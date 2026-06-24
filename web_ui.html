@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Good Badminton</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--bor:#334155;--tx:#e2e8f0;--mu:#94a3b8;--ac:#38bdf8;--gr:#4ade80;--rd:#f87171;--ye:#fbbf24}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:-apple-system,sans-serif;background:var(--bg);color:var(--tx);min-height:100vh}
+  .ct{max-width:900px;margin:0 auto;padding:24px 16px}
+  h1{font-size:1.5rem;margin-bottom:8px}
+  h1 span{font-size:.9rem;color:var(--mu);font-weight:400}
+  .panel{background:var(--card);border:1px solid var(--bor);border-radius:10px;padding:16px;margin-bottom:16px}
+  .ph{font-weight:600;margin-bottom:12px}
+  button,.btn{background:var(--ac);color:#0f172a;border:none;padding:10px 18px;border-radius:7px;font-size:.85rem;font-weight:600;cursor:pointer;margin:4px}
+  button:hover{opacity:.85}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  .btn2{background:var(--bor);color:var(--tx)}
+  .btn3{background:var(--rd);color:#fff}
+  select,option{background:#0f172a;color:var(--tx);border:1px solid var(--bor);border-radius:7px;padding:8px 12px;font-size:.85rem}
+  .vid{display:inline-block;width:220px;background:#0f172a;border:2px solid var(--bor);border-radius:8px;padding:12px;margin:6px;cursor:pointer;text-align:left;vertical-align:top}
+  .vid:hover{border-color:var(--ac)}
+  .vid.sel{border-color:var(--ac);box-shadow:0 0 0 2px rgba(56,189,248,.3)}
+  .vid .vn{font-weight:600;font-size:.85rem;word-break:break-all}
+  .vid .vm{font-size:.75rem;color:var(--mu)}
+  .badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.7rem;font-weight:600;margin-top:4px}
+  .badge-ok{background:rgba(74,222,128,.15);color:var(--gr)}
+  .badge-rd{background:rgba(56,189,248,.15);color:var(--ac)}
+  .up-zone{border:2px dashed var(--bor);border-radius:10px;padding:32px;text-align:center;cursor:pointer;color:var(--mu);margin:10px 0}
+  .up-zone:hover{border-color:var(--ac);color:var(--ac)}
+  .prog-wrap{margin:12px 0}
+  .prog-bar{height:6px;background:var(--bor);border-radius:3px;overflow:hidden}
+  .prog-fill{height:100%;background:linear-gradient(90deg,var(--ac),var(--gr));border-radius:3px;transition:width .3s}
+  .prog-text{font-size:.8rem;color:var(--mu);margin-top:4px}
+  .result-box{display:flex;flex-wrap:wrap;gap:12px}
+  .result-box>*{flex:1;min-width:250px}
+  img,video{max-width:100%;border-radius:6px}
+  .hidden{display:none !important}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .dot-run{background:var(--ye);animation:pls .8s infinite}
+  .dot-ok{background:var(--gr)}
+  .dot-err{background:var(--rd)}
+  @keyframes pls{50%{opacity:.3}}
+  canvas{cursor:crosshair;border-radius:8px;background:#000}
+  .step{display:flex;align-items:center;gap:6px;padding:5px 8px;font-size:.8rem}
+  .step .sdot{width:10px;height:10px;border-radius:50%;flex-shrink:0;background:var(--bor)}
+  .step .sdot.done{background:var(--ac)}
+  .step .sdot.cur{background:var(--ye)}
+</style>
+</head>
+<body>
+<div class="ct">
+  <h1>🏸 Good Badminton <span>AI 羽毛球分析</span></h1>
+
+  <!-- ===== Video Selection ===== -->
+  <div class="panel" id="panel-videos">
+    <div class="ph">📁 选择视频</div>
+    <div id="video-list" style="margin-bottom:8px">加载中...</div>
+    <div class="up-zone" id="upload-zone">
+      <div style="font-size:1.5rem">📤</div>
+      <div>拖拽视频到此处上传</div>
+      <div style="font-size:.75rem">MP4 / MOV / AVI / MKV · 最大 1GB</div>
+    </div>
+    <input type="file" id="file-input" accept="video/*" style="display:none">
+    <div style="margin-top:8px">
+      <select id="lang-sel"><option value="zh">中文</option><option value="en">English</option></select>
+      <select id="pose-sel"><option value="yolo-pose">YOLO Pose (快)</option><option value="rtmpose">RTMPose (准)</option></select>
+      <button id="btn-detect" disabled onclick="doDetect()">🔍 1. 自动检测球场</button>
+      <button id="btn-analyze" disabled onclick="doAnalyze()">▶ 2. 开始分析</button>
+      <button class="btn2" id="btn-delete" disabled onclick="doDelete()">🗑 删除结果</button>
+    </div>
+  </div>
+
+  <!-- ===== Court Detection ===== -->
+  <div class="panel hidden" id="panel-court">
+    <div class="ph">📍 球场检测</div>
+    <div id="court-ok" class="hidden">
+      <div style="color:var(--gr);font-weight:600">✅ 自动检测完成</div>
+      <img id="court-preview" style="max-height:350px;border:1px solid var(--bor);margin:6px 0">
+      <div style="font-size:.8rem;color:var(--mu)">如果边线不准可手动修正</div>
+      <button class="btn2" onclick="manualFix()">✏️ 手动修正</button>
+    </div>
+    <div id="court-fail" class="hidden">
+      <div style="color:var(--ye);font-weight:600;margin-bottom:10px">⚠️ 请手动标注球场四个角点</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:300px">
+          <canvas id="anno-canvas" width="900" height="500"></canvas>
+        </div>
+        <div style="width:200px">
+          <div style="font-weight:600;margin-bottom:6px;font-size:.85rem">📌 操作方法</div>
+          <div style="font-size:.78rem;color:var(--mu);line-height:1.6;margin-bottom:8px">
+            在图片上<b>按顺序</b>点击<br>球场四个边界线交点：<br><br>
+            <span style="color:#ff4444">1️⃣ 左上角</span><br>
+            <span style="color:#44ff44">2️⃣ 右上角</span><br>
+            <span style="color:#4488ff">3️⃣ 右下角</span><br>
+            <span style="color:#ffff44">4️⃣ 左下角</span><br><br>
+            💡 选<b>白线交点</b>，<br>不是看台或广告牌
+          </div>
+          <div id="steps" style="margin-bottom:10px"></div>
+          <button class="btn2" onclick="undoPoint()">↩ 撤销</button>
+          <button class="btn2" onclick="resetPoints()">🔄 清空</button>
+          <button id="btn-submit" disabled onclick="submitPoints()">✅ 确认提交</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Progress ===== -->
+  <div class="panel hidden" id="panel-progress">
+    <div class="ph"><span class="dot dot-run" id="sdot"></span> <span id="stxt">准备中...</span></div>
+    <div class="prog-wrap">
+      <div class="prog-bar"><div class="prog-fill" id="pfill" style="width:0%"></div></div>
+      <div class="prog-text" id="pmsg"></div>
+    </div>
+  </div>
+
+  <!-- ===== Results ===== -->
+  <div class="panel hidden" id="panel-results">
+    <div class="ph">📊 分析结果</div>
+    <div class="result-box">
+      <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">标注视频</div><video id="rvideo" controls></video></div>
+      <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置热力图</div><img id="rheat" alt="热力图"></div>
+      <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置散点图</div><img id="rscatter" alt="散点图"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+var selVideo = null, clicks = [], annoImg = null, sx = 1, sy = 1;
+
+// ── Load videos ──
+function loadVideos() {
+  fetch('/api/videos').then(function(r){return r.json()}).then(function(vids){
+    var h = '';
+    for (var i = 0; i < vids.length; i++) {
+      var v = vids[i];
+      var b = '';
+      if (v.has_result) b = '<span class="badge badge-ok">已完成</span>';
+      else if (v.has_annotations) b = '<span class="badge badge-rd">已标注球场</span>';
+      h += '<div class="vid" data-fn="'+v.filename+'" onclick="pickVideo(this,\''+v.filename+'\')">'
+        +'<div class="vn">🎬 '+v.filename+'</div>'
+        +'<div class="vm">'+v.size_mb+' MB</div>'+b+'</div>';
+    }
+    document.getElementById('video-list').innerHTML = h || '<span style="color:var(--mu)">暂无视频，请上传</span>';
+  }).catch(function(e){
+    document.getElementById('video-list').innerHTML = '<span style="color:var(--rd)">加载失败: '+e.message+'</span>';
+  });
+}
+
+function pickVideo(el, fn) {
+  selVideo = fn;
+  var cards = document.querySelectorAll('.vid');
+  for (var i = 0; i < cards.length; i++) cards[i].classList.remove('sel');
+  el.classList.add('sel');
+  document.getElementById('btn-detect').disabled = false;
+  document.getElementById('btn-analyze').disabled = false;
+  document.getElementById('btn-delete').disabled = false;
+}
+
+// ── Upload ──
+var uz = document.getElementById('upload-zone');
+var fi = document.getElementById('file-input');
+uz.onclick = function(){ fi.click(); };
+uz.ondragover = function(e){ e.preventDefault(); };
+uz.ondrop = function(e){
+  e.preventDefault();
+  if (e.dataTransfer.files[0]) doUpload(e.dataTransfer.files[0]);
+};
+fi.onchange = function(){
+  if (fi.files[0]) doUpload(fi.files[0]);
+};
+
+function doUpload(file) {
+  var fd = new FormData();
+  fd.append('file', file);
+  var btn = document.getElementById('btn-detect');
+  btn.disabled = true; btn.textContent = '上传中...';
+  fetch('/api/upload', {method:'POST', body:fd}).then(function(r){return r.json()}).then(function(d){
+    btn.textContent = '🔍 1. 自动检测球场';
+    if (d.ok) { loadVideos(); selVideo = d.filename; }
+  });
+}
+
+// ── Court Detection ──
+function doDetect() {
+  if (!selVideo) return;
+  var btn = document.getElementById('btn-detect');
+  btn.disabled = true; btn.textContent = '检测中...';
+  fetch('/api/detect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({video:selVideo})})
+  .then(function(r){return r.json()}).then(function(d){
+    var pc = document.getElementById('panel-court');
+    pc.classList.remove('hidden');
+    pc.scrollIntoView({behavior:'smooth'});
+    if (d.success) {
+      document.getElementById('court-ok').classList.remove('hidden');
+      document.getElementById('court-fail').classList.add('hidden');
+      document.getElementById('court-preview').src = '/api/output/'+selVideo.replace(/\.[^.]+$/,'')+'/auto_court_preview.png?'+Date.now();
+      document.getElementById('btn-analyze').disabled = false;
+    } else {
+      document.getElementById('court-ok').classList.add('hidden');
+      document.getElementById('court-fail').classList.remove('hidden');
+      document.getElementById('btn-analyze').disabled = true;
+      clicks = [];
+      loadAnnoImage();
+    }
+    btn.textContent = '🔍 1. 重新检测球场';
+    btn.disabled = false;
+  });
+}
+
+// ── Manual Annotation ──
+function manualFix() {
+  document.getElementById('court-ok').classList.add('hidden');
+  document.getElementById('court-fail').classList.remove('hidden');
+  clicks = [];
+  loadAnnoImage();
+}
+
+function loadAnnoImage() {
+  var stem = selVideo.replace(/\.[^.]+$/,'');
+  var img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = '/api/template/'+stem+'?'+Date.now();
+  img.onload = function(){
+    annoImg = img;
+    var c = document.getElementById('anno-canvas');
+    var maxW = 900, scale = Math.min(1, maxW / img.naturalWidth);
+    sx = scale; sy = scale;
+    c.width = Math.round(img.naturalWidth * scale);
+    c.height = Math.round(img.naturalHeight * scale);
+    c.style.width = c.width+'px';
+    c.style.height = c.height+'px';
+    clicks = [];
+    redrawAnno();
+    updateSteps();
+  };
+  img.onerror = function(){
+    var c = document.getElementById('anno-canvas');
+    var ctx = c.getContext('2d');
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('无法加载模板图片', 100, 250);
+  };
+}
+
+var ac = document.getElementById('anno-canvas');
+ac.onclick = function(e){
+  if (!annoImg || clicks.length >= 4) return;
+  var r = ac.getBoundingClientRect();
+  clicks.push([Math.round((e.clientX-r.left)/sx), Math.round((e.clientY-r.top)/sy)]);
+  redrawAnno();
+  updateSteps();
+};
+
+function redrawAnno() {
+  var c = document.getElementById('anno-canvas');
+  var ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (annoImg) ctx.drawImage(annoImg, 0, 0, c.width, c.height);
+  var cols = ['#ff4444','#44ff44','#4488ff','#ffff44'];
+  for (var i = 0; i < clicks.length; i++) {
+    var cx = clicks[i][0]*sx, cy = clicks[i][1]*sy;
+    ctx.fillStyle = cols[i]; ctx.beginPath(); ctx.arc(cx,cy,7,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(cx,cy,7,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.fillText(i+1, cx+12, cy-8);
+  }
+  if (clicks.length > 1) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.setLineDash([6,3]);
+    ctx.beginPath();
+    for (var i = 0; i < clicks.length; i++) {
+      var dx = clicks[i][0]*sx, dy = clicks[i][1]*sy;
+      i===0 ? ctx.moveTo(dx,dy) : ctx.lineTo(dx,dy);
+    }
+    if (clicks.length===4) ctx.closePath();
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+function updateSteps() {
+  var h = '', labels = ['1️⃣ 左上角','2️⃣ 右上角','3️⃣ 右下角','4️⃣ 左下角'];
+  for (var i = 0; i < 4; i++) {
+    var cls = 'sdot';
+    if (i < clicks.length) cls += ' done';
+    else if (i === clicks.length) cls += ' cur';
+    var txt = i < clicks.length ? labels[i]+' ('+clicks[i][0]+','+clicks[i][1]+')' : labels[i];
+    h += '<div class="step"><span class="'+cls+'"></span> '+txt+'</div>';
+  }
+  document.getElementById('steps').innerHTML = h;
+  document.getElementById('btn-submit').disabled = clicks.length !== 4;
+}
+
+function undoPoint() { clicks.pop(); redrawAnno(); updateSteps(); }
+function resetPoints() { clicks = []; redrawAnno(); updateSteps(); }
+
+function submitPoints() {
+  if (clicks.length !== 4) return;
+  var btn = document.getElementById('btn-submit');
+  btn.disabled = true; btn.textContent = '提交中...';
+  fetch('/api/manual-annotate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({video:selVideo, corners:clicks})})
+  .then(function(r){return r.json()}).then(function(d){
+    btn.textContent = '✅ 确认提交';
+    if (d.ok) {
+      // 显示手动标注的预览图
+      document.getElementById('court-ok').classList.remove('hidden');
+      document.getElementById('court-fail').classList.add('hidden');
+      if (d.preview_path) {
+        document.getElementById('court-preview').src = d.preview_path+'?'+Date.now();
+      }
+      document.getElementById('btn-analyze').disabled = false;
+      document.getElementById('btn-analyze').textContent = '▶ 2. 开始分析';
+    } else {
+      alert('保存失败: '+(d.error||'未知错误'));
+      btn.disabled = false;
+    }
+  });
+}
+
+// ── Analysis ──
+function doAnalyze() {
+  if (!selVideo) return;
+  var btn = document.getElementById('btn-analyze');
+  btn.disabled = true; btn.textContent = '启动中...';
+  fetch('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({video:selVideo, language:document.getElementById('lang-sel').value, pose_family:document.getElementById('pose-sel').value})})
+  .then(function(r){return r.json()}).then(function(){
+    document.getElementById('panel-progress').classList.remove('hidden');
+    document.getElementById('panel-progress').scrollIntoView({behavior:'smooth'});
+    pollProgress();
+  });
+}
+
+function pollProgress() {
+  var jid = selVideo.replace(/\.[^.]+$/,'');
+  var iv = setInterval(function(){
+    fetch('/api/status/'+jid).then(function(r){return r.json()}).then(function(d){
+      document.getElementById('pfill').style.width = d.progress+'%';
+      document.getElementById('pmsg').textContent = d.message;
+      if (d.status === 'completed') {
+        clearInterval(iv);
+        document.getElementById('sdot').className = 'dot dot-ok';
+        document.getElementById('stxt').textContent = '完成';
+        document.getElementById('btn-analyze').textContent = '▶ 重新分析';
+        document.getElementById('btn-analyze').disabled = false;
+        showResults(d.result);
+      } else if (d.status === 'error') {
+        clearInterval(iv);
+        document.getElementById('sdot').className = 'dot dot-err';
+        document.getElementById('stxt').textContent = '出错';
+        document.getElementById('btn-analyze').textContent = '▶ 重试';
+        document.getElementById('btn-analyze').disabled = false;
+      }
+    });
+  }, 2000);
+}
+
+function showResults(r) {
+  if (!r) return;
+  var p = document.getElementById('panel-results');
+  p.classList.remove('hidden');
+  p.scrollIntoView({behavior:'smooth'});
+  if (r.output_video) {
+    var vid = document.getElementById('rvideo');
+    vid.src = r.output_video+'?'+Date.now();
+    vid.load();
+  }
+  if (r.heatmap) document.getElementById('rheat').src = r.heatmap+'?'+Date.now();
+  if (r.scatter) document.getElementById('rscatter').src = r.scatter+'?'+Date.now();
+}
+
+// ── Delete ──
+function doDelete() {
+  if (!selVideo || !confirm('确定删除 '+selVideo+' 的分析结果？')) return;
+  var stem = selVideo.replace(/\.[^.]+$/,'');
+  fetch('/api/output/'+stem+'/', {method:'DELETE'}).then(function(){
+    document.getElementById('panel-court').classList.add('hidden');
+    document.getElementById('panel-results').classList.add('hidden');
+    document.getElementById('btn-analyze').disabled = false;
+    loadVideos();
+  });
+}
+
+// ── Init ──
+loadVideos();
+</script>
+</body>
+</html>

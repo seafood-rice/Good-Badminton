@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.agents/
+
+# Local inputs and generated outputs
+results/
+outputs/
+*.log
+
+# User videos and auto-generated templates
+videos/*
+!videos/demo.mp4
+!videos/demo1.mp4
+templates/_auto_*
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Model weights are intentionally not published
+weights/*
+!weights/.gitkeep
+*.pt
+*.pth
+*.onnx
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Dev files
+.local/
