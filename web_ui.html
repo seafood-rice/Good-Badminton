@@ -83,24 +83,24 @@
     </div>
     <div id="court-fail" class="hidden">
       <div style="color:var(--ye);font-weight:600;margin-bottom:10px">⚠️ 请手动标注球场四个角点</div>
-      <div style="display:flex;gap:16px;flex-wrap:wrap">
-        <div style="flex:1;min-width:300px">
-          <canvas id="anno-canvas" width="900" height="500"></canvas>
-        </div>
-        <div style="width:200px">
-          <div style="font-weight:600;margin-bottom:6px;font-size:.85rem">📌 操作方法</div>
-          <div style="font-size:.78rem;color:var(--mu);line-height:1.6;margin-bottom:8px">
-            在图片上<b>按顺序</b>点击<br>球场四个边界线交点：<br><br>
-            <span style="color:#ff4444">1️⃣ 左上角</span><br>
-            <span style="color:#44ff44">2️⃣ 右上角</span><br>
-            <span style="color:#4488ff">3️⃣ 右下角</span><br>
-            <span style="color:#ffff44">4️⃣ 左下角</span><br><br>
-            💡 选<b>白线交点</b>，<br>不是看台或广告牌
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <canvas id="anno-canvas" width="900" height="500" style="max-width:100%"></canvas>
+        <div style="background:#0f172a;border:1px solid var(--bor);border-radius:8px;padding:12px">
+          <div style="font-weight:600;margin-bottom:8px;font-size:.85rem">📌 操作方法：在图片上<strong>按顺序</strong>点击四个边界线交点</div>
+          <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+            <span style="color:#ff4444;font-size:.85rem">1️⃣ 左上</span>
+            <span style="color:#44ff44;font-size:.85rem">2️⃣ 右上</span>
+            <span style="color:#4488ff;font-size:.85rem">3️⃣ 右下</span>
+            <span style="color:#ffff44;font-size:.85rem">4️⃣ 左下</span>
+            <span style="color:var(--mu);font-size:.8rem">💡 选<b>白线交点</b>，不是看台或广告牌</span>
           </div>
-          <div id="steps" style="margin-bottom:10px"></div>
-          <button class="btn2" onclick="undoPoint()">↩ 撤销</button>
-          <button class="btn2" onclick="resetPoints()">🔄 清空</button>
-          <button id="btn-submit" disabled onclick="submitPoints()">✅ 确认提交</button>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+            <div id="steps" style="display:flex;gap:12px;flex-wrap:wrap"></div>
+            <div style="flex:1"></div>
+            <button class="btn2" onclick="undoPoint()">↩ 撤销</button>
+            <button class="btn2" onclick="resetPoints()">🔄 清空</button>
+            <button id="btn-submit" disabled onclick="submitPoints()">✅ 确认提交</button>
+          </div>
         </div>
       </div>
     </div>
@@ -291,13 +291,14 @@ function redrawAnno() {
 }
 
 function updateSteps() {
-  var h = '', labels = ['1️⃣ 左上角','2️⃣ 右上角','3️⃣ 右下角','4️⃣ 左下角'];
+  var labels = ['1️⃣ 左上','2️⃣ 右上','3️⃣ 右下','4️⃣ 左下'];
+  var h = '';
   for (var i = 0; i < 4; i++) {
-    var cls = 'sdot';
-    if (i < clicks.length) cls += ' done';
-    else if (i === clicks.length) cls += ' cur';
-    var txt = i < clicks.length ? labels[i]+' ('+clicks[i][0]+','+clicks[i][1]+')' : labels[i];
-    h += '<div class="step"><span class="'+cls+'"></span> '+txt+'</div>';
+    var done = i < clicks.length;
+    var cur = i === clicks.length;
+    var color = done ? ['#ff4444','#44ff44','#4488ff','#ffff44'][i] : 'var(--mu)';
+    var txt = done ? labels[i]+' ✓' : labels[i];
+    h += '<span style="color:'+color+';font-size:.8rem;'+(cur?'font-weight:bold;':'')+'">'+txt+'</span>';
   }
   document.getElementById('steps').innerHTML = h;
   document.getElementById('btn-submit').disabled = clicks.length !== 4;
