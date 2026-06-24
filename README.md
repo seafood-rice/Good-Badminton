@@ -188,4 +188,6 @@ badminton_analysis/
 - [Tau-J/rtmlib](https://github.com/Tau-J/rtmlib)
 - [yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet)
 
-**许可证**：Apache License 2.0 — **可商用**，需保留版权声明。
+**许可证**：
+- 原始代码：[Apache License 2.0](https://github.com/yo-WASSUP/Good-Badminton/blob/main/LICENSE)
+- 本 Fork 新增/修改代码：[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) — **禁止商用**
