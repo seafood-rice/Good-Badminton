@@ -73,6 +73,12 @@ class StatsVisualizer:
 
     def _find_chinese_font(self):
         font_paths = [
+            # macOS & Linux (project-bundled font)
+            os.path.join(os.path.dirname(__file__), "..", "..", "simhei.ttf"),
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "simhei.ttf"),
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            # Windows
             "C:/Windows/Fonts/simhei.ttf",
             "C:/Windows/Fonts/simsun.ttc",
             "C:/Windows/Fonts/simkai.ttf",

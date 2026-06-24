@@ -370,9 +370,13 @@ def api_clip():
     env = os.environ.copy()
     env['PATH'] = f"{os.path.expanduser('~/.local/bin')}:{env.get('PATH', '')}"
 
+    # 优先使用标注视频（有分析叠加层），否则回退到原始视频
+    analyzed_video = save_dir / f'detect_{video_path.stem}.mp4'
+    source_video = analyzed_video if analyzed_video.exists() else video_path
+
     cmd = [
         _venv_python, str(PROJECT_ROOT / 'clip_video.py'),
-        '--video-path', str(video_path),
+        '--video-path', str(source_video),
         '--rally-file', str(rally_file),
         '--output-dir', str(clip_output_dir),
         '--mode', mode,
