@@ -151,7 +151,9 @@ class BadmintonAnalysisSystem:
         self.is_court_view_count = 0
         self.consecutive_non_court_frames = 0
         self.rally_active = False
-        self.rally_count = 0  
+        self.rally_count = 0
+        self.rally_segments = []  # [(rally_id, start_frame, end_frame), ...]
+        self._current_rally_start = 0
         self.fps = 30  
         self.court_view_frames_threshold = 5
         self.non_court_frames_threshold = 5
@@ -218,6 +220,19 @@ class BadmintonAnalysisSystem:
             frame_count += 1
             frame, detect_frame_count = self._process_frame(frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count)
 
+        # 视频结束时如果还在回合中，记录最后一个回合
+        if self.rally_active:
+            self.rally_segments.append((self.rally_count, self._current_rally_start, frame_count))
+
+        # 保存回合分段数据
+        rally_path = os.path.join(self.save_dir, "rally_segments.json")
+        write_json(rally_path, {
+            "fps": fps,
+            "rallies": [{"id": r[0], "start_frame": r[1], "end_frame": r[2],
+                         "start_sec": r[1]/fps, "end_sec": r[2]/fps}
+                        for r in self.rally_segments],
+        })
+
         self.end_time = time.time()
         processing_time = self.end_time - self.start_time
         
@@ -281,12 +296,14 @@ class BadmintonAnalysisSystem:
             self.rally_active = True
 
             self.rally_count += 1
+            self._current_rally_start = frame_count
 
             self.player_tracker.start_new_rally()
-            
+
 
         if self.consecutive_non_court_frames >= self.non_court_frames_threshold and self.rally_active:
             self.rally_active = False
+            self.rally_segments.append((self.rally_count, self._current_rally_start, frame_count))
 
             self.shuttlecock_tracker.clear_trajectory()
 

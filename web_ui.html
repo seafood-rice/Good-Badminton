@@ -118,6 +118,16 @@
   <!-- ===== Results ===== -->
   <div class="panel hidden" id="panel-results">
     <div class="ph">📊 分析结果</div>
+    <div id="rally-info" style="margin-bottom:8px;font-size:.85rem;color:var(--mu)"></div>
+    <div style="margin-bottom:12px">
+      <select id="clip-mode">
+        <option value="highlights">集锦视频（合并）</option>
+        <option value="clips">单独回合视频</option>
+      </select>
+      <button id="btn-clip" class="btn2" onclick="doClip()">✂️ 生成回合剪辑</button>
+      <span id="clip-status" style="font-size:.8rem;color:var(--mu);margin-left:8px"></span>
+    </div>
+    <div id="clip-list" style="margin-bottom:12px;font-size:.85rem"></div>
     <div class="result-box">
       <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">标注视频</div><video id="rvideo" controls></video></div>
       <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置热力图</div><img id="rheat" alt="热力图"></div>
@@ -369,6 +379,39 @@ function showResults(r) {
   }
   if (r.heatmap) document.getElementById('rheat').src = r.heatmap+'?'+Date.now();
   if (r.scatter) document.getElementById('rscatter').src = r.scatter+'?'+Date.now();
+  if (r.rally_count > 0) {
+    document.getElementById('rally-info').innerHTML = '检测到 <b>'+r.rally_count+'</b> 个回合，可以生成剪辑视频';
+    document.getElementById('btn-clip').disabled = false;
+  } else {
+    document.getElementById('rally-info').textContent = '';
+    document.getElementById('btn-clip').disabled = true;
+  }
+}
+
+function doClip() {
+  if (!selVideo) return;
+  var btn = document.getElementById('btn-clip');
+  var stat = document.getElementById('clip-status');
+  btn.disabled = true; btn.textContent = '生成中...';
+  stat.textContent = '正在剪辑，请稍候...';
+  var mode = document.getElementById('clip-mode').value;
+  fetch('/api/clip', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({video:selVideo, mode:mode})})
+  .then(function(r){return r.json()}).then(function(d){
+    btn.textContent = '✂️ 生成回合剪辑';
+    if (d.ok && d.clips) {
+      stat.textContent = '完成! ' + d.clips.length + ' 个文件';
+      var html = '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+      for (var i=0; i<d.clips.length; i++) {
+        html += '<a href="'+d.clips[i].url+'" target="_blank" style="color:var(--ac);font-size:.8rem">📹 '+d.clips[i].name+' ('+d.clips[i].size_mb+'MB)</a>';
+      }
+      html += '</div>';
+      document.getElementById('clip-list').innerHTML = html;
+    } else {
+      stat.textContent = '失败: ' + (d.error||'未知');
+    }
+    btn.disabled = false;
+  });
 }
 
 // ── Delete ──

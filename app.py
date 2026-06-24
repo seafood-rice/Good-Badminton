@@ -309,6 +309,15 @@ def api_analyze():
             vs = video_path.stem
             sd = str(save_dir)
             pos_dir = os.path.join(sd, 'position_visualizations')
+            rally_file = os.path.join(sd, 'rally_segments.json')
+            rally_count = 0
+            if os.path.exists(rally_file):
+                try:
+                    with open(rally_file) as rf:
+                        rally_count = len(json.load(rf).get('rallies', []))
+                except:
+                    pass
+
             job['result'] = {
                 'video_name': vs,
                 'output_video': f'/api/output/{vs}/detect_{vs}.mp4',
@@ -316,6 +325,7 @@ def api_analyze():
                 'heatmap': f'/api/output/{vs}/position_visualizations/heatmaps/match_heatmap.png',
                 'scatter': f'/api/output/{vs}/position_visualizations/scatter_plots/match_scatter.png',
                 'preview': f'/api/output/{vs}/auto_court_preview.png',
+                'rally_count': rally_count,
             }
         else:
             job['status'] = 'error'
@@ -339,7 +349,54 @@ def api_status(job_id):
     })
 
 
-@app.route('/api/output/<video_name>/<path:subpath>')
+@app.route('/api/clip', methods=['POST'])
+def api_clip():
+    """生成回合剪辑视频"""
+    data = request.json
+    video_name = data.get('video')
+    mode = data.get('mode', 'highlights')
+    padding = data.get('padding', 1.5)
+
+    video_path = VIDEOS / video_name
+    save_dir = OUTPUTS / video_path.stem
+    rally_file = save_dir / 'rally_segments.json'
+
+    if not rally_file.exists():
+        return jsonify({'error': '还没有回合检测数据，请先运行分析'}), 400
+
+    clip_output_dir = save_dir / 'clips'
+    clip_output_dir.mkdir(exist_ok=True)
+
+    env = os.environ.copy()
+    env['PATH'] = f"{os.path.expanduser('~/.local/bin')}:{env.get('PATH', '')}"
+
+    cmd = [
+        _venv_python, str(PROJECT_ROOT / 'clip_video.py'),
+        '--video-path', str(video_path),
+        '--rally-file', str(rally_file),
+        '--output-dir', str(clip_output_dir),
+        '--mode', mode,
+        '--padding', str(padding),
+    ]
+
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=str(PROJECT_ROOT), env=env)
+        print(r.stdout)
+
+        # 查找生成的剪辑文件
+        clips = sorted(clip_output_dir.glob('*.mp4'))
+        result = {
+            'ok': True,
+            'mode': mode,
+            'clips': [{
+                'name': c.name,
+                'url': f'/api/output/{video_path.stem}/clips/{c.name}',
+                'size_mb': round(c.stat().st_size / 1024 / 1024, 1),
+            } for c in clips],
+        }
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 def serve_output(video_name, subpath):
     """提供输出文件，支持视频 Range 请求"""
     filepath = OUTPUTS / video_name / subpath
