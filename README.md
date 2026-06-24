@@ -1,265 +1,175 @@
-﻿# Good-Badminton: AI 羽毛球鹰眼系统 🏸
+# Good-Badminton: AI 羽毛球鹰眼系统 🏸
 
 <div align="center">
 
-[![GitHub stars](https://img.shields.io/github/stars/yo-WASSUP/Good-Badminton?style=social)](https://github.com/yo-WASSUP/Good-Badminton/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/yo-WASSUP/Good-Badminton?style=social)](https://github.com/yo-WASSUP/Good-Badminton/network/members)
-[![GitHub license](https://img.shields.io/github/license/yo-WASSUP/Good-Badminton)](https://github.com/yo-WASSUP/Good-Badminton/blob/main/LICENSE)
-[![小红书视频介绍](https://img.shields.io/badge/小红书-视频介绍-ff2442)](https://www.xiaohongshu.com/explore/6a37b1d20000000011016229?xsec_token=ABod3wXBTiDppp6W2Ou0QHlu2eotUkeu27-ha64nFRR74=&xsec_source=pc_user)
+[![GitHub stars](https://img.shields.io/github/stars/qwpyyx/Good-Badminton?style=social)](https://github.com/qwpyyx/Good-Badminton/stargazers)
+[![GitHub license](https://img.shields.io/github/license/qwpyyx/Good-Badminton)](https://github.com/qwpyyx/Good-Badminton/blob/main/LICENSE)
 
-**基于计算机视觉的羽毛球比赛视频分析工具**
-
-[中文](README.md) | [English](README_EN.md)
+**基于计算机视觉的羽毛球比赛视频分析工具 | 一键 Web 界面，告别命令行**
 
 </div>
 
+> 🛠 Forked from [yo-WASSUP/Good-Badminton](https://github.com/yo-WASSUP/Good-Badminton) (Apache 2.0)，在此基础上做了大量改进。
+
+## 🆕 本 Fork 改进
+
+| 改进 | 说明 |
+|------|------|
+| 🌐 **Web 前端** | 一键启动 Flask 界面，浏览器里完成所有操作，不需要记命令行参数 |
+| 🎨 **自适应球场检测** | 自动识别地板颜色（绿/红/橙/蓝），不再只支持绿色球场 |
+| 📐 **手动标注 + 实时预览** | 点击四个角点即可标注球场，提交后立即看到绿色四边形反馈 |
+| 🎬 **H.264 视频输出** | 输出视频可直接在浏览器/手机上播放，无需额外转码 |
+| 📤 **拖拽上传** | 直接拖视频到页面即可上传分析 |
+| 📊 **实时进度** | 进度条实时显示分析进度，不用盯着终端 |
+
 ## 🎬 效果预览
 
-![Good-Badminton 分析结果预览](assets/demo.gif)
+![分析结果预览](assets/demo.gif)
 
-视频效果在 `assets/demo.mp4`。
+## 🚀 快速开始
 
-## 🆕 更新日志
-- **2026-06-23**：增加自动球场边界检测。
-- **2026-06-20**：正式开源。
-- **2026-06-17**：整理项目介绍文档。
-- **当前版本**：支持球员姿态检测、羽毛球检测、球场坐标映射、轨迹统计、热力图/散点图和带标注视频输出。
-- **实验功能**：击球点分析和技术动作统计仍在迭代中，适合研究和二次开发使用。
-
-## 🔮 开发计划
-
-- [x] 羽毛球比赛视频逐帧分析
-- [x] RTMPose / RTMO / YOLO Pose 多姿态模型支持
-- [x] YOLO 羽毛球检测模型接入
-- [x] 手动球场标注与球场坐标映射
-- [x] 球员移动轨迹、速度、距离和回合统计
-- [x] 中文 / 英文可视化文字
-- [x] 热力图、散点图和检测数据导出
-- [ ] 更稳定的击球点识别
-- [ ] 更精确的羽毛球检测模型
-- [ ] 更完整的技术动作统计
-- [x] 自动球场关键点检测
-- [ ] 批量视频分析工作流
-
----
-
-## ✨ 功能
-
-- **球员姿态检测** - 支持 RTMPose、RTMO 和 Ultralytics YOLO Pose，识别人体关键点和骨架。
-- **羽毛球检测** - 使用 YOLO 模型检测羽毛球位置，并在输出视频中绘制轨迹。
-- **球场坐标映射** - 手动标注球场关键点，将图像坐标映射到标准球场坐标。
-- **球员位置追踪** - 分别追踪上半场和下半场球员位置，记录移动轨迹。
-- **回合检测** - 根据连续球场视图自动判断回合开始和结束，并在视频叠加层和检测数据中记录回合编号。
-- **运动统计分析** - 统计移动距离、当前速度、最大速度和回合数量。
-- **可视化输出** - 生成带骨架、轨迹、统计信息和球场轨迹的分析视频。
-- **位置图表** - 自动生成球员位置热力图和散点图。
-- **中英文显示** - 可通过 `--language zh/en` 切换可视化文字。
-- **本地运行** - 视频、模型和分析结果都保存在本地。
-
-## 📋 系统要求
-
-- Python 3.8+
-- FFmpeg，并已加入系统 `PATH`
-- 羽毛球 YOLO 检测权重，请从 [GitHub Releases](https://github.com/yo-WASSUP/Good-Badminton/releases/latest)  下载
-
-## 性能需求与参考速度
-
-推荐配置：
-
-- GPU，建议 6GB+ 显存；显存越大，越适合更高分辨率视频和更大的姿态模型。
-- 16GB+ 系统内存。
-- SSD 存储，方便写入输出视频、`detections.jsonl` 和可视化图片。
-- CPU 可以运行完整流程，但姿态检测和羽毛球检测会明显变慢，更适合短视频或功能验证。
-
-参考速度会受显卡、视频分辨率、姿态模型、是否显示窗口、是否保留音频影响。
-
-以 720p 视频、`--pose-family yolo-pose --yolo-pose-model yolo11n-pose.pt` 和 `weights/yolo11s-ball.pt` 为例，GPU 推理日志通常接近：
-
-```text
-pose 0.02s, shuttlecock 0.02s, shuttle draw 0.00s, players draw 0.01s, court draw 0.00s
-```
-
-开启 `--performance-stats` 可以每隔约 5 秒打印一次性能汇总，用于判断瓶颈在姿态推理、羽毛球检测还是绘制阶段。
-
-## 🚀 安装指南
-
-默认依赖使用 CPU 版 PyTorch 和 ONNX Runtime。
-
-### Windows
+### 1. 安装
 
 ```bash
-python -m venv .venv
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
+# 克隆仓库
+git clone https://github.com/qwpyyx/Good-Badminton.git
+cd Good-Badminton
 
-### Linux / macOS
-
-```bash
-python -m venv .venv
+# 创建虚拟环境并安装依赖
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 pip install -r requirements.txt
+
+# macOS 安装 FFmpeg（如果还没有）
+# 下载: https://evermeet.cx/ffmpeg/
+# 解压放到 ~/.local/bin/ 并加入 PATH
 ```
 
-### GPU 加速（Windows / NVIDIA）
+### 2. 下载模型权重
 
-前置要求：
+从 [yo-WASSUP/Good-Badminton Releases](https://github.com/yo-WASSUP/Good-Badminton/releases/latest) 下载：
+- `yolo11s-ball.pt` → 放到 `weights/`
+- `yolox_nano_8xb8-300e_humanart-40f6f0d0.onnx` → 放到 `weights/`
 
-- 已安装 NVIDIA 显卡驱动，`nvidia-smi` 可以正常输出显卡信息。
-- 推荐使用 CUDA 12.1 对应的 PyTorch wheel。
+首次运行 YOLO pose 模型时会自动下载 `yolo11n-pose.pt`。
 
-PowerShell：
+### 3. 启动 Web 界面（推荐 ✨）
 
 ```bash
-.\.venv\Scripts\activate
-
-pip uninstall -y torch torchvision onnxruntime onnxruntime-gpu
-pip install torch==2.5.1+cu121 torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121
-pip install onnxruntime-gpu==1.20.1
+source .venv/bin/activate
+python app.py
 ```
 
-验证 GPU 是否生效：
+打开 http://127.0.0.1:5050 即可使用。
 
-```bash
-python -c "import torch; print('torch:', torch.__version__); print('cuda:', torch.cuda.is_available()); print('gpu:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'not available')"
-python -c "import onnxruntime as ort; print(ort.__version__); print(ort.get_available_providers())"
-```
-
-期望看到：
-
-```text
-cuda: True
-CUDAExecutionProvider
-```
-
-> 注意：安装 GPU 版 ONNX Runtime 后，`pip check` 可能提示 `rtmlib requires onnxruntime, which is not installed`。只要 provider 验证能看到 `CUDAExecutionProvider`，就不要再安装 CPU 版 `onnxruntime`，否则可能覆盖 GPU 包。
-
-切回 CPU 版：
-
-```bash
-pip install --force-reinstall -r requirements.txt
-```
-
-## 📝 使用指南
-
-### 第一次运行流程
-
-1. 准备输入视频和羽毛球检测权重。
-2. 运行基础命令：
+### 4. 命令行方式（高级用户）
 
 ```bash
 python main.py --video-path videos/demo.mp4
 ```
 
-3. 如果没有传 `--template-path`，程序会弹出文件选择框，让你选择一张球场模板图。模板图通常选视频里视角稳定、球场线清楚的一帧。
-4. 程序会先尝试自动检测球场边界，并保存 `outputs/<视频文件名>/auto_court_preview.png`。预览窗口按 Enter/Y 接受自动结果；按 M/R/Esc 进入手动四角标注。
-5. 如果进入手动标注，按图片顶部提示依次点击球场四个角点：左上、右上、右下、左下。
+## 🌐 Web 界面使用指南
 
-![球场标注示例](assets/label_court_example.png)
+### 自动模式
 
-6. 点完四个点后，窗口会显示绿色球场框和蓝色姿态检测 ROI 框。ROI 由程序根据球场自动生成。
-7. 标注结果会保存到 `outputs/<视频文件名>/court_annotations.txt`。同一个输出目录下再次运行会复用这个文件，不会重复要求标注。
-8. 分析结束后，查看 `outputs/<视频文件名>/detect_<视频文件名>.mp4`、`detections.jsonl` 和 `position_visualizations/`。
+1. 浏览器打开 http://127.0.0.1:5050
+2. 点击选中视频（或拖拽上传新视频）
+3. 点击 **「🔍 自动检测球场」** — 程序自动识别地板颜色和球场边界
+4. 查看检测结果，如果边线准确，直接点 **「▶ 开始分析」**
+5. 等待进度条完成，查看标注视频、热力图和散点图
 
-为什么要标注球场四点：
+### 手动修正模式
 
-- 四个角点用于建立图像坐标到标准羽毛球场坐标的映射。
-- 球员过滤主要依赖球场坐标，能把观众、裁判、场外人员过滤掉。
-- 上下半场球员判断、移动距离、速度、回合统计、热力图和散点图都依赖这个映射。
-- 回合检测基于球场模板匹配：连续多帧识别为比赛视图时开始回合，连续多帧离开比赛视图时结束回合。
-- 姿态检测 ROI 只用于减少推理区域和提升速度；它会自动从球场范围扩展生成。
-- 羽毛球检测仍在整帧上执行，轨迹显示会按球场横向范围加 padding 做基础过滤。
+如果自动检测的球场边线不准确：
 
-如果你换了视频视角、裁切方式或模板图，需要删除对应输出目录里的 `court_annotations.txt`，重新标注四点。
+1. 点击 **「✏️ 手动修正」**
+2. 在图片上按顺序点击球场四个角点：
+   - **1️⃣ 左上角** (红点)
+   - **2️⃣ 右上角** (绿点)
+   - **3️⃣ 右下角** (蓝点)
+   - **4️⃣ 左下角** (黄点)
+3. 点击 **「✅ 确认提交」** — 会显示绿色四边形预览
+4. 确认边线正确后，点击 **「▶ 开始分析」**
 
-### 姿态模型选择
+> 💡 角点要选 **球场边界白线的交点**，不是看台或广告牌。
 
-```bash
-# 默认：两阶段 RTMPose balanced
-python main.py --video-path videos/demo.mp4 --pose-family rtmpose --pose-mode balanced
+## ✨ 功能
 
-# 更轻量的一阶段 RTMO
-python main.py --video-path videos/demo.mp4 --pose-family rtmo --pose-mode lightweight
+- **球员姿态检测** — 支持 RTMPose、RTMO 和 YOLO Pose，识别人体关键点
+- **羽毛球检测** — YOLO 模型检测羽毛球位置并绘制轨迹
+- **球场坐标映射** — 自动/手动标注球场，将图像坐标映射到标准球场坐标
+- **自适应球场颜色** — 自动识别绿/红/橙/蓝等不同颜色的球场地板
+- **球员追踪** — 分别追踪上下半场球员，记录移动轨迹
+- **回合检测** — 根据球场视图自动判断回合开始和结束
+- **运动统计** — 移动距离、速度、最大速度、回合数量
+- **可视化输出** — 带骨架、轨迹、统计覆盖层的标注视频 (H.264)
+- **位置图表** — 热力图和散点图
+- **中英文** — 可视化文字可切换
 
-# 使用 Ultralytics YOLO Pose
-python main.py --video-path videos/demo.mp4 --pose-family yolo-pose --yolo-pose-model yolo11n-pose.pt
-```
+## 📋 系统要求
 
-RTMPose 模型档位：
+- Python 3.8+
+- FFmpeg（加入 PATH）
+- 模型权重从 [Releases](https://github.com/yo-WASSUP/Good-Badminton/releases/latest) 下载
 
-- `lightweight`：速度优先。
-- `balanced`：默认配置，速度和效果折中。
-- `performance`：更大模型，速度更慢，通常更适合追求检测质量。
-
-### 常用参数
-
-```text
---video-path                 输入视频路径，必填
---output-dir                 输出目录，默认 outputs/<视频文件名>
---ball-model                 YOLO 羽毛球检测模型路径，默认 weights/yolo11s-ball.pt
---pose-family                姿态模型族：rtmpose、rtmo 或 yolo-pose
---pose-mode                  RTMPose / RTMO 档位：lightweight、balanced、performance
---yolo-pose-model            YOLO pose 模型路径或模型名，默认 yolo11n-pose.pt
---template-path              球场模板图路径；不传时会弹出文件选择框
---pose-roi true|false                是否显示姿态检测 ROI 框，默认 true
---display true|false                 是否显示 OpenCV 预览窗口，默认 true
---skeletons true|false               是否显示人体骨架，默认 true
---player-trajectories true|false     是否显示球员轨迹，默认 true
---court-trajectory true|false        是否显示球场轨迹叠加层，默认 true
---shuttlecock-trajectory true|false  是否显示羽毛球轨迹，默认 true
---player-stats true|false            是否显示球员统计信息，默认 true
---performance-stats                  打印性能耗时
---save-images                        保存处理后的每帧图像
---visualize-positions true|false     是否生成热力图和散点图，默认 true
---audio true|false                   是否保留原视频音频，默认 true
---language {zh,en}           选择界面语言
-```
+**推荐配置：**
+- GPU 6GB+ 显存；或 Apple Silicon Mac (MPS)
+- 16GB+ 内存
+- CPU 也能跑，但 4K 视频会较慢（约 10-20 分钟/20 秒视频）
 
 ## 📊 输出结果
 
 默认输出到 `outputs/<视频文件名>/`：
 
-- `metadata.json`：视频、模型、球场标注和输出文件元数据。
-- `detections.jsonl`：逐帧检测记录，包含回合编号、球员、手部、球场坐标、速度和羽毛球坐标。
-- `detect_<视频文件名>.mp4`：带骨架、轨迹、统计信息和回合编号叠加层的输出视频。
-- `court_annotations.txt`：球场标注坐标缓存。
-- `position_visualizations/heatmaps/`：球员位置热力图。
-- `position_visualizations/scatter_plots/`：球员位置散点图。
-
-### 位置可视化示例
-
-| 热力图 | 散点图 |
-| --- | --- |
-| ![球员位置热力图示例](assets/match_heatmap.png) | ![球员位置散点图示例](assets/match_scatter.png) |
+```
+outputs/demo/
+├── detect_demo.mp4          # 标注视频 (H.264, 浏览器可播)
+├── detections.jsonl          # 逐帧检测数据
+├── auto_court_preview.png    # 球场检测预览
+├── manual_court_preview.png  # 手动标注预览
+├── court_annotations.txt     # 球场坐标缓存
+├── metadata.json             # 运行元数据
+└── position_visualizations/
+    ├── heatmaps/             # 热力图
+    └── scatter_plots/        # 散点图
+```
 
 ## 🧩 项目结构
 
 ```text
-main.py              # 命令行入口和参数解析，保持 python main.py ... 的运行方式
+app.py               # 🌐 Web 前端入口（推荐）
+main.py              # 命令行入口
+court_detect.py      # 无头球场检测脚本
+web_ui.html          # 前端页面
 badminton_analysis/
-├── system.py        # 视频分析主流程 BadmintonAnalysisSystem
-├── court/           # 球场标注与坐标映射
-├── data/            # JSON / JSONL 输出
-├── detection/       # 羽毛球检测与姿态检测
-├── media/           # 视频音频处理
+├── system.py        # 分析主流程
+├── court/           # 球场检测与坐标映射 (自适应颜色)
+├── data/            # JSON/JSONL 输出
+├── detection/       # 羽毛球 & 姿态检测
+├── media/           # 视频 & 音频处理 (H.264)
 ├── tracking/        # 球员追踪
-└── visualization/   # 视频叠加层、统计图和位置图
+└── visualization/   # 叠加层、统计图、位置图
 ```
 
-## 🙏 致谢
+## 🔧 命令行参数（高级）
 
-感谢 RTMPose、RTMO 和 OpenMMLab 生态提供的姿态估计算法基础，以及 [Tau-J/rtmlib](https://github.com/Tau-J/rtmlib) 提供的轻量姿态估计运行库。
+```text
+--video-path              输入视频路径
+--template-path            球场模板图（可选，会自动提取）
+--output-dir               输出目录，默认 outputs/<视频名>
+--pose-family              rtmpose / rtmo / yolo-pose
+--pose-mode                lightweight / balanced / performance
+--language                 zh / en
+--display false            关闭 OpenCV 窗口（服务器模式）
+```
 
-感谢 [Ultralytics](https://github.com/ultralytics/ultralytics) 提供的 YOLO 目标检测算法与工具链。
+## 🙏 致谢与许可
 
-感谢 [yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet) 项目整理并公开羽毛球数据集，为本项目的羽毛球检测与轨迹分析提供了重要参考。
+本项目 Fork 自 [yo-WASSUP/Good-Badminton](https://github.com/yo-WASSUP/Good-Badminton)。
 
-## 📄 许可证
+- RTMPose、RTMO 和 OpenMMLab 生态
+- [Ultralytics YOLO](https://github.com/ultralytics/ultralytics)
+- [Tau-J/rtmlib](https://github.com/Tau-J/rtmlib)
+- [yastrebksv/TrackNet](https://github.com/yastrebksv/TrackNet)
 
-本项目代码和 `weights/yolo11s-ball.pt` 使用 Apache License 2.0。随 Release 提供的 RTMPose / RTMO / YOLOX ONNX 权重来自 OpenMMLab / RTMPose 生态，按其上游 Apache License 2.0 授权使用，并保留原始归属。
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=yo-WASSUP/Good-Badminton&type=Date)](https://www.star-history.com/#yo-WASSUP/Good-Badminton&Date)
+**许可证**：Apache License 2.0 — **可商用**，需保留版权声明。
