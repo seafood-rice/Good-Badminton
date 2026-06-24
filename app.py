@@ -397,6 +397,9 @@ def api_clip():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/output/<video_name>/<path:subpath>')
 def serve_output(video_name, subpath):
     """提供输出文件，支持视频 Range 请求"""
     filepath = OUTPUTS / video_name / subpath
