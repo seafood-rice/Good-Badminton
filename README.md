@@ -21,6 +21,7 @@
 | 🎬 **H.264 视频输出** | 输出视频可直接在浏览器/手机上播放，无需额外转码 |
 | 📤 **拖拽上传** | 直接拖视频到页面即可上传分析 |
 | 📊 **实时进度** | 进度条实时显示分析进度，不用盯着终端 |
+| ✂️ **回合智能剪辑** | 自动检测回合，一键生成集锦视频或单独回合片段，去除捡球等冗余 |
 
 ## 🎬 效果预览
 
@@ -93,6 +94,16 @@ python main.py --video-path videos/demo.mp4
 
 > 💡 角点要选 **球场边界白线的交点**，不是看台或广告牌。
 
+### 回合剪辑模式
+
+分析完成后，结果面板会显示检测到的回合数。可以一键生成剪辑：
+
+- **集锦视频**：所有回合拼接为一个视频，自动去除捡球和回放
+- **单独回合**：每个回合输出为独立 mp4 文件
+- 剪辑前后保留 1.5 秒缓冲，确保动作完整
+
+> 💡 长视频建议先用剪辑模式定位回合，再对关键回合做精确分析。
+
 ## ✨ 功能
 
 - **球员姿态检测** — 支持 RTMPose、RTMO 和 YOLO Pose，识别人体关键点
@@ -129,6 +140,10 @@ outputs/demo/
 ├── manual_court_preview.png  # 手动标注预览
 ├── court_annotations.txt     # 球场坐标缓存
 ├── metadata.json             # 运行元数据
+├── rally_segments.json       # 回合分段数据
+├── clips/                    # 回合剪辑输出
+│   ├── highlights.mp4        # 集锦视频（所有回合合并）
+│   └── rally_001.mp4         # 单个回合片段
 └── position_visualizations/
     ├── heatmaps/             # 热力图
     └── scatter_plots/        # 散点图
@@ -140,6 +155,7 @@ outputs/demo/
 app.py               # 🌐 Web 前端入口（推荐）
 main.py              # 命令行入口
 court_detect.py      # 无头球场检测脚本
+clip_video.py        # ✂️ 回合视频剪辑脚本
 web_ui.html          # 前端页面
 badminton_analysis/
 ├── system.py        # 分析主流程
