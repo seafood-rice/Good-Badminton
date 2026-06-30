@@ -40,3 +40,17 @@ def test_empty_weaknesses_returns_baseline():
     assert len(plan["weeks"]) == 4
     # baseline still schedules something
     assert any(wk["sessions"] for wk in plan["weeks"])
+
+
+def test_foundation_fallback_when_no_easy_exercises():
+    # A library whose only exercise for the targeted weakness is advanced/strength
+    lib = [
+        {"id": "adv_only", "name": "Advanced only drill", "category": "strength",
+         "target_weaknesses": ["elbow_extension"], "description": "x",
+         "equipment": "none", "difficulty": "advanced",
+         "duration_min": 10, "reps": 8, "sets": 3, "location": "home"},
+    ]
+    plan = generate_plan(_summary([("elbow_extension", 5)]), library=lib, weeks=4)
+    # Foundation weeks (1 and 2) must still be non-empty via the fallback
+    assert all(len(wk["sessions"]) >= 1 for wk in plan["weeks"]), \
+        "Foundation weeks must never be empty even with no easy-eligible exercises"

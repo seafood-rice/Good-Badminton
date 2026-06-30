@@ -65,7 +65,7 @@ def generate_plan(match_summary, library=None, weeks=4):
                 continue  # introduce harder strength/on-court work in Progression
             frequency = 3 if ex["category"] in ("on_court", "strength") else 5
             sessions.append(_session_from_exercise(ex, frequency))
-        # ensure Foundation weeks are never empty: fall back to all easy-eligible exercises
+        # ensure Foundation weeks are never empty: if no easy-eligible exercises exist, fall back to all selected exercises
         if not sessions:
             sessions = [_session_from_exercise(ex, 3) for ex in exercises]
         week_list.append({"week": w, "phase": phase, "sessions": sessions})
