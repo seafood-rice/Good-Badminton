@@ -1,5 +1,4 @@
 import json
-import os
 import pytest
 
 import app as webapp
@@ -62,3 +61,9 @@ def test_training_plan_post_regenerates_with_weeks(client, tmp_path):
     r = client.post("/api/training-plan/demo", json={"weeks": 6})
     assert r.status_code == 200
     assert len(r.get_json()["weeks"]) == 6
+
+
+def test_training_plan_post_rejects_bad_weeks(client, tmp_path):
+    _write_summary(tmp_path, "demo")
+    r = client.post("/api/training-plan/demo", json={"weeks": "not-a-number"})
+    assert r.status_code == 400

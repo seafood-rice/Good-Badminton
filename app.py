@@ -505,7 +505,10 @@ def api_training_plan(video_name):
 @app.route('/api/training-plan/<video_name>', methods=['POST'])
 def api_training_plan_regenerate(video_name):
     data = request.json or {}
-    weeks = int(data.get('weeks', 4))
+    try:
+        weeks = int(data.get('weeks', 4))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'weeks 必须是整数'}), 400
     plan, status = _load_or_make_training_plan(video_name, weeks=weeks, force=True)
     return jsonify(plan), status
 
