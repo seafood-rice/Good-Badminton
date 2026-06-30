@@ -668,15 +668,24 @@ function showPlanLocation(loc) {
 // ── Posture Drill ──
 var _postureData = null, _posturePlan = null;
 
+var _matchHidden = {};  // remembers which match panels setMode hid when entering posture
 function setMode(mode) {
-  var match = mode !== 'posture';
-  // Toggle the match panels (court/results) vs the posture panel.
+  var posture = mode === 'posture';
+  // The match flow owns panel-court/panel-results visibility (shown after detect/analyze).
+  // Don't force them visible (that would flash empty panels on cold load); only hide them
+  // when switching INTO posture, and restore exactly those when switching back.
   ['panel-court','panel-results'].forEach(function(id){
-    var el = document.getElementById(id); if (el) el.classList.toggle('hidden', !match);
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (posture) {
+      if (!el.classList.contains('hidden')) { el.classList.add('hidden'); _matchHidden[id] = true; }
+    } else if (_matchHidden[id]) {
+      el.classList.remove('hidden'); _matchHidden[id] = false;
+    }
   });
-  document.getElementById('panel-posture').classList.toggle('hidden', match);
-  document.getElementById('mode-match').className = match ? '' : 'btn2';
-  document.getElementById('mode-posture').className = match ? 'btn2' : '';
+  document.getElementById('panel-posture').classList.toggle('hidden', !posture);
+  document.getElementById('mode-match').className = posture ? 'btn2' : '';
+  document.getElementById('mode-posture').className = posture ? '' : 'btn2';
   var pb = document.getElementById('btn-posture-analyze');
   if (pb) pb.disabled = !selVideo;
 }
@@ -693,6 +702,9 @@ function postureAnalyze() {
   .then(function(r){return r.json()}).then(function(d){
     if (!d.ok) { alert('启动失败: '+(d.error||'未知')); btn.disabled=false; btn.textContent='▶ 分析 Analyze'; return; }
     posturePoll(d.job_id);
+  }).catch(function(){
+    btn.disabled = false; btn.textContent = '▶ 分析 Analyze';
+    document.getElementById('posture-pmsg').textContent = '启动失败，请重试';
   });
 }
 

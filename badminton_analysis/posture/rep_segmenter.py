@@ -85,6 +85,9 @@ def segment_reps(track, fps, min_gap_sec=0.8, pre=20, post=15, k=1.0,
     post_f = int(round(post * scale))
     max_speed = float(np.max(arr)) or 1.0
 
+    if len(kept) > max_reps:
+        print("segment_reps: detected " + str(len(kept)) + " reps, capping at max_reps=" + str(max_reps))
+
     reps = []
     for rep_id, idx in enumerate(kept[:max_reps], start=1):
         peak_frame = track[idx]["frame"]
