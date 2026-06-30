@@ -73,7 +73,7 @@ class BiomechanicalAnalyzer:
                         "knee_flexion", "hip_shoulder_separation", "wrist_flexion")}
 
         # weight transfer: window-start centroid -> contact centroid, normalized by shoulder width
-        start_centroid = next((w["centroid"] for w in window_frames if w.get("centroid")), None)
+        start_centroid = next((w["centroid"] for w in window_frames if w.get("centroid") is not None), None)
         contact_centroid = contact.get("centroid") if contact else None
         shoulder_w = self._shoulder_width(kp, conf)
         wt = None
