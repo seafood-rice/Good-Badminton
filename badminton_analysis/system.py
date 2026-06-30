@@ -424,7 +424,7 @@ class BadmintonAnalysisSystem:
         elbow_angle = None
         side = "unknown"
 
-        if pose is not None and pose.get("keypoints") is not None:
+        if pose is not None and pose.get("keypoints") is not None and len(pose["keypoints"]) > 0:
             people = pose["keypoints"]
             ox, oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
             person = people[0]
