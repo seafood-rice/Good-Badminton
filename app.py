@@ -461,17 +461,20 @@ def api_technique(video_name):
     if not summary_path.exists():
         return jsonify({'error': '还没有技术分析数据，请先用 --analyze-technique 运行分析'}), 404
 
-    with open(summary_path, encoding='utf-8') as f:
-        summary = json.load(f)
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
 
-    strokes = []
-    strokes_path = out_dir / 'strokes.jsonl'
-    if strokes_path.exists():
-        with open(strokes_path, encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    strokes.append(json.loads(line))
+        strokes = []
+        strokes_path = out_dir / 'strokes.jsonl'
+        if strokes_path.exists():
+            with open(strokes_path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        strokes.append(json.loads(line))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
     return jsonify({'summary': summary, 'strokes': strokes})
 
@@ -482,17 +485,23 @@ def _load_or_make_training_plan(video_name, weeks=4, force=False):
     summary_path = out_dir / 'technique_summary.json'
 
     if plan_path.exists() and not force:
-        with open(plan_path, encoding='utf-8') as f:
-            return json.load(f), 200
+        try:
+            with open(plan_path, encoding='utf-8') as f:
+                return json.load(f), 200
+        except Exception as e:
+            return {'error': str(e)}, 500
 
     if not summary_path.exists():
         return {'error': '没有技术分析数据，无法生成训练计划'}, 404
 
-    with open(summary_path, encoding='utf-8') as f:
-        summary = json.load(f)
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        plan = generate_plan(summary, weeks=weeks)
+        write_json(str(plan_path), plan)
+    except Exception as e:
+        return {'error': str(e)}, 500
 
-    plan = generate_plan(summary, weeks=weeks)
-    write_json(str(plan_path), plan)
     return plan, 200
 
 

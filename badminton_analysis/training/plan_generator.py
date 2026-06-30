@@ -1,10 +1,9 @@
 """Generate a progressive multi-week training plan from a technique match summary."""
-from .exercise_library import exercises_for, load_library
+from .exercise_library import exercises_for, load_library, _DIFFICULTY_ORDER
 
 _MAX_WEAKNESSES = 3
 _EX_PER_WEAKNESS = 2
 _EARLY_DIFFICULTY = {"beginner"}
-_BASELINE_CATEGORIES = ("on_court", "mobility", "strength", "flexibility")
 
 
 def _session_from_exercise(ex, frequency):
@@ -36,7 +35,7 @@ def _select_exercises(match_summary, library):
 def _baseline(library):
     chosen = []
     seen_categories = set()
-    for ex in sorted(library, key=lambda e: e["difficulty"]):
+    for ex in sorted(library, key=lambda e: _DIFFICULTY_ORDER.get(e["difficulty"], 1)):
         if ex["difficulty"] != "beginner":
             continue
         if ex["category"] in seen_categories:

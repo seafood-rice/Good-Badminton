@@ -67,3 +67,12 @@ def test_training_plan_post_rejects_bad_weeks(client, tmp_path):
     _write_summary(tmp_path, "demo")
     r = client.post("/api/training-plan/demo", json={"weeks": "not-a-number"})
     assert r.status_code == 400
+
+
+def test_technique_500_on_malformed_summary(client, tmp_path):
+    out_dir = tmp_path / "demo"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "technique_summary.json").write_text("{ not valid json", encoding="utf-8")
+    r = client.get("/api/technique/demo")
+    assert r.status_code == 500
+    assert "error" in r.get_json()
