@@ -522,6 +522,68 @@ def api_training_plan_regenerate(video_name):
     return jsonify(plan), status
 
 
+@app.route('/api/posture/<video_name>')
+def api_posture(video_name):
+    """Return drill summary + per-rep reports for a posture-drill video."""
+    out_dir = OUTPUTS / video_name / 'posture'
+    summary_path = out_dir / 'drill_summary.json'
+    if not summary_path.exists():
+        return jsonify({'error': '还没有姿态训练分析数据，请先运行姿态分析'}), 404
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        reps = []
+        reps_path = out_dir / 'drill_reps.jsonl'
+        if reps_path.exists():
+            with open(reps_path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        reps.append(json.loads(line))
+        return jsonify({'summary': summary, 'reps': reps})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+def _load_or_make_posture_plan(video_name, weeks=4, force=False):
+    out_dir = OUTPUTS / video_name / 'posture'
+    plan_path = out_dir / 'training_plan.json'
+    summary_path = out_dir / 'drill_summary.json'
+    if plan_path.exists() and not force:
+        try:
+            with open(plan_path, encoding='utf-8') as f:
+                return json.load(f), 200
+        except Exception as e:
+            return {'error': str(e)}, 500
+    if not summary_path.exists():
+        return {'error': '没有姿态分析数据，无法生成训练计划'}, 404
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        plan = generate_plan(summary, weeks=weeks)
+        write_json(str(plan_path), plan)
+        return plan, 200
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+
+@app.route('/api/posture-plan/<video_name>', methods=['GET'])
+def api_posture_plan(video_name):
+    plan, status = _load_or_make_posture_plan(video_name)
+    return jsonify(plan), status
+
+
+@app.route('/api/posture-plan/<video_name>', methods=['POST'])
+def api_posture_plan_regenerate(video_name):
+    data = request.json or {}
+    try:
+        weeks = int(data.get('weeks', 4))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'weeks 必须是整数'}), 400
+    plan, status = _load_or_make_posture_plan(video_name, weeks=weeks, force=True)
+    return jsonify(plan), status
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Static page
 # ═══════════════════════════════════════════════════════════════════════════
