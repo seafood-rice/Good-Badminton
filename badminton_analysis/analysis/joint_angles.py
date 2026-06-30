@@ -96,6 +96,27 @@ def compute_joint_angles(keypoints, racket_head=None, dominant="right", conf=Non
     return angles
 
 
+def infer_racket_head(keypoints, dominant="right", extend=0.6):
+    """Infer racket head from elbow+wrist keypoints when no racket model is available.
+
+    Extends the forearm vector past the wrist by ``extend`` times the forearm length.
+    Returns ``(float x, float y)`` or ``None`` if either keypoint is missing/invalid.
+    """
+    kp = np.asarray(keypoints, dtype=float)
+    if dominant == "left":
+        elbow_idx, wrist_idx = L_ELBOW, L_WRIST
+    else:
+        elbow_idx, wrist_idx = R_ELBOW, R_WRIST
+
+    if not is_valid(kp, elbow_idx) or not is_valid(kp, wrist_idx):
+        return None
+
+    elbow = kp[elbow_idx]
+    wrist = kp[wrist_idx]
+    racket = wrist + extend * (wrist - elbow)
+    return (float(racket[0]), float(racket[1]))
+
+
 def weight_transfer_ratio(centroid_start, centroid_contact, shoulder_width_px):
     """Horizontal centroid displacement normalized by shoulder width. None if width invalid."""
     if not shoulder_width_px or abs(float(shoulder_width_px)) < 1e-6:

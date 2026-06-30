@@ -476,6 +476,9 @@ class BadmintonAnalysisSystem:
 
         if self._racket_detector is not None:
             racket_head = self._racket_detector.detect_racket_head(frame, roi_corners=roi_corners)
+        if racket_head is None and keypoints is not None:
+            from .analysis.joint_angles import infer_racket_head
+            racket_head = infer_racket_head(keypoints, dominant=self.dominant_hand)
 
         shuttle = None
         if ball_position and ball_position != [0, 0]:

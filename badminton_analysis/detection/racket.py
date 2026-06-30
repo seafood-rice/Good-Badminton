@@ -64,3 +64,8 @@ class RacketDetector:
                 best_conf = float(c)
                 best = (cx, cy)
         return best
+
+    def infer_racket_head(self, keypoints, dominant="right"):
+        """Kinematic fallback: infer racket head from elbow+wrist keypoints."""
+        from ..analysis.joint_angles import infer_racket_head as _infer
+        return _infer(keypoints, dominant=dominant)
