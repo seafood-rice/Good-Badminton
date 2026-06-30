@@ -5,6 +5,10 @@ import tkinter as tk
 import time
 import argparse
 
+from .stroke.events import detect_contacts, StrokeEvent
+from .stroke.classifier import classify_stroke
+from .analysis.technique_writer import write_stroke_reports, build_match_summary
+
 
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
@@ -59,14 +63,15 @@ def load_runtime_dependencies():
     SCHEMA_VERSION = _SCHEMA_VERSION
 
 class BadmintonAnalysisSystem:
-    def __init__(self, video_path, show_display=True, 
-                 show_skeletons=True, show_player_trajectories=True, 
+    def __init__(self, video_path, show_display=True,
+                 show_skeletons=True, show_player_trajectories=True,
                  show_court_trajectory=True, show_shuttlecock_trajectory=True,
-                 show_player_stats=True, show_performance_stats=False, 
+                 show_player_stats=True, show_performance_stats=False,
                  save_images=False, language='zh', output_dir=None,
                  ball_model_path='weights/yolo11s-ball.pt', template_path=None,
                  pose_mode='balanced', pose_family='rtmpose',
-                 yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True):
+                 yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
+                 analyze_technique=False, racket_model_path=None, dominant_hand="right"):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -76,7 +81,12 @@ class BadmintonAnalysisSystem:
         self.pose_family = pose_family
         self.yolo_pose_model = yolo_pose_model
         self.show_pose_roi = show_pose_roi
-
+        self.analyze_technique = analyze_technique
+        self.racket_model_path = racket_model_path
+        self.dominant_hand = dominant_hand
+        self._analysis_track = []   # contact detection track
+        self._analysis_frames = {}  # frame_index -> window-frame record
+        self._racket_detector = None
 
         self.show_skeletons = show_skeletons
         self.show_player_trajectories = show_player_trajectories
@@ -103,6 +113,10 @@ class BadmintonAnalysisSystem:
         else:
             self.rtmpose_processor = RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
         self.yolo_ball_model = YOLO(self.ball_model_path)
+
+        if self.analyze_technique:
+            from .detection.racket import RacketDetector
+            self._racket_detector = RacketDetector(model_path=self.racket_model_path)
 
         self.last_stats_update_frame = 0
 
@@ -240,7 +254,10 @@ class BadmintonAnalysisSystem:
         print(f"原始视频时长: {video_duration:.2f} 秒")
         print(f"处理耗时: {processing_time:.2f} 秒")
         print(f"处理速度比: {processing_time/video_duration:.2f}x")
-        
+
+        if self.analyze_technique:
+            self._run_technique_analysis()
+
         self._cleanup(cap)
 
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
@@ -336,9 +353,11 @@ class BadmintonAnalysisSystem:
         shuttle_draw_elapsed = time.time() - shuttle_draw_t0
         
 
-        players = self.player_tracker.update(frame_count, centroids, ball_position, 
+        players = self.player_tracker.update(frame_count, centroids, ball_position,
                                              point_left_hands, point_right_hands, detect_frame_count)
-        
+
+        if self.analyze_technique:
+            self._capture_analysis_frame(frame_count, frame, roi_corners, ball_position)
 
         if frame_count == 1 or not self.cached_movement_stats:
             self.cached_movement_stats = self.player_tracker.get_player_movement_stats()
@@ -395,6 +414,75 @@ class BadmintonAnalysisSystem:
             if self.save_images:
                 cv2.imwrite(os.path.join(self.images_save_dir, f"{frame_count}.png"), frame)
         return frame, detect_frame_count
+
+    def _capture_analysis_frame(self, frame_count, frame, roi_corners, ball_position):
+        from .analysis import joint_angles as ja
+        pose = self.player_pose_visualizer.get_current_pose_data()
+        keypoints = None
+        racket_head = None
+        nose = shoulder = hip = centroid = None
+        elbow_angle = None
+        side = "unknown"
+
+        if pose is not None and pose.get("keypoints") is not None:
+            people = pose["keypoints"]
+            ox, oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
+            person = people[0]
+            kp = person.astype(float).copy()
+            # shift ROI-local keypoints back to full-frame coords (ignore missing <=1)
+            mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
+            kp[mask, 0] += ox
+            kp[mask, 1] += oy
+            keypoints = kp
+            if ja.is_valid(kp, ja.NOSE):
+                nose = (float(kp[ja.NOSE][0]), float(kp[ja.NOSE][1]))
+            dom = ja.R_SHOULDER if self.dominant_hand == "right" else ja.L_SHOULDER
+            dom_hip = ja.R_HIP if self.dominant_hand == "right" else ja.L_HIP
+            if ja.is_valid(kp, dom):
+                shoulder = (float(kp[dom][0]), float(kp[dom][1]))
+            if ja.is_valid(kp, dom_hip):
+                hip = (float(kp[dom_hip][0]), float(kp[dom_hip][1]))
+            angles_now = ja.compute_joint_angles(kp, dominant=self.dominant_hand)
+            elbow_angle = angles_now.get("elbow_extension")
+
+        if self._racket_detector is not None:
+            racket_head = self._racket_detector.detect_racket_head(frame, roi_corners=roi_corners)
+
+        # centroid + side from tracked players (prefer lower court, else upper)
+        for region in ("lower", "upper"):
+            p = self.player_tracker.players.get(region)
+            if p is not None:
+                centroid = (float(p[0]), float(p[1]))
+                side = region
+                break
+
+        shuttle = None
+        if ball_position and ball_position != [0, 0]:
+            shuttle = (float(ball_position[0]), float(ball_position[1]))
+
+        self._analysis_track.append({
+            "frame": frame_count, "racket_head": racket_head, "shuttle": shuttle,
+        })
+        self._analysis_frames[frame_count] = {
+            "frame": frame_count, "keypoints": keypoints, "conf": None,
+            "racket_head": racket_head, "centroid": centroid, "nose": nose,
+            "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
+            "player_side": side,
+        }
+
+    def _run_technique_analysis(self):
+        from .analysis.biomechanics import BiomechanicalAnalyzer
+        runner = TechniqueAnalysisRunner(
+            BiomechanicalAnalyzer(dominant=self.dominant_hand),
+            racket_detector=self._racket_detector,
+            dominant=self.dominant_hand,
+        )
+        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get)
+        strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
+        summary_path = os.path.join(self.save_dir, "technique_summary.json")
+        write_stroke_reports(strokes_path, reports)
+        write_json(summary_path, build_match_summary(reports))
+        print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
 
     def _get_template_path(self):
         """Get the court template image path."""
@@ -522,3 +610,76 @@ class BadmintonAnalysisSystem:
         overlay, mid_height_int = self.court_mapper.draw_court_overlay(frame)
         cv2.rectangle(overlay, roi_corners[0], roi_corners[1], (255, 0, 0), 2)
         return overlay
+
+
+class TechniqueAnalysisRunner:
+    """Post-loop orchestration: contacts -> classification -> biomechanical reports."""
+
+    def __init__(self, analyzer, racket_detector=None, dominant="right",
+                 window_pre=20, window_post=15):
+        self.analyzer = analyzer
+        self.racket_detector = racket_detector
+        self.dominant = dominant
+        self.window_pre = window_pre
+        self.window_post = window_post
+
+    def _build_classifier_window(self, contact_frame, window_start, window_end, frame_lookup):
+        racket_head, nose, shoulder, hip, elbow_angle, centroid = [], [], [], [], [], []
+        contact_index = 0
+        for offset, idx in enumerate(range(window_start, window_end + 1)):
+            rec = frame_lookup(idx) or {}
+            if idx == contact_frame:
+                contact_index = offset
+            racket_head.append(rec.get("racket_head"))
+            nose.append(rec.get("nose"))
+            shoulder.append(rec.get("shoulder"))
+            hip.append(rec.get("hip"))
+            elbow_angle.append(rec.get("elbow_angle"))
+            centroid.append(rec.get("centroid"))
+        return {
+            "contact_index": contact_index, "racket_head": racket_head, "nose": nose,
+            "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
+            "centroid": centroid, "fps": 30.0,
+        }
+
+    def _window_frames(self, window_start, window_end, frame_lookup):
+        frames = []
+        for idx in range(window_start, window_end + 1):
+            rec = frame_lookup(idx)
+            if rec is None:
+                continue
+            frames.append({
+                "frame": idx,
+                "keypoints": rec.get("keypoints"),
+                "conf": rec.get("conf"),
+                "racket_head": rec.get("racket_head"),
+                "centroid": rec.get("centroid"),
+            })
+        return frames
+
+    def run(self, track, frame_lookup):
+        contacts = detect_contacts(
+            track, window_pre=self.window_pre, window_post=self.window_post)
+        reports = []
+        events = []
+        for c in contacts:
+            cw = self._build_classifier_window(
+                c["contact_frame"], c["window_start"], c["window_end"], frame_lookup)
+            stroke_type, conf = classify_stroke(cw)
+            # player_side from the contact frame's centroid if available, else "unknown"
+            contact_rec = frame_lookup(c["contact_frame"]) or {}
+            side = contact_rec.get("player_side", "unknown")
+            event = StrokeEvent(
+                stroke_type=stroke_type,
+                contact_frame=c["contact_frame"],
+                window_start=c["window_start"],
+                window_end=c["window_end"],
+                player_side=side,
+                confidence=conf,
+            )
+            window_frames = self._window_frames(
+                c["window_start"], c["window_end"], frame_lookup)
+            report = self.analyzer.analyze(event, window_frames)
+            reports.append(report)
+            events.append(event)
+        return reports, events

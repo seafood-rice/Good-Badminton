@@ -25,6 +25,12 @@ def main():
     parser.add_argument('--performance-stats', action='store_true', default=True, help='显示性能统计信息')
     parser.add_argument('--visualize-positions', choices=['true', 'false'], default='true', help='是否生成球员位置热力图和散点图，默认 true')
     parser.add_argument('--audio', choices=['true', 'false'], default='true', help='是否保留原视频音频，默认 true')
+    parser.add_argument('--analyze-technique', action='store_true', default=False,
+                        help='启用击球姿态生物力学分析，输出 strokes.jsonl 与 technique_summary.json')
+    parser.add_argument('--racket-model', default='weights/yolo11s-racket.pt', type=str,
+                        help='YOLO 球拍检测模型路径（用于击球分析）')
+    parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
+                        help='球员持拍手，默认 right')
     parser.add_argument('--language', default='zh', choices=['zh', 'en'], help='选择界面语言 (zh/en)')
     args = parser.parse_args()
 
@@ -52,7 +58,10 @@ def main():
         pose_mode=args.pose_mode,
         pose_family=args.pose_family,
         yolo_pose_model=args.yolo_pose_model,
-        show_pose_roi=args.pose_roi == 'true'
+        show_pose_roi=args.pose_roi == 'true',
+        analyze_technique=args.analyze_technique,
+        racket_model_path=args.racket_model,
+        dominant_hand=args.dominant_hand,
     )
 
     system.keep_audio = args.audio == 'true'
