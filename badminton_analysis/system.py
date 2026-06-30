@@ -433,7 +433,6 @@ class BadmintonAnalysisSystem:
             ox, oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
 
             def _foot_midpoint(kp_arr, ox, oy):
-                import numpy as _np
                 pts = []
                 for idx in (ja.L_ANKLE, ja.R_ANKLE):
                     if ja.is_valid(kp_arr, idx):
