@@ -65,3 +65,21 @@ def test_posture_plan_post_rejects_bad_weeks(client, tmp_path):
     _write_drill(tmp_path, "drill1")
     r = client.post("/api/posture-plan/drill1", json={"weeks": "nope"})
     assert r.status_code == 400
+    assert "error" in r.get_json()
+
+
+def test_posture_plan_get_reuses_cached(client, tmp_path):
+    out = _write_drill(tmp_path, "drill1")
+    r = client.get("/api/posture-plan/drill1")
+    assert r.status_code == 200
+    assert "weeks" in r.get_json()
+    assert (out / "training_plan.json").exists()
+
+    # Write sentinel file to cached training_plan.json
+    sentinel_plan = {"weeks": [], "targeted_weaknesses": ["__SENTINEL__"]}
+    (out / "training_plan.json").write_text(json.dumps(sentinel_plan), encoding="utf-8")
+
+    # GET again and verify it returns the sentinel (i.e., reused the cache)
+    r2 = client.get("/api/posture-plan/drill1")
+    assert r2.status_code == 200
+    assert "__SENTINEL__" in r2.get_json().get("targeted_weaknesses", [])
