@@ -716,6 +716,12 @@ function posturePoll(jid) {
         b.disabled = false; b.textContent = '▶ 重试';
         document.getElementById('posture-pmsg').textContent = d.message||'失败';
       }
+    }).catch(function(){
+      // Network/status error: stop polling and let the user retry rather than loop forever.
+      clearInterval(iv);
+      var b = document.getElementById('btn-posture-analyze');
+      b.disabled = false; b.textContent = '▶ 重试';
+      document.getElementById('posture-pmsg').textContent = '状态查询失败，请重试';
     });
   }, 2000);
 }
@@ -773,6 +779,7 @@ function postureLoadPlan(stem) {
 }
 
 function postureRegen() {
+  if (!selVideo) return;
   var stem = selVideo.replace(/\.[^.]+$/,'');
   fetch('/api/posture-plan/'+stem, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({weeks:4})})
   .then(function(r){return r.json()}).then(function(d){ _posturePlan = d; posturePlanLoc('court'); });
