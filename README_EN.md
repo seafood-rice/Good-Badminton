@@ -56,6 +56,57 @@ Video preview: `assets/demo_en.mp4`.
 - **Position charts** - Automatically generates player position heatmaps and scatter plots.
 - **Chinese / English display** - Switch visualization text with `--language zh/en`.
 - **Local execution** - Videos, models, and analysis outputs stay on your local machine.
+- **Stroke technique analysis** - Detects stroke types, analyzes key joint angles, generates biomechanical scores and improvement suggestions.
+- **Intelligent training plan** - Generates progressive multi-week training plans targeting detected weaknesses, with on-court and at-home exercises.
+
+## 🎯 Stroke Technique Analysis
+
+Enable technique analysis to automatically detect stroke types, analyze key joint angles, generate biomechanical scores with improvement suggestions, and create personalized training plans.
+
+### Enabling Technique Analysis
+
+Add the `--analyze-technique` flag to the command line:
+
+```bash
+python main.py --video-path videos/demo.mp4 --analyze-technique
+```
+
+#### Optional Parameters
+
+- `--racket-model weights/yolo11s-racket.pt` — Path to a YOLO racket detection model. **Optional**: If not provided or the file does not exist, the system automatically falls back to a kinematic inference method that estimates racket position from elbow and wrist keypoints. Technique analysis still works (with slightly lower precision).
+- `--dominant-hand right|left` — Player's racket hand (default `right`).
+
+### Output Files
+
+When technique analysis is enabled, the following files are generated in `outputs/<video_name>/`:
+
+| File | Description |
+|------|---|
+| `strokes.jsonl` | Biomechanical report for each detected stroke (stroke type, overall score, per-joint scores, weaknesses with descriptions, strengths) |
+| `technique_summary.json` | Match-level summary: stroke counts by type, average scores, recurring weaknesses |
+| `training_plan.json` | Generated when requested via Web UI; a progressive multi-week plan targeting detected weaknesses |
+
+### Web UI Technique Panel
+
+After analysis completes with `--analyze-technique`, the results page displays a **Technique Analysis** panel featuring:
+
+- **Stroke list** — All detected strokes with overall scores
+- **Stroke detail** — Key joint angles vs. ideal ranges, improvement suggestions
+- **Match summary** — Stroke type statistics, average scores, recurring weaknesses
+- **Training plan** — Multi-week progressive plan targeting detected weaknesses, toggleable on-court/at-home modes, regenerate button
+
+### Supported Stroke Types
+
+- High Clear
+- Smash
+- Drop Shot
+- Serve
+
+### Notes
+
+- Racket detection is **optional**. If `--racket-model` is not provided or the file does not exist, the system automatically uses kinematic inference (estimating racket position from elbow and wrist keypoints).
+- Biomechanical reference ranges in `badminton_analysis/analysis/reference_ranges.py` are indicative first-release starting values and can be tuned to match your training objectives.
+- Biomechanical scores are based on key joint angles including shoulder, elbow, wrist, hip, knee, and ankle.
 
 ## Requirements
 
@@ -219,6 +270,9 @@ RTMPose / RTMO modes:
 --visualize-positions true|false     Generate heatmaps and scatter plots, default true
 --audio true|false                   Keep original video audio, default true
 --language {zh,en}                   Visualization language
+--analyze-technique                  Enable stroke technique analysis (disabled by default)
+--racket-model                       Path to YOLO racket detection model; optional, kinematic inference is used if not provided
+--dominant-hand                      Player's racket hand: right or left (default right)
 ```
 
 ## 📊 Outputs
@@ -249,6 +303,9 @@ badminton_analysis/
 ├── detection/       # Shuttlecock detection and pose detection
 ├── media/           # Video/audio processing
 ├── tracking/        # Player tracking
+├── stroke/          # Stroke detection and classification
+├── analysis/        # Biomechanical analysis and scoring
+├── training/        # Training plan generation
 └── visualization/   # Video overlays, statistics charts, and position plots
 ```
 

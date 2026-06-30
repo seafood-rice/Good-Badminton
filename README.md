@@ -116,6 +116,57 @@ python main.py --video-path videos/demo.mp4
 - **可视化输出** — 带骨架、轨迹、统计覆盖层的标注视频 (H.264)
 - **位置图表** — 热力图和散点图
 - **中英文** — 可视化文字可切换
+- **击球技术分析** — 检测击球类型，分析关键关节角度，生成生物力学评分和改进建议
+- **智能训练计划** — 针对检测到的薄弱环节生成进阶训练计划，包括球场和居家训练
+
+## 🎯 击球技术分析
+
+启用技术分析后，系统会自动识别击球类型，分析关键关节角度，生成生物力学评分和改进建议，并生成个性化训练计划。
+
+### 启用技术分析
+
+在命令行添加 `--analyze-technique` 标志：
+
+```bash
+python main.py --video-path videos/demo.mp4 --analyze-technique
+```
+
+#### 可选参数
+
+- `--racket-model weights/yolo11s-racket.pt` — YOLO 球拍检测模型路径。**可选**：如果不提供或文件不存在，系统会自动使用运动学降级方案，从肘部和腕部关键点推断球拍位置，技术分析功能仍可正常工作（精度略低）。
+- `--dominant-hand right|left` — 运动员持拍手（默认 `right`）。
+
+### 输出文件
+
+启用技术分析后，输出目录 `outputs/<视频名>/` 中会生成：
+
+| 文件 | 说明 |
+|------|------|
+| `strokes.jsonl` | 每一击的生物力学分析报告（击球类型、综合评分、各关节角度评分、薄弱环节和改进建议） |
+| `technique_summary.json` | 比赛级汇总：各类型击球数量、平均评分、常见薄弱环节 |
+| `training_plan.json` | 当通过 Web UI 请求时生成的进阶训练计划（目标定制化，分为球场和居家训练） |
+
+### Web UI 技术分析面板
+
+分析完成后，结果页面会显示 **技术分析** 面板，包含：
+
+- **击球列表** — 所有识别的击球及其综合评分
+- **击球详情** — 关键关节角度与理想范围对比，改进建议
+- **比赛汇总** — 击球类型统计、平均评分、常见薄弱环节
+- **训练计划** — 生成针对检测薄弱环节的多周进阶计划，可切换球场/居家模式，支持重新生成
+
+### 支持的击球类型
+
+- 高远球（High Clear）
+- 杀球（Smash）
+- 吊球（Drop Shot）
+- 发球（Serve）
+
+### 注意事项
+
+- 球拍检测是**可选**的。如果未提供 `--racket-model` 或模型文件不存在，系统会自动使用运动学推断（基于肘部、腕部关键点推断球拍位置）。
+- 生物力学参考范围（`badminton_analysis/analysis/reference_ranges.py`）是第一版的参考值，可根据训练需求调整。
+- 生物力学评分基于关键关节角度，包括肩、肘、腕、髋、膝、踝等。
 
 ## 📋 系统要求
 
@@ -164,6 +215,9 @@ badminton_analysis/
 ├── detection/       # 羽毛球 & 姿态检测
 ├── media/           # 视频 & 音频处理 (H.264)
 ├── tracking/        # 球员追踪
+├── stroke/          # 击球检测与分类
+├── analysis/        # 生物力学分析与评分
+├── training/        # 训练计划生成
 └── visualization/   # 叠加层、统计图、位置图
 ```
 
@@ -177,6 +231,9 @@ badminton_analysis/
 --pose-mode                lightweight / balanced / performance
 --language                 zh / en
 --display false            关闭 OpenCV 窗口（服务器模式）
+--analyze-technique        启用击球技术分析（默认关闭）
+--racket-model             球拍检测模型路径，可选；不提供时使用运动学推断
+--dominant-hand            持拍手：right 或 left（默认 right）
 ```
 
 ## 🙏 致谢与许可
