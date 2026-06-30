@@ -584,6 +584,78 @@ def api_posture_plan_regenerate(video_name):
     return jsonify(plan), status
 
 
+@app.route('/api/posture/analyze', methods=['POST'])
+def api_posture_analyze():
+    data = request.json or {}
+    video_name = data.get('video')
+    stroke_type = data.get('stroke_type')
+    dominant = data.get('dominant_hand', 'right')
+    if not video_name or stroke_type not in ('high_clear', 'smash', 'drop_shot', 'serve'):
+        return jsonify({'error': '需要 video 和有效的 stroke_type'}), 400
+
+    video_path = VIDEOS / video_name
+    if not video_path.exists():
+        return jsonify({'error': '视频不存在'}), 404
+
+    save_dir = OUTPUTS / video_path.stem / 'posture'
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        _venv_python, str(PROJECT_ROOT / 'main_posture.py'),
+        '--video-path', str(video_path),
+        '--stroke-type', stroke_type,
+        '--dominant-hand', dominant,
+        '--output-dir', str(save_dir),
+        '--display', 'false',
+    ]
+    job_id = 'posture_' + video_path.stem
+    jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',
+                    'video_name': video_path.stem, 'save_dir': str(save_dir)}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, cwd=str(PROJECT_ROOT), env=os.environ.copy())
+    jobs[job_id]['proc'] = proc
+
+    import threading
+
+    def track():
+        job = jobs[job_id]
+        proc.wait()
+        if proc.returncode == 0:
+            vs = video_path.stem
+            sd = str(save_dir)
+            raw = os.path.join(sd, 'detect_' + vs + '.mp4')
+            h264 = os.path.join(sd, 'detect_' + vs + '_h264.mp4')
+            ffmpeg_bin = shutil.which('ffmpeg') or 'ffmpeg'
+            try:
+                subprocess.run([ffmpeg_bin, '-y', '-i', raw, '-c:v', 'libx264',
+                                '-preset', 'fast', '-crf', '23', '-movflags', '+faststart', h264],
+                               check=True, capture_output=True, timeout=600)
+                if os.path.exists(h264) and os.path.getsize(h264) > 0:
+                    os.replace(h264, raw)
+            except Exception as e:
+                print('posture ffmpeg re-encode failed: ' + str(e))
+            job['status'] = 'completed'
+            job['progress'] = 100
+            job['message'] = '完成!'
+            job['result'] = {'video_name': vs,
+                             'output_video': '/api/output/' + vs + '/posture/detect_' + vs + '.mp4'}
+        else:
+            job['status'] = 'error'
+            job['message'] = '姿态分析失败 (exit=' + str(proc.returncode) + ')'
+
+    threading.Thread(target=track, daemon=True).start()
+    return jsonify({'ok': True, 'job_id': job_id})
+
+
+@app.route('/api/posture-analyze-status/<job_id>')
+def api_posture_analyze_status(job_id):
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({'status': 'not_found'}), 404
+    return jsonify({'status': job.get('status'), 'progress': job.get('progress', 0),
+                    'message': job.get('message', ''), 'result': job.get('result')})
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Static page
 # ═══════════════════════════════════════════════════════════════════════════
