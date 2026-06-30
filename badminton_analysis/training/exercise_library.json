@@ -1,0 +1,76 @@
+[
+  {"id": "shadow_clear", "name": "Shadow clear swings", "category": "on_court",
+   "target_weaknesses": ["elbow_extension", "wrist_flexion"],
+   "description": "Full overhead clear motion without a shuttle, focusing on full arm extension and wrist snap at the top.",
+   "equipment": "racket", "difficulty": "beginner", "duration_min": 10, "reps": 20, "sets": 3, "location": "court"},
+
+  {"id": "overhead_band_press", "name": "Resistance band overhead press", "category": "strength",
+   "target_weaknesses": ["elbow_extension"],
+   "description": "Press a resistance band overhead to full lockout to build extension strength.",
+   "equipment": "resistance band", "difficulty": "beginner", "duration_min": 8, "reps": 12, "sets": 3, "location": "home"},
+
+  {"id": "wall_throws", "name": "Overhead medicine ball wall throws", "category": "strength",
+   "target_weaknesses": ["elbow_extension", "weight_transfer"],
+   "description": "Explosively throw a light medicine ball overhead into a wall, extending fully and driving weight forward.",
+   "equipment": "medicine ball", "difficulty": "intermediate", "duration_min": 10, "reps": 10, "sets": 3, "location": "home"},
+
+  {"id": "trunk_rotation_drill", "name": "Cable/band trunk rotations", "category": "strength",
+   "target_weaknesses": ["trunk_rotation", "hip_shoulder_separation"],
+   "description": "Rotate the trunk against band resistance to build rotational power.",
+   "equipment": "resistance band", "difficulty": "beginner", "duration_min": 8, "reps": 15, "sets": 3, "location": "home"},
+
+  {"id": "thoracic_rotation_stretch", "name": "Thoracic spine rotation stretch", "category": "mobility",
+   "target_weaknesses": ["trunk_rotation"],
+   "description": "Open-book thoracic rotations to improve mid-back rotational range.",
+   "equipment": "none", "difficulty": "beginner", "duration_min": 5, "reps": 12, "sets": 2, "location": "home"},
+
+  {"id": "rotation_smash_drill", "name": "Multi-shuttle rotational smash", "category": "on_court",
+   "target_weaknesses": ["trunk_rotation", "hip_shoulder_separation", "weight_transfer"],
+   "description": "Feed multi-shuttle smashes emphasizing hip-shoulder separation and forward drive.",
+   "equipment": "racket, shuttles", "difficulty": "advanced", "duration_min": 15, "reps": 30, "sets": 2, "location": "court"},
+
+  {"id": "wrist_snap_drill", "name": "Wrist snap shadow drill", "category": "on_court",
+   "target_weaknesses": ["wrist_flexion"],
+   "description": "Short overhead snaps focusing on wrist pronation at contact.",
+   "equipment": "racket", "difficulty": "beginner", "duration_min": 8, "reps": 25, "sets": 3, "location": "court"},
+
+  {"id": "wrist_curls", "name": "Weighted wrist curls", "category": "strength",
+   "target_weaknesses": ["wrist_flexion"],
+   "description": "Wrist flexion/extension curls with a light dumbbell to build forearm control.",
+   "equipment": "dumbbell", "difficulty": "intermediate", "duration_min": 8, "reps": 15, "sets": 3, "location": "home"},
+
+  {"id": "split_step_lunge", "name": "Split-step into lunge", "category": "on_court",
+   "target_weaknesses": ["knee_flexion", "weight_transfer"],
+   "description": "Split-step then deep lunge to the net, loading the knees and transferring weight forward.",
+   "equipment": "none", "difficulty": "intermediate", "duration_min": 10, "reps": 12, "sets": 3, "location": "court"},
+
+  {"id": "single_leg_squat", "name": "Single-leg squats", "category": "strength",
+   "target_weaknesses": ["knee_flexion"],
+   "description": "Controlled single-leg squats to build stance stability and leg drive.",
+   "equipment": "none", "difficulty": "intermediate", "duration_min": 10, "reps": 10, "sets": 3, "location": "home"},
+
+  {"id": "hip_flexor_stretch", "name": "Hip flexor stretch", "category": "flexibility",
+   "target_weaknesses": ["hip_shoulder_separation", "knee_flexion"],
+   "description": "Half-kneeling hip flexor stretch to open the hips for rotation and lunging.",
+   "equipment": "none", "difficulty": "beginner", "duration_min": 5, "reps": 4, "sets": 2, "location": "home"},
+
+  {"id": "shoulder_dislocates", "name": "Band shoulder dislocates", "category": "mobility",
+   "target_weaknesses": ["wrist_flexion", "elbow_extension"],
+   "description": "Pass a band overhead and behind to improve shoulder/arm mobility for the overhead action.",
+   "equipment": "resistance band", "difficulty": "beginner", "duration_min": 5, "reps": 12, "sets": 2, "location": "home"},
+
+  {"id": "lunge_footwork", "name": "Four-corner lunge footwork", "category": "on_court",
+   "target_weaknesses": ["weight_transfer", "knee_flexion"],
+   "description": "Lunge to four court corners and recover, driving weight into and out of each lunge.",
+   "equipment": "none", "difficulty": "intermediate", "duration_min": 12, "reps": 16, "sets": 2, "location": "court"},
+
+  {"id": "serve_target_practice", "name": "Serve target practice", "category": "on_court",
+   "target_weaknesses": ["wrist_flexion", "trunk_rotation"],
+   "description": "Serve to marked targets to refine controlled wrist and trunk action on the serve.",
+   "equipment": "racket, shuttles", "difficulty": "beginner", "duration_min": 12, "reps": 30, "sets": 2, "location": "court"},
+
+  {"id": "med_ball_rotational_throw", "name": "Rotational medicine ball throw", "category": "strength",
+   "target_weaknesses": ["hip_shoulder_separation", "trunk_rotation"],
+   "description": "Explosive sideways medicine ball throws to develop hip-shoulder separation power.",
+   "equipment": "medicine ball", "difficulty": "advanced", "duration_min": 10, "reps": 8, "sets": 3, "location": "home"}
+]
