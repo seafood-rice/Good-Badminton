@@ -108,6 +108,70 @@ After analysis completes with `--analyze-technique`, the results page displays a
 - Biomechanical reference ranges in `badminton_analysis/analysis/reference_ranges.py` are indicative first-release starting values and can be tuned to match your training objectives.
 - Biomechanical scores are based on key joint angles including shoulder, elbow, wrist, hip, knee, and ankle.
 
+## 🧍 Posture Drill — Repetition Practice Mode
+
+In addition to match analysis, the system supports a **single-player posture drill mode** for practicing a single stroke type repeatedly and receiving real-time feedback.
+
+### What Is Posture Drill
+
+- **Court-free practice** — No need to annotate a court; ideal for daily training and at-home drills
+- **Single stroke focus** — Choose one stroke type (High Clear, Smash, Drop Shot, or Serve) and repeat it multiple times
+- **Side-view format** — Film from a **side / profile view** to capture key joint angles clearly
+- **Automatic segmentation** — The system automatically detects each repetition from wrist-speed peaks in the swing motion; no manual marking required
+- **Optional shuttlecock** — If a shuttlecock is visible in the video, the system uses it to refine the stroke contact moment; shadow practice (no ball) is also supported
+
+### Enabling Posture Drill
+
+Use the command-line tool `main_posture.py`:
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear --dominant-hand right
+```
+
+#### Required Parameters
+
+- `--video-path` — Input video path
+- `--stroke-type` — Stroke type: `high_clear` (High Clear) / `smash` (Smash) / `drop_shot` (Drop Shot) / `serve` (Serve)
+
+#### Optional Parameters
+
+- `--dominant-hand` — Racket hand: `right` (right-handed) or `left` (left-handed), default `right`
+- `--output-dir` — Output directory, default `outputs/<video_name>/posture`
+- `--ball-model` — Shuttlecock detection model path, optional
+- `--display` — Show OpenCV preview window, default `false`
+
+### Output Files
+
+When posture drill analysis completes, the output directory `outputs/<video_name>/posture/` contains:
+
+| File | Description |
+|------|---|
+| `detect_<video_name>.mp4` | Annotated video with live joint-angle overlay |
+| `drill_reps.jsonl` | Biomechanical report for each repetition (per-joint-angle scores, weaknesses with suggestions) |
+| `drill_summary.json` | Drill summary: rep count, mean/best/worst score, consistency (standard deviation of per-rep scores; lower = more consistent), recurring weaknesses |
+| `training_plan.json` | Generated when requested via Web UI; progressive training plan targeting detected weaknesses |
+
+### Web UI Posture Drill Panel
+
+Select **🧍 Posture Drill** from the top mode switch to enter the drill workflow:
+
+1. **Choose stroke type and dominant hand** — High Clear, Smash, Drop Shot, or Serve; left-handed or right-handed
+2. **Upload video and analyze** — No court annotation needed; the system automatically detects repetitions
+3. **Review drill results** —
+   - **Repetition list** — All detected reps with score badges
+   - **Rep details** — Click a rep to see its key joint angles, comparison with ideal ranges, and improvement suggestions
+   - **Drill summary** — Overall score, consistency, recurring weaknesses
+4. **Generate training plan** — Supports **on-court / at-home** toggle; can be regenerated
+
+### Supported Stroke Types
+
+Same as match mode: High Clear, Smash, Drop Shot, Serve.
+
+### Notes
+
+- **Side-view is the tuned/supported view for this release**; other camera angles (front, rear, etc.) are future work
+- Biomechanical reference ranges are shared with match mode and based on key joint angles (shoulder, elbow, wrist, hip, knee, ankle, etc.)
+
 ## Requirements
 
 - Python 3.8+
