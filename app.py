@@ -4,6 +4,8 @@
 import os, sys, json, time, subprocess, glob, shutil
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
+from badminton_analysis.data.writer import write_json
+from badminton_analysis.training.plan_generator import generate_plan
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -449,6 +451,63 @@ def delete_output(video_name, subpath):
     elif filepath.exists():
         filepath.unlink()
     return jsonify({'ok': True})
+
+
+@app.route('/api/technique/<video_name>')
+def api_technique(video_name):
+    """Return technique summary + per-stroke reports for a video."""
+    out_dir = OUTPUTS / video_name
+    summary_path = out_dir / 'technique_summary.json'
+    if not summary_path.exists():
+        return jsonify({'error': '还没有技术分析数据，请先用 --analyze-technique 运行分析'}), 404
+
+    with open(summary_path, encoding='utf-8') as f:
+        summary = json.load(f)
+
+    strokes = []
+    strokes_path = out_dir / 'strokes.jsonl'
+    if strokes_path.exists():
+        with open(strokes_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    strokes.append(json.loads(line))
+
+    return jsonify({'summary': summary, 'strokes': strokes})
+
+
+def _load_or_make_training_plan(video_name, weeks=4, force=False):
+    out_dir = OUTPUTS / video_name
+    plan_path = out_dir / 'training_plan.json'
+    summary_path = out_dir / 'technique_summary.json'
+
+    if plan_path.exists() and not force:
+        with open(plan_path, encoding='utf-8') as f:
+            return json.load(f), 200
+
+    if not summary_path.exists():
+        return {'error': '没有技术分析数据，无法生成训练计划'}, 404
+
+    with open(summary_path, encoding='utf-8') as f:
+        summary = json.load(f)
+
+    plan = generate_plan(summary, weeks=weeks)
+    write_json(str(plan_path), plan)
+    return plan, 200
+
+
+@app.route('/api/training-plan/<video_name>', methods=['GET'])
+def api_training_plan(video_name):
+    plan, status = _load_or_make_training_plan(video_name)
+    return jsonify(plan), status
+
+
+@app.route('/api/training-plan/<video_name>', methods=['POST'])
+def api_training_plan_regenerate(video_name):
+    data = request.json or {}
+    weeks = int(data.get('weeks', 4))
+    plan, status = _load_or_make_training_plan(video_name, weeks=weeks, force=True)
+    return jsonify(plan), status
 
 
 # ═══════════════════════════════════════════════════════════════════════════
