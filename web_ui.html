@@ -133,6 +133,23 @@
       <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置热力图</div><img id="rheat" alt="热力图"></div>
       <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置散点图</div><img id="rscatter" alt="散点图"></div>
     </div>
+
+    <!-- ===== Technique Analysis Sub-panel ===== -->
+    <div id="techniquePanel" class="hidden" style="margin-top:24px;border-top:1px solid var(--bor);padding-top:20px;">
+      <div class="ph">🏸 技术分析 / Technique Analysis</div>
+      <div id="techniqueSummary" style="margin-bottom:16px;font-size:.85rem;color:var(--mu)"></div>
+      <div id="strokeList" style="margin-bottom:12px"></div>
+      <div id="strokeDetail" style="margin-bottom:12px;background:#0f172a;border-radius:8px;padding:12px;font-size:.82rem"></div>
+      <div id="trainingPlan" style="margin-top:20px;border-top:1px solid var(--bor);padding-top:16px;">
+        <div class="ph">🏋 训练计划 / Training Plan</div>
+        <div style="margin-bottom:12px">
+          <button id="planCourtBtn" onclick="showPlanLocation('court')">🏟 球场 On-Court</button>
+          <button id="planHomeBtn" class="btn2" onclick="showPlanLocation('home')">🏠 居家 At-Home</button>
+          <button class="btn3" id="planRegenBtn" onclick="regeneratePlan()">🔄 重新生成 Regenerate</button>
+        </div>
+        <div id="planWeeks" style="font-size:.85rem"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -387,6 +404,7 @@ function showResults(r) {
     document.getElementById('rally-info').textContent = '';
     document.getElementById('btn-clip').disabled = true;
   }
+  if (r.video_name) loadTechnique(r.video_name);
 }
 
 function doClip() {
@@ -429,6 +447,169 @@ function doDelete() {
 
 // ── Init ──
 loadVideos();
+
+// ── Technique Analysis ──
+var _techniqueData = null;
+var _planData = null;
+var _currentVideo = null;
+var METRIC_LABEL = {
+  elbow_extension: '肘部伸展 Elbow', trunk_rotation: '躯干旋转 Trunk',
+  wrist_flexion: '手腕角度 Wrist', knee_flexion: '屈膝 Knee',
+  hip_shoulder_separation: '髋肩分离 Hip-Shoulder', weight_transfer: '重心转移 Weight'
+};
+
+function scoreColor(s) {
+  if (s == null) return '#888';
+  if (s >= 75) return '#3fb950';
+  if (s >= 50) return '#d29922';
+  return '#f85149';
+}
+
+function loadTechnique(videoName) {
+  _currentVideo = videoName;
+  fetch('/api/technique/' + videoName).then(function(r) {
+    if (!r.ok) {
+      document.getElementById('techniquePanel').classList.add('hidden');
+      return null;
+    }
+    return r.json();
+  }).then(function(data) {
+    if (!data) return;
+    _techniqueData = data;
+    document.getElementById('techniquePanel').classList.remove('hidden');
+    renderSummary();
+    renderStrokeList();
+    loadPlan();
+  }).catch(function() {
+    document.getElementById('techniquePanel').classList.add('hidden');
+  });
+}
+
+function renderSummary() {
+  var s = _techniqueData.summary;
+  var html = '<p>共检测 <b>' + s.stroke_count + '</b> 次击球 / ' + s.stroke_count + ' strokes detected.</p><ul style="margin:8px 0 8px 16px">';
+  var byType = s.by_type || {};
+  for (var type in byType) {
+    if (Object.prototype.hasOwnProperty.call(byType, type)) {
+      var info = byType[type];
+      html += '<li>' + type + ': ' + info.count + ' 次, 平均分 ' + (info.avg_score != null ? info.avg_score : 'N/A') + '</li>';
+    }
+  }
+  html += '</ul>';
+  var rw = s.recurring_weaknesses || [];
+  if (rw.length) {
+    html += '<p style="margin-top:6px">主要弱点 / Top weaknesses:</p><ul style="margin:4px 0 0 16px">';
+    for (var i = 0; i < Math.min(3, rw.length); i++) {
+      html += '<li>' + (METRIC_LABEL[rw[i].metric] || rw[i].metric) + ' (' + rw[i].count + ')</li>';
+    }
+    html += '</ul>';
+  }
+  document.getElementById('techniqueSummary').innerHTML = html;
+}
+
+function renderStrokeList() {
+  var strokes = _techniqueData.strokes;
+  var html = '<div style="font-weight:600;margin-bottom:8px;font-size:.85rem">击球列表 / Strokes — 点击查看详情</div>';
+  for (var i = 0; i < strokes.length; i++) {
+    var st = strokes[i];
+    var c = scoreColor(st.overall_score);
+    html += '<div onclick="showStrokeDetail(' + i + ')" style="cursor:pointer;padding:7px 10px;border-left:5px solid ' + c + ';margin:4px 0;background:#0f172a;border-radius:0 6px 6px 0;font-size:.83rem">'
+      + '#' + (i + 1) + ' ' + st.stroke_type
+      + ' — <b style="color:' + c + '">' + (st.overall_score != null ? st.overall_score : 'N/A') + '</b></div>';
+  }
+  document.getElementById('strokeList').innerHTML = html;
+}
+
+function showStrokeDetail(i) {
+  var st = _techniqueData.strokes[i];
+  var html = '<div style="font-weight:600;margin-bottom:10px">击球 #' + (i + 1) + ': ' + st.stroke_type + '</div>';
+  var pm = st.per_metric || {};
+  for (var metric in pm) {
+    if (Object.prototype.hasOwnProperty.call(pm, metric)) {
+      var m = pm[metric];
+      var sc = m.score;
+      var w = sc == null ? 0 : Math.max(0, Math.min(100, sc));
+      html += '<div style="margin:5px 0;display:flex;align-items:center;gap:8px">'
+        + '<span style="display:inline-block;width:170px;flex-shrink:0">' + (METRIC_LABEL[metric] || metric) + '</span>'
+        + '<span style="display:inline-block;width:200px;background:#333;border-radius:3px;flex-shrink:0">'
+        +   '<span style="display:inline-block;height:12px;width:' + (w * 2) + 'px;background:' + scoreColor(sc) + ';border-radius:3px;"></span>'
+        + '</span>'
+        + '<span style="color:var(--mu)">' + (m.measured != null ? m.measured : 'N/A')
+        + (m.ideal_range ? ' (ideal ' + m.ideal_range[0] + '–' + m.ideal_range[1] + ')' : '') + '</span>'
+        + '</div>';
+    }
+  }
+  var weaknesses = st.weaknesses || [];
+  if (weaknesses.length) {
+    html += '<div style="margin-top:10px;font-weight:600">改进建议 / Suggestions</div><ul style="margin:6px 0 0 16px">';
+    for (var j = 0; j < weaknesses.length; j++) {
+      html += '<li style="margin:3px 0">' + weaknesses[j].description + '</li>';
+    }
+    html += '</ul>';
+  }
+  document.getElementById('strokeDetail').innerHTML = html;
+}
+
+function loadPlan() {
+  fetch('/api/training-plan/' + _currentVideo).then(function(r) {
+    if (!r.ok) return null;
+    return r.json();
+  }).then(function(data) {
+    if (!data) return;
+    _planData = data;
+    showPlanLocation('court');
+  }).catch(function() {});
+}
+
+function regeneratePlan() {
+  var btn = document.getElementById('planRegenBtn');
+  btn.disabled = true; btn.textContent = '生成中...';
+  fetch('/api/training-plan/' + _currentVideo, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({weeks: 4})
+  }).then(function(r) {
+    btn.disabled = false; btn.textContent = '🔄 重新生成 Regenerate';
+    if (!r.ok) return null;
+    return r.json();
+  }).then(function(data) {
+    if (!data) return;
+    _planData = data;
+    showPlanLocation('court');
+  }).catch(function() {
+    btn.disabled = false; btn.textContent = '🔄 重新生成 Regenerate';
+  });
+}
+
+function showPlanLocation(loc) {
+  if (!_planData) return;
+  // Update button styles
+  var courtBtn = document.getElementById('planCourtBtn');
+  var homeBtn = document.getElementById('planHomeBtn');
+  if (loc === 'court') {
+    courtBtn.className = ''; homeBtn.className = 'btn2';
+  } else {
+    courtBtn.className = 'btn2'; homeBtn.className = '';
+  }
+  var html = '';
+  var weeks = _planData.weeks || [];
+  for (var i = 0; i < weeks.length; i++) {
+    var wk = weeks[i];
+    var rows = (wk.sessions || []).filter(function(s) { return s.location === loc; });
+    if (!rows.length) continue;
+    html += '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:4px">第 ' + wk.week + ' 周 (' + wk.phase + ') / Week ' + wk.week + '</div><ul style="margin-left:16px">';
+    for (var j = 0; j < rows.length; j++) {
+      var s = rows[j];
+      html += '<li style="margin:3px 0">' + s.name
+        + ' — ' + (s.sets != null ? s.sets : '?') + '×' + (s.reps != null ? s.reps : '?')
+        + ', ' + s.frequency_per_week + '×/周'
+        + (s.duration_min ? ', ' + s.duration_min + 'min' : '')
+        + '</li>';
+    }
+    html += '</ul></div>';
+  }
+  document.getElementById('planWeeks').innerHTML = html || '<p style="color:var(--mu)">本视图暂无项目 / Nothing scheduled for this view.</p>';
+}
 </script>
 </body>
 </html>
