@@ -61,4 +61,4 @@ def test_missing_contact_keypoints_gives_none_scores():
     ev = StrokeEvent("high_clear", 30, 10, 45, "lower", 0.5)
     frames = _window_frames(30, np.ones((17, 2)), racket_head=None)  # all missing
     report = analyzer.analyze(ev, frames)
-    assert report["overall_score"] is None or report["overall_score"] >= 0
+    assert report["overall_score"] is None

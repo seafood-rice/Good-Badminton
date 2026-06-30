@@ -5,11 +5,6 @@ import tkinter as tk
 import time
 import argparse
 
-from .stroke.events import detect_contacts, StrokeEvent
-from .stroke.classifier import classify_stroke
-from .analysis.technique_writer import write_stroke_reports, build_match_summary
-
-
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -85,7 +80,7 @@ class BadmintonAnalysisSystem:
         self.racket_model_path = racket_model_path
         self.dominant_hand = dominant_hand
         self._analysis_track = []   # contact detection track
-        self._analysis_frames = {}  # frame_index -> window-frame record
+        self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
 
         self.show_skeletons = show_skeletons
@@ -422,12 +417,43 @@ class BadmintonAnalysisSystem:
         racket_head = None
         nose = shoulder = hip = centroid = None
         elbow_angle = None
+        angles_now = None
         side = "unknown"
+
+        # centroid + side from tracked players (prefer lower court, else upper)
+        for region in ("lower", "upper"):
+            p = self.player_tracker.players.get(region)
+            if p is not None:
+                centroid = (float(p[0]), float(p[1]))
+                side = region
+                break
 
         if pose is not None and pose.get("keypoints") is not None and len(pose["keypoints"]) > 0:
             people = pose["keypoints"]
             ox, oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
-            person = people[0]
+
+            def _foot_midpoint(kp_arr, ox, oy):
+                import numpy as _np
+                pts = []
+                for idx in (ja.L_ANKLE, ja.R_ANKLE):
+                    if ja.is_valid(kp_arr, idx):
+                        pts.append((float(kp_arr[idx][0]) + ox, float(kp_arr[idx][1]) + oy))
+                if pts:
+                    xs = sum(p[0] for p in pts) / len(pts)
+                    ys = sum(p[1] for p in pts) / len(pts)
+                    return (xs, ys)
+                return None
+
+            if centroid is not None and len(people) > 1:
+                def _dist_to_centroid(pers):
+                    fm = _foot_midpoint(pers, ox, oy)
+                    if fm is None:
+                        return float("inf")
+                    return (fm[0]-centroid[0])**2 + (fm[1]-centroid[1])**2
+                person = min(people, key=_dist_to_centroid)
+            else:
+                person = people[0]
+
             kp = person.astype(float).copy()
             # shift ROI-local keypoints back to full-frame coords (ignore missing <=1)
             mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
@@ -445,16 +471,12 @@ class BadmintonAnalysisSystem:
             angles_now = ja.compute_joint_angles(kp, dominant=self.dominant_hand)
             elbow_angle = angles_now.get("elbow_extension")
 
+        if keypoints is not None and angles_now is not None:
+            from .visualization.technique_overlay import draw_technique_overlay
+            draw_technique_overlay(frame, angles_now)
+
         if self._racket_detector is not None:
             racket_head = self._racket_detector.detect_racket_head(frame, roi_corners=roi_corners)
-
-        # centroid + side from tracked players (prefer lower court, else upper)
-        for region in ("lower", "upper"):
-            p = self.player_tracker.players.get(region)
-            if p is not None:
-                centroid = (float(p[0]), float(p[1]))
-                side = region
-                break
 
         shuttle = None
         if ball_position and ball_position != [0, 0]:
@@ -472,10 +494,12 @@ class BadmintonAnalysisSystem:
 
     def _run_technique_analysis(self):
         from .analysis.biomechanics import BiomechanicalAnalyzer
+        from .analysis.technique_writer import write_stroke_reports, build_match_summary
         runner = TechniqueAnalysisRunner(
             BiomechanicalAnalyzer(dominant=self.dominant_hand),
             racket_detector=self._racket_detector,
             dominant=self.dominant_hand,
+            fps=self.fps,
         )
         reports, _events = runner.run(self._analysis_track, self._analysis_frames.get)
         strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
@@ -616,12 +640,13 @@ class TechniqueAnalysisRunner:
     """Post-loop orchestration: contacts -> classification -> biomechanical reports."""
 
     def __init__(self, analyzer, racket_detector=None, dominant="right",
-                 window_pre=20, window_post=15):
+                 window_pre=20, window_post=15, fps=30.0):
         self.analyzer = analyzer
         self.racket_detector = racket_detector
         self.dominant = dominant
         self.window_pre = window_pre
         self.window_post = window_post
+        self.fps = fps
 
     def _build_classifier_window(self, contact_frame, window_start, window_end, frame_lookup):
         racket_head, nose, shoulder, hip, elbow_angle, centroid = [], [], [], [], [], []
@@ -639,7 +664,7 @@ class TechniqueAnalysisRunner:
         return {
             "contact_index": contact_index, "racket_head": racket_head, "nose": nose,
             "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
-            "centroid": centroid, "fps": 30.0,
+            "centroid": centroid, "fps": self.fps,
         }
 
     def _window_frames(self, window_start, window_end, frame_lookup):
@@ -658,6 +683,8 @@ class TechniqueAnalysisRunner:
         return frames
 
     def run(self, track, frame_lookup):
+        from .stroke.events import detect_contacts, StrokeEvent
+        from .stroke.classifier import classify_stroke
         contacts = detect_contacts(
             track, window_pre=self.window_pre, window_post=self.window_post)
         reports = []

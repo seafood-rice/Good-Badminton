@@ -22,6 +22,9 @@ def _clean_value(value):
         return str(value)
 
 
+clean_value = _clean_value  # public alias
+
+
 def write_json(path, payload):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:

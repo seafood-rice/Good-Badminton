@@ -3,7 +3,7 @@ import json
 import os
 from collections import Counter, defaultdict
 
-from ..data.writer import _clean_value
+from ..data.writer import clean_value as _clean_value
 
 
 def write_stroke_reports(path, reports):
