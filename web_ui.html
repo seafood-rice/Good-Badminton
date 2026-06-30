@@ -139,7 +139,7 @@
       <div class="ph">🏸 技术分析 / Technique Analysis</div>
       <div id="techniqueSummary" style="margin-bottom:16px;font-size:.85rem;color:var(--mu)"></div>
       <div id="strokeList" style="margin-bottom:12px"></div>
-      <div id="strokeDetail" style="margin-bottom:12px;background:#0f172a;border-radius:8px;padding:12px;font-size:.82rem"></div>
+      <div id="strokeDetail" class="hidden" style="margin-bottom:12px;background:#0f172a;border-radius:8px;padding:12px;font-size:.82rem"></div>
       <div id="trainingPlan" style="margin-top:20px;border-top:1px solid var(--bor);padding-top:16px;">
         <div class="ph">🏋 训练计划 / Training Plan</div>
         <div style="margin-bottom:12px">
@@ -518,6 +518,10 @@ function renderStrokeList() {
       + ' — <b style="color:' + c + '">' + (st.overall_score != null ? st.overall_score : 'N/A') + '</b></div>';
   }
   document.getElementById('strokeList').innerHTML = html;
+  // Reset the detail box when (re)loading a stroke list, so no stale detail lingers.
+  var detail = document.getElementById('strokeDetail');
+  detail.innerHTML = '';
+  detail.classList.add('hidden');
 }
 
 function showStrokeDetail(i) {
@@ -547,7 +551,9 @@ function showStrokeDetail(i) {
     }
     html += '</ul>';
   }
-  document.getElementById('strokeDetail').innerHTML = html;
+  var detail = document.getElementById('strokeDetail');
+  detail.innerHTML = html;
+  detail.classList.remove('hidden');
 }
 
 function loadPlan() {
@@ -583,7 +589,9 @@ function regeneratePlan() {
 
 function showPlanLocation(loc) {
   if (!_planData) return;
-  // Update button styles
+  // Update button styles. Active = no class (inherits the accent `button` style);
+  // inactive = 'btn2' (muted secondary). Do NOT change '' to 'btn' — there is no
+  // standalone .btn element styling beyond the shared `button,.btn` rule.
   var courtBtn = document.getElementById('planCourtBtn');
   var homeBtn = document.getElementById('planHomeBtn');
   if (loc === 'court') {
