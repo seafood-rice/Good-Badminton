@@ -15,6 +15,14 @@ def main():
     parser.add_argument("--ball-model", default=None,
                         help="Optional YOLO shuttlecock model for rep refinement")
     parser.add_argument("--pose-model", default="weights/yolo11n-pose.pt")
+    parser.add_argument("--pose-family", default="yolo-pose",
+                        choices=["yolo-pose", "rtmpose", "rtmo"],
+                        help="Pose model family for skeleton detection")
+    parser.add_argument("--pose-mode", default="balanced",
+                        choices=["lightweight", "balanced", "performance"],
+                        help="RTMPose/RTMO model tier (ignored for yolo-pose)")
+    parser.add_argument("--yolo-pose-model", default="weights/yolo11n-pose.pt",
+                        help="YOLO pose model path (used when pose-family=yolo-pose)")
     parser.add_argument("--display", choices=["true", "false"], default="false")
     args = parser.parse_args()
 
@@ -27,6 +35,9 @@ def main():
         ball_model_path=args.ball_model,
         show_display=args.display == "true",
         pose_model=args.pose_model,
+        pose_family=args.pose_family,
+        pose_mode=args.pose_mode,
+        yolo_pose_model=args.yolo_pose_model,
     )
     system.process_video()
 
