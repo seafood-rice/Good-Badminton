@@ -68,6 +68,16 @@ def test_posture_plan_post_rejects_bad_weeks(client, tmp_path):
     assert "error" in r.get_json()
 
 
+def test_posture_analyze_rejects_bad_pose_family(client, tmp_path, monkeypatch):
+    import app as webapp
+    monkeypatch.setattr(webapp, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear",
+                          "pose_family": "bogus"})
+    assert r.status_code == 400
+
+
 def test_posture_plan_get_reuses_cached(client, tmp_path):
     out = _write_drill(tmp_path, "drill1")
     r = client.get("/api/posture-plan/drill1")

@@ -590,6 +590,9 @@ def api_posture_analyze():
     video_name = data.get('video')
     stroke_type = data.get('stroke_type')
     dominant = data.get('dominant_hand', 'right')
+    pose_family = data.get('pose_family', 'yolo-pose')
+    if pose_family not in ('yolo-pose', 'rtmpose', 'rtmo'):
+        return jsonify({'error': 'invalid pose_family'}), 400
     if not video_name or stroke_type not in ('high_clear', 'smash', 'drop_shot', 'serve'):
         return jsonify({'error': '需要 video 和有效的 stroke_type'}), 400
 
@@ -605,6 +608,7 @@ def api_posture_analyze():
         '--video-path', str(video_path),
         '--stroke-type', stroke_type,
         '--dominant-hand', dominant,
+        '--pose-family', pose_family,
         '--output-dir', str(save_dir),
         '--display', 'false',
     ]

@@ -173,6 +173,13 @@
       <label style="margin-left:12px">持拍手 Hand:
         <select id="posture-hand"><option value="right">右 Right</option><option value="left">左 Left</option></select>
       </label>
+      <label style="margin-left:12px">姿态模型 Pose:
+        <select id="posture-pose-family">
+          <option value="yolo-pose">YOLO Pose (快)</option>
+          <option value="rtmpose">RTMPose (准)</option>
+          <option value="rtmo">RTMO</option>
+        </select>
+      </label>
       <button id="btn-posture-analyze" onclick="postureAnalyze()" disabled>▶ 分析 Analyze</button>
     </div>
     <div id="posture-progress-wrap" class="hidden">
@@ -698,7 +705,8 @@ function postureAnalyze() {
   fetch('/api/posture/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({video: selVideo,
       stroke_type: document.getElementById('posture-stroke').value,
-      dominant_hand: document.getElementById('posture-hand').value})})
+      dominant_hand: document.getElementById('posture-hand').value,
+      pose_family: document.getElementById('posture-pose-family').value})})
   .then(function(r){return r.json()}).then(function(d){
     if (!d.ok) { alert('启动失败: '+(d.error||'未知')); btn.disabled=false; btn.textContent='▶ 分析 Analyze'; return; }
     posturePoll(d.job_id);
