@@ -6,6 +6,7 @@ curated text unchanged. Builds NO OAuth flow — it only reads tokens that a
 sanctioned first-party CLI already stored, or an API key from env/config, or
 uses a local no-auth endpoint.
 """
+import copy
 import os
 
 _ENV_KEY = {
@@ -62,7 +63,7 @@ class _SDKProvider(LLMProvider):
 
 class AnthropicProvider(_SDKProvider):
     def polish_fields(self, fields, lang):
-        # Implementer: load the `claude-api` skill for the current model id + SDK usage.
+        # Anthropic Messages API; model id supplied at runtime via the spec string.
         import anthropic  # lazy
         client = anthropic.Anthropic(api_key=self.auth.get("key")) if self.auth.get("kind") == "api_key" \
             else anthropic.Anthropic()  # env/subscription resolved by SDK
@@ -127,6 +128,8 @@ def polish(report_dict, lang, spec=None):
     provider = get_provider(spec)
     if provider is None:
         return report_dict
+    # Deep-copy to avoid mutating the caller's dict.
+    report_dict = copy.deepcopy(report_dict)
     # Gather prose fields with stable ids.
     fields = {}
     fields["verdict"] = report_dict.get("summary", {}).get("verdict_text", "")

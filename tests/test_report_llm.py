@@ -56,4 +56,4 @@ def test_polish_provider_error_falls_back(monkeypatch):
 def test_resolve_auth_prefers_env_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     auth = rl.resolve_auth("openai")
-    assert auth is not None and auth.get("kind") in ("api_key", "subscription_token", "local")
+    assert auth is not None and auth["kind"] == "api_key"
