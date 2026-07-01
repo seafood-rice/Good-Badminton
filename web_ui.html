@@ -850,7 +850,7 @@ function postureReportLang(lang, stem) {
         + '<b>'+(x.metric_label||x.metric)+'</b> ['+(x.impact_label||'')+']<br>'+(x.text||'')+'</div>';
     });
     (d.weaknesses||[]).forEach(function(x){
-      var ideal = x.ideal_range||['',''];
+      var ideal = (Array.isArray(x.ideal_range) && x.ideal_range.length >= 2) ? x.ideal_range : ['',''];
       html += '<div style="border-left:4px solid #f85149;padding:6px 10px;margin:4px 0">'
         + '<b>'+(x.metric_label||x.metric)+'</b> ['+(x.impact_label||'')+']<br>'
         + '实测 '+(x.measured!=null?x.measured:'N/A')+' (理想 '+ideal[0]+'–'+ideal[1]+')<br>'
@@ -861,6 +861,9 @@ function postureReportLang(lang, stem) {
     document.getElementById('report-dl-html').href = '/api/output/'+stem+'/posture/coach_report_'+lang+'.html';
     var pdf = document.getElementById('report-dl-pdf');
     pdf.href = '/api/output/'+stem+'/posture/coach_report_'+lang+'.pdf';
+    pdf.classList.remove('hidden');  // PDF is best-effort; a 404 on click is acceptable if it wasn't produced
+  }).catch(function(){
+    document.getElementById('report-body').innerHTML = '<p>加载失败 / load failed</p>';
   });
 }
 </script>
