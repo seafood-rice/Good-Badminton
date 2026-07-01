@@ -804,6 +804,51 @@ I18N = {
             "Weight transfer is well-timed. Ground reaction force is feeding into the "
             "stroke rather than being wasted."
         ),
+
+        # ================================================================
+        # stroke labels
+        # ================================================================
+        "stroke_smash": "Smash",
+        "stroke_high_clear": "High Clear",
+        "stroke_drop_shot": "Drop Shot",
+        "stroke_serve": "Serve",
+
+        # ================================================================
+        # metric labels
+        # ================================================================
+        "metric_elbow_extension": "Elbow Extension",
+        "metric_trunk_rotation": "Trunk Rotation",
+        "metric_wrist_flexion": "Wrist Flexion",
+        "metric_knee_flexion": "Knee Flexion",
+        "metric_hip_shoulder_separation": "Hip-Shoulder Separation",
+        "metric_weight_transfer": "Weight Transfer",
+
+        # ================================================================
+        # impact category labels
+        # ================================================================
+        "impact_power": "Power",
+        "impact_accuracy": "Accuracy",
+        "impact_consistency": "Consistency",
+        "impact_injury_risk": "Injury Risk",
+
+        # ================================================================
+        # verdict texts — {score} and {consistency} placeholders available
+        # ================================================================
+        "verdict_insufficient": (
+            "Not enough data to assess — no reps recorded."
+        ),
+        "verdict_strong": (
+            "Strong execution (score {score}, consistency ±{consistency}). "
+            "Keep reinforcing these patterns under match pressure."
+        ),
+        "verdict_developing": (
+            "Developing (score {score}, consistency ±{consistency}). "
+            "The foundation is there; focus on the priority corrections below."
+        ),
+        "verdict_needs_work": (
+            "Needs work (score {score}, consistency ±{consistency}). "
+            "Address the key weaknesses before moving on to advanced drills."
+        ),
     },
 
     # Task 2: Traditional Chinese (Taiwan / Hong Kong coaching register)
@@ -1224,6 +1269,51 @@ I18N = {
         "strength_wt_generic": (
             "重心轉移時機恰當。地面反作用力有帶入球路，沒有浪費掉。"
         ),
+
+        # ================================================================
+        # stroke labels
+        # ================================================================
+        "stroke_smash": "殺球",
+        "stroke_high_clear": "後場高球",
+        "stroke_drop_shot": "吊球",
+        "stroke_serve": "發球",
+
+        # ================================================================
+        # metric labels
+        # ================================================================
+        "metric_elbow_extension": "手肘伸展",
+        "metric_trunk_rotation": "軀幹轉體",
+        "metric_wrist_flexion": "手腕屈曲",
+        "metric_knee_flexion": "膝蓋屈曲",
+        "metric_hip_shoulder_separation": "髖肩分離",
+        "metric_weight_transfer": "重心轉移",
+
+        # ================================================================
+        # impact category labels
+        # ================================================================
+        "impact_power": "力量",
+        "impact_accuracy": "精準度",
+        "impact_consistency": "穩定性",
+        "impact_injury_risk": "受傷風險",
+
+        # ================================================================
+        # verdict texts
+        # ================================================================
+        "verdict_insufficient": (
+            "資料不足，無法評估——尚未記錄任何回合。"
+        ),
+        "verdict_strong": (
+            "表現出色（得分 {score}，穩定性 ±{consistency}）。"
+            "繼續在比賽壓力下鞏固這些動作模式。"
+        ),
+        "verdict_developing": (
+            "穩步進步中（得分 {score}，穩定性 ±{consistency}）。"
+            "基礎已經建立，專注改善以下優先事項。"
+        ),
+        "verdict_needs_work": (
+            "需要加強（得分 {score}，穩定性 ±{consistency}）。"
+            "先處理主要弱點，再進行進階訓練。"
+        ),
     },
 
     # Task 2: Simplified Chinese (Mainland China coaching register)
@@ -1643,6 +1733,51 @@ I18N = {
         ),
         "strength_wt_generic": (
             "重心转移时机恰当。地面反作用力有带入球路，没有浪费掉。"
+        ),
+
+        # ================================================================
+        # stroke labels
+        # ================================================================
+        "stroke_smash": "杀球",
+        "stroke_high_clear": "后场高球",
+        "stroke_drop_shot": "吊球",
+        "stroke_serve": "发球",
+
+        # ================================================================
+        # metric labels
+        # ================================================================
+        "metric_elbow_extension": "手肘伸展",
+        "metric_trunk_rotation": "躯干转体",
+        "metric_wrist_flexion": "手腕屈曲",
+        "metric_knee_flexion": "膝盖屈曲",
+        "metric_hip_shoulder_separation": "髋肩分离",
+        "metric_weight_transfer": "重心转移",
+
+        # ================================================================
+        # impact category labels
+        # ================================================================
+        "impact_power": "力量",
+        "impact_accuracy": "精准度",
+        "impact_consistency": "稳定性",
+        "impact_injury_risk": "受伤风险",
+
+        # ================================================================
+        # verdict texts
+        # ================================================================
+        "verdict_insufficient": (
+            "数据不足，无法评估——尚未记录任何回合。"
+        ),
+        "verdict_strong": (
+            "表现出色（得分 {score}，稳定性 ±{consistency}）。"
+            "继续在比赛压力下巩固这些动作模式。"
+        ),
+        "verdict_developing": (
+            "稳步进步中（得分 {score}，稳定性 ±{consistency}）。"
+            "基础已经建立，专注改善以下优先事项。"
+        ),
+        "verdict_needs_work": (
+            "需要加强（得分 {score}，稳定性 ±{consistency}）。"
+            "先处理主要弱点，再进行进阶训练。"
         ),
     },
 }
