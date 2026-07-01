@@ -6,6 +6,11 @@ from .rep_segmenter import segment_reps
 from .writer import write_rep_reports, build_drill_summary
 
 
+def _today():
+    import datetime
+    return datetime.date.today().isoformat()
+
+
 class PostureRunner:
     """Post-loop orchestration: reps -> per-rep StrokeEvent -> biomechanical reports."""
 
@@ -88,6 +93,28 @@ class PostureAnalysisSystem:
         from ..detection.rtmpose import RTMPoseProcessor
         return RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
 
+    def _write_reports(self, reports, summary, date=None):
+        from .report_builder import build_coach_report
+        from .report_render import render_html, render_pdf
+        from ..data.writer import write_json
+        date = date or _today()
+        meta = {"date": date, "stroke_type": self.stroke_type,
+                "dominant_hand": self.dominant_hand, "pose_family": getattr(self, "pose_family", "yolo-pose")}
+        by_lang = build_coach_report(reports, summary, meta)
+        written = {}
+        for lang, report in by_lang.items():
+            json_path = os.path.join(self.save_dir, "coach_report_" + lang + ".json")
+            html_path = os.path.join(self.save_dir, "coach_report_" + lang + ".html")
+            pdf_path = os.path.join(self.save_dir, "coach_report_" + lang + ".pdf")
+            write_json(json_path, report)
+            html = render_html(report)
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html)
+            if not render_pdf(html, pdf_path):
+                print("coach report PDF skipped for " + lang + " (renderer unavailable)")
+            written[lang] = json_path
+        return written
+
     def process_video(self):
         import cv2
         from ..analysis import joint_angles as ja
@@ -140,8 +167,8 @@ class PostureAnalysisSystem:
         reports, reps = runner.run(self._track, self._frames.get, fps)
 
         write_rep_reports(os.path.join(self.save_dir, "drill_reps.jsonl"), reports)
-        write_json(os.path.join(self.save_dir, "drill_summary.json"),
-                   build_drill_summary(reports, self.stroke_type))
+        summary = build_drill_summary(reports, self.stroke_type)
+        write_json(os.path.join(self.save_dir, "drill_summary.json"), summary)
         write_json(os.path.join(self.save_dir, "metadata.json"), {
             "video": {"path": self.video_path, "name": self.video_name,
                       "fps": float(fps), "width": width, "height": height},
@@ -149,6 +176,7 @@ class PostureAnalysisSystem:
             "dominant_hand": self.dominant_hand,
             "pose_family": self.pose_family,
         })
+        self._write_reports(reports, summary, date=_today())
         print("Posture analysis: " + str(len(reports)) + " reps -> " + self.save_dir)
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
         return reports
