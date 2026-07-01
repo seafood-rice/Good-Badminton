@@ -57,7 +57,9 @@ class PostureAnalysisSystem:
 
     def __init__(self, video_path, stroke_type, dominant_hand="right",
                  output_dir=None, ball_model_path=None, show_display=False,
-                 show_overlay=True, pose_model="weights/yolo11n-pose.pt"):
+                 show_overlay=True, pose_model="weights/yolo11n-pose.pt",
+                 pose_family="yolo-pose", pose_mode="balanced",
+                 yolo_pose_model="weights/yolo11n-pose.pt"):
         if not os.path.exists(video_path):
             raise FileNotFoundError("Input video not found: " + video_path)
         self.video_path = video_path
@@ -67,6 +69,9 @@ class PostureAnalysisSystem:
         self.show_overlay = show_overlay
         self.ball_model_path = ball_model_path
         self.pose_model = pose_model
+        self.pose_family = pose_family
+        self.pose_mode = pose_mode
+        self.yolo_pose_model = yolo_pose_model
 
         self.video_name = os.path.basename(video_path).rsplit(".", 1)[0]
         self.save_dir = output_dir or os.path.join("outputs", self.video_name, "posture")
@@ -76,12 +81,19 @@ class PostureAnalysisSystem:
         self._track = []
         self._frames = {}
 
+    def _build_pose_processor(self):
+        if self.pose_family == "yolo-pose":
+            from ..detection.yolo_pose import YOLOPoseProcessor
+            return YOLOPoseProcessor(model_path=self.yolo_pose_model)
+        from ..detection.rtmpose import RTMPoseProcessor
+        return RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
+
     def process_video(self):
         import cv2
-        from ..detection.yolo_pose import YOLOPoseProcessor
         from ..analysis import joint_angles as ja
         from ..analysis.biomechanics import BiomechanicalAnalyzer
         from ..visualization.technique_overlay import draw_technique_overlay
+        from ..visualization.skeleton import draw_skeleton
         from ..media import video_audio as vap
         from ..data.writer import write_json
 
@@ -92,7 +104,7 @@ class PostureAnalysisSystem:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        pose = YOLOPoseProcessor(model_path=self.pose_model)
+        pose = self._build_pose_processor()
         ball_model = None
         if self.ball_model_path and os.path.exists(self.ball_model_path):
             from ultralytics import YOLO
@@ -110,7 +122,7 @@ class PostureAnalysisSystem:
                 break
             frame_count += 1
             self._capture_frame(frame, frame_count, pose, ball_model, dom_wrist,
-                                ja, draw_technique_overlay)
+                                ja, draw_technique_overlay, draw_skeleton)
             writer.write(frame)
             if self.show_display:
                 cv2.imshow("posture", frame)
@@ -135,13 +147,14 @@ class PostureAnalysisSystem:
                       "fps": float(fps), "width": width, "height": height},
             "mode": "posture", "stroke_type": self.stroke_type,
             "dominant_hand": self.dominant_hand,
+            "pose_family": self.pose_family,
         })
         print("Posture analysis: " + str(len(reports)) + " reps -> " + self.save_dir)
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
         return reports
 
     def _capture_frame(self, frame, frame_count, pose, ball_model, dom_wrist,
-                       ja, draw_technique_overlay):
+                       ja, draw_technique_overlay, draw_skeleton):
         keypoints, scores = pose.process_frame(frame)
         kp = None
         wrist = None
@@ -157,6 +170,7 @@ class PostureAnalysisSystem:
             best_i = max(range(len(keypoints)), key=lambda i: _spread(keypoints[i]))
             kp = keypoints[best_i].astype(float)
             conf_row = scores[best_i] if scores is not None else None
+            draw_skeleton(frame, kp, conf=conf_row)
             if ja.is_valid(kp, dom_wrist, conf_row):
                 wrist = (float(kp[dom_wrist][0]), float(kp[dom_wrist][1]))
             racket_head = ja.infer_racket_head(kp, dominant=self.dominant_hand)
