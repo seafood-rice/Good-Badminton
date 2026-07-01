@@ -14,7 +14,7 @@ table{border-collapse:collapse;width:100%;font-size:.9rem} th,td{border:1px soli
 
 
 def _esc(v):
-    return _html.escape(str(v)) if v is not None else ""
+    return _html.escape(str(v), quote=True) if v is not None else ""
 
 
 def render_html(report):
@@ -44,11 +44,13 @@ def render_html(report):
     if weaknesses:
         parts.append("<h2>Areas to improve</h2>")
         for w in weaknesses:
-            ideal = w.get("ideal_range") or ["", ""]
+            _ideal = list(w.get("ideal_range") or [])
+            ideal_lo = _ideal[0] if len(_ideal) > 0 else ""
+            ideal_hi = _ideal[1] if len(_ideal) > 1 else ""
             parts.append("<div class='finding'><b>" + _esc(w.get("metric_label"))
                          + "</b> <span class='impact'>" + _esc(w.get("impact_label")) + "</span><br>"
                          + "measured " + _esc(w.get("measured")) + " (ideal "
-                         + _esc(ideal[0]) + "–" + _esc(ideal[1]) + ")<br>"
+                         + _esc(ideal_lo) + "–" + _esc(ideal_hi) + ")<br>"
                          + _esc(w.get("mechanism_text")) + "<br><i>" + _esc(w.get("drill_text")) + "</i></div>")
 
     per_rep = report.get("per_rep", [])

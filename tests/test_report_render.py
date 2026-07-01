@@ -52,3 +52,22 @@ def test_render_pdf_returns_false_when_lib_absent(monkeypatch, tmp_path):
     out = tmp_path / "r.pdf"
     assert render_pdf("<html><body>x</body></html>", str(out)) is False
     assert not out.exists()
+
+
+def test_render_html_empty_sections_safe():
+    html = render_html({"lang": "en", "header": {}, "summary": {},
+                        "strengths": [], "weaknesses": [], "per_rep": [], "training_plan": {}})
+    assert "<html" in html.lower()  # produced a document, no crash
+
+
+def test_render_pdf_returns_false_on_render_error(monkeypatch, tmp_path):
+    import sys, types
+    fake = types.ModuleType("weasyprint")
+    class _HTML:
+        def __init__(self, *a, **k): pass
+        def write_pdf(self, *a, **k): raise RuntimeError("boom")
+    fake.HTML = _HTML
+    monkeypatch.setitem(sys.modules, "weasyprint", fake)
+    out = tmp_path / "r.pdf"
+    assert render_pdf("<html><body>x</body></html>", str(out)) is False
+    assert not out.exists()
