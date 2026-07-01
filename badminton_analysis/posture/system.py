@@ -110,8 +110,12 @@ class PostureAnalysisSystem:
             html = render_html(report)
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html)
-            if not render_pdf(html, pdf_path):
-                print("coach report PDF skipped for " + lang + " (renderer unavailable)")
+            try:
+                if not render_pdf(html, pdf_path):
+                    print("coach report PDF skipped for " + lang + " (renderer unavailable)")
+            except Exception as exc:
+                # PDF is best-effort: never let a renderer failure abort the run.
+                print("coach report PDF failed for " + lang + ": " + str(exc))
             written[lang] = json_path
         return written
 
