@@ -200,6 +200,17 @@
         <button onclick="postureRegen()">🔄 重新生成 Regenerate</button>
         <div id="posture-plan-weeks"></div>
       </div>
+      <div id="posture-report" class="hidden" style="margin-top:16px">
+        <div class="ph">📋 教练报告 Coach Report</div>
+        <div style="margin:6px 0">
+          <button onclick="postureReportLang('en')">EN</button>
+          <button class="btn2" onclick="postureReportLang('zh-Hant')">繁體</button>
+          <button class="btn2" onclick="postureReportLang('zh-Hans')">简体</button>
+          <a id="report-dl-html" href="#" target="_blank" style="margin-left:12px">⬇ HTML</a>
+          <a id="report-dl-pdf" href="#" target="_blank" class="hidden">⬇ PDF</a>
+        </div>
+        <div id="report-body"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -770,6 +781,7 @@ function postureLoad(stem) {
     document.getElementById('posture-rep-list').innerHTML = rl;
     var dt = document.getElementById('posture-rep-detail'); dt.innerHTML=''; dt.classList.add('hidden');
     postureLoadPlan(stem);
+    postureShowReport(stem);
   });
 }
 
@@ -816,6 +828,40 @@ function posturePlanLoc(loc) {
     html += '</ul>';
   });
   document.getElementById('posture-plan-weeks').innerHTML = html || '<p>本视图暂无项目</p>';
+}
+
+function postureShowReport(stem) {
+  document.getElementById('posture-report').classList.remove('hidden');
+  postureReportLang('en', stem);
+}
+
+function postureReportLang(lang, stem) {
+  stem = stem || (selVideo ? selVideo.replace(/\.[^.]+$/,'') : null);
+  if (!stem) return;
+  fetch('/api/posture-report/'+stem+'?lang='+lang).then(function(r){ if(!r.ok) return null; return r.json(); })
+  .then(function(d){
+    if (!d) { document.getElementById('report-body').innerHTML = '<p>暂无报告</p>'; return; }
+    var h = d.header||{}, s = d.summary||{};
+    var html = '<div style="background:#0f172a;border-radius:8px;padding:12px">';
+    html += '<div style="font-weight:600">'+(h.stroke_label||h.stroke||'')+' · '+(h.rep_count||0)+' reps</div>';
+    html += '<p>'+(s.verdict_text||'')+'</p>';
+    (d.strengths||[]).forEach(function(x){
+      html += '<div style="border-left:4px solid #3fb950;padding:6px 10px;margin:4px 0">'
+        + '<b>'+(x.metric_label||x.metric)+'</b> ['+(x.impact_label||'')+']<br>'+(x.text||'')+'</div>';
+    });
+    (d.weaknesses||[]).forEach(function(x){
+      var ideal = x.ideal_range||['',''];
+      html += '<div style="border-left:4px solid #f85149;padding:6px 10px;margin:4px 0">'
+        + '<b>'+(x.metric_label||x.metric)+'</b> ['+(x.impact_label||'')+']<br>'
+        + '实测 '+(x.measured!=null?x.measured:'N/A')+' (理想 '+ideal[0]+'–'+ideal[1]+')<br>'
+        + (x.mechanism_text||'')+'<br><i>'+(x.drill_text||'')+'</i></div>';
+    });
+    html += '</div>';
+    document.getElementById('report-body').innerHTML = html;
+    document.getElementById('report-dl-html').href = '/api/output/'+stem+'/posture/coach_report_'+lang+'.html';
+    var pdf = document.getElementById('report-dl-pdf');
+    pdf.href = '/api/output/'+stem+'/posture/coach_report_'+lang+'.pdf';
+  });
 }
 </script>
 </body>
