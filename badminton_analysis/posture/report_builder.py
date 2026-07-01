@@ -2,6 +2,8 @@
 from . import coach_kb as kb
 from ..training.plan_generator import generate_plan
 
+# _SEVERITY_RANK ranks the rep-level `severity` values from scoring (severe/moderate/minor),
+# which is distinct from the KB's informational `severity_hint` (high/moderate/low).
 _SEVERITY_RANK = {"severe": 3, "moderate": 2, "minor": 1, None: 0}
 
 
@@ -98,6 +100,16 @@ def _one_language(lang, reports, summary, meta):
 
     training_plan = generate_plan(summary)
 
+    section_labels = {
+        "strengths":      kb.t(lang, "section_strengths"),
+        "weaknesses":     kb.t(lang, "section_weaknesses"),
+        "per_rep":        kb.t(lang, "section_per_rep"),
+        "training_plan":  kb.t(lang, "section_training_plan"),
+        "col_rep":        kb.t(lang, "col_rep"),
+        "col_score":      kb.t(lang, "col_score"),
+        "col_top_weakness": kb.t(lang, "col_top_weakness"),
+    }
+
     return {
         "lang": lang,
         "header": header,
@@ -106,6 +118,7 @@ def _one_language(lang, reports, summary, meta):
         "weaknesses": weaknesses,
         "per_rep": per_rep,
         "training_plan": training_plan,
+        "section_labels": section_labels,
     }
 
 

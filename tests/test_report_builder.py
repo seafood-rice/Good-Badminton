@@ -67,3 +67,29 @@ def test_empty_reps_insufficient_data_verdict():
     assert r["header"]["rep_count"] == 0
     assert r["weaknesses"] == [] and r["strengths"] == []
     assert "verdict_text" in r["summary"] and r["summary"]["verdict_text"]
+
+
+def test_section_labels_present_in_all_languages():
+    out = build_coach_report(_reports(), _summary(), _meta())
+    for lang in ("en", "zh-Hant", "zh-Hans"):
+        labels = out[lang].get("section_labels", {})
+        assert labels, f"section_labels missing in {lang}"
+        for key in ("strengths", "weaknesses", "per_rep", "training_plan",
+                    "col_rep", "col_score", "col_top_weakness"):
+            assert key in labels, f"{lang} section_labels missing key '{key}'"
+            assert labels[key], f"{lang} section_labels['{key}'] is empty"
+
+
+def test_section_labels_differ_by_language():
+    out = build_coach_report(_reports(), _summary(), _meta())
+    en_labels = out["en"]["section_labels"]
+    hans_labels = out["zh-Hans"]["section_labels"]
+    # Each label key should be translated (not identical to the English text)
+    assert en_labels["strengths"] != hans_labels["strengths"], \
+        "zh-Hans 'strengths' label must differ from English"
+    assert en_labels["weaknesses"] != hans_labels["weaknesses"], \
+        "zh-Hans 'weaknesses' label must differ from English"
+    assert en_labels["per_rep"] != hans_labels["per_rep"], \
+        "zh-Hans 'per_rep' label must differ from English"
+    assert en_labels["training_plan"] != hans_labels["training_plan"], \
+        "zh-Hans 'training_plan' label must differ from English"

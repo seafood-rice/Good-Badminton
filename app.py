@@ -474,7 +474,7 @@ def api_technique(video_name):
                     if line:
                         strokes.append(json.loads(line))
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'failed to read report'}), 500
 
     return jsonify({'summary': summary, 'strokes': strokes})
 
@@ -542,7 +542,7 @@ def api_posture(video_name):
                         reps.append(json.loads(line))
         return jsonify({'summary': summary, 'reps': reps})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'failed to read report'}), 500
 
 
 def _load_or_make_posture_plan(video_name, weeks=4, force=False):
@@ -677,7 +677,7 @@ def api_posture_report(video_name):
         with open(path, encoding='utf-8') as f:
             return jsonify(json.load(f))
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'failed to read report'}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════

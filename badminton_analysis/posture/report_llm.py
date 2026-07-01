@@ -89,7 +89,10 @@ class GoogleProvider(_SDKProvider):
 class LocalOpenAICompatProvider(_SDKProvider):
     def polish_fields(self, fields, lang):
         from openai import OpenAI  # lazy; local OpenAI-compatible endpoint
-        base = os.environ.get("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
+        # For local: specs, the part after "local:" is treated as the base URL.
+        # The spec-supplied value wins over the env var fallback.
+        base = self.model if (self.model or "").startswith("http") else \
+               os.environ.get("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
         client = OpenAI(base_url=base, api_key="not-needed")
         return _openai_rewrite(client, self.model, fields, lang)
 

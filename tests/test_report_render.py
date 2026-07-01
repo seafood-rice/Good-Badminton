@@ -71,3 +71,50 @@ def test_render_pdf_returns_false_on_render_error(monkeypatch, tmp_path):
     out = tmp_path / "r.pdf"
     assert render_pdf("<html><body>x</body></html>", str(out)) is False
     assert not out.exists()
+
+
+def _zh_hans_report():
+    """Minimal zh-Hans report dict with localized section_labels."""
+    return {
+        "lang": "zh-Hans",
+        "header": {"stroke": "smash", "stroke_label": "杀球", "rep_count": 3,
+                   "dominant_hand": "right", "date": "2026-07-01", "pose_family": "yolo-pose"},
+        "summary": {"mean_score": 70.0, "consistency": 9.5, "verdict_text": "稳步进步中。"},
+        "section_labels": {
+            "strengths": "做得好的方面",
+            "weaknesses": "需要改善的方面",
+            "per_rep": "每回合分析",
+            "training_plan": "训练计划",
+            "col_rep": "回合",
+            "col_score": "得分",
+            "col_top_weakness": "主要弱点",
+        },
+        "strengths": [{"metric": "trunk_rotation", "metric_label": "躯干转体",
+                       "measured": 35, "impact_label": "力量", "text": "转体良好。"}],
+        "weaknesses": [{"metric": "elbow_extension", "metric_label": "手肘伸展",
+                        "measured": 138, "ideal_range": [150, 170], "direction": "under",
+                        "severity": "moderate", "impact_label": "力量",
+                        "mechanism_text": "杠杆臂短。", "drill_text": "墙壁点击。"}],
+        "per_rep": [{"rep_id": 1, "overall_score": 70, "top_weakness": "elbow_extension"}],
+        "training_plan": {"weeks": []},
+    }
+
+
+def test_render_html_zh_hans_uses_localized_headings():
+    html = render_html(_zh_hans_report())
+    # Chinese headings must appear; English headings must NOT
+    assert "做得好的方面" in html, "zh-Hans strengths heading missing"
+    assert "需要改善的方面" in html, "zh-Hans weaknesses heading missing"
+    assert "每回合分析" in html, "zh-Hans per-rep heading missing"
+    assert "Strengths" not in html, "English 'Strengths' heading leaked into zh-Hans report"
+    assert "Areas to" not in html, "English 'Areas to' heading leaked into zh-Hans report"
+    assert "Per-Rep" not in html, "English 'Per-Rep' heading leaked into zh-Hans report"
+
+
+def test_render_html_falls_back_to_english_when_no_section_labels():
+    """Renderer must produce valid English output when section_labels is absent."""
+    report = _report()  # no section_labels key
+    html = render_html(report)
+    assert "Strengths" in html
+    assert "Areas to Improve" in html
+    assert "Per-Rep Breakdown" in html

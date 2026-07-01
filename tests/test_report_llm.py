@@ -57,3 +57,37 @@ def test_resolve_auth_prefers_env_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     auth = rl.resolve_auth("openai")
     assert auth is not None and auth["kind"] == "api_key"
+
+
+def test_local_provider_uses_spec_url_over_env(monkeypatch):
+    """get_provider('local:http://localhost:8000') must use the spec URL, not the env var."""
+    captured = {}
+    import sys, types as _types
+
+    # Build a fake openai module so the `from openai import OpenAI` inside polish_fields works.
+    fake_openai = _types.ModuleType("openai")
+
+    class _FakeOpenAI:
+        def __init__(self, base_url, api_key):
+            captured["base_url"] = base_url
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kwargs):
+                    resp = _types.SimpleNamespace()
+                    resp.choices = [_types.SimpleNamespace(
+                        message=_types.SimpleNamespace(content='{"verdict": "ok"}')
+                    )]
+                    return resp
+
+    fake_openai.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://localhost:11434/v1")
+
+    provider = rl.LocalOpenAICompatProvider("http://localhost:8000", {"kind": "local"})
+    try:
+        provider.polish_fields({"verdict": "x"}, "en")
+    except Exception:
+        pass  # JSON parse may fail on the fake response; we only care about base_url
+    assert captured.get("base_url") == "http://localhost:8000", \
+        "LocalOpenAICompatProvider must use the spec URL, not the env var"

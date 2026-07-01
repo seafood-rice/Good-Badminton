@@ -20,6 +20,17 @@ def _esc(v):
 def render_html(report):
     h = report.get("header", {})
     s = report.get("summary", {})
+    # Section labels are threaded in from the builder (already localised).
+    # English fallbacks keep the renderer safe when section_labels is absent.
+    labels = report.get("section_labels", {})
+    lbl_strengths    = labels.get("strengths",      "Strengths")
+    lbl_weaknesses   = labels.get("weaknesses",     "Areas to Improve")
+    lbl_per_rep      = labels.get("per_rep",        "Per-Rep Breakdown")
+    lbl_training     = labels.get("training_plan",  "Training Plan")
+    lbl_col_rep      = labels.get("col_rep",        "Rep")
+    lbl_col_score    = labels.get("col_score",      "Score")
+    lbl_col_weakness = labels.get("col_top_weakness", "Top Weakness")
+
     parts = []
     parts.append("<!doctype html><html lang='" + _esc(report.get("lang", "en")) + "'><head>"
                  "<meta charset='utf-8'><style>" + _CSS + "</style></head><body>")
@@ -34,7 +45,7 @@ def render_html(report):
 
     strengths = report.get("strengths", [])
     if strengths:
-        parts.append("<h2>Strengths</h2>")
+        parts.append("<h2>" + _esc(lbl_strengths) + "</h2>")
         for st in strengths:
             parts.append("<div class='strength'><b>" + _esc(st.get("metric_label"))
                          + "</b> <span class='impact'>" + _esc(st.get("impact_label")) + "</span><br>"
@@ -42,7 +53,7 @@ def render_html(report):
 
     weaknesses = report.get("weaknesses", [])
     if weaknesses:
-        parts.append("<h2>Areas to improve</h2>")
+        parts.append("<h2>" + _esc(lbl_weaknesses) + "</h2>")
         for w in weaknesses:
             _ideal = list(w.get("ideal_range") or [])
             ideal_lo = _ideal[0] if len(_ideal) > 0 else ""
@@ -55,7 +66,9 @@ def render_html(report):
 
     per_rep = report.get("per_rep", [])
     if per_rep:
-        parts.append("<h2>Per-rep</h2><table><tr><th>Rep</th><th>Score</th><th>Top weakness</th></tr>")
+        parts.append("<h2>" + _esc(lbl_per_rep) + "</h2>"
+                     + "<table><tr><th>" + _esc(lbl_col_rep) + "</th><th>" + _esc(lbl_col_score)
+                     + "</th><th>" + _esc(lbl_col_weakness) + "</th></tr>")
         for r in per_rep:
             parts.append("<tr><td>" + _esc(r.get("rep_id")) + "</td><td>" + _esc(r.get("overall_score"))
                          + "</td><td>" + _esc(r.get("top_weakness")) + "</td></tr>")
@@ -64,7 +77,7 @@ def render_html(report):
     plan = report.get("training_plan", {})
     weeks = plan.get("weeks", []) if isinstance(plan, dict) else []
     if weeks:
-        parts.append("<h2>Training plan</h2>")
+        parts.append("<h2>" + _esc(lbl_training) + "</h2>")
         for wk in weeks:
             parts.append("<b>Week " + _esc(wk.get("week")) + " (" + _esc(wk.get("phase")) + ")</b><ul>")
             for sess in wk.get("sessions", []):
