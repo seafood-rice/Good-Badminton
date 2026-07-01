@@ -64,7 +64,8 @@ class PostureAnalysisSystem:
                  output_dir=None, ball_model_path=None, show_display=False,
                  show_overlay=True, pose_model="weights/yolo11n-pose.pt",
                  pose_family="yolo-pose", pose_mode="balanced",
-                 yolo_pose_model="weights/yolo11n-pose.pt"):
+                 yolo_pose_model="weights/yolo11n-pose.pt",
+                 report_llm="off"):
         if not os.path.exists(video_path):
             raise FileNotFoundError("Input video not found: " + video_path)
         self.video_path = video_path
@@ -77,6 +78,7 @@ class PostureAnalysisSystem:
         self.pose_family = pose_family
         self.pose_mode = pose_mode
         self.yolo_pose_model = yolo_pose_model
+        self.report_llm = report_llm
 
         self.video_name = os.path.basename(video_path).rsplit(".", 1)[0]
         self.save_dir = output_dir or os.path.join("outputs", self.video_name, "posture")
@@ -101,6 +103,10 @@ class PostureAnalysisSystem:
         meta = {"date": date, "stroke_type": self.stroke_type,
                 "dominant_hand": self.dominant_hand, "pose_family": getattr(self, "pose_family", "yolo-pose")}
         by_lang = build_coach_report(reports, summary, meta)
+        if getattr(self, "report_llm", "off") not in (None, "off"):
+            from .report_llm import polish
+            for lang in by_lang:
+                by_lang[lang] = polish(by_lang[lang], lang, spec=self.report_llm)
         written = {}
         for lang, report in by_lang.items():
             json_path = os.path.join(self.save_dir, "coach_report_" + lang + ".json")
