@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--yolo-pose-model", default="weights/yolo11n-pose.pt",
                         help="YOLO pose model path (used when pose-family=yolo-pose)")
     parser.add_argument("--display", choices=["true", "false"], default="false")
+    parser.add_argument("--report-llm", default="off",
+                        help="LLM polish spec 'provider:model' or 'off' (default off)")
     args = parser.parse_args()
 
     from badminton_analysis.posture.system import PostureAnalysisSystem
@@ -38,6 +40,7 @@ def main():
         pose_family=args.pose_family,
         pose_mode=args.pose_mode,
         yolo_pose_model=args.yolo_pose_model,
+        report_llm=args.report_llm,
     )
     system.process_video()
 

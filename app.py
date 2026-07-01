@@ -591,6 +591,7 @@ def api_posture_analyze():
     stroke_type = data.get('stroke_type')
     dominant = data.get('dominant_hand', 'right')
     pose_family = data.get('pose_family', 'yolo-pose')
+    report_llm = data.get('report_llm', 'off')
     if pose_family not in ('yolo-pose', 'rtmpose', 'rtmo'):
         return jsonify({'error': 'invalid pose_family'}), 400
     if not video_name or stroke_type not in ('high_clear', 'smash', 'drop_shot', 'serve'):
@@ -611,6 +612,7 @@ def api_posture_analyze():
         '--pose-family', pose_family,
         '--output-dir', str(save_dir),
         '--display', 'false',
+        '--report-llm', report_llm,
     ]
     job_id = 'posture_' + video_path.stem
     jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',
@@ -658,6 +660,24 @@ def api_posture_analyze_status(job_id):
         return jsonify({'status': 'not_found'}), 404
     return jsonify({'status': job.get('status'), 'progress': job.get('progress', 0),
                     'message': job.get('message', ''), 'result': job.get('result')})
+
+
+_REPORT_LANGS = ("en", "zh-Hant", "zh-Hans")
+
+
+@app.route('/api/posture-report/<video_name>')
+def api_posture_report(video_name):
+    lang = request.args.get('lang', 'en')
+    if lang not in _REPORT_LANGS:
+        return jsonify({'error': 'invalid lang'}), 400
+    path = OUTPUTS / video_name / 'posture' / ('coach_report_' + lang + '.json')
+    if not path.exists():
+        return jsonify({'error': '还没有教练报告，请先运行姿态分析'}), 404
+    try:
+        with open(path, encoding='utf-8') as f:
+            return jsonify(json.load(f))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
