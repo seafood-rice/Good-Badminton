@@ -2,7 +2,7 @@ import os
 import cv2
 import sys
 import numpy as np
-from rtmlib import Body, RTMO, draw_skeleton
+from rtmlib import Body, RTMO
 
 class RTMPoseProcessor:
     """RTMPose pose detection processor"""

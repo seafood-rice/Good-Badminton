@@ -12,7 +12,7 @@ SKELETON_CONNECTIONS = [
 
 def _valid(kp, idx, conf, conf_thresh):
     x, y = float(kp[idx][0]), float(kp[idx][1])
-    if x <= 1 and y <= 1:
+    if x <= 1 or y <= 1:
         return False
     if conf is not None and float(conf[idx]) < conf_thresh:
         return False

@@ -23,3 +23,13 @@ def test_draw_skeleton_on_frame_applies_offset_and_draws():
     # single person as (1,17,2)
     v._draw_skeleton_on_frame(frame, person[None, ...], offset_x=40, offset_y=50)
     assert int(frame.sum()) > 0  # drew something after offset shift
+
+
+def test_missing_keypoint_sentinel_not_shifted_into_view():
+    v = PlayerPoseVisualizer(rtmpose_processor=_FakePose())
+    frame = np.zeros((300, 300, 3), dtype=np.uint8)
+    # All keypoints are (0,0) — the "missing" sentinel; none should be shifted or drawn.
+    person = np.zeros((17, 2))
+    v._draw_skeleton_on_frame(frame, person[None, ...], offset_x=40, offset_y=50)
+    # The sentinel (0,0) must NOT be shifted to (40,50) and drawn there.
+    assert frame[50, 40].sum() == 0  # pixel at (offset_y=50, offset_x=40) is still black

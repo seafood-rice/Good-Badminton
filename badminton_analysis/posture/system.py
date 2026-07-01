@@ -84,7 +84,7 @@ class PostureAnalysisSystem:
     def _build_pose_processor(self):
         if self.pose_family == "yolo-pose":
             from ..detection.yolo_pose import YOLOPoseProcessor
-            return YOLOPoseProcessor(model_path=self.yolo_pose_model)
+            return YOLOPoseProcessor(model_path=self.yolo_pose_model or self.pose_model)
         from ..detection.rtmpose import RTMPoseProcessor
         return RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
 
