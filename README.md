@@ -227,10 +227,113 @@ python main_posture.py --video-path videos/drill.mov --stroke-type high_clear --
 
 与比赛模式相同：高远球、杀球、吊球、发球。
 
+### 骨骼叠加层与姿态模型
+
+姿态训练模式支持**人体骨骼叠加层**，在输出视频中实时绘制人体骨骼和关键点。可以通过命令行选择不同的姿态模型族：
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --pose-family rtmpose --pose-mode balanced
+```
+
+#### 姿态模型族
+
+- `yolo-pose`（默认）— Ultralytics YOLO Pose，内置于 YOLOv11
+- `rtmpose` — RTMPose 两阶段模型，更精准
+- `rtmo` — 一阶段轻量级 RTM 模型
+
+#### 可选参数
+
+- `--pose-family` — 模型族：`yolo-pose` / `rtmpose` / `rtmo`（默认 `yolo-pose`）
+- `--pose-mode` — RTMPose/RTMO 的处理模式（仅在这两个模型族有效）：
+  - `lightweight` — 轻量级，优先速度
+  - `balanced` — 平衡模式（默认），速度与精度均衡
+  - `performance` — 性能模式，更大模型，精度更高但速度较慢
+
+RTMPose/RTMO 的 ONNX 权重会在首次运行时自动下载（与比赛模式相同）。
+
+> 💡 **Web UI 模式选择**：在 Web UI 的姿态训练面板中，可通过下拉菜单直接选择模型族和处理模式，无需记住命令行参数。
+
 ### 注意事项
 
 - **侧面视角是本版本的重点支持视角**，其他相机角度（正面、背后等）为后续工作
 - 生物力学参考范围与比赛模式共用，基于关键关节角度（肩、肘、腕、髋、膝、踝等）
+
+### 📊 专业教练报告 — 三语言版本
+
+姿态训练完成后，系统会自动生成**专业教练报告**，关联每一项生物力学发现与击球质量的影响（力量、精准度、一致性、伤病风险），包含总体评价、优势、薄弱环节（测量值 vs. 理想值 + 为何影响成绩 + 改进钻练）、逐个重复的数据表，以及针对性的训练计划。报告支持**三种语言**自动生成：
+
+- **英文** (English)
+- **繁体中文** (Traditional Chinese)
+- **简体中文** (Simplified Chinese)
+
+#### 输出文件
+
+报告生成在 `outputs/<视频名>/posture/` 中，包括：
+
+| 文件 | 说明 |
+|------|------|
+| `coach_report_en.json` | 英文版教练报告（结构化数据） |
+| `coach_report_en.html` | 英文版教练报告（网页版） |
+| `coach_report_en.pdf` | 英文版教练报告（PDF，如已安装 weasyprint） |
+| `coach_report_zh-Hant.json` | 繁体中文版教练报告（结构化数据） |
+| `coach_report_zh-Hant.html` | 繁体中文版教练报告（网页版） |
+| `coach_report_zh-Hant.pdf` | 繁体中文版教练报告（PDF，如已安装 weasyprint） |
+| `coach_report_zh-Hans.json` | 简体中文版教练报告（结构化数据） |
+| `coach_report_zh-Hans.html` | 简体中文版教练报告（网页版） |
+| `coach_report_zh-Hans.pdf` | 简体中文版教练报告（PDF，如已安装 weasyprint） |
+
+> 📝 **PDF 生成是最佳努力** — PDF 功能需要可选的 `weasyprint` 库。如果未安装，系统仍会生成 JSON 和 HTML 版本，PDF 会被跳过而不会报错。繁体中文 PDF 的字体显示取决于系统已安装的 CJK 字体。
+
+#### Web UI 教练报告面板
+
+分析完成后，结果页面会显示 **教练报告** 面板，支持：
+
+- **语言切换器** — 即时切换 EN / 繁體 / 简体，页面无需刷新
+- **下载链接** — 下载 HTML 版本或 PDF 版本（PDF 仅在生成成功时显示）
+- **内容概览** — 总体评价、击球强项、改进方向、关键薄弱环节对应的改进钻练、逐个重复的得分表、多周训练计划
+
+#### 可选 LLM 文案润色
+
+默认情况下，教练报告从内置的精心策划的知识库生成，**完全离线，不调用外部服务**。可选地，可以使用 LLM 对报告中的文案部分进行人性化润色（仅限文字表述，不改动数字和评分）：
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm claude:claude-opus-4-1-20250805
+```
+
+#### 支持的 LLM 提供商
+
+- **Anthropic Claude** — 格式：`claude:<model_id>`（如 `claude:claude-opus-4-1-20250805`）
+- **OpenAI** — 格式：`openai:<model_id>`（如 `openai:gpt-4o`）
+- **Google Gemini** — 格式：`google:<model_id>`（如 `google:gemini-2.0-flash`）
+- **本地兼容端点** — 格式：`local:<base_url>`（如 `local:http://localhost:8000`）无需身份认证
+
+#### 身份认证机制
+
+**重要**：系统**不实现**任何登录、OAuth 流程或订阅支付。而是复用提供商自身的正式 CLI 工具（如 Claude Code）已保存的凭据，或从环境变量读取 API 密钥，或使用本地无需认证的端点：
+
+- **Anthropic (Claude)** — 复用 Claude Code 登录凭据；或环境变量 `ANTHROPIC_API_KEY`
+- **OpenAI** — 环境变量 `OPENAI_API_KEY`
+- **Google Gemini** — 环境变量 `GOOGLE_API_KEY`
+- **本地端点** — 无需身份认证
+
+若未指定 `--report-llm` 或凭据不可用，系统采用默认的离线知识库。LLM 仅用于可选的文案润色，不会改变报告的任何数据或评分。
+
+#### 示例
+
+```bash
+# 默认离线模式，无 LLM 调用
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear
+
+# 使用 Claude 进行文案润色（需要 Claude Code 已登录 或 ANTHROPIC_API_KEY 环境变量）
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm claude:claude-opus-4-1-20250805
+
+# 使用本地 OpenAI 兼容端点（无需凭据）
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm local:http://localhost:8000
+```
 
 ## 📋 系统要求
 

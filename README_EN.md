@@ -167,10 +167,113 @@ Select **🧍 Posture Drill** from the top mode switch to enter the drill workfl
 
 Same as match mode: High Clear, Smash, Drop Shot, Serve.
 
+### Skeleton Overlay and Pose Model Selection
+
+Posture drill mode supports a **human skeleton overlay** that draws skeletal structure and keypoints in real time on the output video. You can choose from different pose model families via the command line:
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --pose-family rtmpose --pose-mode balanced
+```
+
+#### Pose Model Families
+
+- `yolo-pose` (default) — Ultralytics YOLO Pose, built into YOLOv11
+- `rtmpose` — Two-stage RTMPose model, more accurate
+- `rtmo` — Lightweight one-stage RTM model
+
+#### Optional Parameters
+
+- `--pose-family` — Model family: `yolo-pose` / `rtmpose` / `rtmo` (default `yolo-pose`)
+- `--pose-mode` — Processing mode for RTMPose/RTMO (only applicable to these two families):
+  - `lightweight` — Lightweight, prioritizes speed
+  - `balanced` — Balanced mode (default), tradeoff between speed and accuracy
+  - `performance` — Performance mode, larger model, higher accuracy but slower
+
+RTMPose/RTMO ONNX weights download automatically on first run (same as match mode).
+
+> 💡 **Web UI Model Selection**: In the Web UI Posture Drill panel, you can select the model family and processing mode from dropdown menus without memorizing command-line arguments.
+
 ### Notes
 
 - **Side-view is the tuned/supported view for this release**; other camera angles (front, rear, etc.) are future work
 - Biomechanical reference ranges are shared with match mode and based on key joint angles (shoulder, elbow, wrist, hip, knee, ankle, etc.)
+
+### 📊 Professional Coach Report — Tri-Lingual Versions
+
+Upon completion of posture drill analysis, the system automatically generates a **professional coach report** that correlates every biomechanical finding to shot-quality impact (power, accuracy, consistency, and injury risk). The report includes an overall verdict, strengths, weaknesses (measured values vs. ideal ranges + why it affects performance + corrective drills), a per-repetition data table, and a targeted training plan. Reports are automatically generated in **three languages**:
+
+- **English**
+- **Traditional Chinese (繁體)**
+- **Simplified Chinese (简体)**
+
+#### Output Files
+
+Reports are generated in `outputs/<video_name>/posture/` and include:
+
+| File | Description |
+|------|---|
+| `coach_report_en.json` | English coach report (structured data) |
+| `coach_report_en.html` | English coach report (web version) |
+| `coach_report_en.pdf` | English coach report (PDF, if weasyprint is installed) |
+| `coach_report_zh-Hant.json` | Traditional Chinese coach report (structured data) |
+| `coach_report_zh-Hant.html` | Traditional Chinese coach report (web version) |
+| `coach_report_zh-Hant.pdf` | Traditional Chinese coach report (PDF, if weasyprint is installed) |
+| `coach_report_zh-Hans.json` | Simplified Chinese coach report (structured data) |
+| `coach_report_zh-Hans.html` | Simplified Chinese coach report (web version) |
+| `coach_report_zh-Hans.pdf` | Simplified Chinese coach report (PDF, if weasyprint is installed) |
+
+> 📝 **PDF Generation is Best-Effort** — PDF support requires the optional `weasyprint` library. If not installed, the system still generates JSON and HTML versions; PDF is skipped without error. Traditional Chinese PDF glyph rendering depends on CJK fonts installed on your system.
+
+#### Web UI Coach Report Panel
+
+After analysis completes, the results page displays a **Coach Report** panel featuring:
+
+- **Language switcher** — Instantly toggle between EN / 繁體 / 简体 without page reload
+- **Download links** — Download HTML version or PDF version (PDF only shown if generation succeeded)
+- **Content overview** — Overall verdict, shot strengths, areas for improvement, key weaknesses with corresponding corrective drills, per-repetition score table, multi-week training plan
+
+#### Optional LLM Prose Polish
+
+By default, the coach report is generated entirely from a carefully curated built-in knowledge base and **runs completely offline with no external service calls**. Optionally, you can use an LLM to add human-friendly prose polish to report text sections (numbers and scores are never changed):
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm claude:claude-opus-4-1-20250805
+```
+
+#### Supported LLM Providers
+
+- **Anthropic Claude** — Format: `claude:<model_id>` (e.g., `claude:claude-opus-4-1-20250805`)
+- **OpenAI** — Format: `openai:<model_id>` (e.g., `openai:gpt-4o`)
+- **Google Gemini** — Format: `google:<model_id>` (e.g., `google:gemini-2.0-flash`)
+- **Local Compatible Endpoint** — Format: `local:<base_url>` (e.g., `local:http://localhost:8000`) with no authentication required
+
+#### Authentication Mechanism
+
+**Important**: The system **does not implement** any login, OAuth flow, or subscription payment. Instead, it reuses credentials already stored by each provider's official CLI tool (e.g., Claude Code), or reads API keys from environment variables, or uses local authentication-free endpoints:
+
+- **Anthropic (Claude)** — Reuses Claude Code login credentials; or environment variable `ANTHROPIC_API_KEY`
+- **OpenAI** — Environment variable `OPENAI_API_KEY`
+- **Google Gemini** — Environment variable `GOOGLE_API_KEY`
+- **Local endpoint** — No authentication required
+
+If `--report-llm` is not specified or credentials are unavailable, the system uses the default offline knowledge base. The LLM is only used for optional prose polish and never changes any report data or scores.
+
+#### Examples
+
+```bash
+# Default offline mode, no LLM calls
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear
+
+# Use Claude for prose polish (requires Claude Code login or ANTHROPIC_API_KEY environment variable)
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm claude:claude-opus-4-1-20250805
+
+# Use local OpenAI-compatible endpoint (no credentials needed)
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm local:http://localhost:8000
+```
 
 ## Requirements
 
