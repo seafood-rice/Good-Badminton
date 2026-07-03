@@ -676,7 +676,7 @@ def api_posture(video_name):
 @app.route('/api/posture-rep-clip/<video_name>', methods=['POST'])
 def api_posture_rep_clip(video_name):
     """On-demand ffmpeg crop of a single rep window from the annotated posture video."""
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     rep_id = data.get('rep_id')
     if rep_id is None:
         return jsonify({'error': '需要 rep_id'}), 400
@@ -685,15 +685,18 @@ def api_posture_rep_clip(video_name):
     if not reps_path.exists():
         return jsonify({'error': '没有 rep 数据'}), 404
     rep = None
-    with open(reps_path, encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            r = json.loads(line)
-            if r.get('rep_id') == rep_id:
-                rep = r
-                break
+    try:
+        with open(reps_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                r = json.loads(line)
+                if str(r.get('rep_id')) == str(rep_id):
+                    rep = r
+                    break
+    except Exception:
+        return jsonify({'error': 'rep 数据读取失败'}), 500
     if rep is None:
         return jsonify({'error': 'rep 不存在'}), 404
     video_file = out_dir / ('detect_' + video_name + '.mp4')

@@ -51,3 +51,32 @@ def test_rep_clip_404_without_annotated_video(client, tmp_path):
     _write_reps(tmp_path, "drill1", with_video=False)
     r = client.post("/api/posture-rep-clip/drill1", json={"rep_id": 1})
     assert r.status_code == 404
+
+
+def test_rep_clip_400_on_bodyless_post(client, tmp_path):
+    _write_reps(tmp_path, "drill1", with_video=True)
+    r = client.post("/api/posture-rep-clip/drill1")
+    assert r.status_code == 400
+    assert "error" in r.get_json()
+
+
+def test_rep_clip_500_on_malformed_reps_line(client, tmp_path):
+    out = _write_reps(tmp_path, "drill1", with_video=True)
+    (out / "drill_reps.jsonl").write_text('{"rep_id": 1, "contact_frame": 90\n', encoding="utf-8")
+    r = client.post("/api/posture-rep-clip/drill1", json={"rep_id": 1})
+    assert r.status_code == 500
+    assert "error" in r.get_json()
+
+
+def test_rep_clip_matches_string_rep_id(client, tmp_path, monkeypatch):
+    _write_reps(tmp_path, "drill1", with_video=True)
+    calls = {}
+
+    def fake_run(*args, **kwargs):
+        calls["ran"] = True
+
+    monkeypatch.setattr(webapp.subprocess, "run", fake_run)
+    r = client.post("/api/posture-rep-clip/drill1", json={"rep_id": "1"})
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+    assert calls.get("ran") is True
