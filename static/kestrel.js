@@ -593,8 +593,10 @@ window.Kestrel = (function () {
     fetch('/api/posture/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
       var s = d.summary; postureCtx.reps = d.reps || [];
-      fetch('/api/output/' + stem + '/posture/metadata.json').then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (meta) { if (meta && meta.video && meta.video.fps) postureCtx.fps = meta.video.fps; }).catch(function () {});
+      var metaReady = fetch('/api/output/' + stem + '/posture/metadata.json')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (meta) { if (meta && meta.video && meta.video.fps) postureCtx.fps = meta.video.fps; })
+        .catch(function () {});
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       var mean = (s.mean_score === null || s.mean_score === undefined) ? null : Math.round(s.mean_score);
       var cons = (s.consistency === null || s.consistency === undefined) ? null : Math.round(s.consistency * 10) / 10;
@@ -611,7 +613,9 @@ window.Kestrel = (function () {
         return '<li><button class="rep-row" data-i="' + i + '"><span class="mono">#' + rep.rep_id + '</span>' +
           scoreChipHTML(rep.overall_score) + '</button></li>'; }).join('');
       document.querySelectorAll('.rep-row').forEach(function (b) { b.onclick = function () { selectRep(postureCtx.reps, Number(b.getAttribute('data-i'))); }; });
-      if (postureCtx.reps.length) { selectRep(postureCtx.reps, 0); }
+      if (postureCtx.reps.length) {
+        metaReady.then(function () { if (document.getElementById('rep-detail')) selectRep(postureCtx.reps, 0); });
+      }
     }).catch(function () { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; });
   }
   var REP_PAD = 1.5;
@@ -657,8 +661,8 @@ window.Kestrel = (function () {
       .then(function (r) { return r.json(); }).then(function (d) {
         btn.disabled = false; btn.textContent = '⬇ ' + (zh?'下载本次':'Download this rep');
         if (d.ok && d.url) { var a = document.createElement('a'); a.href = d.url; a.download = 'rep_' + rep.rep_id + '.mp4'; document.body.appendChild(a); a.click(); a.remove(); }
-        else { alert(d.error || 'error'); } })
-      .catch(function () { btn.disabled = false; btn.textContent = '⬇ ' + (zh?'下载本次':'Download this rep'); });
+        else { alert(zh ? (d.error || '生成失败') : 'Clip generation failed'); } })
+      .catch(function () { btn.disabled = false; btn.textContent = '⬇ ' + (zh?'下载本次':'Download this rep'); alert(zh ? '网络错误，请重试' : 'Network error — please try again'); });
   }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
