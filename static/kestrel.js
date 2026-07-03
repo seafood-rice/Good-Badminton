@@ -486,6 +486,20 @@ window.Kestrel = (function () {
     hip_shoulder_separation:['髋肩分离','Hip–shoulder separation'], weight_transfer:['重心转移','Weight transfer']
   };
   function metricLabel(k) { var m = METRIC_LABELS[k]; return m ? (state.lang==='zh'?m[0]:m[1]) : String(k).replace(/_/g,' '); }
+  var STROKE_TYPE_LABELS = {
+    high_clear: ['高远球', 'High clear'], smash: ['杀球', 'Smash'],
+    drop_shot: ['吊球', 'Drop shot'], serve: ['发球', 'Serve']
+  };
+  function strokeTypeLabel(k) { var m = STROKE_TYPE_LABELS[k]; return m ? (state.lang==='zh'?m[0]:m[1]) : String(k).replace(/_/g,' '); }
+  function weaknessLineHTML(w) {
+    var zh = state.lang === 'zh';
+    if (w.description && (!zh || !w.metric)) return '<li>' + w.description + '</li>';
+    if (!w.metric) return '';
+    var parts = [metricLabel(w.metric)];
+    if (w.measured !== null && w.measured !== undefined) parts.push((zh ? '实测 ' : 'measured ') + (Math.round(w.measured * 10) / 10));
+    if (Array.isArray(w.ideal_range) && w.ideal_range.length >= 2) parts.push((zh ? '理想 ' : 'ideal ') + w.ideal_range[0] + '–' + w.ideal_range[1]);
+    return '<li>' + parts.join(' · ') + '</li>';
+  }
   function scoreHue(s) { return s >= 70 ? 'var(--good)' : (s >= 40 ? 'var(--mid)' : 'var(--bad)'); }
   function metricBarHTML(key, m) {
     var score = Math.max(0, Math.min(100, Number(m.score) || 0));
@@ -522,7 +536,7 @@ window.Kestrel = (function () {
     // Rally summary + clip generation.
     fetch('/api/output/' + stem + '/rally_segments.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       var n = d && d.rallies ? d.rallies.length : 0;
-      document.getElementById('rally-info').textContent = zh ? (n + ' 个回合') : (n + ' rallies detected');
+      document.getElementById('rally-info').textContent = zh ? (n + ' 个回合') : (n + (n === 1 ? ' rally detected' : ' rallies detected'));
       var btn = document.getElementById('clip-btn'); btn.disabled = n === 0;
     }).catch(function () { document.getElementById('rally-info').textContent = zh?'暂无回合数据':'No rally data'; document.getElementById('clip-btn').disabled = true; });
     document.getElementById('clip-btn').onclick = function () {
@@ -543,20 +557,20 @@ window.Kestrel = (function () {
       status.style.display = 'none';
       var s = d.summary;
       var chips = Object.keys(s.by_type || {}).map(function (k) {
-        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + k + '</b> ' + bt.count + '× · ' + (Math.round(bt.avg_score) ) + '</span>'; }).join('');
+        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + strokeTypeLabel(k) + '</b> ' + bt.count + '× · ' + (Math.round(bt.avg_score) ) + '</span>'; }).join('');
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       document.getElementById('tech-summary').innerHTML =
         '<div class="tech-sum"><div class="mono">' + (zh?'击球数':'Strokes') + ': ' + s.stroke_count + '</div>' +
         '<div class="chip-row">' + chips + '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') + '</div>';
       var strokes = d.strokes || [];
       document.getElementById('tech-strokes').innerHTML = strokes.map(function (st, i) {
-        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + st.stroke_type + '</span>' +
+        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + strokeTypeLabel(st.stroke_type) + '</span>' +
           '<span class="score-chip mono" style="background:' + scoreHue(st.overall_score) + '">' + Math.round(st.overall_score) + '</span></button>'; }).join('');
       document.querySelectorAll('.stroke-row').forEach(function (b) { b.onclick = function () {
         document.querySelectorAll('.stroke-row').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');
         var st = strokes[Number(b.getAttribute('data-i'))];
         var bars = Object.keys(st.per_metric || {}).map(function (k) { return metricBarHTML(k, st.per_metric[k]); }).join('');
-        var ws = (st.weaknesses || []).map(function (w) { return '<li>' + (w.description || metricLabel(w.metric)) + '</li>'; }).join('');
+        var ws = (st.weaknesses || []).map(weaknessLineHTML).join('');
         document.getElementById('tech-detail').innerHTML = bars + (ws ? '<ul class="weak-list">' + ws + '</ul>' : '');
       }; });
     }).catch(function () { document.getElementById('tech-status').textContent = zh?'技术分析加载失败':'Failed to load technique'; });
