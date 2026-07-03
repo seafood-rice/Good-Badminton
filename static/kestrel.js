@@ -480,7 +480,87 @@ window.Kestrel = (function () {
     if (state.resultsMode === 'posture') { renderPostureResults(body); }
     else { renderMatchResults(body); }
   }
-  function renderMatchResults(body) { body.innerHTML = '<p class="muted">match results (Task 2)</p>'; }
+  var METRIC_LABELS = {
+    elbow_extension:['肘部伸展','Elbow extension'], trunk_rotation:['躯干旋转','Trunk rotation'],
+    wrist_flexion:['手腕屈曲','Wrist flexion'], knee_flexion:['膝盖弯曲','Knee flexion'],
+    hip_shoulder_separation:['髋肩分离','Hip–shoulder separation'], weight_transfer:['重心转移','Weight transfer']
+  };
+  function metricLabel(k) { var m = METRIC_LABELS[k]; return m ? (state.lang==='zh'?m[0]:m[1]) : String(k).replace(/_/g,' '); }
+  function scoreHue(s) { return s >= 70 ? 'var(--good)' : (s >= 40 ? 'var(--mid)' : 'var(--bad)'); }
+  function metricBarHTML(key, m) {
+    var score = Math.max(0, Math.min(100, Number(m.score) || 0));
+    var measured = (m.measured === null || m.measured === undefined) ? '—' : (Math.round(m.measured * 10) / 10);
+    var ideal = (m.ideal_range && m.ideal_range.length === 2) ? (m.ideal_range[0] + '–' + m.ideal_range[1]) : '';
+    return '<div class="metric"><div class="metric-head"><span class="metric-name">' + metricLabel(key) + '</span>' +
+      '<span class="metric-val mono">' + measured + (ideal ? ' <span class="metric-ideal">(' + (state.lang==='zh'?'理想':'ideal') + ' ' + ideal + ')</span>' : '') + '</span></div>' +
+      '<div class="metric-track"><div class="metric-fill" style="width:' + score + '%;background:' + scoreHue(score) + '"></div></div></div>';
+  }
+  function renderMatchResults(body) {
+    var zh = state.lang === 'zh'; var stem = state.resultsVideo;
+    var vurl = '/api/output/' + stem + '/detect_' + stem + '.mp4';
+    var heat = '/api/output/' + stem + '/position_visualizations/heatmaps/match_heatmap.png';
+    var scat = '/api/output/' + stem + '/position_visualizations/scatter_plots/match_scatter.png';
+    body.innerHTML =
+      '<div class="res-grid"><div><video class="res-video" controls src="' + vurl + '"></video></div>' +
+        '<div><div class="res-section" id="rally-box"><h2>' + (zh?'回合':'Rallies') + '</h2>' +
+          '<p class="muted" id="rally-info">' + (zh?'加载中…':'Loading…') + '</p>' +
+          '<button class="btn-primary" id="clip-btn" disabled>' + (zh?'生成回合剪辑':'Generate clips') + '</button>' +
+          '<div id="clip-list" class="clip-list"></div></div></div></div>' +
+      '<div class="res-section"><h2>' + (zh?'位置可视化':'Position visualization') + '</h2>' +
+        '<div class="viz-row"><div class="viz-cell" id="viz-heat"><img class="res-viz" src="' + heat + '" alt="heatmap"><div class="viz-cap mono">' + (zh?'热力图':'Heatmap') + '</div></div>' +
+          '<div class="viz-cell" id="viz-scat"><img class="res-viz" src="' + scat + '" alt="scatter"><div class="viz-cap mono">' + (zh?'散点图':'Scatter') + '</div></div></div></div>' +
+      '<div class="res-section" id="tech-box"><h2>' + (zh?'技术分析':'Technique analysis') + '</h2>' +
+        '<p class="muted" id="tech-status">' + (zh?'加载中…':'Loading…') + '</p>' +
+        '<div id="tech-summary"></div><div id="tech-strokes" class="stroke-list"></div><div id="tech-detail" class="rep-detail"></div></div>';
+
+    // Heatmap/scatter: hide the cell and show a note if the image is missing.
+    ['viz-heat','viz-scat'].forEach(function (id) {
+      var cell = document.getElementById(id); var img = cell.querySelector('img');
+      img.onerror = function () { cell.innerHTML = '<div class="viz-missing">' + (zh?'暂无可视化':'Not available') + '</div>'; };
+    });
+
+    // Rally summary + clip generation.
+    fetch('/api/output/' + stem + '/rally_segments.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      var n = d && d.rallies ? d.rallies.length : 0;
+      document.getElementById('rally-info').textContent = zh ? (n + ' 个回合') : (n + ' rallies detected');
+      var btn = document.getElementById('clip-btn'); btn.disabled = n === 0;
+    }).catch(function () { document.getElementById('rally-info').textContent = zh?'暂无回合数据':'No rally data'; document.getElementById('clip-btn').disabled = true; });
+    document.getElementById('clip-btn').onclick = function () {
+      var btn = document.getElementById('clip-btn'); btn.disabled = true; btn.textContent = zh?'生成中…':'Generating…';
+      fetch('/api/clip', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ video: stem, mode:'highlights', padding:1.5 }) })
+        .then(function (r) { return r.json(); }).then(function (d) {
+          btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false;
+          if (d.ok && d.clips) { document.getElementById('clip-list').innerHTML = d.clips.map(function (c) {
+            return '<a class="clip-item" href="' + c.url + '" download>⬇ ' + c.name + ' <span class="mono">' + c.size_mb + 'MB</span></a>'; }).join(''); }
+          else { alert(d.error || 'error'); } })
+        .catch(function () { btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false; });
+    };
+
+    // Technique analysis.
+    fetch('/api/technique/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      var status = document.getElementById('tech-status');
+      if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = zh?'暂无技术分析数据':'No technique data yet'; return; }
+      status.style.display = 'none';
+      var s = d.summary;
+      var chips = Object.keys(s.by_type || {}).map(function (k) {
+        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + k + '</b> ' + bt.count + '× · ' + (Math.round(bt.avg_score) ) + '</span>'; }).join('');
+      var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
+      document.getElementById('tech-summary').innerHTML =
+        '<div class="tech-sum"><div class="mono">' + (zh?'击球数':'Strokes') + ': ' + s.stroke_count + '</div>' +
+        '<div class="chip-row">' + chips + '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') + '</div>';
+      var strokes = d.strokes || [];
+      document.getElementById('tech-strokes').innerHTML = strokes.map(function (st, i) {
+        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + st.stroke_type + '</span>' +
+          '<span class="score-chip mono" style="background:' + scoreHue(st.overall_score) + '">' + Math.round(st.overall_score) + '</span></button>'; }).join('');
+      document.querySelectorAll('.stroke-row').forEach(function (b) { b.onclick = function () {
+        document.querySelectorAll('.stroke-row').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');
+        var st = strokes[Number(b.getAttribute('data-i'))];
+        var bars = Object.keys(st.per_metric || {}).map(function (k) { return metricBarHTML(k, st.per_metric[k]); }).join('');
+        var ws = (st.weaknesses || []).map(function (w) { return '<li>' + (w.description || metricLabel(w.metric)) + '</li>'; }).join('');
+        document.getElementById('tech-detail').innerHTML = bars + (ws ? '<ul class="weak-list">' + ws + '</ul>' : '');
+      }; });
+    }).catch(function () { document.getElementById('tech-status').textContent = zh?'技术分析加载失败':'Failed to load technique'; });
+  }
   function renderPostureResults(body) { body.innerHTML = '<p class="muted">posture results (Task 3)</p>'; }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
