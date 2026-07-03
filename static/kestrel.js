@@ -249,7 +249,82 @@ window.Kestrel = (function () {
     document.getElementById('wiz-back').onclick = function () { goStep('mode'); };
     nextBtn.onclick = function () { if (wiz.video) afterUpload(); };
   }
-  function renderStepCourt(body) { body.innerHTML = '<p class="muted">court step (Task 5)</p>'; }
+  function renderStepCourt(body) {
+    var zh = state.lang === 'zh';
+    var stem = wiz.video.replace(/\.[^.]+$/, '');
+    body.innerHTML =
+      '<div id="court-auto" class="court-panel"><p class="muted">' + (zh?'正在自动检测球场…':'Auto-detecting court…') + '</p></div>' +
+      '<div class="wiz-actions"><button class="btn-ghost" id="wiz-back">' + (zh?'返回':'Back') + '</button>' +
+        '<button class="btn-primary" id="wiz-next" disabled>' + (zh?'继续':'Continue') + '</button></div>';
+    var nextBtn = document.getElementById('wiz-next');
+    document.getElementById('wiz-back').onclick = function () { goStep('upload'); };
+    nextBtn.onclick = function () { goStep('config'); };
+    var clicks = [], annoImg = null, sx = 1, sy = 1;
+
+    function showManual() {
+      var panel = document.getElementById('court-auto');
+      panel.innerHTML =
+        '<div class="court-fail">⚠️ ' + (zh?'请按顺序点击球场四个角点：左上 → 右上 → 右下 → 左下':'Click the 4 court corners in order: TL → TR → BR → BL') + '</div>' +
+        '<canvas id="anno" class="anno-canvas"></canvas>' +
+        '<div class="anno-tools"><span id="anno-steps" class="mono"></span>' +
+          '<button class="btn-ghost" id="anno-undo">' + (zh?'撤销':'Undo') + '</button>' +
+          '<button class="btn-ghost" id="anno-reset">' + (zh?'清空':'Reset') + '</button>' +
+          '<button class="btn-primary" id="anno-submit" disabled>' + (zh?'提交':'Submit') + '</button></div>';
+      var img = new Image(); img.crossOrigin = 'anonymous';
+      img.src = '/api/template/' + stem + '?' + Date.now();
+      img.onload = function () {
+        annoImg = img; var c = document.getElementById('anno');
+        var scale = Math.min(1, 900 / img.naturalWidth); sx = scale; sy = scale;
+        c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+        redraw(); updateSteps();
+      };
+      var c = document.getElementById('anno');
+      c.onclick = function (e) { if (!annoImg || clicks.length >= 4) return; var r = c.getBoundingClientRect();
+        clicks.push([Math.round((e.clientX - r.left) / sx), Math.round((e.clientY - r.top) / sy)]); redraw(); updateSteps(); };
+      document.getElementById('anno-undo').onclick = function () { clicks.pop(); redraw(); updateSteps(); };
+      document.getElementById('anno-reset').onclick = function () { clicks = []; redraw(); updateSteps(); };
+      document.getElementById('anno-submit').onclick = submitCorners;
+    }
+    function redraw() {
+      var c = document.getElementById('anno'); if (!c) return; var ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, c.width, c.height); if (annoImg) ctx.drawImage(annoImg, 0, 0, c.width, c.height);
+      var cols = ['#FF5A36', '#3FAE6A', '#4E8FE0', '#E8A93B'];
+      clicks.forEach(function (p, i) { var x = p[0]*sx, y = p[1]*sy; ctx.fillStyle = cols[i];
+        ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); });
+      if (clicks.length > 1) { ctx.strokeStyle = 'rgba(255,90,54,.7)'; ctx.lineWidth = 2; ctx.beginPath();
+        clicks.forEach(function (p, i) { var x = p[0]*sx, y = p[1]*sy; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+        if (clicks.length === 4) ctx.closePath(); ctx.stroke(); }
+    }
+    function updateSteps() {
+      var labels = zh ? ['左上','右上','右下','左下'] : ['TL','TR','BR','BL'];
+      document.getElementById('anno-steps').textContent = labels.map(function (l, i) { return (i < clicks.length ? '✓' : '·') + l; }).join('  ');
+      document.getElementById('anno-submit').disabled = clicks.length !== 4;
+    }
+    function submitCorners() {
+      var btn = document.getElementById('anno-submit'); btn.disabled = true; btn.textContent = zh?'提交中…':'Submitting…';
+      fetch('/api/manual-annotate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video: wiz.video, corners: clicks }) }).then(function (r) { return r.json(); })
+        .then(function (d) { if (d.ok) { document.getElementById('court-auto').innerHTML =
+              '<div class="court-ok">✓ ' + (zh?'球场已标注':'Court annotated') + '</div>' +
+              (d.preview_path ? '<img class="court-preview" src="' + d.preview_path + '?' + Date.now() + '">' : '');
+            nextBtn.disabled = false; }
+          else { btn.disabled = false; btn.textContent = zh?'提交':'Submit'; alert(d.error || 'error'); } })
+        .catch(function () { btn.disabled = false; btn.textContent = zh?'提交':'Submit'; });
+    }
+
+    fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ video: wiz.video }) }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.success) {
+          document.getElementById('court-auto').innerHTML =
+            '<div class="court-ok">✓ ' + (zh?'球场自动检测成功':'Court auto-detected') + '</div>' +
+            '<img class="court-preview" src="/api/output/' + stem + '/auto_court_preview.png?' + Date.now() + '">' +
+            '<button class="btn-ghost" id="court-manual">' + (zh?'手动调整':'Adjust manually') + '</button>';
+          nextBtn.disabled = false;
+          document.getElementById('court-manual').onclick = showManual;
+        } else { showManual(); }
+      }).catch(function () { showManual(); });
+  }
   function renderStepConfig(body) { body.innerHTML = '<p class="muted">config step (Task 6)</p>'; }
   function renderStepProgress(body) { body.innerHTML = '<p class="muted">progress step (Task 7)</p>'; }
   function setScreen(name) { state.screen = name; render(); }
