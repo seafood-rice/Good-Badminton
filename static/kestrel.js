@@ -3,16 +3,16 @@ window.Kestrel = (function () {
   var state = { lang: localStorage.getItem('kestrel_lang') || 'zh',
                 theme: localStorage.getItem('kestrel_theme') ||
                        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
-                screen: 'dashboard' };
+                screen: 'dashboard', resultsVideo: null, resultsMode: 'match', resultsModes: [] };
   function applyTheme() {
     document.documentElement.setAttribute('data-theme', state.theme);
   }
   var T = {
     zh: { brand: 'Kestrel', portal: '教练平台', nav_dashboard: '视频库',
-          nav_new: '新建分析', persona: 'Coach Lee', team: 'Team Falcons',
+          nav_new: '新建分析', nav_results: '结果', persona: 'Coach Lee', team: 'Team Falcons',
           theme_light: '浅色', theme_dark: '深色' },
     en: { brand: 'Kestrel', portal: 'Coach Portal', nav_dashboard: 'Dashboard',
-          nav_new: 'New Analysis', persona: 'Coach Lee', team: 'Team Falcons',
+          nav_new: 'New Analysis', nav_results: 'Results', persona: 'Coach Lee', team: 'Team Falcons',
           theme_light: 'Light', theme_dark: 'Dark' }
   };
   function t(key) { return (T[state.lang] && T[state.lang][key]) || key; }
@@ -128,15 +128,29 @@ window.Kestrel = (function () {
     if (!vids.length) { wrap.innerHTML = '<p class="muted">' +
       (state.lang==='zh'?'暂无视频':'No videos') + '</p>'; return; }
     wrap.innerHTML = vids.map(function (v) {
+      var nm = (v.name || '').replace(/"/g, '&quot;');
       var thumb = v.thumb ? 'background-image:url(' + v.thumb + ')' : '';
       var dur = v.duration_sec ? Math.floor(v.duration_sec/60)+':'+('0'+Math.round(v.duration_sec%60)).slice(-2) : '';
-      return '<div class="vcard"><div class="vthumb" style="' + thumb + '">' +
+      return '<div class="vcard" role="button" tabindex="0" data-name="' + nm + '"><div class="vthumb" style="' + thumb + '">' +
         '<span class="vmode mono">' + modeLabel(v) + '</span>' +
         '<span class="vdur mono">' + dur + '</span></div>' +
         '<div class="vbody"><div class="vname">' + v.name + '</div>' +
         '<div class="vdate mono">' + (v.date||'') + '</div>' +
         '<div class="vfoot">' + statusChip(v) + '</div></div></div>';
     }).join('');
+    wrap.querySelectorAll('.vcard').forEach(function (el) {
+      el.onclick = function () {
+        var name = el.getAttribute('data-name');
+        var v = lib.videos.filter(function (x) { return x.name === name; })[0];
+        if (!v) return;
+        if (v.has_match || v.has_posture) {
+          var modes = [];
+          if (v.has_match) modes.push('match');
+          if (v.has_posture) modes.push('posture');
+          openResults(v.name, modes[0], modes);
+        } else { setScreen('new'); }
+      };
+    });
   }
   function renderSidebar() {
     var s = document.getElementById('sidebar');
@@ -148,6 +162,7 @@ window.Kestrel = (function () {
       '<nav class="nav">' +
         '<button class="nav-item" data-screen="dashboard">' + t('nav_dashboard') + '</button>' +
         '<button class="nav-item" data-screen="new">' + t('nav_new') + '</button>' +
+        (state.resultsVideo ? '<button class="nav-item" data-screen="results">' + t('nav_results') + '</button>' : '') +
       '</nav><div class="spacer"></div>' +
       '<div class="side-toggles">' +
         '<button data-lang="zh">中</button><button data-lang="en">EN</button>' +
@@ -414,7 +429,13 @@ window.Kestrel = (function () {
           clearInterval(iv);
           document.getElementById('prog-actions').innerHTML =
             '<div class="prog-done">✓ ' + (zh?'分析完成':'Analysis complete') + '</div>' +
-            '<button class="btn-primary" id="prog-lib">' + (zh?'返回视频库':'Back to Library') + '</button>';
+            '<button class="btn-primary" id="prog-results">' + (zh?'查看结果':'View Results') + '</button>' +
+            '<button class="btn-ghost" id="prog-lib">' + (zh?'返回视频库':'Back to Library') + '</button>';
+          document.getElementById('prog-results').onclick = function () {
+            var stem = wiz.video.replace(/\.[^.]+$/, ''); var m = wiz.mode;
+            wiz.step = 'mode'; wiz.video = null; wiz.jobId = null;
+            openResults(stem, m, [m]);
+          };
           document.getElementById('prog-lib').onclick = function () { wiz.step = 'mode'; wiz.video = null; wiz.jobId = null; setScreen('dashboard'); };
         } else if (d.status === 'error') {
           clearInterval(iv); renderStages('error');
@@ -427,10 +448,45 @@ window.Kestrel = (function () {
         document.getElementById('prog-actions').innerHTML = '<div class="prog-err">' + (zh?'状态查询失败':'Status check failed') + '</div>'; });
     }, 1500);
   }
+  function openResults(stem, mode, modes) {
+    state.resultsVideo = stem;
+    state.resultsMode = mode;
+    state.resultsModes = (modes && modes.length) ? modes : [mode];
+    state.screen = 'results';
+    render();
+  }
+  function renderResults() {
+    var main = document.getElementById('main'); var zh = state.lang === 'zh';
+    var modes = state.resultsModes && state.resultsModes.length ? state.resultsModes : [state.resultsMode];
+    var toggle = '';
+    if (modes.length > 1) {
+      toggle = '<div class="seg" role="tablist" aria-label="mode">' + modes.map(function (m) {
+        var on = m === state.resultsMode;
+        var lbl = m === 'posture' ? (zh ? '训练' : 'Drill') : (zh ? '比赛' : 'Match');
+        return '<button class="seg-btn' + (on ? ' on' : '') + '" role="tab" aria-selected="' + on +
+          '" data-rmode="' + m + '">' + lbl + '</button>';
+      }).join('') + '</div>';
+    }
+    main.innerHTML =
+      '<div class="page-head"><div class="rhead-left">' +
+        '<button class="btn-ghost" id="res-back">← ' + (zh ? '视频库' : 'Library') + '</button>' +
+        '<h1 class="res-title mono">' + state.resultsVideo + '</h1></div>' + toggle + '</div>' +
+      '<div id="results-body"></div>';
+    document.getElementById('res-back').onclick = function () { setScreen('dashboard'); };
+    main.querySelectorAll('[data-rmode]').forEach(function (b) {
+      b.onclick = function () { state.resultsMode = b.getAttribute('data-rmode'); renderResults(); };
+    });
+    var body = document.getElementById('results-body');
+    if (state.resultsMode === 'posture') { renderPostureResults(body); }
+    else { renderMatchResults(body); }
+  }
+  function renderMatchResults(body) { body.innerHTML = '<p class="muted">match results (Task 2)</p>'; }
+  function renderPostureResults(body) { body.innerHTML = '<p class="muted">posture results (Task 3)</p>'; }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
     renderSidebar();
     if (state.screen === 'new') { renderWizard(); }
+    else if (state.screen === 'results') { renderResults(); }
     else { loadDashboard(); }
   }
   function init() {
@@ -442,5 +498,5 @@ window.Kestrel = (function () {
   return { state: state, applyTheme: applyTheme, t: t, setLang: setLang,
            setTheme: setTheme, renderSidebar: renderSidebar,
            renderDashboard: renderDashboard, applyFilters: applyFilters,
-           loadDashboard: loadDashboard, setScreen: setScreen };
+           loadDashboard: loadDashboard, setScreen: setScreen, openResults: openResults };
 })();
