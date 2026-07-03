@@ -55,6 +55,35 @@ def _video_duration_sec(path):
     return None
 
 
+def _write_first_frame(video_path, dest):
+    """Grab frame 0 of the video and save a JPEG at dest. Returns bool."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return False
+        h, w = frame.shape[:2]
+        scale = min(1.0, 640 / max(w, 1))
+        if scale < 1.0:
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return bool(cv2.imwrite(str(dest), frame))
+    except Exception:
+        return False
+
+
+def _ensure_thumbnail(video_path, stem):
+    """Ensure OUTPUTS/<stem>/thumb.jpg exists; return its Path or None."""
+    dest = OUTPUTS / stem / 'thumb.jpg'
+    if dest.exists():
+        return dest
+    if _write_first_frame(video_path, dest):
+        return dest
+    return None
+
+
 @app.route('/api/videos')
 def api_videos():
     """列出所有视频和对应的分析结果"""
@@ -68,6 +97,8 @@ def api_videos():
             has_posture = (out_dir / 'posture' / 'drill_summary.json').exists()
             has_annotations = (out_dir / 'court_annotations.txt').exists()
             thumb_path = out_dir / 'thumb.jpg'
+            if not thumb_path.exists():
+                _ensure_thumbnail(p, name)
             if has_match or has_posture:
                 status = 'analyzed'
             elif has_annotations:
@@ -102,6 +133,7 @@ def api_upload():
         return jsonify({'error': '空文件名'}), 400
     save_path = VIDEOS / name
     file.save(str(save_path))
+    _ensure_thumbnail(save_path, save_path.stem)
     return jsonify({'ok': True, 'filename': name, 'size_mb': round(save_path.stat().st_size / 1024 / 1024, 1)})
 
 

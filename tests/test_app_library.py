@@ -43,3 +43,28 @@ def test_videos_status_new_and_court_set(client, monkeypatch):
     rows = {r["name"]: r for r in c.get("/api/videos").get_json()}
     assert rows["a"]["status"] == "new"
     assert rows["b"]["status"] == "court_set"
+
+
+def test_ensure_thumbnail_writes_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "OUTPUTS", tmp_path / "outputs")
+
+    # Stub the frame grab so no real video decode is needed.
+    def fake_write(video_path, dest):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\xff\xd8\xff")  # jpeg magic
+        return True
+    monkeypatch.setattr(webapp, "_write_first_frame", fake_write)
+
+    out = webapp._ensure_thumbnail(tmp_path / "clip.mp4", "clip")
+    assert out is not None and out.exists()
+
+
+def test_videos_backfills_thumbnail(client, monkeypatch):
+    c, videos, outputs = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    monkeypatch.setattr(webapp, "_write_first_frame",
+                        lambda vp, dest: (dest.parent.mkdir(parents=True, exist_ok=True),
+                                          dest.write_bytes(b"\xff\xd8\xff"), True)[-1])
+    row = next(r for r in c.get("/api/videos").get_json() if r["name"] == "clip")
+    assert row["thumb"] == "/api/output/clip/thumb.jpg"
