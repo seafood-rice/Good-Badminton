@@ -122,6 +122,43 @@ def api_videos():
     return jsonify(videos)
 
 
+@app.route('/api/stats')
+def api_stats():
+    """Dashboard tiles: counts + aggregate scores across all outputs."""
+    count = analyzed = rallies = 0
+    score_sum = score_n = 0.0
+    for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
+        for p in VIDEOS.glob(ext):
+            count += 1
+            out = OUTPUTS / p.stem
+            has_match = (out / 'detections.jsonl').exists()
+            has_posture = (out / 'posture' / 'drill_summary.json').exists()
+            if has_match or has_posture:
+                analyzed += 1
+            rf = out / 'rally_segments.json'
+            if rf.exists():
+                try:
+                    with open(rf, encoding='utf-8') as f:
+                        rallies += len(json.load(f).get('rallies', []))
+                except Exception:
+                    pass
+            tf = out / 'technique_summary.json'
+            if tf.exists():
+                try:
+                    with open(tf, encoding='utf-8') as f:
+                        by_type = json.load(f).get('by_type', {})
+                    vals = [v['avg_score'] for v in by_type.values()
+                            if isinstance(v, dict) and v.get('avg_score') is not None]
+                    if vals:
+                        score_sum += sum(vals) / len(vals)
+                        score_n += 1
+                except Exception:
+                    pass
+    avg = round(score_sum / score_n, 1) if score_n else None
+    return jsonify({'videos': count, 'analyzed': analyzed,
+                    'rallies': rallies, 'avg_technique_score': avg})
+
+
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
     """上传视频"""

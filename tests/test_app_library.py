@@ -68,3 +68,32 @@ def test_videos_backfills_thumbnail(client, monkeypatch):
                                           dest.write_bytes(b"\xff\xd8\xff"), True)[-1])
     row = next(r for r in c.get("/api/videos").get_json() if r["name"] == "clip")
     assert row["thumb"] == "/api/output/clip/thumb.jpg"
+
+
+def test_stats_aggregates_outputs(client, monkeypatch):
+    c, videos, outputs = client
+    (videos / "m.mp4").write_bytes(b"\x00")
+    (videos / "n.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    monkeypatch.setattr(webapp, "_write_first_frame", lambda vp, d: False)
+
+    m = outputs / "m"
+    m.mkdir(parents=True)
+    (m / "detections.jsonl").write_text("{}\n", encoding="utf-8")
+    (m / "rally_segments.json").write_text(
+        json.dumps({"rallies": [{}, {}, {}]}), encoding="utf-8")
+    (m / "technique_summary.json").write_text(
+        json.dumps({"by_type": {"smash": {"avg_score": 70.0},
+                                "clear": {"avg_score": 50.0}}}), encoding="utf-8")
+
+    s = c.get("/api/stats").get_json()
+    assert s["videos"] == 2
+    assert s["analyzed"] == 1
+    assert s["rallies"] == 3
+    assert s["avg_technique_score"] == 60.0
+
+
+def test_stats_empty(client, monkeypatch):
+    c, videos, outputs = client
+    s = c.get("/api/stats").get_json()
+    assert s == {"videos": 0, "analyzed": 0, "rallies": 0, "avg_technique_score": None}
