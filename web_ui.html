@@ -72,6 +72,7 @@
     <div style="margin-top:8px">
       <select id="lang-sel"><option value="zh">中文</option><option value="en">English</option></select>
       <select id="pose-sel"><option value="yolo-pose">YOLO Pose (快)</option><option value="rtmpose">RTMPose (准)</option></select>
+      <label style="font-size:.85rem;margin:0 4px"><input type="checkbox" id="tech-sel" checked> 技术分析 Technique</label>
       <button id="btn-detect" disabled onclick="doDetect()">🔍 1. 自动检测球场</button>
       <button id="btn-analyze" disabled onclick="doAnalyze()">▶ 2. 开始分析</button>
       <button class="btn2" id="btn-delete" disabled onclick="doDelete()">🗑 删除结果</button>
@@ -218,13 +219,17 @@
 <script>
 // ── State ──
 var selVideo = null, clicks = [], annoImg = null, sx = 1, sy = 1;
+var _mode = 'match';        // current UI mode; kept in sync by setMode()
+var _videoMap = {};         // filename -> video meta from /api/videos (has_result, ...)
 
 // ── Load videos ──
 function loadVideos() {
   fetch('/api/videos').then(function(r){return r.json()}).then(function(vids){
     var h = '';
+    _videoMap = {};
     for (var i = 0; i < vids.length; i++) {
       var v = vids[i];
+      _videoMap[v.filename] = v;
       var b = '';
       if (v.has_result) b = '<span class="badge badge-ok">已完成</span>';
       else if (v.has_annotations) b = '<span class="badge badge-rd">已标注球场</span>';
@@ -247,6 +252,34 @@ function pickVideo(el, fn) {
   document.getElementById('btn-analyze').disabled = false;
   document.getElementById('btn-delete').disabled = false;
   var pb = document.getElementById('btn-posture-analyze'); if (pb) pb.disabled = false;
+  restoreForMode();
+}
+
+// Reload whatever results already exist for the selected video in the current
+// mode, so previously-analyzed videos show their technique panel / coach report
+// without re-running. Safe no-op when nothing has been analyzed yet.
+function restoreForMode() {
+  if (!selVideo) return;
+  var stem = selVideo.replace(/\.[^.]+$/,'');
+  if (_mode === 'posture') { postureLoad(stem); }
+  else { matchRestore(stem); }
+}
+
+function matchRestore(stem) {
+  var meta = _videoMap[selVideo];
+  var panel = document.getElementById('panel-results');
+  if (!meta || !meta.has_result) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  var bust = '?' + Date.now();
+  var vid = document.getElementById('rvideo');
+  vid.src = '/api/output/'+stem+'/detect_'+stem+'.mp4'+bust; vid.load();
+  document.getElementById('rheat').src = '/api/output/'+stem+'/position_visualizations/heatmaps/match_heatmap.png'+bust;
+  document.getElementById('rscatter').src = '/api/output/'+stem+'/position_visualizations/scatter_plots/match_scatter.png'+bust;
+  // Rally clips need a fresh run's segment data; disable until re-analyzed.
+  document.getElementById('rally-info').textContent = '';
+  document.getElementById('btn-clip').disabled = true;
+  document.getElementById('clip-list').innerHTML = '';
+  loadTechnique(stem);
 }
 
 // ── Upload ──
@@ -416,7 +449,7 @@ function doAnalyze() {
   var btn = document.getElementById('btn-analyze');
   btn.disabled = true; btn.textContent = '启动中...';
   fetch('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({video:selVideo, language:document.getElementById('lang-sel').value, pose_family:document.getElementById('pose-sel').value})})
+    body:JSON.stringify({video:selVideo, language:document.getElementById('lang-sel').value, pose_family:document.getElementById('pose-sel').value, analyze_technique:document.getElementById('tech-sel').checked})})
   .then(function(r){return r.json()}).then(function(){
     document.getElementById('panel-progress').classList.remove('hidden');
     document.getElementById('panel-progress').scrollIntoView({behavior:'smooth'});
@@ -688,6 +721,7 @@ var _postureData = null, _posturePlan = null;
 
 var _matchHidden = {};  // remembers which match panels setMode hid when entering posture
 function setMode(mode) {
+  _mode = mode;
   var posture = mode === 'posture';
   // The match flow owns panel-court/panel-results visibility (shown after detect/analyze).
   // Don't force them visible (that would flash empty panels on cold load); only hide them
@@ -706,6 +740,7 @@ function setMode(mode) {
   document.getElementById('mode-posture').className = posture ? '' : 'btn2';
   var pb = document.getElementById('btn-posture-analyze');
   if (pb) pb.disabled = !selVideo;
+  restoreForMode();
 }
 
 function postureAnalyze() {
@@ -760,9 +795,16 @@ function posturePoll(jid) {
 function postureLoad(stem) {
   fetch('/api/posture/'+stem).then(function(r){ if(!r.ok) return null; return r.json(); })
   .then(function(d){
-    if (!d) return;
+    // No drill data for this video (e.g. switching to an un-analyzed clip):
+    // hide any stale results from a previously-selected video.
+    if (!d) { document.getElementById('posture-results').classList.add('hidden'); return; }
     _postureData = d;
     document.getElementById('posture-results').classList.remove('hidden');
+    // Point the player at the annotated clip (idempotent: posturePoll sets the
+    // same URL after a fresh run; here it also covers the restore-on-select path).
+    var pv = document.getElementById('posture-video');
+    var want = '/api/output/'+stem+'/posture/detect_'+stem+'.mp4';
+    if (pv.src.indexOf(want) === -1) { pv.src = want+'?'+Date.now(); pv.load(); }
     var s = d.summary;
     var html = '<p>共 <b>'+s.rep_count+'</b> 次重复 / '+s.rep_count+' reps. 平均分 '
       + (s.mean_score!=null?s.mean_score:'N/A') + '，一致性(越低越稳) ' + (s.consistency!=null?s.consistency:'N/A') + '</p>';

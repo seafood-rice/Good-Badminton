@@ -211,6 +211,7 @@ def api_analyze():
     video_name = data.get('video')
     language = data.get('language', 'zh')
     pose_family = data.get('pose_family', 'yolo-pose')
+    analyze_technique = data.get('analyze_technique', True)
 
     video_path = VIDEOS / video_name
     if not video_path.exists():
@@ -241,6 +242,8 @@ def api_analyze():
         '--visualize-positions', 'true',
         '--performance-stats',
     ]
+    if analyze_technique:
+        cmd.append('--analyze-technique')
 
     job_id = video_path.stem
     jobs[job_id] = {

@@ -76,3 +76,61 @@ def test_technique_500_on_malformed_summary(client, tmp_path):
     r = client.get("/api/technique/demo")
     assert r.status_code == 500
     assert "error" in r.get_json()
+
+
+class _FakeProc:
+    returncode = 0
+
+    def poll(self):
+        return 0
+
+    def wait(self):
+        return 0
+
+
+def test_analyze_command_enables_technique_analysis(client, tmp_path, monkeypatch):
+    """The web analyze flow must request technique analysis, otherwise
+    technique_summary.json is never produced and the technique panel 404s."""
+    videos = tmp_path / "vids"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "TEMPLATES", tmp_path / "tpl")
+    (tmp_path / "tpl").mkdir()
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakeProc())
+
+    r = client.post("/api/analyze", json={"video": "clip.mp4"})
+    assert r.status_code == 200
+    assert "--analyze-technique" in captured["cmd"]
+
+
+def test_analyze_command_omits_technique_when_opted_out(client, tmp_path, monkeypatch):
+    """Unchecking the technique box must drop the flag so the heavier
+    biomechanics pass is skipped."""
+    videos = tmp_path / "vids"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "TEMPLATES", tmp_path / "tpl")
+    (tmp_path / "tpl").mkdir()
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakeProc())
+
+    r = client.post("/api/analyze", json={"video": "clip.mp4", "analyze_technique": False})
+    assert r.status_code == 200
+    assert "--analyze-technique" not in captured["cmd"]
