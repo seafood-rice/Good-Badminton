@@ -22,6 +22,7 @@ window.Kestrel = (function () {
     applyTheme(); renderSidebar(); }
   var lib = { videos: [], filter: { q: '', mode: 'all', status: 'all', sort: 'date' } };
   var wiz = { mode: 'match', video: null, step: 'mode', jobId: null };
+  var postureCtx = { stem: null, reps: [], fps: 30, sel: -1 };
   function loadDashboard() {
     Promise.all([
       fetch('/api/stats').then(function (r) { return r.json(); }),
@@ -575,7 +576,45 @@ window.Kestrel = (function () {
       }; });
     }).catch(function () { document.getElementById('tech-status').textContent = zh?'技术分析加载失败':'Failed to load technique'; });
   }
-  function renderPostureResults(body) { body.innerHTML = '<p class="muted">posture results (Task 3)</p>'; }
+  function renderPostureResults(body) {
+    var zh = state.lang === 'zh'; var stem = state.resultsVideo;
+    postureCtx = { stem: stem, reps: [], fps: 30, sel: -1 };
+    var vurl = '/api/output/' + stem + '/posture/detect_' + stem + '.mp4';
+    body.innerHTML =
+      '<div class="res-grid"><div><video id="posture-video" class="res-video" controls src="' + vurl + '"></video>' +
+        '<div id="rep-scrubber" class="scrubber"></div></div>' +
+        '<div><div class="res-section" id="drill-summary"><p class="muted">' + (zh?'加载中…':'Loading…') + '</p></div>' +
+          '<div class="res-section"><h2>' + (zh?'逐次':'Reps') + '</h2><ul id="rep-list" class="rep-list"></ul></div></div></div>' +
+      '<div class="res-section rep-detail" id="rep-detail"></div>';
+    fetch('/api/posture/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
+      var s = d.summary; postureCtx.reps = d.reps || [];
+      var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
+      document.getElementById('drill-summary').innerHTML =
+        '<h2>' + (zh?'训练概览':'Drill summary') + '</h2>' +
+        '<div class="dsum-grid mono">' +
+          '<div><span>' + (zh?'次数':'Reps') + '</span><b>' + s.rep_count + '</b></div>' +
+          '<div><span>' + (zh?'平均分':'Mean') + '</span><b style="color:' + scoreHue(s.mean_score) + '">' + Math.round(s.mean_score) + '</b></div>' +
+          '<div><span>' + (zh?'一致性':'Consistency') + '</span><b>' + (Math.round(s.consistency*10)/10) + '</b></div>' +
+          '<div><span>' + (zh?'最佳':'Best') + '</span><b>#' + (s.best_rep&&s.best_rep.rep_id) + '</b></div>' +
+          '<div><span>' + (zh?'最差':'Worst') + '</span><b>#' + (s.worst_rep&&s.worst_rep.rep_id) + '</b></div>' +
+        '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '');
+      document.getElementById('rep-list').innerHTML = postureCtx.reps.map(function (rep, i) {
+        return '<li><button class="rep-row" data-i="' + i + '"><span class="mono">#' + rep.rep_id + '</span>' +
+          '<span class="score-chip mono" style="background:' + scoreHue(rep.overall_score) + '">' + Math.round(rep.overall_score) + '</span></button></li>'; }).join('');
+      document.querySelectorAll('.rep-row').forEach(function (b) { b.onclick = function () { selectRep(postureCtx.reps, Number(b.getAttribute('data-i'))); }; });
+      if (postureCtx.reps.length) { selectRep(postureCtx.reps, 0); }
+    }).catch(function () { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; });
+  }
+  function selectRep(reps, i) {
+    postureCtx.sel = i; var rep = reps[i];
+    document.querySelectorAll('.rep-row').forEach(function (x) { x.classList.toggle('on', Number(x.getAttribute('data-i')) === i); });
+    var bars = Object.keys(rep.per_metric || {}).map(function (k) { return metricBarHTML(k, rep.per_metric[k]); }).join('');
+    var ws = (rep.weaknesses || []).map(weaknessLineHTML).join('');
+    document.getElementById('rep-detail').innerHTML =
+      '<h2>' + (state.lang==='zh'?'第 ':'Rep #') + rep.rep_id + (state.lang==='zh'?' 次详情':'') + '</h2>' +
+      bars + (ws ? '<ul class="weak-list">' + ws + '</ul>' : '');
+  }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
     renderSidebar();
