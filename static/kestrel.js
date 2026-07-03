@@ -21,7 +21,7 @@ window.Kestrel = (function () {
   function setTheme(theme) { state.theme = theme; localStorage.setItem('kestrel_theme', theme);
     applyTheme(); renderSidebar(); }
   var lib = { videos: [], filter: { q: '', mode: 'all', status: 'all', sort: 'date' } };
-  var wiz = { mode: 'match', video: null, step: 'mode', jobId: null };
+  var wiz = { mode: 'match', video: null, step: 'mode', jobId: null, pollIv: null };
   var postureCtx = { stem: null, reps: [], fps: 30, sel: -1 };
   function loadDashboard() {
     Promise.all([
@@ -294,9 +294,13 @@ window.Kestrel = (function () {
         c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
         redraw(); updateSteps();
       };
+      img.onerror = function () {
+        panel.innerHTML = '<div class="court-fail">⚠️ ' + (zh?'无法加载标注图片，请返回重新选择视频':'Cannot load the annotation image — go back and re-select the video') + '</div>';
+      };
       var c = document.getElementById('anno');
       c.onclick = function (e) { if (!annoImg || clicks.length >= 4) return; var r = c.getBoundingClientRect();
-        clicks.push([Math.round((e.clientX - r.left) / sx), Math.round((e.clientY - r.top) / sy)]); redraw(); updateSteps(); };
+        var cx = (e.clientX - r.left) * (c.width / r.width), cy = (e.clientY - r.top) * (c.height / r.height);
+        clicks.push([Math.round(cx / sx), Math.round(cy / sy)]); redraw(); updateSteps(); };
       document.getElementById('anno-undo').onclick = function () { clicks.pop(); redraw(); updateSteps(); };
       document.getElementById('anno-reset').onclick = function () { clicks = []; redraw(); updateSteps(); };
       document.getElementById('anno-submit').onclick = submitCorners;
@@ -324,8 +328,8 @@ window.Kestrel = (function () {
               '<div class="court-ok">✓ ' + (zh?'球场已标注':'Court annotated') + '</div>' +
               (d.preview_path ? '<img class="court-preview" src="' + d.preview_path + '?' + Date.now() + '">' : '');
             nextBtn.disabled = false; }
-          else { btn.disabled = false; btn.textContent = zh?'提交':'Submit'; alert(d.error || 'error'); } })
-        .catch(function () { btn.disabled = false; btn.textContent = zh?'提交':'Submit'; });
+          else { btn.disabled = false; btn.textContent = zh?'提交':'Submit'; alert(zh ? (d.error || '提交失败') : 'Submit failed'); } })
+        .catch(function () { btn.disabled = false; btn.textContent = zh?'提交':'Submit'; alert(zh ? '网络错误，请重试' : 'Network error — please try again'); });
     }
 
     fetch('/api/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -386,8 +390,8 @@ window.Kestrel = (function () {
     fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { return r.json(); })
       .then(function (d) { if (d.ok) { wiz.jobId = d.job_id; goStep('progress'); }
-        else { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(d.error || 'error'); } })
-      .catch(function () { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; });
+        else { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(state.lang==='zh' ? (d.error || '启动失败') : 'Failed to start analysis'); } })
+      .catch(function () { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(state.lang==='zh' ? '网络错误，请重试' : 'Network error — please try again'); });
   }
   var STAGE_LABELS = {
     loading: ['加载模型', 'Loading model'], analyzing: ['分析动作', 'Analyzing'],
@@ -420,14 +424,19 @@ window.Kestrel = (function () {
   function pollJob() {
     var zh = state.lang === 'zh';
     var url = (wiz.mode === 'posture' ? '/api/posture-analyze-status/' : '/api/status/') + wiz.jobId;
-    var iv = setInterval(function () {
+    if (wiz.pollIv) { clearInterval(wiz.pollIv); }
+    var fails = 0;
+    var iv = wiz.pollIv = setInterval(function () {
+      if (!document.getElementById('prog-fill')) { clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; } return; }
       fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+        var fill = document.getElementById('prog-fill'); if (!fill) { return; }
+        fails = 0;
         var pct = d.progress || 0;
-        document.getElementById('prog-fill').style.width = pct + '%';
+        fill.style.width = pct + '%';
         document.getElementById('prog-pct').textContent = pct + '%';
         renderStages(d.stage || 'analyzing');
         if (d.status === 'completed') {
-          clearInterval(iv);
+          clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; }
           document.getElementById('prog-actions').innerHTML =
             '<div class="prog-done">✓ ' + (zh?'分析完成':'Analysis complete') + '</div>' +
             '<button class="btn-primary" id="prog-results">' + (zh?'查看结果':'View Results') + '</button>' +
@@ -439,14 +448,20 @@ window.Kestrel = (function () {
           };
           document.getElementById('prog-lib').onclick = function () { wiz.step = 'mode'; wiz.video = null; wiz.jobId = null; setScreen('dashboard'); };
         } else if (d.status === 'error') {
-          clearInterval(iv); renderStages('error');
+          clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; } renderStages('error');
           document.getElementById('prog-actions').innerHTML =
             '<div class="prog-err">' + (d.message || (zh?'分析失败':'Analysis failed')) + '</div>' +
             '<button class="btn-ghost" id="prog-retry">' + (zh?'返回设置':'Back to Config') + '</button>';
           document.getElementById('prog-retry').onclick = function () { goStep('config'); };
         }
-      }).catch(function () { clearInterval(iv);
-        document.getElementById('prog-actions').innerHTML = '<div class="prog-err">' + (zh?'状态查询失败':'Status check failed') + '</div>'; });
+      }).catch(function () {
+        fails += 1;
+        if (fails >= 3) {
+          clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; }
+          var pa = document.getElementById('prog-actions');
+          if (pa) { pa.innerHTML = '<div class="prog-err">' + (zh?'状态查询失败':'Status check failed') + '</div>'; }
+        }
+      });
     }, 1500);
   }
   function openResults(stem, mode, modes) {
@@ -551,8 +566,8 @@ window.Kestrel = (function () {
           btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false;
           if (d.ok && d.clips) { document.getElementById('clip-list').innerHTML = d.clips.map(function (c) {
             return '<a class="clip-item" href="' + c.url + '" download>⬇ ' + c.name + ' <span class="mono">' + c.size_mb + 'MB</span></a>'; }).join(''); }
-          else { alert(d.error || 'error'); } })
-        .catch(function () { btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false; });
+          else { alert(zh ? (d.error || '生成失败') : 'Clip generation failed'); } })
+        .catch(function () { btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false; alert(zh ? '网络错误，请重试' : 'Network error — please try again'); });
     };
 
     // Technique analysis.
