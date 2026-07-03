@@ -36,6 +36,17 @@ def _find_venv_python():
 _venv_python = _find_venv_python()
 
 
+def _parse_progress_line(line):
+    """Parse 'PROGRESS <pct> <stage>' emitted by a worker. None if not a progress line."""
+    parts = line.strip().split()
+    if len(parts) == 3 and parts[0] == "PROGRESS":
+        try:
+            return int(parts[1]), parts[2]
+        except ValueError:
+            return None
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
@@ -351,6 +362,7 @@ def api_analyze():
         'message': '准备启动...',
         'video_name': video_name,
         'save_dir': str(save_dir),
+        'stage': 'analyzing',
     }
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -387,12 +399,14 @@ def api_analyze():
                     pct = 0
                 job['progress'] = pct
                 job['message'] = f'分析中... {count}/{total_frames} 帧'
+                job['stage'] = 'analyzing'
             time.sleep(1.5)
 
         proc.wait()
 
         if proc.returncode == 0:
             job['status'] = 'reencoding'
+            job['stage'] = 'encoding'
             job['progress'] = 99
             job['message'] = '正在转码为浏览器兼容格式...'
 
@@ -417,6 +431,7 @@ def api_analyze():
                 # 即使转码失败也继续，原始视频可能在某些播放器能播放
 
             job['status'] = 'completed'
+            job['stage'] = 'done'
             job['progress'] = 100
             job['message'] = '分析完成!'
 
@@ -444,6 +459,7 @@ def api_analyze():
             }
         else:
             job['status'] = 'error'
+            job['stage'] = 'error'
             job['message'] = f'分析失败 (exit={proc.returncode})'
 
     threading.Thread(target=track_progress, daemon=True).start()
@@ -461,6 +477,7 @@ def api_status(job_id):
         'progress': job.get('progress', 0),
         'message': job.get('message', ''),
         'result': job.get('result'),
+        'stage': job.get('stage'),
     })
 
 
@@ -727,8 +744,16 @@ def api_posture_analyze():
 
     def track():
         job = jobs[job_id]
+        job['stage'] = 'loading'
+        for line in proc.stdout:
+            parsed = _parse_progress_line(line)
+            if parsed:
+                job['progress'], job['stage'] = parsed[0], parsed[1]
         proc.wait()
         if proc.returncode == 0:
+            job['stage'] = 'encoding'
+            job['progress'] = max(job.get('progress', 0), 96)
+            job['message'] = '完成!'
             vs = video_path.stem
             sd = str(save_dir)
             raw = os.path.join(sd, 'detect_' + vs + '.mp4')
@@ -744,11 +769,12 @@ def api_posture_analyze():
                 print('posture ffmpeg re-encode failed: ' + str(e))
             job['status'] = 'completed'
             job['progress'] = 100
-            job['message'] = '完成!'
+            job['stage'] = 'done'
             job['result'] = {'video_name': vs,
                              'output_video': '/api/output/' + vs + '/posture/detect_' + vs + '.mp4'}
         else:
             job['status'] = 'error'
+            job['stage'] = 'error'
             job['message'] = '姿态分析失败 (exit=' + str(proc.returncode) + ')'
 
     threading.Thread(target=track, daemon=True).start()
@@ -761,7 +787,8 @@ def api_posture_analyze_status(job_id):
     if not job:
         return jsonify({'status': 'not_found'}), 404
     return jsonify({'status': job.get('status'), 'progress': job.get('progress', 0),
-                    'message': job.get('message', ''), 'result': job.get('result')})
+                    'message': job.get('message', ''), 'result': job.get('result'),
+                    'stage': job.get('stage')})
 
 
 _REPORT_LANGS = ("en", "zh-Hant", "zh-Hans")
