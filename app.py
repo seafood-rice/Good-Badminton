@@ -47,6 +47,15 @@ def _parse_progress_line(line):
     return None
 
 
+def _rep_clip_window(contact_frame, fps, padding=1.5):
+    """Seconds window (start, duration) around a rep's contact frame, start clamped to 0."""
+    if not fps or fps <= 0:
+        fps = 30.0
+    center = (contact_frame or 0) / fps
+    start = max(0.0, center - padding)
+    return round(start, 3), round(padding * 2, 3)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
@@ -662,6 +671,56 @@ def api_posture(video_name):
         return jsonify({'summary': summary, 'reps': reps})
     except Exception as e:
         return jsonify({'error': 'failed to read report'}), 500
+
+
+@app.route('/api/posture-rep-clip/<video_name>', methods=['POST'])
+def api_posture_rep_clip(video_name):
+    """On-demand ffmpeg crop of a single rep window from the annotated posture video."""
+    data = request.json or {}
+    rep_id = data.get('rep_id')
+    if rep_id is None:
+        return jsonify({'error': '需要 rep_id'}), 400
+    out_dir = OUTPUTS / video_name / 'posture'
+    reps_path = out_dir / 'drill_reps.jsonl'
+    if not reps_path.exists():
+        return jsonify({'error': '没有 rep 数据'}), 404
+    rep = None
+    with open(reps_path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            if r.get('rep_id') == rep_id:
+                rep = r
+                break
+    if rep is None:
+        return jsonify({'error': 'rep 不存在'}), 404
+    video_file = out_dir / ('detect_' + video_name + '.mp4')
+    if not video_file.exists():
+        return jsonify({'error': '没有标注视频'}), 404
+    fps = 30.0
+    meta_path = out_dir / 'metadata.json'
+    if meta_path.exists():
+        try:
+            with open(meta_path, encoding='utf-8') as f:
+                fps = (json.load(f).get('video', {}) or {}).get('fps') or 30.0
+        except Exception:
+            fps = 30.0
+    start, duration = _rep_clip_window(rep.get('contact_frame', 0), fps)
+    clip_dir = out_dir / 'rep_clips'
+    clip_dir.mkdir(exist_ok=True)
+    out_file = clip_dir / ('rep_' + str(rep_id) + '.mp4')
+    ffmpeg_bin = shutil.which('ffmpeg') or 'ffmpeg'
+    try:
+        subprocess.run([ffmpeg_bin, '-y', '-ss', str(start), '-i', str(video_file),
+                        '-t', str(duration), '-c:v', 'libx264', '-preset', 'fast',
+                        '-crf', '23', '-movflags', '+faststart', str(out_file)],
+                       check=True, capture_output=True, timeout=120)
+    except Exception as e:
+        return jsonify({'error': 'ffmpeg 失败: ' + str(e)}), 500
+    return jsonify({'ok': True,
+                    'url': '/api/output/' + video_name + '/posture/rep_clips/rep_' + str(rep_id) + '.mp4'})
 
 
 def _load_or_make_posture_plan(video_name, weeks=4, force=False):
