@@ -208,7 +208,47 @@ window.Kestrel = (function () {
     });
     document.getElementById('wiz-next').onclick = function () { goStep('upload'); };
   }
-  function renderStepUpload(body) { body.innerHTML = '<p class="muted">upload step (Task 4)</p>'; }
+  function afterUpload() { goStep(wiz.mode === 'match' ? 'court' : 'config'); }
+  function renderStepUpload(body) {
+    var zh = state.lang === 'zh';
+    body.innerHTML =
+      '<div class="dropzone" id="dz"><div class="dz-plus">+</div>' +
+        '<div class="dz-main">' + (zh?'拖拽视频到此，或点击选择':'Drag & drop a video, or click to browse') + '</div>' +
+        '<div class="dz-sub mono">MP4 · MOV · AVI · ≤ 1GB</div></div>' +
+      '<input type="file" id="dz-file" accept="video/*" hidden>' +
+      '<div class="or-line">' + (zh?'或从已有视频选择':'or pick an existing video') + '</div>' +
+      '<div id="pick-list" class="pick-list muted">' + (zh?'加载中…':'Loading…') + '</div>' +
+      '<div class="wiz-actions"><button class="btn-ghost" id="wiz-back">' + (zh?'返回':'Back') + '</button>' +
+        '<button class="btn-primary" id="wiz-next" disabled>' + (zh?'继续':'Continue') + '</button></div>';
+    var nextBtn = document.getElementById('wiz-next');
+    function selectVideo(fn) { wiz.video = fn; nextBtn.disabled = false;
+      document.querySelectorAll('.pick-item').forEach(function (el) { el.classList.toggle('on', el.getAttribute('data-fn') === fn); }); }
+    var dz = document.getElementById('dz'), fileInput = document.getElementById('dz-file');
+    dz.onclick = function () { fileInput.click(); };
+    dz.ondragover = function (e) { e.preventDefault(); dz.classList.add('drag'); };
+    dz.ondragleave = function () { dz.classList.remove('drag'); };
+    dz.ondrop = function (e) { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) doUpload(e.dataTransfer.files[0]); };
+    fileInput.onchange = function () { if (fileInput.files[0]) doUpload(fileInput.files[0]); };
+    function doUpload(file) {
+      dz.querySelector('.dz-main').textContent = (zh?'上传中…':'Uploading…');
+      var fd = new FormData(); fd.append('file', file);
+      fetch('/api/upload', { method: 'POST', body: fd }).then(function (r) { return r.json(); })
+        .then(function (d) { if (d.ok) { selectVideo(d.filename); dz.querySelector('.dz-main').textContent = '✓ ' + d.filename; }
+          else { dz.querySelector('.dz-main').textContent = (zh?'上传失败':'Upload failed'); } })
+        .catch(function () { dz.querySelector('.dz-main').textContent = (zh?'上传失败':'Upload failed'); });
+    }
+    fetch('/api/videos').then(function (r) { return r.json(); }).then(function (vids) {
+      var list = document.getElementById('pick-list');
+      if (!vids || !vids.length) { list.textContent = (zh?'暂无视频':'No videos yet'); return; }
+      list.classList.remove('muted');
+      list.innerHTML = vids.map(function (v) {
+        return '<button class="pick-item" data-fn="' + v.filename + '">🎬 ' + v.name +
+          ' <span class="mono pick-sz">' + v.size_mb + 'MB</span></button>'; }).join('');
+      list.querySelectorAll('.pick-item').forEach(function (b) { b.onclick = function () { selectVideo(b.getAttribute('data-fn')); }; });
+    }).catch(function () { document.getElementById('pick-list').textContent = (zh?'加载失败':'Failed to load'); });
+    document.getElementById('wiz-back').onclick = function () { goStep('mode'); };
+    nextBtn.onclick = function () { if (wiz.video) afterUpload(); };
+  }
   function renderStepCourt(body) { body.innerHTML = '<p class="muted">court step (Task 5)</p>'; }
   function renderStepConfig(body) { body.innerHTML = '<p class="muted">config step (Task 6)</p>'; }
   function renderStepProgress(body) { body.innerHTML = '<p class="muted">progress step (Task 7)</p>'; }
