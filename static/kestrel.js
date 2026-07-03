@@ -325,7 +325,54 @@ window.Kestrel = (function () {
         } else { showManual(); }
       }).catch(function () { showManual(); });
   }
-  function renderStepConfig(body) { body.innerHTML = '<p class="muted">config step (Task 6)</p>'; }
+  function fieldRow(labelZh, labelEn, controlHTML) {
+    return '<label class="field"><span class="field-label">' + (state.lang==='zh'?labelZh:labelEn) + '</span>' + controlHTML + '</label>';
+  }
+  function selectHTML(id, opts) {
+    return '<select id="' + id + '" class="field-select">' + opts.map(function (o) {
+      return '<option value="' + o[0] + '">' + (state.lang==='zh'?o[1]:o[2]) + '</option>'; }).join('') + '</select>';
+  }
+  function renderStepConfig(body) {
+    var zh = state.lang === 'zh';
+    var fields;
+    if (wiz.mode === 'posture') {
+      fields =
+        fieldRow('击球类型','Stroke', selectHTML('cfg-stroke', [['high_clear','高远球','High clear'],['smash','杀球','Smash'],['drop_shot','吊球','Drop shot'],['serve','发球','Serve']])) +
+        fieldRow('持拍手','Dominant hand', selectHTML('cfg-hand', [['right','右手','Right'],['left','左手','Left']])) +
+        fieldRow('姿态模型','Pose model', selectHTML('cfg-pose', [['yolo-pose','YOLO Pose (快)','YOLO Pose (fast)'],['rtmpose','RTMPose (准)','RTMPose (accurate)'],['rtmo','RTMO','RTMO']])) +
+        fieldRow('教练报告文字润色','Report polish', selectHTML('cfg-llm', [['off','关闭','Off'],['on','开启','On']]));
+    } else {
+      fields =
+        fieldRow('语言','Language', selectHTML('cfg-lang', [['zh','中文','Chinese'],['en','English','English']])) +
+        fieldRow('姿态模型','Pose model', selectHTML('cfg-pose', [['yolo-pose','YOLO Pose (快)','YOLO Pose (fast)'],['rtmpose','RTMPose (准)','RTMPose (accurate)']])) +
+        '<label class="field field-check"><input type="checkbox" id="cfg-tech" checked><span class="field-label">' + (zh?'技术分析':'Technique analysis') + '</span></label>';
+    }
+    body.innerHTML = '<div class="cfg-form">' + fields + '</div>' +
+      '<div class="wiz-actions"><button class="btn-ghost" id="wiz-back">' + (zh?'返回':'Back') + '</button>' +
+        '<button class="btn-primary" id="wiz-start">' + (zh?'开始分析':'Start Analysis') + '</button></div>';
+    document.getElementById('wiz-back').onclick = function () { goStep(wiz.mode === 'match' ? 'court' : 'upload'); };
+    document.getElementById('wiz-start').onclick = startAnalysis;
+  }
+  function startAnalysis() {
+    var btn = document.getElementById('wiz-start'); btn.disabled = true;
+    btn.textContent = state.lang==='zh'?'启动中…':'Starting…';
+    var url, payload;
+    if (wiz.mode === 'posture') {
+      url = '/api/posture/analyze';
+      payload = { video: wiz.video, stroke_type: document.getElementById('cfg-stroke').value,
+        dominant_hand: document.getElementById('cfg-hand').value, pose_family: document.getElementById('cfg-pose').value,
+        report_llm: document.getElementById('cfg-llm').value };
+    } else {
+      url = '/api/analyze';
+      payload = { video: wiz.video, language: document.getElementById('cfg-lang').value,
+        pose_family: document.getElementById('cfg-pose').value, analyze_technique: document.getElementById('cfg-tech').checked };
+    }
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d.ok) { wiz.jobId = d.job_id; goStep('progress'); }
+        else { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(d.error || 'error'); } })
+      .catch(function () { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; });
+  }
   function renderStepProgress(body) { body.innerHTML = '<p class="muted">progress step (Task 7)</p>'; }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
