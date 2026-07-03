@@ -373,7 +373,60 @@ window.Kestrel = (function () {
         else { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(d.error || 'error'); } })
       .catch(function () { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; });
   }
-  function renderStepProgress(body) { body.innerHTML = '<p class="muted">progress step (Task 7)</p>'; }
+  var STAGE_LABELS = {
+    loading: ['加载模型', 'Loading model'], analyzing: ['分析动作', 'Analyzing'],
+    scoring: ['评分', 'Scoring'], report: ['生成报告', 'Building report'],
+    encoding: ['转码视频', 'Encoding video'], done: ['完成', 'Done'], error: ['失败', 'Failed']
+  };
+  function progressStages() {
+    return wiz.mode === 'posture' ? ['loading','analyzing','scoring','report','encoding','done']
+                                  : ['analyzing','encoding','done'];
+  }
+  function renderStepProgress(body) {
+    var zh = state.lang === 'zh';
+    body.innerHTML =
+      '<div class="prog-wrap"><div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>' +
+        '<div class="prog-pct mono" id="prog-pct">0%</div></div>' +
+      '<ul class="stage-list" id="stage-list"></ul>' +
+      '<div class="wiz-actions" id="prog-actions"></div>';
+    pollJob();
+  }
+  function renderStages(curStage) {
+    var stages = progressStages(); var curIdx = stages.indexOf(curStage);
+    if (curStage === 'done') curIdx = stages.length;
+    document.getElementById('stage-list').innerHTML = stages.map(function (st, i) {
+      var cls = i < curIdx ? 'done' : (i === curIdx ? 'active' : 'pending');
+      var mark = i < curIdx ? '✓' : (i === curIdx ? '●' : '○');
+      return '<li class="stage ' + cls + '"><span class="stage-mark">' + mark + '</span>' +
+        (state.lang === 'zh' ? STAGE_LABELS[st][0] : STAGE_LABELS[st][1]) + '</li>';
+    }).join('');
+  }
+  function pollJob() {
+    var zh = state.lang === 'zh';
+    var url = (wiz.mode === 'posture' ? '/api/posture-analyze-status/' : '/api/status/') + wiz.jobId;
+    var iv = setInterval(function () {
+      fetch(url).then(function (r) { return r.json(); }).then(function (d) {
+        var pct = d.progress || 0;
+        document.getElementById('prog-fill').style.width = pct + '%';
+        document.getElementById('prog-pct').textContent = pct + '%';
+        renderStages(d.stage || 'analyzing');
+        if (d.status === 'completed') {
+          clearInterval(iv);
+          document.getElementById('prog-actions').innerHTML =
+            '<div class="prog-done">✓ ' + (zh?'分析完成':'Analysis complete') + '</div>' +
+            '<button class="btn-primary" id="prog-lib">' + (zh?'返回视频库':'Back to Library') + '</button>';
+          document.getElementById('prog-lib').onclick = function () { wiz.step = 'mode'; wiz.video = null; wiz.jobId = null; setScreen('dashboard'); };
+        } else if (d.status === 'error') {
+          clearInterval(iv); renderStages('error');
+          document.getElementById('prog-actions').innerHTML =
+            '<div class="prog-err">' + (d.message || (zh?'分析失败':'Analysis failed')) + '</div>' +
+            '<button class="btn-ghost" id="prog-retry">' + (zh?'返回设置':'Back to Config') + '</button>';
+          document.getElementById('prog-retry').onclick = function () { goStep('config'); };
+        }
+      }).catch(function () { clearInterval(iv);
+        document.getElementById('prog-actions').innerHTML = '<div class="prog-err">' + (zh?'状态查询失败':'Status check failed') + '</div>'; });
+    }, 1500);
+  }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
     renderSidebar();
