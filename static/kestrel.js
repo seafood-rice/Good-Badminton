@@ -2,7 +2,8 @@ window.Kestrel = (function () {
   'use strict';
   var state = { lang: localStorage.getItem('kestrel_lang') || 'zh',
                 theme: localStorage.getItem('kestrel_theme') ||
-                       (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') };
+                       (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+                screen: 'dashboard' };
   function applyTheme() {
     document.documentElement.setAttribute('data-theme', state.theme);
   }
@@ -20,6 +21,7 @@ window.Kestrel = (function () {
   function setTheme(theme) { state.theme = theme; localStorage.setItem('kestrel_theme', theme);
     applyTheme(); renderSidebar(); }
   var lib = { videos: [], filter: { q: '', mode: 'all', status: 'all', sort: 'date' } };
+  var wiz = { mode: 'match', video: null, step: 'mode', jobId: null };
   function loadDashboard() {
     Promise.all([
       fetch('/api/stats').then(function (r) { return r.json(); }),
@@ -107,7 +109,8 @@ window.Kestrel = (function () {
                  ['avg_technique_score', state.lang==='zh'?'技术均分':'Avg Score']];
     var main = document.getElementById('main');
     main.innerHTML =
-      '<div class="page-head"><h1>' + (state.lang==='zh'?'视频库':'Video Library') + '</h1></div>' +
+      '<div class="page-head"><h1>' + (state.lang==='zh'?'视频库':'Video Library') + '</h1>' +
+        '<button class="btn-primary" id="go-new">+ ' + (state.lang==='zh'?'新建分析':'New Analysis') + '</button></div>' +
       '<div class="stat-row">' + tiles.map(function (t2) {
         var val = s[t2[0]]; if (val === null || val === undefined) val = '—';
         return '<div class="stat"><div class="stat-label mono">' + t2[1] +
@@ -117,6 +120,7 @@ window.Kestrel = (function () {
       '<div id="cards" class="card-grid"></div>';
     renderFilterBar();
     renderCards();
+    var gn = document.getElementById('go-new'); if (gn) gn.onclick = function () { setScreen('new'); };
   }
   function renderCards() {
     var wrap = document.getElementById('cards'); if (!wrap) return;
@@ -157,8 +161,63 @@ window.Kestrel = (function () {
       b.onclick = function () { setLang(b.getAttribute('data-lang')); }; });
     s.querySelectorAll('[data-theme]').forEach(function (b) {
       b.onclick = function () { setTheme(b.getAttribute('data-theme')); }; });
+    s.querySelectorAll('[data-screen]').forEach(function (b) {
+      b.onclick = function () { setScreen(b.getAttribute('data-screen')); };
+      b.classList.toggle('active', b.getAttribute('data-screen') === state.screen);
+    });
   }
-  function render() { renderSidebar(); loadDashboard(); }
+  var WIZ_STEPS_MATCH = [['mode','模式','Mode'],['upload','上传','Upload'],['court','球场','Court'],['config','设置','Config'],['progress','分析','Analyze']];
+  var WIZ_STEPS_POSTURE = [['mode','模式','Mode'],['upload','上传','Upload'],['config','设置','Config'],['progress','分析','Analyze']];
+  function wizSteps() { return wiz.mode === 'posture' ? WIZ_STEPS_POSTURE : WIZ_STEPS_MATCH; }
+  function stepperHTML() {
+    var steps = wizSteps(); var curIdx = steps.findIndex(function (s) { return s[0] === wiz.step; });
+    return '<div class="stepper">' + steps.map(function (s, i) {
+      var cls = i < curIdx ? 'done' : (i === curIdx ? 'active' : 'pending');
+      return '<div class="step ' + cls + '"><span class="step-dot mono">' + (i + 1) + '</span>' +
+        '<span class="step-label">' + (state.lang === 'zh' ? s[1] : s[2]) + '</span></div>';
+    }).join('<div class="step-line"></div>') + '</div>';
+  }
+  function goStep(step) { wiz.step = step; renderWizard(); }
+  function renderWizard() {
+    var main = document.getElementById('main');
+    main.innerHTML =
+      '<div class="page-head"><h1>' + (state.lang==='zh'?'新建分析':'New Analysis') + '</h1>' +
+        '<button class="btn-ghost" id="wiz-cancel">' + (state.lang==='zh'?'取消':'Cancel') + '</button></div>' +
+      stepperHTML() + '<div id="wiz-body"></div>';
+    document.getElementById('wiz-cancel').onclick = function () { setScreen('dashboard'); };
+    var body = document.getElementById('wiz-body');
+    if (wiz.step === 'mode') { renderStepMode(body); }
+    else if (wiz.step === 'upload') { renderStepUpload(body); }
+    else if (wiz.step === 'court') { renderStepCourt(body); }
+    else if (wiz.step === 'config') { renderStepConfig(body); }
+    else if (wiz.step === 'progress') { renderStepProgress(body); }
+  }
+  function renderStepMode(body) {
+    var zh = state.lang === 'zh';
+    var cards = [
+      ['match', zh?'比赛分析':'Match Analysis', zh?'全场追踪、回合检测、热力图与击球评分。需要四点球场设置。':'Full-court tracking, rally detection, heatmaps, and stroke scoring. Needs a 4-point court setup.'],
+      ['posture', zh?'姿态训练':'Posture Drill', zh?'无需球场的单一动作重复练习，逐次反馈。':'Court-free single-stroke repetition practice with per-rep feedback.']
+    ];
+    body.innerHTML = '<div class="choice-grid">' + cards.map(function (c) {
+      return '<button class="choice-card' + (wiz.mode === c[0] ? ' on' : '') + '" data-mode="' + c[0] + '">' +
+        '<div class="choice-title">' + c[1] + '</div><div class="choice-desc">' + c[2] + '</div></button>';
+    }).join('') + '</div>' +
+      '<div class="wiz-actions"><button class="btn-primary" id="wiz-next">' + (zh?'继续':'Continue') + '</button></div>';
+    body.querySelectorAll('[data-mode]').forEach(function (b) {
+      b.onclick = function () { wiz.mode = b.getAttribute('data-mode'); renderWizard(); };
+    });
+    document.getElementById('wiz-next').onclick = function () { goStep('upload'); };
+  }
+  function renderStepUpload(body) { body.innerHTML = '<p class="muted">upload step (Task 4)</p>'; }
+  function renderStepCourt(body) { body.innerHTML = '<p class="muted">court step (Task 5)</p>'; }
+  function renderStepConfig(body) { body.innerHTML = '<p class="muted">config step (Task 6)</p>'; }
+  function renderStepProgress(body) { body.innerHTML = '<p class="muted">progress step (Task 7)</p>'; }
+  function setScreen(name) { state.screen = name; render(); }
+  function render() {
+    renderSidebar();
+    if (state.screen === 'new') { renderWizard(); }
+    else { loadDashboard(); }
+  }
   function init() {
     applyTheme();
     document.documentElement.lang = state.lang;
@@ -168,5 +227,5 @@ window.Kestrel = (function () {
   return { state: state, applyTheme: applyTheme, t: t, setLang: setLang,
            setTheme: setTheme, renderSidebar: renderSidebar,
            renderDashboard: renderDashboard, applyFilters: applyFilters,
-           loadDashboard: loadDashboard };
+           loadDashboard: loadDashboard, setScreen: setScreen };
 })();
