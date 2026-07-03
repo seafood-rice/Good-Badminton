@@ -34,7 +34,9 @@ professional and easy to act on — with no regression to the working backend.
 - **Build approach:** split assets served by Flask's built-in `/static/` handler —
   `web_ui.html` shell + `static/kestrel.css` + `static/kestrel.js` +
   `static/fonts/` (local IBM Plex Mono woff2) + `static/img/`. No CDN, offline-safe.
-- **Theme:** light only for v1 (dark toggle deferred).
+- **Theme:** light "paper" (prototype default) **plus a dark theme toggle** in the
+  sidebar. Choice persisted to `localStorage`; first load honours the OS
+  `prefers-color-scheme`, falling back to light.
 - **Exercise video guides:** curated **external links** per exercise (embedded when
   online; graceful "unavailable offline" fallback). We do not produce videos.
 - **Per-rep clip:** in-browser **bounded scrubber** for analysis, **plus** an
@@ -67,6 +69,18 @@ CSS custom properties on `:root` (ported from the prototype, kept themeable):
 - Scores: `--good:#3FAE6A`, `--mid:#E8A93B`, `--bad:#E5484D` (+ pastel chip backgrounds)
 - Scale: `--radius-sm/md/lg/pill`, `--space` (spacing multiplier)
 
+**Theming (light + dark).** The values above are the light theme (`:root`). A dark
+theme is a second token set applied via `[data-theme="dark"]` on the root container
+— only the surface/ink/border/chip tokens change; **accent and score hues stay
+constant** (they read well on both). Indicative dark values: `--paper:#0F1114`,
+`--card:#1A1D1F`, `--border:#2A2D33`, `--fill:#22262B`, `--ink:#F3F1EC`,
+`--muted:#9A9EA6`, `--faint:#787D85`; pastel score chips become translucent tints.
+The dark sidebar (`--sidebar-bg`) is unchanged across themes. A **theme toggle** in
+the sidebar footer (beside the language toggle) flips `data-theme`; the choice is
+persisted to `localStorage`, and first load honours `prefers-color-scheme`
+(defaulting to light). All components read tokens only, so no per-component dark CSS
+is required.
+
 Typography:
 
 - UI text: system sans stack (`-apple-system, "Segoe UI", …`) — covers CJK for the
@@ -86,8 +100,9 @@ i18n: `kestrel.js` holds `T = { zh:{…}, en:{…} }`; every label rendered via
 
 ### Persistent sidebar (232px, dark, sticky)
 Kestrel mark + wordmark, "Coach Portal" label, animated nav highlight, footer with
-coach-persona avatar + **language toggle (中/EN)**. Nav: **Dashboard** ·
-**New Analysis** · (Results opens contextually when a video is entered).
+coach-persona avatar + **language toggle (中/EN)** + **theme toggle (light/dark)**.
+Nav: **Dashboard** · **New Analysis** · (Results opens contextually when a video is
+entered).
 
 ### Screen 1 — Dashboard / Video Library
 - **4 stat tiles** (mono): Total Videos · Analyzed · Rallies Detected · Avg
@@ -173,7 +188,8 @@ noted enrichments.
 
 ## Phasing (for the implementation plan)
 
-1. Design system + shell + sidebar + **Library** (filters, thumbnails, stats).
+1. Design system (light + dark tokens, theme toggle) + shell + sidebar +
+   **Library** (filters, thumbnails, stats).
 2. **New Analysis wizard** + staged progress (incl. posture progress backend).
 3. **Results** — match + posture, rep bounded scrubber + on-demand crop.
 4. **Training plan + coach report** + enriched bilingual exercise content + video guides.
@@ -182,6 +198,5 @@ noted enrichments.
 ## Out of scope (deferred)
 
 - Multi-athlete / coach-roster backend (persona stays cosmetic).
-- Dark theme toggle.
 - Server-persisted notes (localStorage only for v1).
 - Self-produced exercise demo videos (curated external links instead).
