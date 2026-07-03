@@ -593,6 +593,8 @@ window.Kestrel = (function () {
     fetch('/api/posture/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
       var s = d.summary; postureCtx.reps = d.reps || [];
+      fetch('/api/output/' + stem + '/posture/metadata.json').then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (meta) { if (meta && meta.video && meta.video.fps) postureCtx.fps = meta.video.fps; }).catch(function () {});
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       var mean = (s.mean_score === null || s.mean_score === undefined) ? null : Math.round(s.mean_score);
       var cons = (s.consistency === null || s.consistency === undefined) ? null : Math.round(s.consistency * 10) / 10;
@@ -612,14 +614,51 @@ window.Kestrel = (function () {
       if (postureCtx.reps.length) { selectRep(postureCtx.reps, 0); }
     }).catch(function () { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; });
   }
+  var REP_PAD = 1.5;
+  function repWindow(rep) {
+    var fps = postureCtx.fps || 30; var center = (rep.contact_frame || 0) / fps;
+    return { start: Math.max(0, center - REP_PAD), end: center + REP_PAD };
+  }
+  function bindRepWindow(rep) {
+    var v = document.getElementById('posture-video'); if (!v) return;
+    var w = repWindow(rep);
+    v.currentTime = w.start;
+    v.ontimeupdate = function () { if (v.currentTime >= w.end) { v.pause(); } };
+    var play = v.play(); if (play && play.catch) play.catch(function () {});
+  }
   function selectRep(reps, i) {
-    postureCtx.sel = i; var rep = reps[i];
+    postureCtx.sel = i; var rep = reps[i]; var zh = state.lang === 'zh';
     document.querySelectorAll('.rep-row').forEach(function (x) { x.classList.toggle('on', Number(x.getAttribute('data-i')) === i); });
     var bars = Object.keys(rep.per_metric || {}).map(function (k) { return metricBarHTML(k, rep.per_metric[k]); }).join('');
     var ws = (rep.weaknesses || []).map(weaknessLineHTML).join('');
     document.getElementById('rep-detail').innerHTML =
-      '<h2>' + (state.lang==='zh'?'第 ':'Rep #') + rep.rep_id + (state.lang==='zh'?' 次详情':'') + '</h2>' +
+      '<h2>' + (zh?('第 ' + rep.rep_id + ' 次详情'):('Rep #' + rep.rep_id)) + '</h2>' +
       bars + (ws ? '<ul class="weak-list">' + ws + '</ul>' : '');
+    // Scrubber controls under the video.
+    var sc = document.getElementById('rep-scrubber');
+    if (sc) {
+      sc.innerHTML =
+        '<button class="btn-ghost" id="sc-replay">⏮ ' + (zh?'重播本次':'Replay rep') + '</button>' +
+        '<button class="btn-ghost" id="sc-back">−1f</button>' +
+        '<button class="btn-ghost" id="sc-fwd">+1f</button>' +
+        '<button class="btn-primary" id="sc-dl">⬇ ' + (zh?'下载本次':'Download this rep') + '</button>';
+      document.getElementById('sc-replay').onclick = function () { bindRepWindow(rep); };
+      var v = document.getElementById('posture-video'); var step = 1 / (postureCtx.fps || 30);
+      document.getElementById('sc-back').onclick = function () { if (v) { v.pause(); v.currentTime = Math.max(0, v.currentTime - step); } };
+      document.getElementById('sc-fwd').onclick = function () { if (v) { v.pause(); v.currentTime = v.currentTime + step; } };
+      document.getElementById('sc-dl').onclick = function () { downloadRep(rep); };
+    }
+    bindRepWindow(rep);
+  }
+  function downloadRep(rep) {
+    var zh = state.lang === 'zh'; var btn = document.getElementById('sc-dl');
+    btn.disabled = true; btn.textContent = zh?'生成中…':'Preparing…';
+    fetch('/api/posture-rep-clip/' + postureCtx.stem, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ rep_id: rep.rep_id }) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        btn.disabled = false; btn.textContent = '⬇ ' + (zh?'下载本次':'Download this rep');
+        if (d.ok && d.url) { var a = document.createElement('a'); a.href = d.url; a.download = 'rep_' + rep.rep_id + '.mp4'; document.body.appendChild(a); a.click(); a.remove(); }
+        else { alert(d.error || 'error'); } })
+      .catch(function () { btn.disabled = false; btn.textContent = '⬇ ' + (zh?'下载本次':'Download this rep'); });
   }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
