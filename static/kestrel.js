@@ -47,6 +47,49 @@ window.Kestrel = (function () {
     return out;
   }
   function applyFilters(patch) { Object.assign(lib.filter, patch); renderCards(); }
+  // Localized filter options: [value, zh, en]. Labels stay consistent with the
+  // card badges (modeLabel / statusChip) so the same term names the same thing.
+  var FILTER_DEFS = {
+    mode:   [['all', '全部', 'All'], ['match', '比赛', 'Match'], ['posture', '训练', 'Drill']],
+    status: [['all', '全部', 'All'], ['analyzed', '已完成', 'Analyzed'],
+             ['court_set', '已标注', 'Court set'], ['new', '未分析', 'New']],
+    sort:   [['date', '日期', 'Date'], ['name', '名称', 'Name']]
+  };
+  var FILTER_GROUP_LABEL = { mode: ['类型', 'Type'], status: ['状态', 'Status'], sort: ['排序', 'Sort'] };
+  function _loc(pair, zhIdx, enIdx) { return state.lang === 'zh' ? pair[zhIdx] : pair[enIdx]; }
+  function segGroup(key) {
+    var cur = lib.filter[key];
+    var label = _loc(FILTER_GROUP_LABEL[key], 0, 1);
+    var btns = FILTER_DEFS[key].map(function (o) {
+      var on = o[0] === cur;
+      return '<button class="seg-btn' + (on ? ' on' : '') + '" role="tab" aria-selected="' + on +
+        '" data-fkey="' + key + '" data-fval="' + o[0] + '">' + _loc(o, 1, 2) + '</button>';
+    }).join('');
+    return '<div class="seg-group"><span class="seg-label">' + label + '</span>' +
+      '<div class="seg" role="tablist" aria-label="' + label + '">' + btns + '</div></div>';
+  }
+  function searchHTML() {
+    var ph = state.lang === 'zh' ? '搜索视频…' : 'Search videos…';
+    var q = lib.filter.q || '';
+    return '<div class="search">' +
+      '<svg class="search-ic" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>' +
+      '<input id="f-q" type="search" aria-label="' + ph + '" placeholder="' + ph + '" value="' + q.replace(/"/g, '&quot;') + '">' +
+      '<button class="search-clear' + (q ? '' : ' hide') + '" id="f-clear" aria-label="' +
+        (state.lang === 'zh' ? '清除' : 'Clear') + '">&times;</button></div>';
+  }
+  function renderFilterBar() {
+    var bar = document.getElementById('filter-bar'); if (!bar) return;
+    bar.innerHTML = searchHTML() + segGroup('mode') + segGroup('status') + segGroup('sort');
+    var q = bar.querySelector('#f-q'), clr = bar.querySelector('#f-clear');
+    q.oninput = function (e) { clr.classList.toggle('hide', !e.target.value); applyFilters({ q: e.target.value }); };
+    clr.onclick = function () { applyFilters({ q: '' }); renderFilterBar(); bar.querySelector('#f-q').focus(); };
+    bar.querySelectorAll('.seg-btn').forEach(function (b) {
+      b.onclick = function () {
+        var patch = {}; patch[b.getAttribute('data-fkey')] = b.getAttribute('data-fval');
+        applyFilters(patch); renderFilterBar();
+      };
+    });
+  }
   function modeLabel(v) { return v.has_posture && !v.has_match ? (state.lang==='zh'?'训练':'Drill')
                                                                : (state.lang==='zh'?'比赛':'Match'); }
   function statusChip(v) {
@@ -70,16 +113,9 @@ window.Kestrel = (function () {
         return '<div class="stat"><div class="stat-label mono">' + t2[1] +
                '</div><div class="stat-val mono">' + val + '</div></div>';
       }).join('') + '</div>' +
-      '<div class="filter-bar">' +
-        '<input id="f-q" placeholder="' + (state.lang==='zh'?'搜索…':'Search…') + '">' +
-        '<select id="f-mode"><option value="all">All</option><option value="match">Match</option><option value="posture">Drill</option></select>' +
-        '<select id="f-status"><option value="all">All</option><option value="analyzed">Analyzed</option><option value="court_set">Court set</option><option value="new">New</option></select>' +
-        '<select id="f-sort"><option value="date">Date</option><option value="name">Name</option></select>' +
-      '</div><div id="cards" class="card-grid"></div>';
-    main.querySelector('#f-q').oninput = function (e) { applyFilters({ q: e.target.value }); };
-    main.querySelector('#f-mode').onchange = function (e) { applyFilters({ mode: e.target.value }); };
-    main.querySelector('#f-status').onchange = function (e) { applyFilters({ status: e.target.value }); };
-    main.querySelector('#f-sort').onchange = function (e) { applyFilters({ sort: e.target.value }); };
+      '<div class="filter-bar" id="filter-bar"></div>' +
+      '<div id="cards" class="card-grid"></div>';
+    renderFilterBar();
     renderCards();
   }
   function renderCards() {
