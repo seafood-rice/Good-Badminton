@@ -791,6 +791,11 @@ def index():
     return (PROJECT_ROOT / 'web_ui.html').read_text(encoding='utf-8')
 
 
+@app.route('/kestrel')
+def kestrel():
+    return (PROJECT_ROOT / 'kestrel.html').read_text(encoding='utf-8')
+
+
 if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser()

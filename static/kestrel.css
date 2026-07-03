@@ -1,0 +1,25 @@
+:root{
+  --accent:#FF5A36; --accent-dark:#E64A28; --accent-soft:rgba(255,90,54,0.12);
+  --sidebar-bg:#14161A;
+  --paper:#FAFAF8; --card:#fff; --border:#EBE8E2; --fill:#F3F1EC;
+  --ink:#1A1D1F; --muted:#6B7280; --faint:#8A8F98;
+  --good:#3FAE6A; --mid:#E8A93B; --bad:#E5484D;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:18px; --radius-pill:999px;
+  --space:1;
+}
+[data-theme="dark"]{
+  --paper:#0F1114; --card:#1A1D1F; --border:#2A2D33; --fill:#22262B;
+  --ink:#F3F1EC; --muted:#9A9EA6; --faint:#787D85;
+}
+@font-face{font-family:'IBM Plex Mono';font-weight:400;font-display:swap;
+  src:url('/static/fonts/IBMPlexMono-400.ttf');}
+@font-face{font-family:'IBM Plex Mono';font-weight:500;font-display:swap;
+  src:url('/static/fonts/IBMPlexMono-500.ttf');}
+@font-face{font-family:'IBM Plex Mono';font-weight:600;font-display:swap;
+  src:url('/static/fonts/IBMPlexMono-600.ttf');}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  background:var(--paper);color:var(--ink);}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace;}
+.app-shell{display:flex;min-height:100vh;}
+#main{flex:1;min-width:0;padding:calc(40px*var(--space)) calc(48px*var(--space));max-width:1440px;}
