@@ -40,23 +40,53 @@ _venv_python = _find_venv_python()
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _video_duration_sec(path):
+    """Best-effort video duration in seconds; None if it can't be read."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        cap.release()
+        if fps > 0 and frames > 0:
+            return round(frames / fps, 1)
+    except Exception:
+        pass
+    return None
+
+
 @app.route('/api/videos')
 def api_videos():
     """列出所有视频和对应的分析结果"""
+    import datetime
     videos = []
     for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
         for p in sorted(VIDEOS.glob(ext)):
             name = p.stem
             out_dir = OUTPUTS / name
-            has_result = (out_dir / 'detections.jsonl').exists()
+            has_match = (out_dir / 'detections.jsonl').exists()
+            has_posture = (out_dir / 'posture' / 'drill_summary.json').exists()
             has_annotations = (out_dir / 'court_annotations.txt').exists()
+            thumb_path = out_dir / 'thumb.jpg'
+            if has_match or has_posture:
+                status = 'analyzed'
+            elif has_annotations:
+                status = 'court_set'
+            else:
+                status = 'new'
             videos.append({
                 'name': name,
                 'filename': p.name,
                 'size_mb': round(p.stat().st_size / 1024 / 1024, 1),
-                'has_result': has_result,
+                'has_result': has_match,
                 'has_annotations': has_annotations,
-                'output_dir': str(out_dir) if has_result else None,
+                'has_match': has_match,
+                'has_posture': has_posture,
+                'status': status,
+                'date': datetime.date.fromtimestamp(p.stat().st_mtime).isoformat(),
+                'duration_sec': _video_duration_sec(p),
+                'thumb': f'/api/output/{name}/thumb.jpg' if thumb_path.exists() else None,
+                'output_dir': str(out_dir) if has_match else None,
             })
     return jsonify(videos)
 

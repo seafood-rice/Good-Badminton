@@ -1,0 +1,45 @@
+import json
+import pytest
+import app as webapp
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "OUTPUTS", tmp_path / "outputs")
+    (tmp_path / "outputs").mkdir()
+    webapp.app.config["TESTING"] = True
+    return webapp.app.test_client(), videos, tmp_path / "outputs"
+
+
+def test_videos_reports_status_and_metadata(client, monkeypatch):
+    c, videos, outputs = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    # No duration decode in tests: stub the helper.
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: 12.5)
+    out = outputs / "clip"
+    out.mkdir(parents=True)
+    (out / "detections.jsonl").write_text("{}\n", encoding="utf-8")
+
+    data = c.get("/api/videos").get_json()
+    row = next(r for r in data if r["name"] == "clip")
+    assert row["has_match"] is True
+    assert row["has_posture"] is False
+    assert row["status"] == "analyzed"
+    assert row["duration_sec"] == 12.5
+    assert "date" in row and len(row["date"]) == 10  # YYYY-MM-DD
+
+
+def test_videos_status_new_and_court_set(client, monkeypatch):
+    c, videos, outputs = client
+    (videos / "a.mp4").write_bytes(b"\x00")
+    (videos / "b.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    (outputs / "b").mkdir(parents=True)
+    (outputs / "b" / "court_annotations.txt").write_text("x", encoding="utf-8")
+
+    rows = {r["name"]: r for r in c.get("/api/videos").get_json()}
+    assert rows["a"]["status"] == "new"
+    assert rows["b"]["status"] == "court_set"
