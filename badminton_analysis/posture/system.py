@@ -6,6 +6,17 @@ from .rep_segmenter import segment_reps
 from .writer import write_rep_reports, build_drill_summary
 
 
+def format_progress(pct, stage):
+    """Progress line consumed by the web layer: 'PROGRESS <pct> <stage>'."""
+    return "PROGRESS " + str(int(pct)) + " " + stage
+
+
+def analyzing_pct(frame_count, total_frames):
+    """Map frame progress into the 5-85 'analyzing' band."""
+    frac = min(1.0, frame_count / max(total_frames, 1))
+    return 5 + int(frac * 80)
+
+
 def _today():
     import datetime
     return datetime.date.today().isoformat()
@@ -140,8 +151,10 @@ class PostureAnalysisSystem:
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
         pose = self._build_pose_processor()
+        print(format_progress(5, "loading"), flush=True)
         ball_model = None
         if self.ball_model_path and os.path.exists(self.ball_model_path):
             from ultralytics import YOLO
@@ -158,6 +171,8 @@ class PostureAnalysisSystem:
             if not ret:
                 break
             frame_count += 1
+            if frame_count % 15 == 0:
+                print(format_progress(analyzing_pct(frame_count, total_frames), "analyzing"), flush=True)
             self._capture_frame(frame, frame_count, pose, ball_model, dom_wrist,
                                 ja, draw_technique_overlay, draw_skeleton)
             writer.write(frame)
@@ -172,6 +187,7 @@ class PostureAnalysisSystem:
             cv2.destroyAllWindows()
         vap.process_video_without_audio(temp_path, self.output_video_path)
 
+        print(format_progress(88, "scoring"), flush=True)
         runner = PostureRunner(BiomechanicalAnalyzer(dominant=self.dominant_hand),
                                stroke_type=self.stroke_type, dominant=self.dominant_hand)
         reports, reps = runner.run(self._track, self._frames.get, fps)
@@ -186,6 +202,7 @@ class PostureAnalysisSystem:
             "dominant_hand": self.dominant_hand,
             "pose_family": self.pose_family,
         })
+        print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
         print("Posture analysis: " + str(len(reports)) + " reps -> " + self.save_dir)
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
