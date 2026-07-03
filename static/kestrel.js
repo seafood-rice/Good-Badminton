@@ -502,6 +502,10 @@ window.Kestrel = (function () {
     return '<li>' + parts.join(' · ') + '</li>';
   }
   function scoreHue(s) { return s >= 70 ? 'var(--good)' : (s >= 40 ? 'var(--mid)' : 'var(--bad)'); }
+  function scoreChipHTML(score) {
+    var sc = (score === null || score === undefined) ? null : Math.round(score);
+    return '<span class="score-chip mono" style="background:' + (sc === null ? 'var(--faint)' : scoreHue(sc)) + '">' + (sc === null ? '—' : sc) + '</span>';
+  }
   function metricBarHTML(key, m) {
     var score = Math.max(0, Math.min(100, Number(m.score) || 0));
     var measured = (m.measured === null || m.measured === undefined) ? '—' : (Math.round(m.measured * 10) / 10);
@@ -558,7 +562,7 @@ window.Kestrel = (function () {
       status.style.display = 'none';
       var s = d.summary;
       var chips = Object.keys(s.by_type || {}).map(function (k) {
-        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + strokeTypeLabel(k) + '</b> ' + bt.count + '× · ' + (Math.round(bt.avg_score) ) + '</span>'; }).join('');
+        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + strokeTypeLabel(k) + '</b> ' + bt.count + '× · ' + (bt.avg_score == null ? '—' : Math.round(bt.avg_score)) + '</span>'; }).join('');
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       document.getElementById('tech-summary').innerHTML =
         '<div class="tech-sum"><div class="mono">' + (zh?'击球数':'Strokes') + ': ' + s.stroke_count + '</div>' +
@@ -566,7 +570,7 @@ window.Kestrel = (function () {
       var strokes = d.strokes || [];
       document.getElementById('tech-strokes').innerHTML = strokes.map(function (st, i) {
         return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + strokeTypeLabel(st.stroke_type) + '</span>' +
-          '<span class="score-chip mono" style="background:' + scoreHue(st.overall_score) + '">' + Math.round(st.overall_score) + '</span></button>'; }).join('');
+          scoreChipHTML(st.overall_score) + '</button>'; }).join('');
       document.querySelectorAll('.stroke-row').forEach(function (b) { b.onclick = function () {
         document.querySelectorAll('.stroke-row').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');
         var st = strokes[Number(b.getAttribute('data-i'))];
@@ -590,18 +594,20 @@ window.Kestrel = (function () {
       if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
       var s = d.summary; postureCtx.reps = d.reps || [];
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
+      var mean = (s.mean_score === null || s.mean_score === undefined) ? null : Math.round(s.mean_score);
+      var cons = (s.consistency === null || s.consistency === undefined) ? null : Math.round(s.consistency * 10) / 10;
       document.getElementById('drill-summary').innerHTML =
         '<h2>' + (zh?'训练概览':'Drill summary') + '</h2>' +
         '<div class="dsum-grid mono">' +
           '<div><span>' + (zh?'次数':'Reps') + '</span><b>' + s.rep_count + '</b></div>' +
-          '<div><span>' + (zh?'平均分':'Mean') + '</span><b style="color:' + scoreHue(s.mean_score) + '">' + Math.round(s.mean_score) + '</b></div>' +
-          '<div><span>' + (zh?'一致性':'Consistency') + '</span><b>' + (Math.round(s.consistency*10)/10) + '</b></div>' +
-          '<div><span>' + (zh?'最佳':'Best') + '</span><b>#' + (s.best_rep&&s.best_rep.rep_id) + '</b></div>' +
-          '<div><span>' + (zh?'最差':'Worst') + '</span><b>#' + (s.worst_rep&&s.worst_rep.rep_id) + '</b></div>' +
+          '<div><span>' + (zh?'平均分':'Mean') + '</span><b' + (mean === null ? '' : ' style="color:' + scoreHue(mean) + '"') + '>' + (mean === null ? '—' : mean) + '</b></div>' +
+          '<div><span>' + (zh?'一致性':'Consistency') + '</span><b>' + (cons === null ? '—' : cons) + '</b></div>' +
+          '<div><span>' + (zh?'最佳':'Best') + '</span><b>' + (s.best_rep ? '#' + s.best_rep.rep_id : '—') + '</b></div>' +
+          '<div><span>' + (zh?'最差':'Worst') + '</span><b>' + (s.worst_rep ? '#' + s.worst_rep.rep_id : '—') + '</b></div>' +
         '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '');
       document.getElementById('rep-list').innerHTML = postureCtx.reps.map(function (rep, i) {
         return '<li><button class="rep-row" data-i="' + i + '"><span class="mono">#' + rep.rep_id + '</span>' +
-          '<span class="score-chip mono" style="background:' + scoreHue(rep.overall_score) + '">' + Math.round(rep.overall_score) + '</span></button></li>'; }).join('');
+          scoreChipHTML(rep.overall_score) + '</button></li>'; }).join('');
       document.querySelectorAll('.rep-row').forEach(function (b) { b.onclick = function () { selectRep(postureCtx.reps, Number(b.getAttribute('data-i'))); }; });
       if (postureCtx.reps.length) { selectRep(postureCtx.reps, 0); }
     }).catch(function () { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; });
