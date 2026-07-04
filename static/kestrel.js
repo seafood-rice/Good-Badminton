@@ -883,6 +883,94 @@ window.Kestrel = (function () {
         if (dl) { dl.innerHTML = ''; }
       });
   }
+  var DELETE_SCOPE_TITLES = {
+    all: ['删除整个视频', 'Delete entire video'],
+    match: ['删除比赛结果', 'Delete match results'],
+    posture: ['删除训练结果', 'Delete drill results'],
+    clips: ['删除生成的剪辑', 'Delete generated clips'],
+    reports: ['删除教练报告', 'Delete coach reports']
+  };
+  var DELETE_GROUP_LABELS = {
+    source: ['源视频与球场模板', 'Source video & court template'],
+    match: ['比赛分析结果（含回合剪辑）', 'Match results (incl. rally clips)'],
+    posture: ['训练分析结果（含逐次剪辑与报告）', 'Drill results (incl. rep clips & reports)'],
+    thumb: ['缩略图', 'Thumbnail'],
+    clips_rally: ['回合剪辑', 'Rally clips'],
+    clips_rep: ['逐次剪辑', 'Rep clips'],
+    reports: ['教练报告', 'Coach reports']
+  };
+  function _delEsc(e) { if (e.key === 'Escape') { closeDeleteModal(); } }
+  function closeDeleteModal() {
+    var m = document.getElementById('del-modal');
+    if (m) { m.remove(); }
+    document.removeEventListener('keydown', _delEsc);
+  }
+  function openDeleteModal(stem, scope, onDone) {
+    closeDeleteModal();
+    var zh = state.lang === 'zh';
+    var title = DELETE_SCOPE_TITLES[scope];
+    var wrap = document.createElement('div');
+    wrap.id = 'del-modal';
+    wrap.className = 'modal-overlay';
+    wrap.innerHTML =
+      '<div class="modal-card" role="dialog" aria-modal="true">' +
+        '<h3 class="modal-title">' + (zh ? title[0] : title[1]) + '</h3>' +
+        '<div class="modal-sub mono">' + stem + '</div>' +
+        '<div id="del-rows" class="modal-rows muted">' + (zh?'加载中…':'Loading…') + '</div>' +
+        '<div id="del-err" class="modal-err"></div>' +
+        '<div class="modal-actions">' +
+          '<button class="btn-ghost" id="del-cancel">' + (zh?'取消':'Cancel') + '</button>' +
+          '<button class="btn-danger" id="del-confirm" disabled>' + (zh?'永久删除':'Delete permanently') + '</button>' +
+        '</div></div>';
+    document.body.appendChild(wrap);
+    wrap.onclick = function (e) { if (e.target === wrap) { closeDeleteModal(); } };
+    document.addEventListener('keydown', _delEsc);
+    document.getElementById('del-cancel').onclick = closeDeleteModal;
+    var confirmBtn = document.getElementById('del-confirm');
+    fetch('/api/delete-preview/' + stem + '?scope=' + scope)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var rows = document.getElementById('del-rows'); if (!rows) { return; }
+        if (!d || !d.ok) { rows.textContent = zh?'预览失败':'Preview failed'; return; }
+        if (!d.total_files) { rows.textContent = zh?'没有可删除的文件':'Nothing to delete'; return; }
+        rows.classList.remove('muted');
+        rows.innerHTML = d.groups.map(function (g) {
+          var lbl = DELETE_GROUP_LABELS[g.key];
+          return '<div class="modal-row"><span>' + (lbl ? (zh?lbl[0]:lbl[1]) : g.key) + '</span>' +
+            '<span class="mono">' + g.files + (zh?' 个文件':' files') + ' · ' + g.size_mb + 'MB</span></div>';
+        }).join('') +
+          '<div class="modal-row modal-total"><span>' + (zh?'合计':'Total') + '</span>' +
+          '<span class="mono">' + d.total_files + (zh?' 个文件':' files') + ' · ' + d.total_size_mb + 'MB</span></div>';
+        confirmBtn.disabled = false;
+      }).catch(function () {
+        var rows = document.getElementById('del-rows');
+        if (rows) { rows.textContent = zh?'预览失败':'Preview failed'; }
+      });
+    confirmBtn.onclick = function () {
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = zh?'删除中…':'Deleting…';
+      fetch('/api/delete/' + stem, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: scope }) })
+        .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
+        .then(function (res) {
+          if (res.d && res.d.ok) { closeDeleteModal(); onDone(); return; }
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = zh?'永久删除':'Delete permanently';
+          var err = document.getElementById('del-err');
+          if (err) {
+            err.textContent = res.s === 409
+              ? (zh?'该视频正在分析中，请等待完成后再删除':'Analysis is running — wait for it to finish')
+              : (zh?'删除失败':'Delete failed');
+          }
+        })
+        .catch(function () {
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = zh?'永久删除':'Delete permanently';
+          var err = document.getElementById('del-err');
+          if (err) { err.textContent = zh?'网络错误，请重试':'Network error — please try again'; }
+        });
+    };
+  }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
     renderSidebar();

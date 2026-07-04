@@ -225,3 +225,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .report-card.bad{border-left-color:var(--bad);}
 .report-nums{font-size:12.5px;margin:4px 0;}
 .report-drill{font-style:italic;margin-top:6px;}
+.modal-overlay{position:fixed;inset:0;background:rgba(10,12,14,.55);display:flex;align-items:center;
+  justify-content:center;z-index:100;}
+.modal-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);
+  padding:22px 24px;width:min(420px,90vw);box-shadow:0 12px 40px rgba(0,0,0,.25);}
+.modal-title{margin:0 0 4px;font-size:16px;color:var(--ink);}
+.modal-sub{font-size:12px;color:var(--faint);margin-bottom:14px;}
+.modal-rows{margin-bottom:8px;font-size:13px;}
+.modal-row{display:flex;justify-content:space-between;gap:16px;padding:6px 0;
+  border-bottom:1px solid var(--border);color:var(--muted);}
+.modal-row span:first-child{color:var(--ink);}
+.modal-total{border-bottom:none;font-weight:700;}
+.modal-err{color:var(--bad);font-size:12.5px;min-height:16px;margin-bottom:6px;}
+.modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:8px;}
+.btn-danger{background:var(--bad);color:#fff;border:none;border-radius:var(--radius-sm);
+  padding:10px 18px;font:700 14px inherit;cursor:pointer;}
+.btn-danger:disabled{opacity:.5;cursor:default;}
+.vdel{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.45);border:none;
+  border-radius:var(--radius-sm);color:#fff;padding:4px 8px;cursor:pointer;opacity:0;transition:opacity .15s;}
+.vcard:hover .vdel,.vdel:focus-visible{opacity:1;}
