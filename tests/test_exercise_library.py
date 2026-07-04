@@ -1,5 +1,6 @@
 import pytest
 from badminton_analysis.training import exercise_library as lib
+from badminton_analysis.training.exercise_library import load_library
 
 METRICS = {"elbow_extension", "trunk_rotation", "wrist_flexion",
            "knee_flexion", "hip_shoulder_separation", "weight_transfer"}
@@ -41,3 +42,20 @@ def test_exercises_for_sorted_by_difficulty():
     diffs = [order[e["difficulty"]] for e in result]
     assert diffs == sorted(diffs)
     assert len(result) >= 2
+
+
+def test_library_detail_schema():
+    lib = load_library()
+    assert len(lib) == 15
+    for ex in lib:
+        assert isinstance(ex.get("name_zh"), str) and ex["name_zh"].strip(), ex["id"]
+        assert isinstance(ex.get("description_zh"), str) and ex["description_zh"].strip(), ex["id"]
+        for field, minimum in (("instructions", 3), ("coaching_cues", 2), ("common_mistakes", 2)):
+            block = ex.get(field)
+            assert isinstance(block, dict), (ex["id"], field)
+            for lang in ("en", "zh"):
+                items = block.get(lang)
+                assert isinstance(items, list) and len(items) >= minimum, (ex["id"], field, lang)
+                assert all(isinstance(s, str) and s.strip() for s in items), (ex["id"], field, lang)
+        assert isinstance(ex.get("video_url"), str), ex["id"]
+        assert ex["video_url"].startswith("https://www.youtube.com/"), ex["id"]
