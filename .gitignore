@@ -20,3 +20,4 @@ videos/
 
 # SDD scratch (progress ledger lives here)
 .superpowers/
+.gstack/
