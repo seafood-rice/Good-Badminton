@@ -770,7 +770,7 @@ window.Kestrel = (function () {
     if (!url) { return ''; }
     if (watch && navigator.onLine) {
       return '<div class="video-wrap"><iframe class="video-embed" src="https://www.youtube-nocookie.com/embed/' + watch[1] + '" ' +
-        'title="video guide" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>' + openLink;
+        'title="' + (zh ? '视频教学' : 'video guide') + '" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>' + openLink;
     }
     if (watch && !navigator.onLine) {
       return '<div class="video-offline muted">' + (zh?'离线状态，视频暂不可用':'Video unavailable offline') + '</div>' + openLink;
