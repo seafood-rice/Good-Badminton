@@ -899,14 +899,19 @@ window.Kestrel = (function () {
     clips_rep: ['逐次剪辑', 'Rep clips'],
     reports: ['教练报告', 'Coach reports']
   };
-  function _delEsc(e) { if (e.key === 'Escape') { closeDeleteModal(); } }
+  var _delGen = 0;
+  var _delBusy = false;
+  function _delEsc(e) { if (e.key === 'Escape' && !_delBusy) { closeDeleteModal(); } }
   function closeDeleteModal() {
+    _delGen += 1;
+    _delBusy = false;
     var m = document.getElementById('del-modal');
     if (m) { m.remove(); }
     document.removeEventListener('keydown', _delEsc);
   }
   function openDeleteModal(stem, scope, onDone) {
     closeDeleteModal();
+    var gen = _delGen;
     var zh = state.lang === 'zh';
     var title = DELETE_SCOPE_TITLES[scope];
     var wrap = document.createElement('div');
@@ -923,13 +928,16 @@ window.Kestrel = (function () {
           '<button class="btn-danger" id="del-confirm" disabled>' + (zh?'永久删除':'Delete permanently') + '</button>' +
         '</div></div>';
     document.body.appendChild(wrap);
-    wrap.onclick = function (e) { if (e.target === wrap) { closeDeleteModal(); } };
+    wrap.onclick = function (e) { if (!_delBusy && e.target === wrap) { closeDeleteModal(); } };
     document.addEventListener('keydown', _delEsc);
-    document.getElementById('del-cancel').onclick = closeDeleteModal;
+    var cancelBtn = document.getElementById('del-cancel');
     var confirmBtn = document.getElementById('del-confirm');
+    cancelBtn.onclick = function () { if (!_delBusy) { closeDeleteModal(); } };
+    cancelBtn.focus();
     fetch('/api/delete-preview/' + stem + '?scope=' + scope)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
+        if (gen !== _delGen) { return; }
         var rows = document.getElementById('del-rows'); if (!rows) { return; }
         if (!d || !d.ok) { rows.textContent = zh?'预览失败':'Preview failed'; return; }
         if (!d.total_files) { rows.textContent = zh?'没有可删除的文件':'Nothing to delete'; return; }
@@ -943,18 +951,26 @@ window.Kestrel = (function () {
           '<span class="mono">' + d.total_files + (zh?' 个文件':' files') + ' · ' + d.total_size_mb + 'MB</span></div>';
         confirmBtn.disabled = false;
       }).catch(function () {
+        if (gen !== _delGen) { return; }
         var rows = document.getElementById('del-rows');
         if (rows) { rows.textContent = zh?'预览失败':'Preview failed'; }
       });
     confirmBtn.onclick = function () {
+      _delBusy = true;
       confirmBtn.disabled = true;
+      cancelBtn.disabled = true;
       confirmBtn.textContent = zh?'删除中…':'Deleting…';
+      var err0 = document.getElementById('del-err');
+      if (err0) { err0.textContent = ''; }
       fetch('/api/delete/' + stem, { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope: scope }) })
         .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
         .then(function (res) {
+          if (gen !== _delGen) { return; }
           if (res.d && res.d.ok) { closeDeleteModal(); onDone(); return; }
+          _delBusy = false;
           confirmBtn.disabled = false;
+          cancelBtn.disabled = false;
           confirmBtn.textContent = zh?'永久删除':'Delete permanently';
           var err = document.getElementById('del-err');
           if (err) {
@@ -964,7 +980,10 @@ window.Kestrel = (function () {
           }
         })
         .catch(function () {
+          if (gen !== _delGen) { return; }
+          _delBusy = false;
           confirmBtn.disabled = false;
+          cancelBtn.disabled = false;
           confirmBtn.textContent = zh?'永久删除':'Delete permanently';
           var err = document.getElementById('del-err');
           if (err) { err.textContent = zh?'网络错误，请重试':'Network error — please try again'; }
