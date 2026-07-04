@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from badminton_analysis.training import exercise_library as lib
 from badminton_analysis.training.exercise_library import load_library
@@ -59,3 +61,10 @@ def test_library_detail_schema():
                 assert all(isinstance(s, str) and s.strip() for s in items), (ex["id"], field, lang)
         assert isinstance(ex.get("video_url"), str), ex["id"]
         assert ex["video_url"].startswith("https://www.youtube.com/"), ex["id"]
+
+
+def test_curated_watch_urls():
+    library = load_library()
+    watch = [ex for ex in library
+             if re.match(r"^https://www\.youtube\.com/watch\?v=[\w-]{11}$", ex["video_url"])]
+    assert len(watch) >= 4
