@@ -853,7 +853,7 @@ window.Kestrel = (function () {
         }
         var h = d.header || {}, s = d.summary || {};
         var html = '<div class="report-head mono">' + (h.stroke_label || h.stroke || '') +
-          ' · ' + (h.rep_count || 0) + ' reps' + (h.date ? ' · ' + h.date : '') + '</div>';
+          ' · ' + (h.rep_count || 0) + (lang === 'en' ? ' reps' : ' 次') + (h.date ? ' · ' + h.date : '') + '</div>';
         if (s.verdict_text) { html += '<p class="report-verdict">' + s.verdict_text + '</p>'; }
         (d.strengths || []).forEach(function (x) {
           html += '<div class="report-card good"><b>' + (x.metric_label || x.metric) + '</b>' +
@@ -864,7 +864,7 @@ window.Kestrel = (function () {
           var ideal = (Array.isArray(x.ideal_range) && x.ideal_range.length >= 2) ? (x.ideal_range[0] + '–' + x.ideal_range[1]) : '';
           html += '<div class="report-card bad"><b>' + (x.metric_label || x.metric) + '</b>' +
             (x.impact_label ? ' <span class="chip-metric">' + x.impact_label + '</span>' : '') +
-            '<div class="mono report-nums">' + (x.measured !== null && x.measured !== undefined ? x.measured : '—') +
+            '<div class="mono report-nums">' + (x.measured !== null && x.measured !== undefined ? (Math.round(x.measured * 10) / 10) : '—') +
               (ideal ? ' (' + ideal + ')' : '') + '</div>' +
             (x.mechanism_text ? '<div>' + x.mechanism_text + '</div>' : '') +
             (x.drill_text ? '<div class="report-drill">' + x.drill_text + '</div>' : '') + '</div>';
@@ -879,6 +879,8 @@ window.Kestrel = (function () {
       }).catch(function () {
         var body = document.getElementById('report-body');
         if (body) { body.innerHTML = '<p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; }
+        var dl = document.getElementById('report-dl');
+        if (dl) { dl.innerHTML = ''; }
       });
   }
   function setScreen(name) { state.screen = name; render(); }
