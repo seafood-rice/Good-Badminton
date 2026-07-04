@@ -56,6 +56,94 @@ def _rep_clip_window(contact_frame, fps, padding=1.5):
     return round(start, 3), round(padding * 2, 3)
 
 
+_DELETE_SCOPES = ('match', 'posture', 'clips', 'reports', 'all')
+
+
+def _safe_stem(video_name):
+    """Validated video stem for delete operations. None if malformed or unknown."""
+    if not video_name or not isinstance(video_name, str):
+        return None
+    if '/' in video_name or '\\' in video_name or '..' in video_name:
+        return None
+    if video_name != video_name.strip():
+        return None
+    if (OUTPUTS / video_name).is_dir():
+        return video_name
+    if VIDEOS.exists() and any(p.is_file() and p.stem == video_name for p in VIDEOS.iterdir()):
+        return video_name
+    return None
+
+
+def _delete_groups(stem, scope):
+    """Disjoint (key, [paths]) groups a delete scope removes. Paths are files or dirs."""
+    out = OUTPUTS / stem
+    posture = out / 'posture'
+
+    def match_paths():
+        if not out.is_dir():
+            return []
+        return [p for p in out.iterdir() if p.name not in ('posture', 'thumb.jpg')]
+
+    def source_paths():
+        files = []
+        if VIDEOS.exists():
+            files += [p for p in VIDEOS.iterdir() if p.is_file() and p.stem == stem]
+        if TEMPLATES.exists():
+            files += [p for p in TEMPLATES.iterdir()
+                      if p.is_file() and p.stem.startswith('_auto_' + stem)]
+        return files
+
+    if scope == 'match':
+        return [('match', match_paths())]
+    if scope == 'posture':
+        return [('posture', [posture] if posture.is_dir() else [])]
+    if scope == 'clips':
+        rally = out / 'clips'
+        rep = posture / 'rep_clips'
+        return [('clips_rally', [rally] if rally.is_dir() else []),
+                ('clips_rep', [rep] if rep.is_dir() else [])]
+    if scope == 'reports':
+        reports = ([p for p in posture.iterdir() if p.name.startswith('coach_report_')]
+                   if posture.is_dir() else [])
+        return [('reports', reports)]
+    if scope == 'all':
+        thumb = out / 'thumb.jpg'
+        return [('source', source_paths()),
+                ('match', match_paths()),
+                ('posture', [posture] if posture.is_dir() else []),
+                ('thumb', [thumb] if thumb.is_file() else [])]
+    return []
+
+
+def _paths_stats(paths):
+    """(file count, size MB rounded 1dp) for files and recursive dir contents."""
+    files = 0
+    size = 0
+    for p in paths:
+        if p.is_dir():
+            for f in p.rglob('*'):
+                if f.is_file():
+                    files += 1
+                    size += f.stat().st_size
+        elif p.is_file():
+            files += 1
+            size += p.stat().st_size
+    return files, round(size / 1024 / 1024, 1)
+
+
+def _running_job_for(stem):
+    """Id of any non-terminal analysis job working on this video, else None."""
+    active = ('pending', 'running', 'reencoding')
+    for job_id, job in jobs.items():
+        if job.get('status') not in active:
+            continue
+        jv = str(job.get('video_name') or '')
+        if (job_id == stem or job_id == 'posture_' + stem
+                or jv == stem or jv.rsplit('.', 1)[0] == stem):
+            return job_id
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
