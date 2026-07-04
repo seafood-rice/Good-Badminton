@@ -663,7 +663,14 @@ def serve_template_image(video_name):
 @app.route('/api/output/<video_name>/<path:subpath>', methods=['DELETE'])
 def delete_output(video_name, subpath):
     """删除某个输出文件或整个输出目录"""
-    filepath = OUTPUTS / video_name / subpath
+    if _safe_stem(video_name) is None:
+        return jsonify({'error': '无效的删除请求'}), 400
+    base = (OUTPUTS / video_name).resolve()
+    filepath = (OUTPUTS / video_name / subpath).resolve()
+    try:
+        filepath.relative_to(base)
+    except ValueError:
+        return jsonify({'error': '无效的删除请求'}), 400
     if filepath.is_dir():
         shutil.rmtree(str(filepath))
     elif filepath.exists():
@@ -814,6 +821,56 @@ def api_posture_rep_clip(video_name):
         return jsonify({'error': 'ffmpeg 失败: ' + str(e)}), 500
     return jsonify({'ok': True,
                     'url': '/api/output/' + video_name + '/posture/rep_clips/rep_' + str(rep_id) + '.mp4'})
+
+
+@app.route('/api/delete-preview/<video_name>')
+def api_delete_preview(video_name):
+    """What a delete scope would remove: disjoint groups with file counts + sizes."""
+    scope = request.args.get('scope', '')
+    stem = _safe_stem(video_name)
+    if stem is None or scope not in _DELETE_SCOPES:
+        return jsonify({'error': '无效的删除请求'}), 400
+    rows = []
+    total_files = 0
+    total_size = 0.0
+    for key, paths in _delete_groups(stem, scope):
+        files, size_mb = _paths_stats(paths)
+        if files:
+            rows.append({'key': key, 'files': files, 'size_mb': size_mb})
+            total_files += files
+            total_size += size_mb
+    return jsonify({'ok': True, 'scope': scope, 'groups': rows,
+                    'total_files': total_files, 'total_size_mb': round(total_size, 1)})
+
+
+@app.route('/api/delete/<video_name>', methods=['POST'])
+def api_delete(video_name):
+    """Permanently delete a scope's files. 409 while an analysis job runs on the video."""
+    data = request.get_json(silent=True) or {}
+    scope = data.get('scope', '')
+    stem = _safe_stem(video_name)
+    if stem is None or scope not in _DELETE_SCOPES:
+        return jsonify({'error': '无效的删除请求'}), 400
+    if _running_job_for(stem):
+        return jsonify({'error': '该视频正在分析中，请等待完成后再删除'}), 409
+    deleted = 0
+    try:
+        for _key, paths in _delete_groups(stem, scope):
+            for p in paths:
+                if p.is_dir():
+                    deleted += sum(1 for f in p.rglob('*') if f.is_file())
+                    shutil.rmtree(str(p))
+                elif p.is_file():
+                    p.unlink()
+                    deleted += 1
+        # For scope "all", also delete the parent outputs directory
+        if scope == 'all':
+            out_dir = OUTPUTS / stem
+            if out_dir.is_dir() and not list(out_dir.iterdir()):
+                shutil.rmtree(str(out_dir))
+    except Exception:
+        return jsonify({'error': '删除失败'}), 500
+    return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})
 
 
 def _load_or_make_posture_plan(video_name, weeks=4, force=False):

@@ -1,3 +1,4 @@
+import pytest
 import app as webapp
 
 
@@ -114,3 +115,76 @@ def test_running_job_for(tmp_path, monkeypatch):
     assert webapp._running_job_for("vid1") is None
     monkeypatch.setitem(webapp.jobs, "posture_vid1", {"status": "running", "video_name": "vid1"})
     assert webapp._running_job_for("vid1") == "posture_vid1"
+
+
+@pytest.fixture
+def client():
+    webapp.app.config["TESTING"] = True
+    return webapp.app.test_client()
+
+
+def test_preview_math(tmp_path, monkeypatch, client):
+    _tree(tmp_path, monkeypatch)
+    r = client.get("/api/delete-preview/vid1?scope=all")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["ok"] is True and d["scope"] == "all"
+    keys = [g["key"] for g in d["groups"]]
+    assert keys == ["source", "match", "posture", "thumb"]
+    assert d["total_files"] == sum(g["files"] for g in d["groups"])
+    assert d["total_files"] == 10  # 2 source + 3 match (2 files + 1 clip) + 4 posture + 1 thumb
+
+
+def test_preview_rejects_bad_input(tmp_path, monkeypatch, client):
+    _tree(tmp_path, monkeypatch)
+    assert client.get("/api/delete-preview/vid1?scope=nope").status_code == 400
+    assert client.get("/api/delete-preview/ghost?scope=all").status_code == 400
+
+
+def test_delete_match_removes_exactly_scope(tmp_path, monkeypatch, client):
+    videos, outputs, templates = _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {})
+    r = client.post("/api/delete/vid1", json={"scope": "match"})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    out = outputs / "vid1"
+    assert (out / "posture").is_dir() and (out / "thumb.jpg").is_file()
+    assert not (out / "detections.jsonl").exists()
+    assert not (out / "clips").exists()
+    assert (videos / "vid1.mp4").is_file()
+
+
+def test_delete_all_removes_source_and_outputs(tmp_path, monkeypatch, client):
+    videos, outputs, templates = _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {})
+    r = client.post("/api/delete/vid1", json={"scope": "all"})
+    assert r.status_code == 200
+    assert r.get_json()["deleted_files"] == 10
+    assert not (outputs / "vid1").exists()
+    assert not (videos / "vid1.mp4").exists()
+    assert not (templates / "_auto_vid1.png").exists()
+
+
+def test_delete_409_while_job_running(tmp_path, monkeypatch, client):
+    _, outputs, _ = _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {"vid1": {"status": "running", "video_name": "vid1.mp4"}})
+    r = client.post("/api/delete/vid1", json={"scope": "all"})
+    assert r.status_code == 409
+    assert (outputs / "vid1").exists()
+
+
+def test_legacy_delete_rejects_bad_stem_and_escape(tmp_path, monkeypatch, client):
+    _, outputs, _ = _tree(tmp_path, monkeypatch)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("keep", encoding="utf-8")
+    r = client.delete("/api/output/ghost/anything")
+    assert r.status_code == 400
+    r2 = client.delete("/api/output/vid1/..%2f..%2fsecret.txt")
+    assert r2.status_code in (400, 404)
+    assert secret.exists()
+
+
+def test_legacy_delete_still_works_for_valid_subpath(tmp_path, monkeypatch, client):
+    _, outputs, _ = _tree(tmp_path, monkeypatch)
+    r = client.delete("/api/output/vid1/clips")
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert not (outputs / "vid1" / "clips").exists()
