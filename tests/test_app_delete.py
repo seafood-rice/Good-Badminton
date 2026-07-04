@@ -44,7 +44,7 @@ def test_safe_stem_accepts_video_without_outputs(tmp_path, monkeypatch):
 
 def test_safe_stem_rejects_malformed(tmp_path, monkeypatch):
     _tree(tmp_path, monkeypatch)
-    for bad in ("", "..", "../vid1", "a/b", "a\\b", " vid1", "vid1 ", None):
+    for bad in ("", "..", "../vid1", "a/b", "a\\b", " vid1", "vid1 ", ".", "C:", "c:", None):
         assert webapp._safe_stem(bad) is None, bad
 
 
@@ -86,6 +86,15 @@ def test_delete_groups_all_disjoint_and_complete(tmp_path, monkeypatch):
     expected.add(videos / "vid1.mp4")
     expected.add(templates / "_auto_vid1.png")
     assert covered == expected
+
+
+def test_delete_groups_all_excludes_sibling_stem_files(tmp_path, monkeypatch):
+    videos, outputs, templates = _tree(tmp_path, monkeypatch)
+    (videos / "vid10.mp4").write_bytes(b"x")
+    (templates / "_auto_vid10.png").write_bytes(b"p")
+    groups = dict(webapp._delete_groups("vid1", "all"))
+    assert templates / "_auto_vid10.png" not in groups["source"]
+    assert videos / "vid10.mp4" not in groups["source"]
 
 
 def test_paths_stats_counts(tmp_path, monkeypatch):

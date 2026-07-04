@@ -67,6 +67,8 @@ def _safe_stem(video_name):
         return None
     if video_name != video_name.strip():
         return None
+    if Path(video_name).name != video_name:
+        return None
     if (OUTPUTS / video_name).is_dir():
         return video_name
     if VIDEOS.exists() and any(p.is_file() and p.stem == video_name for p in VIDEOS.iterdir()):
@@ -90,7 +92,7 @@ def _delete_groups(stem, scope):
             files += [p for p in VIDEOS.iterdir() if p.is_file() and p.stem == stem]
         if TEMPLATES.exists():
             files += [p for p in TEMPLATES.iterdir()
-                      if p.is_file() and p.stem.startswith('_auto_' + stem)]
+                      if p.is_file() and p.stem == '_auto_' + stem]
         return files
 
     if scope == 'match':

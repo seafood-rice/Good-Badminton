@@ -88,7 +88,7 @@ def test_safe_stem_accepts_video_without_outputs(tmp_path, monkeypatch):
 
 def test_safe_stem_rejects_malformed(tmp_path, monkeypatch):
     _tree(tmp_path, monkeypatch)
-    for bad in ("", "..", "../vid1", "a/b", "a\\b", " vid1", "vid1 ", None):
+    for bad in ("", "..", "../vid1", "a/b", "a\\b", " vid1", "vid1 ", ".", "C:", "c:", None):
         assert webapp._safe_stem(bad) is None, bad
 
 
@@ -132,6 +132,15 @@ def test_delete_groups_all_disjoint_and_complete(tmp_path, monkeypatch):
     assert covered == expected
 
 
+def test_delete_groups_all_excludes_sibling_stem_files(tmp_path, monkeypatch):
+    videos, outputs, templates = _tree(tmp_path, monkeypatch)
+    (videos / "vid10.mp4").write_bytes(b"x")
+    (templates / "_auto_vid10.png").write_bytes(b"p")
+    groups = dict(webapp._delete_groups("vid1", "all"))
+    assert templates / "_auto_vid10.png" not in groups["source"]
+    assert videos / "vid10.mp4" not in groups["source"]
+
+
 def test_paths_stats_counts(tmp_path, monkeypatch):
     _, outputs, _ = _tree(tmp_path, monkeypatch)
     files, size_mb = webapp._paths_stats([outputs / "vid1" / "clips"])
@@ -170,6 +179,8 @@ def _safe_stem(video_name):
         return None
     if video_name != video_name.strip():
         return None
+    if Path(video_name).name != video_name:
+        return None
     if (OUTPUTS / video_name).is_dir():
         return video_name
     if VIDEOS.exists() and any(p.is_file() and p.stem == video_name for p in VIDEOS.iterdir()):
@@ -193,7 +204,7 @@ def _delete_groups(stem, scope):
             files += [p for p in VIDEOS.iterdir() if p.is_file() and p.stem == stem]
         if TEMPLATES.exists():
             files += [p for p in TEMPLATES.iterdir()
-                      if p.is_file() and p.stem.startswith('_auto_' + stem)]
+                      if p.is_file() and p.stem == '_auto_' + stem]
         return files
 
     if scope == 'match':
@@ -250,12 +261,12 @@ def _running_job_for(stem):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_app_delete.py -v`
-Expected: PASS (9 tests).
+Expected: PASS (10 tests).
 
 - [ ] **Step 5: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `174 passed` (165 baseline + 9 new).
+Expected: `175 passed` (165 baseline + 10 new).
 
 - [ ] **Step 6: Commit**
 
@@ -436,12 +447,12 @@ Replace the body of the existing `delete_output(video_name, subpath)` route with
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_app_delete.py -v`
-Expected: PASS (16 tests).
+Expected: PASS (17 tests).
 
 - [ ] **Step 6: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `181 passed` (174 + 7). If any pre-existing test exercised `delete_output` with a stem that no longer validates, adapt THAT test's fixture to create the video/output first (report it if so).
+Expected: `182 passed` (175 + 7). If any pre-existing test exercised `delete_output` with a stem that no longer validates, adapt THAT test's fixture to create the video/output first (report it if so).
 
 - [ ] **Step 7: Commit**
 
@@ -731,6 +742,6 @@ git commit -m "feat(ui): delete actions on library cards + results screens"
 ## Notes for the executor
 
 - Base commit is `c23cf75` (spec commit).
-- Suite baseline 165 → 174 after T1 → 181 after T2. Frontend tasks: `node --check` + curl; browser dogfood is a controller pass after T4 (on a scratch copy — do NOT delete the real IMG_1270/IMG_1537 fixtures during dogfood; use an uploaded copy or restore from backup).
+- Suite baseline 165 → 175 after T1 → 182 after T2. Frontend tasks: `node --check` + curl; browser dogfood is a controller pass after T4 (on a scratch copy — do NOT delete the real IMG_1270/IMG_1537 fixtures during dogfood; use an uploaded copy or restore from backup).
 - Windows: kill servers by PID (see Global Constraints), never bare `kill`.
 - The legacy-route hardening may interact with existing tests that call `delete_output` — if any pre-existing test fails, adapt its fixture to create the video/outputs dir first and report the adaptation.
