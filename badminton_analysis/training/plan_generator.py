@@ -17,6 +17,17 @@ def _session_from_exercise(ex, frequency):
         "sets": ex["sets"],
         "duration_min": ex["duration_min"],
         "targets": list(ex["target_weaknesses"]),
+        "detail": {
+            "name_zh": ex.get("name_zh"),
+            "description": ex.get("description"),
+            "description_zh": ex.get("description_zh"),
+            "equipment": ex.get("equipment"),
+            "difficulty": ex.get("difficulty"),
+            "instructions": ex.get("instructions"),
+            "coaching_cues": ex.get("coaching_cues"),
+            "common_mistakes": ex.get("common_mistakes"),
+            "video_url": ex.get("video_url"),
+        },
     }
 
 
