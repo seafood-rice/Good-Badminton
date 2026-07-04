@@ -752,9 +752,55 @@ window.Kestrel = (function () {
       r.onclick = function () { togglePlanDetail(Number(r.getAttribute('data-si'))); };
     });
   }
+  var EQUIP_LABELS = { 'racket': '球拍', 'racket, shuttles': '球拍、羽毛球', 'resistance band': '弹力带',
+    'medicine ball': '药球', 'dumbbell': '哑铃', 'none': '无器械' };
+  var DIFF_LABELS = { beginner: ['入门', 'Beginner'], intermediate: ['进阶', 'Intermediate'], advanced: ['高级', 'Advanced'] };
+  function equipLabel(e) { return state.lang === 'zh' ? (EQUIP_LABELS[e] || e) : e; }
+  function diffLabel(d) { var m = DIFF_LABELS[d]; return m ? (state.lang==='zh'?m[0]:m[1]) : d; }
+  function localList(block) {
+    if (!block) { return []; }
+    var zh = state.lang === 'zh';
+    return (zh ? (block.zh || block.en) : (block.en || block.zh)) || [];
+  }
+  function videoGuideHTML(url) {
+    var zh = state.lang === 'zh';
+    var watch = /youtube\.com\/watch\?v=([\w-]{6,})/.exec(url || '');
+    var openLink = '<a class="video-link" href="' + url + '" target="_blank" rel="noopener">▶ ' +
+      (watch ? (zh?'在 YouTube 打开':'Open on YouTube') : (zh?'查找视频教学':'Find video guides')) + '</a>';
+    if (!url) { return ''; }
+    if (watch && navigator.onLine) {
+      return '<div class="video-wrap"><iframe class="video-embed" src="https://www.youtube-nocookie.com/embed/' + watch[1] + '" ' +
+        'title="video guide" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>' + openLink;
+    }
+    if (watch && !navigator.onLine) {
+      return '<div class="video-offline muted">' + (zh?'离线状态，视频暂不可用':'Video unavailable offline') + '</div>' + openLink;
+    }
+    return openLink;
+  }
   function togglePlanDetail(si) {
-    var el = document.getElementById('plan-detail-' + si);
-    if (el) { el.hidden = !el.hidden; }
+    var el = document.getElementById('plan-detail-' + si); if (!el) { return; }
+    if (!el.hidden) { el.hidden = true; return; }
+    var zh = state.lang === 'zh';
+    var entry = planCtx.flat && planCtx.flat[si]; if (!entry) { return; }
+    var d = entry.session.detail;
+    if (!d) {
+      el.innerHTML = '<p class="muted">' + (zh?'此计划是旧版本生成的——点击「重新生成」查看动作详解。':'This plan was generated before exercise details existed — hit Regenerate to see them.') + '</p>';
+      el.hidden = false; return;
+    }
+    var desc = zh ? (d.description_zh || d.description) : (d.description || d.description_zh);
+    var ins = localList(d.instructions).map(function (s) { return '<li>' + s + '</li>'; }).join('');
+    var cues = localList(d.coaching_cues).map(function (s) { return '<li>' + s + '</li>'; }).join('');
+    var mis = localList(d.common_mistakes).map(function (s) { return '<li>' + s + '</li>'; }).join('');
+    el.innerHTML =
+      '<div class="chip-row">' +
+        (d.difficulty ? '<span class="chip-metric">' + diffLabel(d.difficulty) + '</span>' : '') +
+        (d.equipment ? '<span class="chip-metric">' + equipLabel(d.equipment) + '</span>' : '') + '</div>' +
+      (desc ? '<p class="plan-desc">' + desc + '</p>' : '') +
+      (ins ? '<div class="plan-sub">' + (zh?'怎么做':'How to do it') + '</div><ol class="plan-list">' + ins + '</ol>' : '') +
+      (cues ? '<div class="plan-sub">' + (zh?'要点提示':'Coaching cues') + '</div><ul class="plan-list">' + cues + '</ul>' : '') +
+      (mis ? '<div class="plan-sub">' + (zh?'常见错误':'Common mistakes') + '</div><ul class="plan-list">' + mis + '</ul>' : '') +
+      videoGuideHTML(d.video_url);
+    el.hidden = false;
   }
   function regeneratePlan() {
     var zh = state.lang === 'zh';
