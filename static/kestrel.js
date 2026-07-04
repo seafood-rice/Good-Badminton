@@ -134,7 +134,8 @@ window.Kestrel = (function () {
       var dur = v.duration_sec ? Math.floor(v.duration_sec/60)+':'+('0'+Math.round(v.duration_sec%60)).slice(-2) : '';
       return '<div class="vcard" role="button" tabindex="0" data-name="' + nm + '"><div class="vthumb" style="' + thumb + '">' +
         '<span class="vmode mono">' + modeLabel(v) + '</span>' +
-        '<span class="vdur mono">' + dur + '</span></div>' +
+        '<span class="vdur mono">' + dur + '</span>' +
+        '<button class="vdel" data-del="' + nm + '" aria-label="' + (state.lang==='zh'?'删除':'Delete') + '">🗑</button></div>' +
         '<div class="vbody"><div class="vname">' + v.name + '</div>' +
         '<div class="vdate mono">' + (v.date||'') + '</div>' +
         '<div class="vfoot">' + statusChip(v) + '</div></div></div>';
@@ -150,6 +151,16 @@ window.Kestrel = (function () {
           if (v.has_posture) modes.push('posture');
           openResults(v.name, modes[0], modes);
         } else { setScreen('new'); }
+      };
+    });
+    wrap.querySelectorAll('.vdel').forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();
+        var name = b.getAttribute('data-del');
+        openDeleteModal(name, 'all', function () {
+          if (state.resultsVideo === name) { state.resultsVideo = null; }
+          loadDashboard();
+        });
       };
     });
   }
@@ -538,7 +549,8 @@ window.Kestrel = (function () {
       '<div class="res-grid"><div><video class="res-video" controls src="' + vurl + '"></video></div>' +
         '<div><div class="res-section" id="rally-box"><h2>' + (zh?'回合':'Rallies') + '</h2>' +
           '<p class="muted" id="rally-info">' + (zh?'加载中…':'Loading…') + '</p>' +
-          '<button class="btn-primary" id="clip-btn" disabled>' + (zh?'生成回合剪辑':'Generate clips') + '</button>' +
+          '<button class="btn-primary" id="clip-btn" disabled>' + (zh?'生成回合剪辑':'Generate clips') + '</button> ' +
+          '<button class="btn-ghost danger-link" id="clips-del">🗑 ' + (zh?'删除剪辑':'Delete clips') + '</button>' +
           '<div id="clip-list" class="clip-list"></div></div></div></div>' +
       '<div class="res-section"><h2>' + (zh?'位置可视化':'Position visualization') + '</h2>' +
         '<div class="viz-row"><div class="viz-cell" id="viz-heat"><img class="res-viz" src="' + heat + '" alt="heatmap"><div class="viz-cap mono">' + (zh?'热力图':'Heatmap') + '</div></div>' +
@@ -546,8 +558,15 @@ window.Kestrel = (function () {
       '<div class="res-section" id="tech-box"><h2>' + (zh?'技术分析':'Technique analysis') + '</h2>' +
         '<p class="muted" id="tech-status">' + (zh?'加载中…':'Loading…') + '</p>' +
         '<div id="tech-summary"></div><div id="tech-strokes" class="stroke-list"></div><div id="tech-detail" class="rep-detail"></div></div>' +
-      '<div class="res-section" id="plan-box"></div>';
+      '<div class="res-section" id="plan-box"></div>' +
+      '<div class="res-section"><button class="btn-ghost danger-link" id="match-del">🗑 ' + (zh?'删除比赛结果':'Delete match results') + '</button></div>';
     renderPlanPanel(stem, 'match');
+    document.getElementById('match-del').onclick = function () {
+      openDeleteModal(stem, 'match', function () { afterModeDelete('match'); });
+    };
+    document.getElementById('clips-del').onclick = function () {
+      openDeleteModal(stem, 'clips', function () { renderResults(); });
+    };
 
     // Heatmap/scatter: hide the cell and show a note if the image is missing.
     ['viz-heat','viz-scat'].forEach(function (id) {
@@ -608,9 +627,13 @@ window.Kestrel = (function () {
           '<div class="res-section"><h2>' + (zh?'逐次':'Reps') + '</h2><ul id="rep-list" class="rep-list"></ul></div></div></div>' +
       '<div class="res-section rep-detail" id="rep-detail"></div>' +
       '<div class="res-section" id="plan-box"></div>' +
-      '<div class="res-section" id="report-box"></div>';
+      '<div class="res-section" id="report-box"></div>' +
+      '<div class="res-section"><button class="btn-ghost danger-link" id="posture-del">🗑 ' + (zh?'删除训练结果':'Delete drill results') + '</button></div>';
     renderPlanPanel(stem, 'posture');
     renderCoachReport(stem);
+    document.getElementById('posture-del').onclick = function () {
+      openDeleteModal(stem, 'posture', function () { afterModeDelete('posture'); });
+    };
     fetch('/api/posture/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
       var s = d.summary; postureCtx.reps = d.reps || [];
@@ -829,11 +852,14 @@ window.Kestrel = (function () {
       '<div class="plan-head"><h2>' + (zh?'教练报告':'Coach Report') + '</h2>' +
         '<div class="seg" role="tablist" aria-label="report language">' + REPORT_LANG_TABS.map(function (t) {
           return '<button class="seg-btn" data-rlang="' + t[0] + '" role="tab">' + t[1] + '</button>'; }).join('') + '</div>' +
-        '<span id="report-dl"></span></div>' +
+        '<span id="report-dl"></span>' +
+        '<button class="btn-ghost danger-link" id="report-del">🗑 ' + (zh?'删除报告':'Delete reports') + '</button></div>' +
       '<div id="report-body"><p class="muted">' + (zh?'加载中…':'Loading…') + '</p></div>';
     box.querySelectorAll('[data-rlang]').forEach(function (b) {
       b.onclick = function () { loadCoachReport(b.getAttribute('data-rlang')); };
     });
+    var rd = document.getElementById('report-del');
+    if (rd) { rd.onclick = function () { openDeleteModal(stem, 'reports', function () { renderResults(); }); }; }
     loadCoachReport(reportCtx.lang);
   }
   function loadCoachReport(lang) {
@@ -989,6 +1015,11 @@ window.Kestrel = (function () {
           if (err) { err.textContent = zh?'网络错误，请重试':'Network error — please try again'; }
         });
     };
+  }
+  function afterModeDelete(deletedMode) {
+    var remaining = (state.resultsModes || []).filter(function (m) { return m !== deletedMode; });
+    if (remaining.length) { openResults(state.resultsVideo, remaining[0], remaining); }
+    else { state.resultsVideo = null; setScreen('dashboard'); }
   }
   function setScreen(name) { state.screen = name; render(); }
   function render() {

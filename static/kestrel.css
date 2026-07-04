@@ -244,3 +244,5 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .vdel{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.45);border:none;
   border-radius:var(--radius-sm);color:#fff;padding:4px 8px;cursor:pointer;opacity:0;transition:opacity .15s;}
 .vcard:hover .vdel,.vdel:focus-visible{opacity:1;}
+.danger-link{color:var(--bad);border-color:var(--bad);}
+.danger-link:hover{color:#fff;background:var(--bad);border-color:var(--bad);}
