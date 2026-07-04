@@ -765,11 +765,11 @@ window.Kestrel = (function () {
     return (zh ? (block.zh || block.en) : (block.en || block.zh)) || [];
   }
   function videoGuideHTML(url) {
+    if (!url) { return ''; }
     var zh = state.lang === 'zh';
-    var watch = /youtube\.com\/watch\?v=([\w-]{6,})/.exec(url || '');
+    var watch = /youtube\.com\/watch\?v=([\w-]{6,})/.exec(url);
     var openLink = '<a class="video-link" href="' + url + '" target="_blank" rel="noopener">▶ ' +
       (watch ? (zh?'在 YouTube 打开':'Open on YouTube') : (zh?'查找视频教学':'Find video guides')) + '</a>';
-    if (!url) { return ''; }
     if (watch && navigator.onLine) {
       return '<div class="video-wrap"><iframe class="video-embed" src="https://www.youtube-nocookie.com/embed/' + watch[1] + '" ' +
         'title="' + (zh ? '视频教学' : 'video guide') + '" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>' + openLink;
@@ -781,7 +781,7 @@ window.Kestrel = (function () {
   }
   function togglePlanDetail(si) {
     var el = document.getElementById('plan-detail-' + si); if (!el) { return; }
-    if (!el.hidden) { el.hidden = true; return; }
+    if (!el.hidden) { el.hidden = true; el.innerHTML = ''; return; }
     var zh = state.lang === 'zh';
     var entry = planCtx.flat && planCtx.flat[si]; if (!entry) { return; }
     var d = entry.session.detail;
