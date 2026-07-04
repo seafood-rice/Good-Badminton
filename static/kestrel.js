@@ -607,8 +607,10 @@ window.Kestrel = (function () {
         '<div><div class="res-section" id="drill-summary"><p class="muted">' + (zh?'加载中…':'Loading…') + '</p></div>' +
           '<div class="res-section"><h2>' + (zh?'逐次':'Reps') + '</h2><ul id="rep-list" class="rep-list"></ul></div></div></div>' +
       '<div class="res-section rep-detail" id="rep-detail"></div>' +
-      '<div class="res-section" id="plan-box"></div>';
+      '<div class="res-section" id="plan-box"></div>' +
+      '<div class="res-section" id="report-box"></div>';
     renderPlanPanel(stem, 'posture');
+    renderCoachReport(stem);
     fetch('/api/posture/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
       var s = d.summary; postureCtx.reps = d.reps || [];
@@ -815,6 +817,68 @@ window.Kestrel = (function () {
       }).catch(function () {
         btn.disabled = false; btn.textContent = '↻ ' + (zh?'重新生成':'Regenerate');
         alert(zh ? '网络错误，请重试' : 'Network error — please try again');
+      });
+  }
+  var reportCtx = { stem: null, lang: 'zh-Hans' };
+  var REPORT_LANG_TABS = [['en', 'EN'], ['zh-Hant', '繁體'], ['zh-Hans', '簡體']];
+  function renderCoachReport(stem) {
+    reportCtx.stem = stem;
+    var box = document.getElementById('report-box'); if (!box) { return; }
+    var zh = state.lang === 'zh';
+    box.innerHTML =
+      '<div class="plan-head"><h2>' + (zh?'教练报告':'Coach Report') + '</h2>' +
+        '<div class="seg" role="tablist" aria-label="report language">' + REPORT_LANG_TABS.map(function (t) {
+          return '<button class="seg-btn" data-rlang="' + t[0] + '" role="tab">' + t[1] + '</button>'; }).join('') + '</div>' +
+        '<span id="report-dl"></span></div>' +
+      '<div id="report-body"><p class="muted">' + (zh?'加载中…':'Loading…') + '</p></div>';
+    box.querySelectorAll('[data-rlang]').forEach(function (b) {
+      b.onclick = function () { loadCoachReport(b.getAttribute('data-rlang')); };
+    });
+    loadCoachReport(reportCtx.lang);
+  }
+  function loadCoachReport(lang) {
+    reportCtx.lang = lang;
+    var zh = state.lang === 'zh';
+    document.querySelectorAll('#report-box [data-rlang]').forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-rlang') === lang);
+      b.setAttribute('aria-selected', b.getAttribute('data-rlang') === lang ? 'true' : 'false');
+    });
+    fetch('/api/posture-report/' + reportCtx.stem + '?lang=' + lang)
+      .then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+        var body = document.getElementById('report-body'); if (!body) { return; }
+        if (!d) {
+          body.innerHTML = '<p class="muted">' + (zh?'暂无教练报告（完成姿态分析后生成）':'No coach report yet (produced by a posture analysis)') + '</p>';
+          var dl0 = document.getElementById('report-dl'); if (dl0) { dl0.innerHTML = ''; }
+          return;
+        }
+        var h = d.header || {}, s = d.summary || {};
+        var html = '<div class="report-head mono">' + (h.stroke_label || h.stroke || '') +
+          ' · ' + (h.rep_count || 0) + ' reps' + (h.date ? ' · ' + h.date : '') + '</div>';
+        if (s.verdict_text) { html += '<p class="report-verdict">' + s.verdict_text + '</p>'; }
+        (d.strengths || []).forEach(function (x) {
+          html += '<div class="report-card good"><b>' + (x.metric_label || x.metric) + '</b>' +
+            (x.impact_label ? ' <span class="chip-metric">' + x.impact_label + '</span>' : '') +
+            '<div>' + (x.text || '') + '</div></div>';
+        });
+        (d.weaknesses || []).forEach(function (x) {
+          var ideal = (Array.isArray(x.ideal_range) && x.ideal_range.length >= 2) ? (x.ideal_range[0] + '–' + x.ideal_range[1]) : '';
+          html += '<div class="report-card bad"><b>' + (x.metric_label || x.metric) + '</b>' +
+            (x.impact_label ? ' <span class="chip-metric">' + x.impact_label + '</span>' : '') +
+            '<div class="mono report-nums">' + (x.measured !== null && x.measured !== undefined ? x.measured : '—') +
+              (ideal ? ' (' + ideal + ')' : '') + '</div>' +
+            (x.mechanism_text ? '<div>' + x.mechanism_text + '</div>' : '') +
+            (x.drill_text ? '<div class="report-drill">' + x.drill_text + '</div>' : '') + '</div>';
+        });
+        body.innerHTML = html;
+        var dl = document.getElementById('report-dl');
+        if (dl) {
+          dl.innerHTML =
+            '<a class="video-link" href="/api/output/' + reportCtx.stem + '/posture/coach_report_' + lang + '.html" target="_blank" rel="noopener">HTML</a> ' +
+            '<a class="video-link" href="/api/output/' + reportCtx.stem + '/posture/coach_report_' + lang + '.pdf" target="_blank" rel="noopener">PDF</a>';
+        }
+      }).catch(function () {
+        var body = document.getElementById('report-body');
+        if (body) { body.innerHTML = '<p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; }
       });
   }
   function setScreen(name) { state.screen = name; render(); }
