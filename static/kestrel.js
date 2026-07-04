@@ -545,7 +545,9 @@ window.Kestrel = (function () {
           '<div class="viz-cell" id="viz-scat"><img class="res-viz" src="' + scat + '" alt="scatter"><div class="viz-cap mono">' + (zh?'散点图':'Scatter') + '</div></div></div></div>' +
       '<div class="res-section" id="tech-box"><h2>' + (zh?'技术分析':'Technique analysis') + '</h2>' +
         '<p class="muted" id="tech-status">' + (zh?'加载中…':'Loading…') + '</p>' +
-        '<div id="tech-summary"></div><div id="tech-strokes" class="stroke-list"></div><div id="tech-detail" class="rep-detail"></div></div>';
+        '<div id="tech-summary"></div><div id="tech-strokes" class="stroke-list"></div><div id="tech-detail" class="rep-detail"></div></div>' +
+      '<div class="res-section" id="plan-box"></div>';
+    renderPlanPanel(stem, 'match');
 
     // Heatmap/scatter: hide the cell and show a note if the image is missing.
     ['viz-heat','viz-scat'].forEach(function (id) {
@@ -604,7 +606,9 @@ window.Kestrel = (function () {
         '<div id="rep-scrubber" class="scrubber"></div></div>' +
         '<div><div class="res-section" id="drill-summary"><p class="muted">' + (zh?'加载中…':'Loading…') + '</p></div>' +
           '<div class="res-section"><h2>' + (zh?'逐次':'Reps') + '</h2><ul id="rep-list" class="rep-list"></ul></div></div></div>' +
-      '<div class="res-section rep-detail" id="rep-detail"></div>';
+      '<div class="res-section rep-detail" id="rep-detail"></div>' +
+      '<div class="res-section" id="plan-box"></div>';
+    renderPlanPanel(stem, 'posture');
     fetch('/api/posture/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d || !d.summary) { document.getElementById('drill-summary').innerHTML = '<p class="muted">' + (zh?'暂无姿态数据':'No posture data yet') + '</p>'; return; }
       var s = d.summary; postureCtx.reps = d.reps || [];
@@ -678,6 +682,94 @@ window.Kestrel = (function () {
         if (d.ok && d.url) { var a = document.createElement('a'); a.href = d.url; a.download = 'rep_' + rep.rep_id + '.mp4'; document.body.appendChild(a); a.click(); a.remove(); }
         else { alert(zh ? (d.error || '生成失败') : 'Clip generation failed'); } })
       .catch(function () { btn.disabled = false; btn.textContent = '⬇ ' + (zh?'下载本次':'Download this rep'); alert(zh ? '网络错误，请重试' : 'Network error — please try again'); });
+  }
+  var planCtx = { stem: null, mode: 'match', plan: null, loc: 'court' };
+  var PHASE_LABELS = { Foundation: ['基础期', 'Foundation'], Progression: ['进阶期', 'Progression'] };
+  function phaseLabel(p) { var m = PHASE_LABELS[p]; return m ? (state.lang==='zh'?m[0]:m[1]) : p; }
+  function sessionName(s) {
+    if (state.lang === 'zh' && s.detail && s.detail.name_zh) { return s.detail.name_zh; }
+    return s.name;
+  }
+  function renderPlanPanel(stem, mode) {
+    planCtx = { stem: stem, mode: mode, plan: null, loc: 'court' };
+    var box = document.getElementById('plan-box'); if (!box) { return; }
+    var zh = state.lang === 'zh';
+    box.innerHTML = '<h2>' + (zh?'训练计划':'Training Plan') + '</h2><p class="muted">' + (zh?'加载中…':'Loading…') + '</p>';
+    var url = (mode === 'posture' ? '/api/posture-plan/' : '/api/training-plan/') + stem;
+    fetch(url).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      var b = document.getElementById('plan-box'); if (!b) { return; }
+      if (!d || !d.weeks) {
+        b.innerHTML = '<h2>' + (zh?'训练计划':'Training Plan') + '</h2><p class="muted">' + (zh?'暂无训练计划（需先完成分析）':'No training plan yet (run an analysis first)') + '</p>';
+        return;
+      }
+      planCtx.plan = d;
+      b.innerHTML =
+        '<div class="plan-head"><h2>' + (zh?'训练计划':'Training Plan') + '</h2>' +
+          '<div class="seg" role="tablist" aria-label="location">' +
+            '<button class="seg-btn" data-loc="court" role="tab">' + (zh?'场上':'On-Court') + '</button>' +
+            '<button class="seg-btn" data-loc="home" role="tab">' + (zh?'居家':'At-Home') + '</button>' +
+          '</div>' +
+          '<button class="btn-ghost" id="plan-regen">↻ ' + (zh?'重新生成':'Regenerate') + '</button></div>' +
+        '<div id="plan-weeks"></div>';
+      b.querySelectorAll('[data-loc]').forEach(function (t) {
+        t.onclick = function () { planCtx.loc = t.getAttribute('data-loc'); renderPlanWeeks(); };
+      });
+      document.getElementById('plan-regen').onclick = regeneratePlan;
+      renderPlanWeeks();
+    }).catch(function () {
+      var b = document.getElementById('plan-box');
+      if (b) { b.innerHTML = '<h2>' + (zh?'训练计划':'Training Plan') + '</h2><p class="muted">' + (zh?'加载失败':'Failed to load') + '</p>'; }
+    });
+  }
+  function renderPlanWeeks() {
+    var wrap = document.getElementById('plan-weeks'); if (!wrap || !planCtx.plan) { return; }
+    var zh = state.lang === 'zh';
+    document.querySelectorAll('#plan-box [data-loc]').forEach(function (t) {
+      t.classList.toggle('on', t.getAttribute('data-loc') === planCtx.loc);
+      t.setAttribute('aria-selected', t.getAttribute('data-loc') === planCtx.loc ? 'true' : 'false');
+    });
+    planCtx.flat = [];
+    var html = '';
+    (planCtx.plan.weeks || []).forEach(function (wk) {
+      var rows = (wk.sessions || []).filter(function (s) { return s.location === planCtx.loc; });
+      if (!rows.length) { return; }
+      html += '<div class="plan-week"><div class="plan-week-head mono">' +
+        (zh ? ('第 ' + wk.week + ' 周') : ('Week ' + wk.week)) + ' · ' + phaseLabel(wk.phase) + '</div>';
+      rows.forEach(function (s) {
+        var si = planCtx.flat.length;
+        planCtx.flat.push({ week: wk.week, phase: wk.phase, session: s });
+        html += '<button class="plan-row" data-si="' + si + '">' +
+          '<span class="plan-name">' + sessionName(s) + '</span>' +
+          '<span class="plan-meta mono">' + s.sets + '×' + s.reps +
+            ' · ' + s.frequency_per_week + '×/' + (zh?'周':'wk') +
+            (s.duration_min ? ' · ' + s.duration_min + 'min' : '') + '</span></button>' +
+          '<div class="plan-detail" id="plan-detail-' + si + '" hidden></div>';
+      });
+      html += '</div>';
+    });
+    wrap.innerHTML = html || '<p class="muted">' + (zh?'本视图暂无训练项目':'Nothing scheduled for this view') + '</p>';
+    wrap.querySelectorAll('.plan-row').forEach(function (r) {
+      r.onclick = function () { togglePlanDetail(Number(r.getAttribute('data-si'))); };
+    });
+  }
+  function togglePlanDetail(si) {
+    var el = document.getElementById('plan-detail-' + si);
+    if (el) { el.hidden = !el.hidden; }
+  }
+  function regeneratePlan() {
+    var zh = state.lang === 'zh';
+    var btn = document.getElementById('plan-regen'); if (!btn) { return; }
+    btn.disabled = true; btn.textContent = zh?'生成中…':'Regenerating…';
+    var url = (planCtx.mode === 'posture' ? '/api/posture-plan/' : '/api/training-plan/') + planCtx.stem;
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ weeks: 4 }) })
+      .then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+        btn.disabled = false; btn.textContent = '↻ ' + (zh?'重新生成':'Regenerate');
+        if (d && d.weeks) { planCtx.plan = d; renderPlanWeeks(); }
+        else { alert(zh?'生成失败':'Failed to regenerate'); }
+      }).catch(function () {
+        btn.disabled = false; btn.textContent = '↻ ' + (zh?'重新生成':'Regenerate');
+        alert(zh ? '网络错误，请重试' : 'Network error — please try again');
+      });
   }
   function setScreen(name) { state.screen = name; render(); }
   function render() {
