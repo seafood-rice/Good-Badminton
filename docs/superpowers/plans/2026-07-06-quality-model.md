@@ -83,9 +83,11 @@ def test_translation_invariance():
 def test_mirroring_flips_x_and_swaps_sides():
     plain = normalize_window(_frames(30)).reshape(TARGET_FRAMES, 17, 2)
     mirrored = normalize_window(_frames(30), mirror=True).reshape(TARGET_FRAMES, 17, 2)
-    # mirrored right wrist should equal plain left-wrist slot with negated x
-    assert np.allclose(mirrored[:, 10, 0], -plain[:, 9, 0], atol=1e-5)
-    assert np.allclose(mirrored[:, 10, 1], plain[:, 9, 1], atol=1e-5)
+    # valid R wrist (idx 10) lands in the L-wrist slot (idx 9) with negated x
+    assert np.allclose(mirrored[:, 9, 0], -plain[:, 10, 0], atol=1e-5)
+    assert np.allclose(mirrored[:, 9, 1], plain[:, 10, 1], atol=1e-5)
+    # sentinel joints stay masked at zero in both
+    assert np.allclose(mirrored[:, 0], 0.0, atol=1e-5)
 
 
 def test_time_resampling_short_and_long():
@@ -133,20 +135,33 @@ def _resample(seq, target):
 def normalize_window(frames, mirror=False, target=TARGET_FRAMES):
     """(target, 34) float32 pose sequence: hip-centered, torso-scaled, resampled.
 
-    frames: per-frame dicts with "keypoints" (17x2 or None). Returns None when
-    fewer than _MIN_POSED frames carry keypoints.
+    frames: per-frame dicts with "keypoints" (17x2 or None). A joint with
+    x<=1 and-or y<=1 is treated as an undetected sentinel (codebase convention)
+    and masked to 0 in the output (the body-center origin). Frames without two
+    valid hips are dropped. Returns None when fewer than _MIN_POSED usable
+    frames remain.
     """
-    posed = [np.asarray(f["keypoints"], dtype=float) for f in frames
-             if f.get("keypoints") is not None]
+    posed = []
+    for f in frames:
+        kp = f.get("keypoints")
+        if kp is None:
+            continue
+        kp = np.asarray(kp, dtype=float)
+        if (kp[L_HIP][0] > 1.0 and kp[L_HIP][1] > 1.0
+                and kp[R_HIP][0] > 1.0 and kp[R_HIP][1] > 1.0):
+            posed.append(kp)
     if len(posed) < _MIN_POSED:
         return None
     seq = np.stack(posed)                                   # (N, 17, 2)
-    hips = (seq[:, L_HIP] + seq[:, R_HIP]) / 2.0            # (N, 2)
+    valid = (seq[..., 0] > 1.0) & (seq[..., 1] > 1.0)       # (N, 17)
+    hips = (seq[:, L_HIP] + seq[:, R_HIP]) / 2.0
     seq = seq - hips[:, None, :]
     shoulders = (seq[:, L_SHO] + seq[:, R_SHO]) / 2.0
-    torso = np.linalg.norm(shoulders, axis=1)               # hip->shoulder length
-    scale = float(np.median(torso[torso > 1e-6])) if np.any(torso > 1e-6) else 1.0
+    torso = np.linalg.norm(shoulders, axis=1)
+    torso_ok = valid[:, L_SHO] & valid[:, R_SHO] & (torso > 1e-6)
+    scale = float(np.median(torso[torso_ok])) if np.any(torso_ok) else 1.0
     seq = seq / max(scale, 1e-6)
+    seq[~valid] = 0.0                                       # sentinels -> body-center
     if mirror:
         seq[:, :, 0] = -seq[:, :, 0]
         for a, b in _SWAP:
