@@ -55,7 +55,7 @@ def build_drill_summary(reports, stroke_type):
     def _ranked(counter):
         return [{"metric": m, "count": c} for m, c in counter.most_common()]
 
-    return {
+    summary = {
         "stroke_type": stroke_type,
         "rep_count": len(reports),
         "mean_score": mean_score,
@@ -66,3 +66,7 @@ def build_drill_summary(reports, stroke_type):
         "recurring_weaknesses": _ranked(weakness_counter),
         "strengths": _ranked(strength_counter),
     }
+    ai_scores = [r["ai_score"] for r in reports if r.get("ai_score") is not None]
+    if ai_scores:
+        summary["mean_ai_score"] = round(sum(ai_scores) / len(ai_scores), 1)
+    return summary

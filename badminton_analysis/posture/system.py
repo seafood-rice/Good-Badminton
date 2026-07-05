@@ -26,12 +26,13 @@ class PostureRunner:
     """Post-loop orchestration: reps -> per-rep StrokeEvent -> biomechanical reports."""
 
     def __init__(self, analyzer, stroke_type, dominant="right",
-                 window_pre=20, window_post=15):
+                 window_pre=20, window_post=15, quality_scorer=None):
         self.analyzer = analyzer
         self.stroke_type = stroke_type
         self.dominant = dominant
         self.window_pre = window_pre
         self.window_post = window_post
+        self.quality_scorer = quality_scorer
 
     def _window_frames(self, window_start, window_end, frame_lookup):
         frames = []
@@ -64,6 +65,10 @@ class PostureRunner:
             window_frames = self._window_frames(rep.window_start, rep.window_end, frame_lookup)
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
+            if self.quality_scorer is not None:
+                ai = self.quality_scorer.score(window_frames, dominant=self.dominant)
+                if ai is not None:
+                    report["ai_score"] = ai
             reports.append(report)
         return reports, reps
 
@@ -76,7 +81,7 @@ class PostureAnalysisSystem:
                  show_overlay=True, pose_model="weights/yolo11n-pose.pt",
                  pose_family="yolo-pose", pose_mode="balanced",
                  yolo_pose_model="weights/yolo11n-pose.pt",
-                 report_llm="off", racket_model_path=None):
+                 report_llm="off", racket_model_path=None, quality_model_path=None):
         if not os.path.exists(video_path):
             raise FileNotFoundError("Input video not found: " + video_path)
         self.video_path = video_path
@@ -93,6 +98,8 @@ class PostureAnalysisSystem:
         self.racket_model_path = racket_model_path
         self._racket_detector = None
         self._racket_stats = {"detected": 0, "inferred": 0}
+        self.quality_model_path = quality_model_path
+        self._quality_scorer = None
 
         self.video_name = os.path.basename(video_path).rsplit(".", 1)[0]
         self.save_dir = output_dir or os.path.join("outputs", self.video_name, "posture")
@@ -158,6 +165,7 @@ class PostureAnalysisSystem:
 
         pose = self._build_pose_processor()
         self._build_racket_detector()
+        self._build_quality_scorer()
         print(format_progress(5, "loading"), flush=True)
         ball_model = None
         if self.ball_model_path and os.path.exists(self.ball_model_path):
@@ -193,7 +201,8 @@ class PostureAnalysisSystem:
 
         print(format_progress(88, "scoring"), flush=True)
         runner = PostureRunner(BiomechanicalAnalyzer(dominant=self.dominant_hand),
-                               stroke_type=self.stroke_type, dominant=self.dominant_hand)
+                               stroke_type=self.stroke_type, dominant=self.dominant_hand,
+                               quality_scorer=self._quality_scorer)
         reports, reps = runner.run(self._track, self._frames.get, fps)
 
         write_rep_reports(os.path.join(self.save_dir, "drill_reps.jsonl"), reports)
@@ -208,6 +217,8 @@ class PostureAnalysisSystem:
             "racket": {"detected_frames": self._racket_stats["detected"],
                        "inferred_frames": self._racket_stats["inferred"],
                        "model": self.racket_model_path},
+            "quality": {"model": self.quality_model_path if self._quality_scorer else None,
+                        "scored_reps": sum(1 for r in reports if "ai_score" in r)},
         })
         print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
@@ -227,6 +238,19 @@ class PostureAnalysisSystem:
         except Exception as e:
             print("Racket detector unavailable (" + str(e) + "); using wrist inference.")
             self._racket_detector = None
+
+    def _build_quality_scorer(self):
+        """Optional learned form scorer; analysis proceeds on failure."""
+        if not self.quality_model_path or self.stroke_type != "high_clear":
+            return
+        try:
+            from ..quality.scorer import QualityScorer
+            scorer = QualityScorer(model_path=self.quality_model_path,
+                                   stroke_type=self.stroke_type)
+            self._quality_scorer = scorer if scorer.available else None
+        except Exception as e:
+            print("Quality scorer unavailable (" + str(e) + "); rule-based only.")
+            self._quality_scorer = None
 
     def _resolve_racket_head(self, frame, kp, ja):
         if self._racket_detector is not None:
