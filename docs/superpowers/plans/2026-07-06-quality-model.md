@@ -32,7 +32,7 @@
 **Interfaces:**
 - Produces (Tasks 2/4 consume):
   - `TARGET_FRAMES = 64`
-  - `normalize_window(frames, mirror=False, target=TARGET_FRAMES) -> np.ndarray | None` — input: list of per-frame dicts with `"keypoints"` (17×2 array or None, COCO order); output: float32 array `(target, 34)` — hip-centered, torso-scaled, time-resampled; `None` when fewer than 8 frames carry keypoints.
+  - `normalize_window(frames, mirror=False, target=TARGET_FRAMES) -> np.ndarray | None` — input: list of per-frame dicts with `"keypoints"` (17×2 array or None, COCO order); output: float32 array `(target, 34)` — hip-centered, torso-scaled, time-resampled, with sentinel joints (x<=1 or y<=1) masked to 0; frames lacking two valid hips are dropped; `None` when fewer than 8 usable frames remain.
   - Constants `L_SHO, R_SHO, L_HIP, R_HIP = 5, 6, 11, 12` (COCO indices).
 
 - [ ] **Step 1: Write the failing tests**

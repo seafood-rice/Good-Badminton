@@ -56,3 +56,26 @@ def test_time_resampling_short_and_long():
 def test_none_when_too_few_posed_frames():
     frames = [{"keypoints": None}] * 30 + _frames(5)
     assert normalize_window(frames) is None
+
+
+def test_hip_invalid_frames_are_dropped_from_count():
+    bad = _kp()
+    bad[11] = (0.0, 0.0)
+    bad[12] = (0.0, 0.0)
+    frames = [{"keypoints": bad} for _ in range(10)] + _frames(5)
+    assert normalize_window(frames) is None  # only 5 usable < 8
+
+
+def test_shoulder_invalid_frames_excluded_from_scale():
+    clean = _frames(8)
+    noshoulder = []
+    for _ in range(8):
+        kp = _kp()
+        kp[5] = (0.0, 0.0)
+        kp[6] = (0.0, 0.0)
+        noshoulder.append({"keypoints": kp})
+    mixed = normalize_window(clean + noshoulder).reshape(TARGET_FRAMES, 17, 2)
+    baseline = normalize_window(clean).reshape(TARGET_FRAMES, 17, 2)
+    # valid-frame torso scale must match the clean baseline (sentinel shoulders
+    # must not skew the median); compare the wrist trajectory magnitude
+    assert abs(np.linalg.norm(mixed[0, 10]) - np.linalg.norm(baseline[0, 10])) < 1e-5

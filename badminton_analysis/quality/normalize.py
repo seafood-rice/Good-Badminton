@@ -24,10 +24,10 @@ def normalize_window(frames, mirror=False, target=TARGET_FRAMES):
     """(target, 34) float32 pose sequence: hip-centered, torso-scaled, resampled.
 
     frames: per-frame dicts with "keypoints" (17x2 or None). A joint with
-    x<=1 and-or y<=1 is treated as an undetected sentinel (codebase convention)
+    x<=1 and/or y<=1 is treated as an undetected sentinel (codebase convention)
     and masked to 0 in the output (the body-center origin). Frames without two
     valid hips are dropped. Returns None when fewer than _MIN_POSED usable
-    frames remain.
+    frames remain. Falls back to scale 1.0 when no frame has two valid shoulders.
     """
     posed = []
     for f in frames:
