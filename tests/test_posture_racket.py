@@ -1,0 +1,61 @@
+import numpy as np
+import pytest
+
+from badminton_analysis.posture.system import PostureAnalysisSystem
+import badminton_analysis.analysis.joint_angles as ja
+
+
+def _system(tmp_path, **kwargs):
+    video = tmp_path / "drill.mp4"
+    video.write_bytes(b"x")  # ctor only checks existence
+    return PostureAnalysisSystem(str(video), "high_clear",
+                                 output_dir=str(tmp_path / "out"), **kwargs)
+
+
+def _kp():
+    kp = np.zeros((17, 2), dtype=float)
+    kp[ja.R_ELBOW] = (100.0, 100.0)
+    kp[ja.R_WRIST] = (120.0, 80.0)
+    return kp
+
+
+class _FakeDetector:
+    def __init__(self, point):
+        self.point = point
+        self.calls = 0
+
+    def detect_racket_head(self, frame, roi_corners=None):
+        self.calls += 1
+        return self.point
+
+
+def test_detector_result_wins(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector((5.0, 6.0))
+    head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head == (5.0, 6.0)
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+
+
+def test_fallback_when_detector_returns_none(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector(None)
+    head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None  # wrist inference produced a point
+    assert sys_._racket_stats == {"detected": 0, "inferred": 1}
+
+
+def test_fallback_when_no_detector(tmp_path):
+    sys_ = _system(tmp_path)
+    assert sys_._racket_detector is None
+    head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None
+    assert sys_._racket_stats == {"detected": 0, "inferred": 1}
+
+
+def test_missing_weights_path_does_not_raise(tmp_path):
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "nope.pt"))
+    sys_._build_racket_detector()
+    assert sys_._racket_detector is None or sys_._racket_detector.model is None
+    head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None

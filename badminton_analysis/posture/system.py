@@ -76,7 +76,7 @@ class PostureAnalysisSystem:
                  show_overlay=True, pose_model="weights/yolo11n-pose.pt",
                  pose_family="yolo-pose", pose_mode="balanced",
                  yolo_pose_model="weights/yolo11n-pose.pt",
-                 report_llm="off"):
+                 report_llm="off", racket_model_path=None):
         if not os.path.exists(video_path):
             raise FileNotFoundError("Input video not found: " + video_path)
         self.video_path = video_path
@@ -90,6 +90,9 @@ class PostureAnalysisSystem:
         self.pose_mode = pose_mode
         self.yolo_pose_model = yolo_pose_model
         self.report_llm = report_llm
+        self.racket_model_path = racket_model_path
+        self._racket_detector = None
+        self._racket_stats = {"detected": 0, "inferred": 0}
 
         self.video_name = os.path.basename(video_path).rsplit(".", 1)[0]
         self.save_dir = output_dir or os.path.join("outputs", self.video_name, "posture")
@@ -154,6 +157,7 @@ class PostureAnalysisSystem:
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
         pose = self._build_pose_processor()
+        self._build_racket_detector()
         print(format_progress(5, "loading"), flush=True)
         ball_model = None
         if self.ball_model_path and os.path.exists(self.ball_model_path):
@@ -201,12 +205,37 @@ class PostureAnalysisSystem:
             "mode": "posture", "stroke_type": self.stroke_type,
             "dominant_hand": self.dominant_hand,
             "pose_family": self.pose_family,
+            "racket": {"detected_frames": self._racket_stats["detected"],
+                       "inferred_frames": self._racket_stats["inferred"],
+                       "model": self.racket_model_path},
         })
         print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
         print("Posture analysis: " + str(len(reports)) + " reps -> " + self.save_dir)
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
+        print("Racket source: %d detected / %d inferred"
+              % (self._racket_stats["detected"], self._racket_stats["inferred"]), flush=True)
         return reports
+
+    def _build_racket_detector(self):
+        """Optional trained racket detector; analysis proceeds on failure."""
+        if not self.racket_model_path:
+            return
+        try:
+            from ..detection.racket import RacketDetector
+            self._racket_detector = RacketDetector(model_path=self.racket_model_path)
+        except Exception as e:
+            print("Racket detector unavailable (" + str(e) + "); using wrist inference.")
+            self._racket_detector = None
+
+    def _resolve_racket_head(self, frame, kp, ja):
+        if self._racket_detector is not None:
+            head = self._racket_detector.detect_racket_head(frame)
+            if head is not None:
+                self._racket_stats["detected"] += 1
+                return head
+        self._racket_stats["inferred"] += 1
+        return ja.infer_racket_head(kp, dominant=self.dominant_hand)
 
     def _capture_frame(self, frame, frame_count, pose, ball_model, dom_wrist,
                        ja, draw_technique_overlay, draw_skeleton):
@@ -228,7 +257,7 @@ class PostureAnalysisSystem:
             draw_skeleton(frame, kp, conf=conf_row)
             if ja.is_valid(kp, dom_wrist, conf_row):
                 wrist = (float(kp[dom_wrist][0]), float(kp[dom_wrist][1]))
-            racket_head = ja.infer_racket_head(kp, dominant=self.dominant_hand)
+            racket_head = self._resolve_racket_head(frame, kp, ja)
             # centroid = hip midpoint when available, else mean of valid points
             if ja.is_valid(kp, ja.L_HIP, conf_row) and ja.is_valid(kp, ja.R_HIP, conf_row):
                 centroid = (float((kp[ja.L_HIP][0] + kp[ja.R_HIP][0]) / 2),

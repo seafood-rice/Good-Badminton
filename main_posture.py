@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--display", choices=["true", "false"], default="false")
     parser.add_argument("--report-llm", default="off",
                         help="LLM polish spec 'provider:model' or 'off' (default off)")
+    parser.add_argument("--racket-model", default=None,
+                        help="Trained racket detector weights (optional)")
     args = parser.parse_args()
 
     from badminton_analysis.posture.system import PostureAnalysisSystem
@@ -41,6 +43,7 @@ def main():
         pose_mode=args.pose_mode,
         yolo_pose_model=args.yolo_pose_model,
         report_llm=args.report_llm,
+        racket_model_path=args.racket_model,
     )
     system.process_video()
 
