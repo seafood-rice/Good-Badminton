@@ -17,6 +17,7 @@ weights/
 
 # Training datasets (downloaded separately)
 data/
+runs/
 
 # Uploaded videos
 videos/

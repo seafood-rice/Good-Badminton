@@ -79,8 +79,19 @@ def test_build_yaml_prefers_existing_yaml(tmp_path):
         encoding="utf-8")
     out = build_dataset_yaml(tmp_path, tmp_path / "racketdb.yaml")
     text = out.read_text(encoding="utf-8")
-    assert str(tmp_path) in text
+    assert tmp_path.resolve().as_posix() in text
     assert "/somewhere/else" not in text
+
+
+def test_build_yaml_rewrites_parent_relative_splits(tmp_path):
+    (tmp_path / "data.yaml").write_text(
+        "train: ../train/images\nval: ../valid/images\nnc: 1\nnames: ['racket']\n",
+        encoding="utf-8")
+    out = build_dataset_yaml(tmp_path, tmp_path / "racketdb.yaml")
+    text = out.read_text(encoding="utf-8")
+    assert "../" not in text
+    assert "train/images" in text and "valid/images" in text
+    assert tmp_path.resolve().as_posix() in text
 
 
 def test_build_yaml_from_discovered_splits(tmp_path):
@@ -90,6 +101,7 @@ def test_build_yaml_from_discovered_splits(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "names:" in text and "racket" in text
     assert "train" in text and "valid" in text
+    assert "\\" not in text
 
 
 def test_build_yaml_fails_clearly_when_empty(tmp_path):
@@ -122,8 +134,8 @@ License note: the RacketDB repository states no license. Weights trained on it a
 local/personal use; do not commit or redistribute them until the license is clarified.
 """
 import argparse
+import re
 import shutil
-import sys
 from pathlib import Path
 
 _DOWNLOAD_HELP = (
@@ -166,26 +178,25 @@ def build_dataset_yaml(root, out_path):
     out_path = Path(out_path)
     existing = find_dataset_yaml(root)
     if existing is not None:
-        lines = []
-        wrote_path = False
-        for line in existing.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("path:"):
-                lines.append("path: " + str(root.resolve()))
-                wrote_path = True
-            else:
-                lines.append(line)
-        if not wrote_path:
-            lines.insert(0, "path: " + str(root.resolve()))
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        import yaml as _yaml  # pyyaml ships with ultralytics
+        data = _yaml.safe_load(existing.read_text(encoding="utf-8")) or {}
+        data["path"] = root.resolve().as_posix()
+        for key in ("train", "val", "test"):
+            v = data.get(key)
+            if isinstance(v, str):
+                data[key] = re.sub(r"^(\.\./)+|^\./", "", v.replace("\\", "/"))
+        data.setdefault("nc", 1)
+        data.setdefault("names", ["racket"])
+        out_path.write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         return out_path
     splits = discover_splits(root)
     if splits is None:
         raise SystemExit(_DOWNLOAD_HELP % root)
-    lines = ["path: " + str(root.resolve()),
-             "train: " + str(splits["train"].relative_to(root))]
-    lines.append("val: " + str((splits["val"] or splits["train"]).relative_to(root)))
+    lines = ["path: " + root.resolve().as_posix(),
+             "train: " + splits["train"].relative_to(root).as_posix()]
+    lines.append("val: " + (splits["val"] or splits["train"]).relative_to(root).as_posix())
     if splits["test"] is not None:
-        lines.append("test: " + str(splits["test"].relative_to(root)))
+        lines.append("test: " + splits["test"].relative_to(root).as_posix())
     lines += ["nc: 1", "names: ['racket']"]
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path
@@ -252,12 +263,12 @@ data/
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_train_racket_script.py -v`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 6: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `192 passed` (187 + 5).
+Expected: `193 passed` (187 + 6).
 
 - [ ] **Step 7: Commit**
 
@@ -434,7 +445,7 @@ Expected: PASS (4 tests).
 - [ ] **Step 5: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `196 passed` (192 + 4). Existing posture tests construct the system without the new kwarg — the default keeps them green; `--help` on `main_posture.py` still works: `./.venv/Scripts/python.exe main_posture.py --help` exits 0.
+Expected: `197 passed` (193 + 4). Existing posture tests construct the system without the new kwarg — the default keeps them green; `--help` on `main_posture.py` still works: `./.venv/Scripts/python.exe main_posture.py --help` exits 0.
 
 - [ ] **Step 6: Commit**
 
@@ -513,7 +524,7 @@ Expected: PASS (6 tests).
 - [ ] **Step 5: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `198 passed` (196 + 2).
+Expected: `199 passed` (197 + 2).
 
 - [ ] **Step 6: Commit**
 
@@ -556,7 +567,7 @@ Record final val mAP50 / mAP50-95. Compare against the RacketDB paper's YOLOv8n 
 
 - [ ] **Step 5: E2E on IMG_1270**
 
-Save the current `outputs/IMG_1270/posture/drill_reps.jsonl` wrist_flexion measured values (baseline). Re-run posture analysis via the API or `main_posture.py --video-path videos/IMG_1270.mov --stroke-type high_clear --racket-model weights/yolo11n-racket.pt --output-dir <scratch>` (scratch output dir — do NOT overwrite the real fixtures). Verify: `metadata.json` `racket.model` set and `detected_frames` a solid majority; wrist_flexion measured values shifted off 180. Suite green (`198 passed`), and with the weights file temporarily renamed away, `_racket_weights()` returns None (behavior identical to today).
+Save the current `outputs/IMG_1270/posture/drill_reps.jsonl` wrist_flexion measured values (baseline). Re-run posture analysis via the API or `main_posture.py --video-path videos/IMG_1270.mov --stroke-type high_clear --racket-model weights/yolo11n-racket.pt --output-dir <scratch>` (scratch output dir — do NOT overwrite the real fixtures). Verify: `metadata.json` `racket.model` set and `detected_frames` a solid majority; wrist_flexion measured values shifted off 180. Suite green (`199 passed`), and with the weights file temporarily renamed away, `_racket_weights()` returns None (behavior identical to today).
 
 - [ ] **Step 6: Ledger + user summary** (license flag, mAP numbers, before/after wrist metrics).
 
@@ -567,7 +578,7 @@ Save the current `outputs/IMG_1270/posture/drill_reps.jsonl` wrist_flexion measu
 - **Spec coverage:** training script w/ discovery + smoke + license gate (T1) ✓; posture detect-then-fallback + stats in metadata + summary line + CLI passthrough (T2) ✓; app auto-discovery, no UI (T3) ✓; download/license/smoke/full-train/mAP-vs-baseline/e2e IMG_1270/no-weights parity (T4) ✓. Spec's `weights/racket.pt` name superseded by the discovered `main.py` convention (`yolo11n-racket.pt` / `yolo11s-racket.pt`) — recorded in Global Constraints.
 - **Placeholder scan:** T4 Step 1's "adapt if the real layout differs" is a bounded contingency with a reporting requirement, not a placeholder — the two supported layouts are fully coded in T1. No TBD/TODO.
 - **Type consistency:** `racket_model_path` (ctor) ↔ `--racket-model` (both CLIs) ↔ `_racket_weights()` return; `_resolve_racket_head(frame, kp, ja)` defined (T2) and consumed at the `:231` replacement; `_racket_stats` keys `detected`/`inferred` match metadata fields `detected_frames`/`inferred_frames` mapping; test helper `_system`/`_kp`/`_FakeDetector` self-contained; `find_dataset_yaml`/`discover_splits`/`build_dataset_yaml` names identical between script and tests.
-- **Count math:** 187 → 192 (T1 +5) → 196 (T2 +4) → 198 (T3 +2).
+- **Count math:** 187 → 193 (T1 +6) → 197 (T2 +4) → 199 (T3 +2).
 
 ## Notes for the executor
 

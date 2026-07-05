@@ -12,8 +12,8 @@ License note: the RacketDB repository states no license. Weights trained on it a
 local/personal use; do not commit or redistribute them until the license is clarified.
 """
 import argparse
+import re
 import shutil
-import sys
 from pathlib import Path
 
 _DOWNLOAD_HELP = (
@@ -56,26 +56,25 @@ def build_dataset_yaml(root, out_path):
     out_path = Path(out_path)
     existing = find_dataset_yaml(root)
     if existing is not None:
-        lines = []
-        wrote_path = False
-        for line in existing.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("path:"):
-                lines.append("path: " + str(root.resolve()))
-                wrote_path = True
-            else:
-                lines.append(line)
-        if not wrote_path:
-            lines.insert(0, "path: " + str(root.resolve()))
-        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        import yaml as _yaml  # pyyaml ships with ultralytics
+        data = _yaml.safe_load(existing.read_text(encoding="utf-8")) or {}
+        data["path"] = root.resolve().as_posix()
+        for key in ("train", "val", "test"):
+            v = data.get(key)
+            if isinstance(v, str):
+                data[key] = re.sub(r"^(\.\./)+|^\./", "", v.replace("\\", "/"))
+        data.setdefault("nc", 1)
+        data.setdefault("names", ["racket"])
+        out_path.write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         return out_path
     splits = discover_splits(root)
     if splits is None:
         raise SystemExit(_DOWNLOAD_HELP % root)
-    lines = ["path: " + str(root.resolve()),
-             "train: " + str(splits["train"].relative_to(root))]
-    lines.append("val: " + str((splits["val"] or splits["train"]).relative_to(root)))
+    lines = ["path: " + root.resolve().as_posix(),
+             "train: " + splits["train"].relative_to(root).as_posix()]
+    lines.append("val: " + (splits["val"] or splits["train"]).relative_to(root).as_posix())
     if splits["test"] is not None:
-        lines.append("test: " + str(splits["test"].relative_to(root)))
+        lines.append("test: " + splits["test"].relative_to(root).as_posix())
     lines += ["nc: 1", "names: ['racket']"]
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_path

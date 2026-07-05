@@ -38,8 +38,19 @@ def test_build_yaml_prefers_existing_yaml(tmp_path):
         encoding="utf-8")
     out = build_dataset_yaml(tmp_path, tmp_path / "racketdb.yaml")
     text = out.read_text(encoding="utf-8")
-    assert str(tmp_path) in text
+    assert tmp_path.resolve().as_posix() in text
     assert "/somewhere/else" not in text
+
+
+def test_build_yaml_rewrites_parent_relative_splits(tmp_path):
+    (tmp_path / "data.yaml").write_text(
+        "train: ../train/images\nval: ../valid/images\nnc: 1\nnames: ['racket']\n",
+        encoding="utf-8")
+    out = build_dataset_yaml(tmp_path, tmp_path / "racketdb.yaml")
+    text = out.read_text(encoding="utf-8")
+    assert "../" not in text
+    assert "train/images" in text and "valid/images" in text
+    assert tmp_path.resolve().as_posix() in text
 
 
 def test_build_yaml_from_discovered_splits(tmp_path):
@@ -49,6 +60,7 @@ def test_build_yaml_from_discovered_splits(tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "names:" in text and "racket" in text
     assert "train" in text and "valid" in text
+    assert "\\" not in text
 
 
 def test_build_yaml_fails_clearly_when_empty(tmp_path):
