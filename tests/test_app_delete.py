@@ -188,3 +188,54 @@ def test_legacy_delete_still_works_for_valid_subpath(tmp_path, monkeypatch, clie
     r = client.delete("/api/output/vid1/clips")
     assert r.status_code == 200 and r.get_json()["ok"] is True
     assert not (outputs / "vid1" / "clips").exists()
+
+
+def test_delete_all_removes_source_last(tmp_path, monkeypatch, client):
+    videos, outputs, _ = _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {})
+
+    def failing_rmtree(path, *a, **k):
+        raise OSError("locked")
+
+    monkeypatch.setattr(webapp.shutil, "rmtree", failing_rmtree)
+    r = client.post("/api/delete/vid1", json={"scope": "all"})
+    assert r.status_code == 500
+    assert (videos / "vid1.mp4").is_file()
+
+
+def test_delete_reports_keeps_drill_data(tmp_path, monkeypatch, client):
+    _, outputs, _ = _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {})
+    r = client.post("/api/delete/vid1", json={"scope": "reports"})
+    assert r.status_code == 200 and r.get_json()["deleted_files"] == 2
+    posture = outputs / "vid1" / "posture"
+    assert not list(posture.glob("coach_report_*"))
+    assert (posture / "drill_summary.json").is_file()
+    assert (posture / "rep_clips" / "rep_1.mp4").is_file()
+
+
+def test_preview_empty_scope_shape(tmp_path, monkeypatch, client):
+    _, outputs, _ = _tree(tmp_path, monkeypatch)
+    for p in (outputs / "vid1" / "posture").glob("coach_report_*"):
+        p.unlink()
+    r = client.get("/api/delete-preview/vid1?scope=reports")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["groups"] == [] and d["total_files"] == 0
+
+
+def test_running_job_for_pending_and_reencoding(tmp_path, monkeypatch):
+    _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {"vid1": {"status": "pending", "video_name": "vid1.mp4"}})
+    assert webapp._running_job_for("vid1") == "vid1"
+    webapp.jobs["vid1"]["status"] = "reencoding"
+    assert webapp._running_job_for("vid1") == "vid1"
+
+
+def test_delete_all_clears_terminal_jobs(tmp_path, monkeypatch, client):
+    _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(webapp, "jobs", {"vid1": {"status": "completed", "video_name": "vid1.mp4"},
+                                         "posture_vid1": {"status": "error", "video_name": "vid1"}})
+    r = client.post("/api/delete/vid1", json={"scope": "all"})
+    assert r.status_code == 200
+    assert "vid1" not in webapp.jobs and "posture_vid1" not in webapp.jobs

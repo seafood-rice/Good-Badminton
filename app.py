@@ -136,7 +136,7 @@ def _paths_stats(paths):
 def _running_job_for(stem):
     """Id of any non-terminal analysis job working on this video, else None."""
     active = ('pending', 'running', 'reencoding')
-    for job_id, job in jobs.items():
+    for job_id, job in list(jobs.items()):
         if job.get('status') not in active:
             continue
         jv = str(job.get('video_name') or '')
@@ -854,8 +854,9 @@ def api_delete(video_name):
     if _running_job_for(stem):
         return jsonify({'error': '该视频正在分析中，请等待完成后再删除'}), 409
     deleted = 0
+    groups = sorted(_delete_groups(stem, scope), key=lambda g: g[0] == 'source')
     try:
-        for _key, paths in _delete_groups(stem, scope):
+        for _key, paths in groups:
             for p in paths:
                 if p.is_dir():
                     deleted += sum(1 for f in p.rglob('*') if f.is_file())
@@ -868,6 +869,10 @@ def api_delete(video_name):
             out_dir = OUTPUTS / stem
             if out_dir.is_dir() and not list(out_dir.iterdir()):
                 shutil.rmtree(str(out_dir))
+            for stale_id in (stem, 'posture_' + stem):
+                job = jobs.get(stale_id)
+                if job and job.get('status') not in ('pending', 'running', 'reencoding'):
+                    jobs.pop(stale_id, None)
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})
