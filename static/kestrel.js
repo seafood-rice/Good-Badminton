@@ -960,7 +960,7 @@ window.Kestrel = (function () {
     var confirmBtn = document.getElementById('del-confirm');
     cancelBtn.onclick = function () { if (!_delBusy) { closeDeleteModal(); } };
     cancelBtn.focus();
-    fetch('/api/delete-preview/' + stem + '?scope=' + scope)
+    fetch('/api/delete-preview/' + encodeURIComponent(stem) + '?scope=' + scope)
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (gen !== _delGen) { return; }
@@ -988,7 +988,7 @@ window.Kestrel = (function () {
       confirmBtn.textContent = zh?'删除中…':'Deleting…';
       var err0 = document.getElementById('del-err');
       if (err0) { err0.textContent = ''; }
-      fetch('/api/delete/' + stem, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      fetch('/api/delete/' + encodeURIComponent(stem), { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scope: scope }) })
         .then(function (r) { return r.json().then(function (d) { return { s: r.status, d: d }; }); })
         .then(function (res) {
