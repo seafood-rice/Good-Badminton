@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from badminton_analysis.posture.system import PostureAnalysisSystem
 import badminton_analysis.analysis.joint_angles as ja
@@ -105,3 +106,127 @@ def test_racket_weights_default_base_is_weights_dir(tmp_path, monkeypatch):
     (tmp_path / "weights").mkdir()
     (tmp_path / "weights" / "yolo11n-racket.pt").write_bytes(b"n")
     assert webapp._racket_weights().endswith("yolo11n-racket.pt")
+
+
+# ── Route-level: --racket-model reaches the subprocess cmd ─────────────────
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "OUTPUTS", tmp_path)
+    webapp.app.config["TESTING"] = True
+    return webapp.app.test_client()
+
+
+class _FakeProc:
+    returncode = 0
+
+    def poll(self):
+        return 0
+
+    def wait(self):
+        return 0
+
+
+class _FakePostureProc:
+    # non-zero return skips the ffmpeg re-encode branch of the posture
+    # tracking thread, so these tests stay hermetic regardless of thread
+    # scheduling relative to monkeypatch teardown.
+    returncode = 1
+    stdout = []
+
+    def wait(self):
+        return 1
+
+
+def test_analyze_command_includes_racket_model_when_weights_found(client, tmp_path, monkeypatch):
+    videos = tmp_path / "vids"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "TEMPLATES", tmp_path / "tpl")
+    (tmp_path / "tpl").mkdir()
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: "weights/yolo11n-racket.pt")
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakeProc())
+
+    r = client.post("/api/analyze", json={"video": "clip.mp4"})
+    assert r.status_code == 200
+    cmd = captured["cmd"]
+    assert "--racket-model" in cmd
+    assert cmd[cmd.index("--racket-model") + 1] == "weights/yolo11n-racket.pt"
+
+
+def test_analyze_command_omits_racket_model_when_weights_absent(client, tmp_path, monkeypatch):
+    videos = tmp_path / "vids"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "TEMPLATES", tmp_path / "tpl")
+    (tmp_path / "tpl").mkdir()
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: None)
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakeProc())
+
+    r = client.post("/api/analyze", json={"video": "clip.mp4"})
+    assert r.status_code == 200
+    assert "--racket-model" not in captured["cmd"]
+
+
+def test_posture_command_includes_racket_model_when_weights_found(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: "weights/yolo11n-racket.pt")
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePostureProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakePostureProc())
+
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear"})
+    assert r.status_code == 200
+    cmd = captured["cmd"]
+    assert "--racket-model" in cmd
+    assert cmd[cmd.index("--racket-model") + 1] == "weights/yolo11n-racket.pt"
+
+
+def test_posture_command_omits_racket_model_when_weights_absent(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: None)
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePostureProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakePostureProc())
+
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear"})
+    assert r.status_code == 200
+    assert "--racket-model" not in captured["cmd"]
