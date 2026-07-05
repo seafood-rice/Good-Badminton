@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 import app
 from badminton_analysis.posture.writer import build_drill_summary
@@ -92,20 +91,25 @@ def test_quality_weights_discovery(tmp_path):
     assert app._quality_weights(base=tmp_path).endswith("quality-high_clear.pt")
 
 
+class _FakePostureProc:
+    # non-zero return skips the ffmpeg re-encode branch of the posture
+    # tracking thread, so these tests stay hermetic regardless of thread
+    # scheduling relative to monkeypatch teardown.
+    returncode = 1
+    stdout = []
+
+    def wait(self):
+        return 1
+
+
 def test_posture_command_includes_quality_model_when_weights_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "OUTPUTS", tmp_path)
     monkeypatch.setattr(app, "VIDEOS", tmp_path)
     (tmp_path / "clip.mp4").write_bytes(b"x")
 
     monkeypatch.setattr(app, "_quality_weights", lambda base=None: "weights/quality-high_clear.pt")
 
     captured = {}
-
-    class _FakePostureProc:
-        returncode = 1
-        stdout = []
-
-        def wait(self):
-            return 1
 
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
@@ -114,9 +118,8 @@ def test_posture_command_includes_quality_model_when_weights_found(tmp_path, mon
     monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(app.subprocess, "run", lambda *a, **k: _FakePostureProc())
 
-    webapp = app
-    webapp.app.config["TESTING"] = True
-    client = webapp.app.test_client()
+    app.app.config["TESTING"] = True
+    client = app.app.test_client()
 
     r = client.post("/api/posture/analyze",
                     json={"video": "clip.mp4", "stroke_type": "high_clear"})
@@ -127,19 +130,13 @@ def test_posture_command_includes_quality_model_when_weights_found(tmp_path, mon
 
 
 def test_posture_command_omits_quality_model_when_weights_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "OUTPUTS", tmp_path)
     monkeypatch.setattr(app, "VIDEOS", tmp_path)
     (tmp_path / "clip.mp4").write_bytes(b"x")
 
     monkeypatch.setattr(app, "_quality_weights", lambda base=None: None)
 
     captured = {}
-
-    class _FakePostureProc:
-        returncode = 1
-        stdout = []
-
-        def wait(self):
-            return 1
 
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
@@ -148,9 +145,8 @@ def test_posture_command_omits_quality_model_when_weights_absent(tmp_path, monke
     monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(app.subprocess, "run", lambda *a, **k: _FakePostureProc())
 
-    webapp = app
-    webapp.app.config["TESTING"] = True
-    client = webapp.app.test_client()
+    app.app.config["TESTING"] = True
+    client = app.app.test_client()
 
     r = client.post("/api/posture/analyze",
                     json={"video": "clip.mp4", "stroke_type": "high_clear"})
