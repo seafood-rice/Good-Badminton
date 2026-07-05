@@ -40,10 +40,10 @@ class QualityScorer:
         model = self._load()
         if model is None:
             return None
-        arr = normalize_window(window_frames, mirror=(dominant == "left"))
-        if arr is None:
-            return None
         try:
+            arr = normalize_window(window_frames, mirror=(dominant == "left"))
+            if arr is None:
+                return None
             import torch
             with torch.no_grad():
                 out = model(torch.from_numpy(arr).unsqueeze(0))

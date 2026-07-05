@@ -336,10 +336,10 @@ class QualityScorer:
         model = self._load()
         if model is None:
             return None
-        arr = normalize_window(window_frames, mirror=(dominant == "left"))
-        if arr is None:
-            return None
         try:
+            arr = normalize_window(window_frames, mirror=(dominant == "left"))
+            if arr is None:
+                return None
             import torch
             with torch.no_grad():
                 out = model(torch.from_numpy(arr).unsqueeze(0))
@@ -398,7 +398,7 @@ In `main_posture.py`: add after `--racket-model`:
 ```
 and pass `quality_model_path=args.quality_model,` in the constructor call.
 
-- [ ] **Step 4/5: Focused then full suite** — 8 new tests pass; full suite = baseline + 14. `main_posture.py --help` exits 0.
+- [ ] **Step 4/5: Focused then full suite** — 8 new tests pass; full suite = baseline + 8 (this task's tests). `main_posture.py --help` exits 0.
 
 - [ ] **Step 6: Commit**
 

@@ -49,6 +49,12 @@ def test_score_none_on_model_failure():
     assert s.score(_frames()) is None
 
 
+def test_score_none_on_malformed_window():
+    s = QualityScorer(model_path=None, model=_FakeModel(4.0))
+    malformed = [{"keypoints": np.zeros((5, 2))} for _ in range(30)]  # short array
+    assert s.score(malformed) is None
+
+
 def test_unavailable_without_model_or_path():
     s = QualityScorer(model_path=None)
     assert not s.available
