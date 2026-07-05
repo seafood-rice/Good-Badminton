@@ -663,9 +663,16 @@ After the existing `.vcard` click-wiring block in `renderCards`, add:
 
 ```js
   function afterModeDelete(deletedMode) {
-    var remaining = (state.resultsModes || []).filter(function (m) { return m !== deletedMode; });
-    if (remaining.length) { openResults(state.resultsVideo, remaining[0], remaining); }
-    else { state.resultsVideo = null; setScreen('dashboard'); }
+    var stem = state.resultsVideo;
+    fetch('/api/videos').then(function (r) { return r.json(); }).then(function (vids) {
+      var v = (vids || []).filter(function (x) { return x.name === stem; })[0];
+      var remaining = [];
+      if (v && v.has_match) { remaining.push('match'); }
+      if (v && v.has_posture) { remaining.push('posture'); }
+      remaining = remaining.filter(function (m) { return m !== deletedMode; });
+      if (remaining.length) { openResults(stem, remaining[0], remaining); }
+      else { state.resultsVideo = null; setScreen('dashboard'); }
+    }).catch(function () { state.resultsVideo = null; setScreen('dashboard'); });
   }
 ```
 
