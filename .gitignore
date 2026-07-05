@@ -15,6 +15,9 @@ templates/_auto_*.png
 # Model weights (downloaded separately)
 weights/
 
+# Training datasets (downloaded separately)
+data/
+
 # Uploaded videos
 videos/
 
