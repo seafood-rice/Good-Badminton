@@ -234,6 +234,8 @@ class PostureAnalysisSystem:
             if head is not None:
                 self._racket_stats["detected"] += 1
                 return head
+        if kp is None:
+            return None
         self._racket_stats["inferred"] += 1
         return ja.infer_racket_head(kp, dominant=self.dominant_hand)
 
@@ -254,10 +256,13 @@ class PostureAnalysisSystem:
             best_i = max(range(len(keypoints)), key=lambda i: _spread(keypoints[i]))
             kp = keypoints[best_i].astype(float)
             conf_row = scores[best_i] if scores is not None else None
+        # Detector must see the clean frame (before any overlay drawing), and runs
+        # even when pose detection failed - mirroring the match pipeline.
+        racket_head = self._resolve_racket_head(frame, kp, ja)
+        if kp is not None:
             draw_skeleton(frame, kp, conf=conf_row)
             if ja.is_valid(kp, dom_wrist, conf_row):
                 wrist = (float(kp[dom_wrist][0]), float(kp[dom_wrist][1]))
-            racket_head = self._resolve_racket_head(frame, kp, ja)
             # centroid = hip midpoint when available, else mean of valid points
             if ja.is_valid(kp, ja.L_HIP, conf_row) and ja.is_valid(kp, ja.R_HIP, conf_row):
                 centroid = (float((kp[ja.L_HIP][0] + kp[ja.R_HIP][0]) / 2),

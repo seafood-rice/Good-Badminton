@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from badminton_analysis.posture.system import PostureAnalysisSystem
 import badminton_analysis.analysis.joint_angles as ja
@@ -57,5 +56,35 @@ def test_missing_weights_path_does_not_raise(tmp_path):
     sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "nope.pt"))
     sys_._build_racket_detector()
     assert sys_._racket_detector is None or sys_._racket_detector.model is None
+    head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None
+
+
+def test_detector_runs_without_pose(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector((7.0, 8.0))
+    head = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head == (7.0, 8.0)
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+
+
+def test_no_pose_and_no_detection_yields_none(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector(None)
+    head = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head is None
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
+
+
+def test_detector_construction_failure_is_tolerated(tmp_path, monkeypatch):
+    import badminton_analysis.detection.racket as racket_mod
+
+    def _boom(self, *a, **k):
+        raise RuntimeError("cuda exploded")
+
+    monkeypatch.setattr(racket_mod.RacketDetector, "__init__", _boom)
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "w.pt"))
+    sys_._build_racket_detector()
+    assert sys_._racket_detector is None
     head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
     assert head is not None

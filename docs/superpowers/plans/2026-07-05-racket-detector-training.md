@@ -296,7 +296,6 @@ Create `tests/test_posture_racket.py`:
 
 ```python
 import numpy as np
-import pytest
 
 from badminton_analysis.posture.system import PostureAnalysisSystem
 import badminton_analysis.analysis.joint_angles as ja
@@ -356,6 +355,36 @@ def test_missing_weights_path_does_not_raise(tmp_path):
     assert sys_._racket_detector is None or sys_._racket_detector.model is None
     head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
     assert head is not None
+
+
+def test_detector_runs_without_pose(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector((7.0, 8.0))
+    head = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head == (7.0, 8.0)
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+
+
+def test_no_pose_and_no_detection_yields_none(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector(None)
+    head = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head is None
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
+
+
+def test_detector_construction_failure_is_tolerated(tmp_path, monkeypatch):
+    import badminton_analysis.detection.racket as racket_mod
+
+    def _boom(self, *a, **k):
+        raise RuntimeError("cuda exploded")
+
+    monkeypatch.setattr(racket_mod.RacketDetector, "__init__", _boom)
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "w.pt"))
+    sys_._build_racket_detector()
+    assert sys_._racket_detector is None
+    head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -402,20 +431,42 @@ and alongside the other attribute assignments add:
             if head is not None:
                 self._racket_stats["detected"] += 1
                 return head
+        if kp is None:
+            return None
         self._racket_stats["inferred"] += 1
         return ja.infer_racket_head(kp, dominant=self.dominant_hand)
 ```
 
 (c) In `process_video`, call `self._build_racket_detector()` right after `pose = self._build_pose_processor()`.
 
-(d) In `_capture_frame` (`:231`), replace:
+(d) In `_capture_frame` (`:231`), the detector must see the clean frame (before any overlay drawing) and must run even when pose detection failed, mirroring the match pipeline. Replace the whole block from `if keypoints is not None and len(keypoints) > 0:` down through `draw_technique_overlay(frame, angles)` with:
 ```python
-            racket_head = ja.infer_racket_head(kp, dominant=self.dominant_hand)
+        if keypoints is not None and len(keypoints) > 0:
+            # Single-player drill: take the largest-bbox person (max keypoint spread).
+            def _spread(person):
+                xs = person[:, 0]
+                ys = person[:, 1]
+                return float((xs.max() - xs.min()) + (ys.max() - ys.min()))
+            best_i = max(range(len(keypoints)), key=lambda i: _spread(keypoints[i]))
+            kp = keypoints[best_i].astype(float)
+            conf_row = scores[best_i] if scores is not None else None
+        # Detector must see the clean frame (before any overlay drawing), and runs
+        # even when pose detection failed - mirroring the match pipeline.
+        racket_head = self._resolve_racket_head(frame, kp, ja)
+        if kp is not None:
+            draw_skeleton(frame, kp, conf=conf_row)
+            if ja.is_valid(kp, dom_wrist, conf_row):
+                wrist = (float(kp[dom_wrist][0]), float(kp[dom_wrist][1]))
+            # centroid = hip midpoint when available, else mean of valid points
+            if ja.is_valid(kp, ja.L_HIP, conf_row) and ja.is_valid(kp, ja.R_HIP, conf_row):
+                centroid = (float((kp[ja.L_HIP][0] + kp[ja.R_HIP][0]) / 2),
+                            float((kp[ja.L_HIP][1] + kp[ja.R_HIP][1]) / 2))
+            if self.show_overlay:
+                angles = ja.compute_joint_angles(kp, racket_head=racket_head,
+                                                 dominant=self.dominant_hand, conf=conf_row)
+                draw_technique_overlay(frame, angles)
 ```
-with:
-```python
-            racket_head = self._resolve_racket_head(frame, kp, ja)
-```
+(The `racket_head = None` initializer above the block stays; the detector now runs on the pristine frame, every frame.)
 
 (e) In the `write_json(os.path.join(self.save_dir, "metadata.json"), {...})` dict (`:198`), add:
 ```python
@@ -440,12 +491,12 @@ and pass `racket_model_path=args.racket_model,` in the `PostureAnalysisSystem(` 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_posture_racket.py -v`
-Expected: PASS (4 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `197 passed` (193 + 4). Existing posture tests construct the system without the new kwarg — the default keeps them green; `--help` on `main_posture.py` still works: `./.venv/Scripts/python.exe main_posture.py --help` exits 0.
+Expected: `200 passed` (193 + 7). Existing posture tests construct the system without the new kwarg — the default keeps them green; `--help` on `main_posture.py` still works: `./.venv/Scripts/python.exe main_posture.py --help` exits 0.
 
 - [ ] **Step 6: Commit**
 
@@ -519,12 +570,12 @@ In `api_posture_analyze`, immediately after its `cmd = [...]` list closes (`app.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `./.venv/Scripts/python.exe -m pytest tests/test_posture_racket.py -v`
-Expected: PASS (6 tests).
+Expected: PASS (9 tests).
 
 - [ ] **Step 5: Run the full suite**
 
 Run: `./.venv/Scripts/python.exe -m pytest -q`
-Expected: `199 passed` (197 + 2).
+Expected: `202 passed` (200 + 2).
 
 - [ ] **Step 6: Commit**
 
@@ -567,7 +618,7 @@ Record final val mAP50 / mAP50-95. Compare against the RacketDB paper's YOLOv8n 
 
 - [ ] **Step 5: E2E on IMG_1270**
 
-Save the current `outputs/IMG_1270/posture/drill_reps.jsonl` wrist_flexion measured values (baseline). Re-run posture analysis via the API or `main_posture.py --video-path videos/IMG_1270.mov --stroke-type high_clear --racket-model weights/yolo11n-racket.pt --output-dir <scratch>` (scratch output dir — do NOT overwrite the real fixtures). Verify: `metadata.json` `racket.model` set and `detected_frames` a solid majority; wrist_flexion measured values shifted off 180. Suite green (`199 passed`), and with the weights file temporarily renamed away, `_racket_weights()` returns None (behavior identical to today).
+Save the current `outputs/IMG_1270/posture/drill_reps.jsonl` wrist_flexion measured values (baseline). Re-run posture analysis via the API or `main_posture.py --video-path videos/IMG_1270.mov --stroke-type high_clear --racket-model weights/yolo11n-racket.pt --output-dir <scratch>` (scratch output dir — do NOT overwrite the real fixtures). Verify: `metadata.json` `racket.model` set and `detected_frames` a solid majority; wrist_flexion measured values shifted off 180. Suite green (`202 passed`), and with the weights file temporarily renamed away, `_racket_weights()` returns None (behavior identical to today).
 
 - [ ] **Step 6: Ledger + user summary** (license flag, mAP numbers, before/after wrist metrics).
 
@@ -578,7 +629,7 @@ Save the current `outputs/IMG_1270/posture/drill_reps.jsonl` wrist_flexion measu
 - **Spec coverage:** training script w/ discovery + smoke + license gate (T1) ✓; posture detect-then-fallback + stats in metadata + summary line + CLI passthrough (T2) ✓; app auto-discovery, no UI (T3) ✓; download/license/smoke/full-train/mAP-vs-baseline/e2e IMG_1270/no-weights parity (T4) ✓. Spec's `weights/racket.pt` name superseded by the discovered `main.py` convention (`yolo11n-racket.pt` / `yolo11s-racket.pt`) — recorded in Global Constraints.
 - **Placeholder scan:** T4 Step 1's "adapt if the real layout differs" is a bounded contingency with a reporting requirement, not a placeholder — the two supported layouts are fully coded in T1. No TBD/TODO.
 - **Type consistency:** `racket_model_path` (ctor) ↔ `--racket-model` (both CLIs) ↔ `_racket_weights()` return; `_resolve_racket_head(frame, kp, ja)` defined (T2) and consumed at the `:231` replacement; `_racket_stats` keys `detected`/`inferred` match metadata fields `detected_frames`/`inferred_frames` mapping; test helper `_system`/`_kp`/`_FakeDetector` self-contained; `find_dataset_yaml`/`discover_splits`/`build_dataset_yaml` names identical between script and tests.
-- **Count math:** 187 → 193 (T1 +6) → 197 (T2 +4) → 199 (T3 +2).
+- **Count math:** 187 → 193 (T1 +6) → 200 (T2 +7) → 202 (T3 +2).
 
 ## Notes for the executor
 
