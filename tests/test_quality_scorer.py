@@ -1,5 +1,7 @@
 import numpy as np
+import pytest
 
+import app
 from badminton_analysis.posture.writer import build_drill_summary
 from badminton_analysis.quality.scorer import QualityScorer, to_display_score
 
@@ -82,3 +84,75 @@ def test_summary_omits_mean_ai_score_when_absent():
                 "per_metric": {}, "weaknesses": [], "strengths": []}]
     summary = build_drill_summary(reports, "high_clear")
     assert "mean_ai_score" not in summary
+
+
+def test_quality_weights_discovery(tmp_path):
+    assert app._quality_weights(base=tmp_path) is None
+    (tmp_path / "quality-high_clear.pt").write_bytes(b"q")
+    assert app._quality_weights(base=tmp_path).endswith("quality-high_clear.pt")
+
+
+def test_posture_command_includes_quality_model_when_weights_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(app, "_quality_weights", lambda base=None: "weights/quality-high_clear.pt")
+
+    captured = {}
+
+    class _FakePostureProc:
+        returncode = 1
+        stdout = []
+
+        def wait(self):
+            return 1
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePostureProc()
+
+    monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(app.subprocess, "run", lambda *a, **k: _FakePostureProc())
+
+    webapp = app
+    webapp.app.config["TESTING"] = True
+    client = webapp.app.test_client()
+
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear"})
+    assert r.status_code == 200
+    cmd = captured["cmd"]
+    assert "--quality-model" in cmd
+    assert cmd[cmd.index("--quality-model") + 1] == "weights/quality-high_clear.pt"
+
+
+def test_posture_command_omits_quality_model_when_weights_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(app, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(app, "_quality_weights", lambda base=None: None)
+
+    captured = {}
+
+    class _FakePostureProc:
+        returncode = 1
+        stdout = []
+
+        def wait(self):
+            return 1
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePostureProc()
+
+    monkeypatch.setattr(app.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(app.subprocess, "run", lambda *a, **k: _FakePostureProc())
+
+    webapp = app
+    webapp.app.config["TESTING"] = True
+    client = webapp.app.test_client()
+
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear"})
+    assert r.status_code == 200
+    assert "--quality-model" not in captured["cmd"]

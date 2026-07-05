@@ -156,6 +156,13 @@ def _racket_weights(base=None):
     return None
 
 
+def _quality_weights(base=None):
+    """Path to trained AI form-score weights when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'quality-high_clear.pt'
+    return str(p) if p.is_file() else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
@@ -965,6 +972,10 @@ def api_posture_analyze():
     racket_weights = _racket_weights()
     if racket_weights:
         cmd += ['--racket-model', racket_weights]
+
+    quality_weights = _quality_weights()
+    if quality_weights:
+        cmd += ['--quality-model', quality_weights]
 
     job_id = 'posture_' + video_path.stem
     jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',

@@ -652,10 +652,13 @@ window.Kestrel = (function () {
           '<div><span>' + (zh?'一致性':'Consistency') + '</span><b>' + (cons === null ? '—' : cons) + '</b></div>' +
           '<div><span>' + (zh?'最佳':'Best') + '</span><b>' + (s.best_rep ? '#' + s.best_rep.rep_id : '—') + '</b></div>' +
           '<div><span>' + (zh?'最差':'Worst') + '</span><b>' + (s.worst_rep ? '#' + s.worst_rep.rep_id : '—') + '</b></div>' +
+          (s.mean_ai_score !== undefined && s.mean_ai_score !== null ? '<div><span>' + (zh?'AI 评分':'AI score') + '</span><b>' + Math.round(s.mean_ai_score) + '</b></div>' : '') +
         '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '');
       document.getElementById('rep-list').innerHTML = postureCtx.reps.map(function (rep, i) {
         return '<li><button class="rep-row" data-i="' + i + '"><span class="mono">#' + rep.rep_id + '</span>' +
-          scoreChipHTML(rep.overall_score) + '</button></li>'; }).join('');
+          scoreChipHTML(rep.overall_score) +
+          (rep.ai_score !== undefined && rep.ai_score !== null ? '<span class="ai-chip mono" title="AI">AI ' + Math.round(rep.ai_score) + '</span>' : '') +
+          '</button></li>'; }).join('');
       document.querySelectorAll('.rep-row').forEach(function (b) { b.onclick = function () { selectRep(postureCtx.reps, Number(b.getAttribute('data-i'))); }; });
       if (postureCtx.reps.length) {
         metaReady.then(function () { if (document.getElementById('rep-detail')) selectRep(postureCtx.reps, 0); });
@@ -681,6 +684,7 @@ window.Kestrel = (function () {
     var ws = (rep.weaknesses || []).map(weaknessLineHTML).join('');
     document.getElementById('rep-detail').innerHTML =
       '<h2>' + (zh?('第 ' + rep.rep_id + ' 次详情'):('Rep #' + rep.rep_id)) + '</h2>' +
+      (rep.ai_score !== undefined && rep.ai_score !== null ? '<p class="ai-line">' + (zh?'AI 动作评分（模型判定）：':'AI form score (model-based): ') + '<b class="mono">' + rep.ai_score + '</b>/100</p>' : '') +
       bars + (ws ? '<ul class="weak-list">' + ws + '</ul>' : '');
     // Scrubber controls under the video.
     var sc = document.getElementById('rep-scrubber');
