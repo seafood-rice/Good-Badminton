@@ -146,6 +146,16 @@ def _running_job_for(stem):
     return None
 
 
+def _racket_weights(base=None):
+    """Path to trained racket-detector weights when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    for name in ('yolo11n-racket.pt', 'yolo11s-racket.pt'):
+        p = base / name
+        if p.is_file():
+            return str(p)
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
@@ -453,6 +463,10 @@ def api_analyze():
     ]
     if analyze_technique:
         cmd.append('--analyze-technique')
+
+    racket_weights = _racket_weights()
+    if racket_weights:
+        cmd += ['--racket-model', racket_weights]
 
     job_id = video_path.stem
     jobs[job_id] = {
@@ -947,6 +961,11 @@ def api_posture_analyze():
         '--display', 'false',
         '--report-llm', report_llm,
     ]
+
+    racket_weights = _racket_weights()
+    if racket_weights:
+        cmd += ['--racket-model', racket_weights]
+
     job_id = 'posture_' + video_path.stem
     jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',
                     'video_name': video_path.stem, 'save_dir': str(save_dir)}

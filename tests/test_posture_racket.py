@@ -2,6 +2,7 @@ import numpy as np
 
 from badminton_analysis.posture.system import PostureAnalysisSystem
 import badminton_analysis.analysis.joint_angles as ja
+import app as webapp
 
 
 def _system(tmp_path, **kwargs):
@@ -88,3 +89,19 @@ def test_detector_construction_failure_is_tolerated(tmp_path, monkeypatch):
     assert sys_._racket_detector is None
     head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
     assert head is not None
+
+
+def test_racket_weights_prefers_n_then_s(tmp_path):
+    assert webapp._racket_weights(base=tmp_path) is None
+    (tmp_path / "yolo11s-racket.pt").write_bytes(b"s")
+    assert webapp._racket_weights(base=tmp_path).endswith("yolo11s-racket.pt")
+    (tmp_path / "yolo11n-racket.pt").write_bytes(b"n")
+    assert webapp._racket_weights(base=tmp_path).endswith("yolo11n-racket.pt")
+
+
+def test_racket_weights_default_base_is_weights_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "PROJECT_ROOT", tmp_path)
+    assert webapp._racket_weights() is None
+    (tmp_path / "weights").mkdir()
+    (tmp_path / "weights" / "yolo11n-racket.pt").write_bytes(b"n")
+    assert webapp._racket_weights().endswith("yolo11n-racket.pt")
