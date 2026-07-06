@@ -92,6 +92,26 @@ def test_detector_construction_failure_is_tolerated(tmp_path, monkeypatch):
     assert head is not None
 
 
+def test_posture_builds_racket_detector_with_conf_0_15(tmp_path, monkeypatch):
+    """Posture path must use conf=0.15 for close-up drill footage (lower threshold)."""
+    import badminton_analysis.detection.racket as racket_mod
+
+    recorded_kwargs = {}
+
+    def capture_init(self, *args, **kwargs):
+        recorded_kwargs.update(kwargs)
+        # Minimal setup to avoid errors
+        self.conf = kwargs.get('conf', 0.25)
+        self.model = None
+        self.device = 'cpu'
+        self.roi_padding_ratio = 0.08
+
+    monkeypatch.setattr(racket_mod.RacketDetector, "__init__", capture_init)
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "w.pt"))
+    sys_._build_racket_detector()
+    assert recorded_kwargs.get('conf') == 0.15
+
+
 def test_racket_weights_prefers_n_then_s(tmp_path):
     assert webapp._racket_weights(base=tmp_path) is None
     (tmp_path / "yolo11s-racket.pt").write_bytes(b"s")

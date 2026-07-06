@@ -5,6 +5,9 @@ import time
 from .rep_segmenter import segment_reps
 from .writer import write_rep_reports, build_drill_summary
 
+# close-up drill footage: far-view-trained detector needs a lower threshold
+RACKET_CONF = 0.15
+
 
 def format_progress(pct, stage):
     """Progress line consumed by the web layer: 'PROGRESS <pct> <stage>'."""
@@ -234,7 +237,7 @@ class PostureAnalysisSystem:
             return
         try:
             from ..detection.racket import RacketDetector
-            self._racket_detector = RacketDetector(model_path=self.racket_model_path)
+            self._racket_detector = RacketDetector(model_path=self.racket_model_path, conf=RACKET_CONF)
         except Exception as e:
             print("Racket detector unavailable (" + str(e) + "); using wrist inference.")
             self._racket_detector = None
