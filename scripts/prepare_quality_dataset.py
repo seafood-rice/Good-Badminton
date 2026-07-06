@@ -361,7 +361,7 @@ def main():
     # Heavy imports inside main()
     import cv2
     import numpy as np
-    from badminton_analysis.quality.normalize import normalize_window
+    from badminton_analysis.quality.normalize import normalize_window, posed_frames
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -458,16 +458,17 @@ def main():
                 frame_idx += 1
                 total_frames += 1
 
+            # Pose rate against the raw window length (not the fixed-length
+            # resampled tensor normalize_window produces).
+            posed = posed_frames(frames_data)
+            pose_rate = len(posed) / max(1, len(frames_data))
+            total_posed_frames += len(posed)
+
             # Normalize window (may return None if too few posed frames)
             normalized = normalize_window(frames_data)
             if normalized is None:
                 skipped_pose += 1
                 continue
-
-            # Count posed frames (frames where keypoints are not all-zero)
-            posed_frames = np.sum(~np.all(normalized == 0, axis=1))
-            pose_rate = posed_frames / max(1, len(frames_data))
-            total_posed_frames += posed_frames
 
             if pose_rate < args.min_pose_rate:
                 skipped_pose += 1

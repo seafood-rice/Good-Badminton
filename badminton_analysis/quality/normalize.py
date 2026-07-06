@@ -20,14 +20,11 @@ def _resample(seq, target):
     return seq[lo] * (1.0 - t) + seq[hi] * t
 
 
-def normalize_window(frames, mirror=False, target=TARGET_FRAMES):
-    """(target, 34) float32 pose sequence: hip-centered, torso-scaled, resampled.
+def posed_frames(frames):
+    """Frames with two valid hips (x>1 and y>1 sentinels), as float arrays.
 
-    frames: per-frame dicts with "keypoints" (17x2 or None). A joint with
-    x<=1 and/or y<=1 is treated as an undetected sentinel (codebase convention)
-    and masked to 0 in the output (the body-center origin). Frames without two
-    valid hips are dropped. Returns None when fewer than _MIN_POSED usable
-    frames remain. Falls back to scale 1.0 when no frame has two valid shoulders.
+    The single source of truth for what counts as a posed frame — used by
+    normalize_window and by dataset-prep pose-rate gating.
     """
     posed = []
     for f in frames:
@@ -38,6 +35,19 @@ def normalize_window(frames, mirror=False, target=TARGET_FRAMES):
         if (kp[L_HIP][0] > 1.0 and kp[L_HIP][1] > 1.0
                 and kp[R_HIP][0] > 1.0 and kp[R_HIP][1] > 1.0):
             posed.append(kp)
+    return posed
+
+
+def normalize_window(frames, mirror=False, target=TARGET_FRAMES):
+    """(target, 34) float32 pose sequence: hip-centered, torso-scaled, resampled.
+
+    frames: per-frame dicts with "keypoints" (17x2 or None). A joint with
+    x<=1 and/or y<=1 is treated as an undetected sentinel (codebase convention)
+    and masked to 0 in the output (the body-center origin). Frames without two
+    valid hips are dropped. Returns None when fewer than _MIN_POSED usable
+    frames remain. Falls back to scale 1.0 when no frame has two valid shoulders.
+    """
+    posed = posed_frames(frames)
     if len(posed) < _MIN_POSED:
         return None
     seq = np.stack(posed)                                   # (N, 17, 2)

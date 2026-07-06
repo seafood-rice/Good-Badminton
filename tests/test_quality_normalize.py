@@ -1,6 +1,6 @@
 import numpy as np
 
-from badminton_analysis.quality.normalize import TARGET_FRAMES, normalize_window
+from badminton_analysis.quality.normalize import TARGET_FRAMES, normalize_window, posed_frames
 
 
 def _kp(x_off=0.0):
@@ -79,3 +79,20 @@ def test_shoulder_invalid_frames_excluded_from_scale():
     # valid-frame torso scale must match the clean baseline (sentinel shoulders
     # must not skew the median); compare the wrist trajectory magnitude
     assert abs(np.linalg.norm(mixed[0, 10]) - np.linalg.norm(baseline[0, 10])) < 1e-5
+
+
+def test_posed_frames_keeps_only_valid_hip_frames():
+    valid = _kp()
+    hip_invalid = _kp()
+    hip_invalid[11] = (0.0, 0.0)
+    hip_invalid[12] = (0.0, 0.0)
+    frames = (
+        [{"keypoints": None}] * 2
+        + [{"keypoints": hip_invalid}] * 3
+        + [{"keypoints": valid}] * 4
+    )
+    result = posed_frames(frames)
+    assert len(result) == 4
+    for kp in result:
+        assert isinstance(kp, np.ndarray)
+        assert np.array_equal(kp, valid)

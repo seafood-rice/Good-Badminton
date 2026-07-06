@@ -351,3 +351,68 @@ def test_prep_end_to_end_smoke(tmp_path, monkeypatch, capsys):
     assert "SYNC FAIL" in captured.out
     lines2 = [l for l in manifest_path2.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert len(lines2) == 0
+
+
+def test_prep_pose_rate_uses_raw_window_length(tmp_path, monkeypatch):
+    """Regression: pose_rate must be raw-posed-frames / raw-window-length, not
+    (resampled-tensor non-zero rows) / raw-window-length.
+
+    normalize_window always resamples to TARGET_FRAMES (64) rows, so counting
+    non-zero rows of that tensor and dividing by the raw window length makes
+    the rate length-dependent: a >64-frame window with every frame perfectly
+    posed used to score 64/N (e.g. 64/120 ~= 0.53) and wrongly fail the
+    default 0.8 gate. Here every one of ~120 raw frames is posed, so the true
+    rate is 1.0 and the swing must land in the manifest.
+    """
+    import cv2
+
+    data_root = tmp_path / "multisense"
+    docs_dir = data_root / "Documentations"
+
+    ratings_by_player = {"Sub%02d" % i: (i % 7 + 1, (i + 1) % 7 + 1, (i + 2) % 7 + 1)
+                         for i in range(25)}
+    # 4.0s window @ 30fps -> 120 raw frames, well over TARGET_FRAMES (64).
+    swings_rows = [("Sub00", 1, "Forehand Clear", 0.0, 4.0)]
+    _write_docs(docs_dir, swings_rows, ratings_by_player)
+
+    sub_dir = data_root / "Sub00"
+    sub_dir.mkdir(parents=True)
+    video_path = sub_dir / "Forehand Clear Front Video.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(video_path), fourcc, 30.0, (64, 64))
+    frame = np.zeros((64, 64, 3), dtype=np.uint8)
+    for _ in range(150):
+        writer.write(frame)
+    writer.release()
+
+    class _FakePoseExtractor:
+        def process_frame(self, frame):
+            # Every frame fully posed: valid keypoints (incl. both hips) throughout.
+            kp = np.zeros((1, 17, 2), dtype=np.float32)
+            for i in range(17):
+                kp[0, i] = (10.0 + i * 5.0, 20.0 + i * 3.0)
+            return kp, None
+
+    monkeypatch.setattr(pqd, "build_pose_extractor", lambda **kwargs: _FakePoseExtractor())
+    monkeypatch.setattr(
+        pqd, "sync_video",
+        lambda video_path, windows, cache_path:
+            {"t0": 0.0, "fps_eff": 30.0, "z": 9.0, "nframes": 150, "vfps": 30.0})
+
+    out_dir = data_root / "prepared"
+    manifest_path = data_root / "manifest.jsonl"
+    argv = ["prepare_quality_dataset.py",
+           "--data", str(data_root),
+           "--out", str(out_dir),
+           "--manifest", str(manifest_path)]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    # Default --min-pose-rate is 0.8: must not exit despite the window being
+    # far longer than the 64-row resampled tensor.
+    pqd.main()
+
+    assert manifest_path.is_file()
+    lines = [l for l in manifest_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["swing"] == "Sub00_front_0001"
