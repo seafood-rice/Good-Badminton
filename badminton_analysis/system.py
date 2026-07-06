@@ -111,7 +111,11 @@ class BadmintonAnalysisSystem:
 
         if self.analyze_technique:
             from .detection.racket import RacketDetector
-            self._racket_detector = RacketDetector(model_path=self.racket_model_path)
+            try:
+                self._racket_detector = RacketDetector(model_path=self.racket_model_path)
+            except Exception as e:
+                print(f"Racket detector unavailable ({e}); using wrist inference.")
+                self._racket_detector = None
 
         self.last_stats_update_frame = 0
 

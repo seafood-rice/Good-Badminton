@@ -112,3 +112,13 @@ already does.
   training instructions.
 - UI toggles for the detector; ROI-scoped detection in the posture path.
 - ORDB / ShuttleSet / other datasets.
+
+## Outcome addendum (2026-07-07)
+
+- Installed weights filename is `weights/yolo11n-racket.pt` (spec text says
+  `weights/racket.pt`); val mAP50 0.711 / mAP50-95 0.410 at imgsz 1280 (paper YOLOv8 ref
+  0.78/0.47).
+- Posture-path inference runs imgsz 640, conf 0.15 (probe: imgsz 1280 inference produced
+  static false positives on racket-lookalike objects; 640 showed none). Detector domains:
+  user close-up phone footage 24.7% frame recall, RacketDB far-view in-domain, 640x480 lab
+  far-view 0% (kinematic fallback covers).

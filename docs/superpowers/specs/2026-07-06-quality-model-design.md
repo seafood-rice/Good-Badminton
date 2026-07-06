@@ -131,3 +131,15 @@ surfaces it alongside the rule-based scores. It is the first of two sequenced ML
 - EMG/foot-pressure privileged-modality distillation.
 - Project A (BST stroke-type recognition) — separate spec, queued next.
 - In-app retraining/feedback loops; committing weights before license clarity.
+
+## Outcome addendum (2026-07-07)
+
+- **Labels:** adapted to per-player expert means (weak supervision; per-swing ratings do
+  not exist in the dataset).
+- **Deviation (g):** training tensors use full annotated swing windows (~4.1 s) while
+  inference scores ~1.17 s peak-centered rep windows, both resampled to 64 frames —
+  session-level e2e tracked truth (pred 2.3 vs rated 2.0); follow-up: evaluate a wider
+  inference window.
+- **Measured results:** per-swing val MAE beats the val-side predict-mean baseline on all
+  3 player-disjoint seeds (2.135/2.308, 1.908/2.320, 1.623/2.061); per-player (session)
+  MAE 1.994/2.272, 1.732/2.123, 1.500/2.062; installed weights = canonical seed-0.

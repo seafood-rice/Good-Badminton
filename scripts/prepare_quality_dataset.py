@@ -361,6 +361,8 @@ def main():
     # Heavy imports inside main()
     import cv2
     import numpy as np
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from badminton_analysis.quality.normalize import normalize_window, posed_frames
 
     out_dir = Path(args.out)

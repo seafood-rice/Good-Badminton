@@ -81,3 +81,47 @@ def test_infer_racket_head_missing_wrist():
     # wrist stays at (0,0) — missing
     result = det.infer_racket_head(kp, dominant="right")
     assert result is None
+
+
+# ── Match-system wiring: RacketDetector construction must not abort startup ──
+
+def test_match_system_tolerates_racket_detector_construction_failure(tmp_path, monkeypatch):
+    """Corrupt/incompatible racket weights must not kill match analysis startup.
+
+    Mirrors the posture path's PostureAnalysisSystem._build_racket_detector:
+    detector construction failure -> _racket_detector stays None -> downstream
+    falls back to wrist inference (pre-feature behavior), instead of the
+    exception propagating out of BadmintonAnalysisSystem.__init__.
+    """
+    import badminton_analysis.system as system_mod
+
+    class _Fake:
+        """Stand-in for the heavy YOLO/pose/visualizer collaborators built in
+        BadmintonAnalysisSystem.__init__; none of them are exercised here."""
+        def __init__(self, *args, **kwargs):
+            pass
+
+    def _boom(self, *args, **kwargs):
+        raise RuntimeError("corrupt weights")
+
+    monkeypatch.setattr(RacketDetector, "__init__", _boom)
+    monkeypatch.setattr(system_mod, "YOLO", _Fake, raising=False)
+    monkeypatch.setattr(system_mod, "RTMPoseProcessor", _Fake, raising=False)
+    monkeypatch.setattr(system_mod, "YOLOPoseProcessor", _Fake, raising=False)
+    monkeypatch.setattr(system_mod, "ShuttlecockTracker", _Fake, raising=False)
+    monkeypatch.setattr(system_mod, "PlayerPoseVisualizer", _Fake, raising=False)
+    monkeypatch.setattr(system_mod, "CourtTrajectoryVisualizer", _Fake, raising=False)
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    ball_model = tmp_path / "ball.pt"
+    ball_model.write_bytes(b"x")
+
+    sys_ = system_mod.BadmintonAnalysisSystem(
+        str(video),
+        ball_model_path=str(ball_model),
+        analyze_technique=True,
+        racket_model_path=str(tmp_path / "racket.pt"),
+        output_dir=str(tmp_path / "out"),
+    )
+    assert sys_._racket_detector is None

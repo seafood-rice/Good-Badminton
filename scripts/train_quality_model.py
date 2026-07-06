@@ -234,9 +234,12 @@ def main():
         else None
     )
 
-    # Compute baseline (predict mean)
+    # Compute baseline (predict mean). val_baseline_mae is the number Final Val
+    # MAE below should be compared against — baseline_mae alone is a train-set
+    # statistic and is not directly comparable to a val-set metric.
     train_mean = y_train.mean().item()
     baseline_mae = torch.abs(y_train - train_mean).mean().item()
+    val_baseline_mae = torch.abs(y_val - train_mean).mean().item() if len(y_val) > 0 else None
     print(f"Baseline (predict mean {train_mean:.2f}) MAE: {baseline_mae:.3f}")
 
     # Training loop
@@ -309,7 +312,8 @@ def main():
             val_true = torch.cat(val_true)
             val_mae = torch.abs(val_pred - val_true).mean().item()
             print(f"\nFinal Val MAE: {val_mae:.3f}")
-            print(f"Baseline MAE: {baseline_mae:.3f}")
+            print(f"Baseline MAE (train-side, predict mean {train_mean:.2f}): {baseline_mae:.3f}")
+            print(f"Baseline MAE (val-side, predict mean {train_mean:.2f}):   {val_baseline_mae:.3f}   <- compare Final Val MAE against this")
 
             # Bucket accuracy + per-bucket recall. bucket_of returns strings, so
             # this compares them directly instead of routing through

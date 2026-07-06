@@ -212,7 +212,7 @@ def test_sync_video_recovers_known_offset(tmp_path):
     assert cache_path.is_file()
 
 
-def test_trainer_end_to_end_smoke(tmp_path, monkeypatch):
+def test_trainer_end_to_end_smoke(tmp_path, monkeypatch, capsys):
     """CPU-only e2e smoke: synthetic manifest+tensors -> trained TorchScript export.
 
     Would have caught C3 (string-bucket torch.tensor crash) and I4 (aliased
@@ -258,6 +258,14 @@ def test_trainer_end_to_end_smoke(tmp_path, monkeypatch):
     assert out_path.is_file()
     loaded = torch.jit.load(str(out_path))
     assert loaded is not None
+
+    # Train-side and val-side baselines must be reported separately and
+    # unambiguously labeled — Final Val MAE is only comparable to the
+    # val-side number, not the train-side one.
+    out = capsys.readouterr().out
+    assert "Baseline MAE (train-side, predict mean" in out
+    assert "Baseline MAE (val-side, predict mean" in out
+    assert "compare Final Val MAE against this" in out
 
 
 def test_prep_end_to_end_smoke(tmp_path, monkeypatch, capsys):
