@@ -2,11 +2,36 @@
 import os
 import time
 
+import numpy as np
+
 from .rep_segmenter import segment_reps
 from .writer import write_rep_reports, build_drill_summary
 
 # close-up drill footage: far-view-trained detector needs a lower threshold
 RACKET_CONF = 0.15
+
+ROI_MARGIN = 0.75  # racket can extend ~a racket-length beyond the body; keep the box generous
+
+
+def person_roi(kp):
+    """Bounding box around valid keypoints, expanded by ROI_MARGIN of its larger side.
+
+    Returns [(x1, y1), (x2, y2)] or None when kp is None or fewer than 2 joints
+    are valid (x>1 and y>1 - the codebase's undetected-joint sentinel convention,
+    same as badminton_analysis/quality/normalize.py's posed_frames).
+    """
+    if kp is None:
+        return None
+    kp = np.asarray(kp, dtype=float)
+    valid = (kp[:, 0] > 1.0) & (kp[:, 1] > 1.0)
+    if int(np.count_nonzero(valid)) < 2:
+        return None
+    xs = kp[valid, 0]
+    ys = kp[valid, 1]
+    x1, x2 = float(xs.min()), float(xs.max())
+    y1, y2 = float(ys.min()), float(ys.max())
+    pad = ROI_MARGIN * max(x2 - x1, y2 - y1)
+    return [(x1 - pad, y1 - pad), (x2 + pad, y2 + pad)]
 
 
 def format_progress(pct, stage):
@@ -257,7 +282,7 @@ class PostureAnalysisSystem:
 
     def _resolve_racket_head(self, frame, kp, ja):
         if self._racket_detector is not None:
-            head = self._racket_detector.detect_racket_head(frame)
+            head = self._racket_detector.detect_racket_head(frame, roi_corners=person_roi(kp))
             if head is not None:
                 self._racket_stats["detected"] += 1
                 return head

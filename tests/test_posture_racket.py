@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from badminton_analysis.posture.system import PostureAnalysisSystem
+from badminton_analysis.posture.system import PostureAnalysisSystem, person_roi
+from badminton_analysis.detection.racket import RacketDetector
 import badminton_analysis.analysis.joint_angles as ja
 import app as webapp
 
@@ -18,6 +19,24 @@ def _kp():
     kp[ja.R_ELBOW] = (100.0, 100.0)
     kp[ja.R_WRIST] = (120.0, 80.0)
     return kp
+
+
+# ── person_roi: bounding box around valid keypoints, padded by ROI_MARGIN ──
+
+def test_person_roi_none_when_kp_is_none():
+    assert person_roi(None) is None
+
+
+def test_person_roi_none_when_fewer_than_two_valid_joints():
+    kp = np.zeros((17, 2), dtype=float)
+    kp[ja.R_WRIST] = (120.0, 80.0)  # only one valid joint; rest are (0, 0) sentinels
+    assert person_roi(kp) is None
+
+
+def test_person_roi_expands_bbox_by_margin():
+    kp = _kp()  # R_ELBOW (100, 100), R_WRIST (120, 80) -> bbox 20 x 20
+    # pad = ROI_MARGIN(0.75) * max(width=20, height=20) = 15
+    assert person_roi(kp) == [(85.0, 65.0), (135.0, 115.0)]
 
 
 class _FakeDetector:
@@ -90,6 +109,80 @@ def test_detector_construction_failure_is_tolerated(tmp_path, monkeypatch):
     assert sys_._racket_detector is None
     head = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
     assert head is not None
+
+
+# ── Person-ROI gate on the posture detection path ───────────────────────────
+# RacketDetector.detect_racket_head already filters candidate boxes against
+# roi_corners via RacketDetector._point_in_roi; these tests fake the
+# underlying YOLO model (not detect_racket_head itself) so that filtering
+# actually runs and the gate is genuinely exercised.
+
+class _FakeBoxes:
+    def __init__(self, xywh, conf):
+        self.xywh = _FakeTensor(np.array(xywh, dtype=float))
+        self.conf = _FakeTensor(np.array(conf, dtype=float))
+
+
+class _FakeTensor:
+    def __init__(self, arr):
+        self._arr = arr
+        self.shape = arr.shape
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self._arr
+
+
+class _FakeYoloResult:
+    def __init__(self, boxes):
+        self.boxes = boxes
+
+
+class _FakeYoloModel:
+    def __init__(self, xywh, conf):
+        self._result = _FakeYoloResult(_FakeBoxes(xywh, conf))
+
+    def __call__(self, frame, **kwargs):
+        return [self._result]
+
+
+def test_gate_accepts_detection_near_person(tmp_path):
+    sys_ = _system(tmp_path)
+    kp = _kp()  # person_roi(kp) == [(85.0, 65.0), (135.0, 115.0)]
+    sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[110, 90, 10, 10]], conf=[0.9]))
+    head = sys_._resolve_racket_head(frame=None, kp=kp, ja=ja)
+    assert head == (110, 90)
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+
+
+def test_gate_rejects_detection_far_from_person(tmp_path):
+    """Wall-fan-style false positive: a detection far outside the person ROI
+    is rejected inside detect_racket_head, and the method falls through to
+    kinematic inference instead of corrupting wrist_flexion.
+
+    Fails before the person-ROI gate (the far detection was accepted because
+    no ROI was passed to reject it); passes after.
+    """
+    sys_ = _system(tmp_path)
+    kp = _kp()
+    sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[900, 900, 10, 10]], conf=[0.9]))
+    head = sys_._resolve_racket_head(frame=None, kp=kp, ja=ja)
+    assert head is not None  # kinematic fallback still produced a point
+    assert head != (900, 900)
+    assert sys_._racket_stats == {"detected": 0, "inferred": 1}
+
+
+def test_gate_allows_detector_result_when_pose_missing(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[900, 900, 10, 10]], conf=[0.9]))
+    head = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head == (900, 900)
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
 
 
 def test_posture_builds_racket_detector_with_conf_0_15(tmp_path, monkeypatch):
