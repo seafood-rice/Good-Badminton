@@ -4,8 +4,11 @@ Loads prepared dataset (manifest + .npy tensors), splits by player,
 trains TCN on mean coach score, exports TorchScript weights.
 """
 import argparse
+import copy
 import json
 from pathlib import Path
+
+BUCKETS = ("novice", "intermediate", "expert")
 
 
 def bucket_of(score):
@@ -21,19 +24,24 @@ def bucket_of(score):
 def player_split(rows, val_fraction=0.2, seed=0):
     """Split rows by player with no leakage: train and val have disjoint player sets.
 
-    Returns (train_rows, val_rows) lists.
+    Returns (train_rows, val_rows) lists. Raises SystemExit when fewer than 2
+    unique players are present (a player-level split is meaningless below that);
+    `n_val` is capped so at least one player always remains for training.
     """
     import random
 
     # Get unique players
     players = sorted({r["player"] for r in rows})
+    if len(players) < 2:
+        raise SystemExit("player-level split needs >=2 players; got %d" % len(players))
 
     # Shuffle players deterministically
     rng = random.Random(seed)
     rng.shuffle(players)
 
-    # Split players
+    # Split players (always leave >=1 player for train)
     n_val = max(1, int(round(len(players) * val_fraction)))
+    n_val = min(n_val, len(players) - 1)
     val_players = set(players[:n_val])
 
     # Partition rows
@@ -91,6 +99,11 @@ def main():
         type=int,
         default=0,
         help="Random seed",
+    )
+    ap.add_argument(
+        "--device",
+        default="cuda-if-available",
+        help="Torch device: 'cuda-if-available' (default), 'cpu', 'cuda', etc.",
     )
     ap.add_argument(
         "--smoke",
@@ -203,7 +216,10 @@ def main():
     model = TCNRegressor(c_in=34, hidden=64)
 
     # Training setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device == "cuda-if-available":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.MSELoss()
@@ -264,7 +280,9 @@ def main():
 
                 if val_mae < best_val_mae:
                     best_val_mae = val_mae
-                    best_model_state = model.state_dict().copy()
+                    # deepcopy: state_dict() alone returns tensor views, so
+                    # "best" would silently alias whatever epoch runs last.
+                    best_model_state = copy.deepcopy(model.state_dict())
 
                 print(f"Epoch {epoch + 1}/{epochs} | Train loss: {train_loss:.4f} | Val MAE: {val_mae:.3f}")
         else:
@@ -293,11 +311,18 @@ def main():
             print(f"\nFinal Val MAE: {val_mae:.3f}")
             print(f"Baseline MAE: {baseline_mae:.3f}")
 
-            # Bucket accuracy
-            pred_buckets = torch.tensor([bucket_of(p.item()) for p in val_pred])
-            true_buckets = torch.tensor([bucket_of(t.item()) for t in val_true])
-            bucket_acc = (pred_buckets == true_buckets).float().mean().item()
+            # Bucket accuracy + per-bucket recall. bucket_of returns strings, so
+            # this compares them directly instead of routing through
+            # torch.tensor(...) (which cannot hold a list of str).
+            preds_b = [bucket_of(p.item()) for p in val_pred]
+            trues_b = [bucket_of(t.item()) for t in val_true]
+            bucket_acc = sum(p == t for p, t in zip(preds_b, trues_b)) / max(len(preds_b), 1)
             print(f"Bucket accuracy: {bucket_acc:.1%} (vs. 33% random)")
+            for b in BUCKETS:
+                true_in_bucket = sum(t == b for t in trues_b)
+                correct_in_bucket = sum(p == t == b for p, t in zip(preds_b, trues_b))
+                recall = correct_in_bucket / max(true_in_bucket, 1)
+                print(f"  {b} recall: {recall:.1%} ({correct_in_bucket}/{true_in_bucket})")
 
     # Export to TorchScript
     out_path = Path(args.out)

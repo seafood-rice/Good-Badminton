@@ -60,10 +60,11 @@ def find_sources(root):
         if not player_dir.is_dir():
             continue
 
-        # Find video files (common extensions)
+        # Find video files (common extensions); sorted() keeps the pick
+        # deterministic across filesystems/platforms.
         video_file = None
         for ext in (".mp4", ".avi", ".mov", ".mkv"):
-            candidates = list(player_dir.glob(f"*{ext}"))
+            candidates = sorted(player_dir.glob(f"*{ext}"))
             if candidates:
                 video_file = candidates[0]
                 break
@@ -71,9 +72,9 @@ def find_sources(root):
         # Find annotation files (common extensions)
         annot_file = None
         for ext in (".json", ".jsonl", ".yml", ".yaml"):
-            candidates = list(player_dir.glob(f"*annotations{ext}"))
+            candidates = sorted(player_dir.glob(f"*annotations{ext}"))
             if not candidates:
-                candidates = list(player_dir.glob(f"*{ext}"))
+                candidates = sorted(player_dir.glob(f"*{ext}"))
             if candidates:
                 annot_file = candidates[0]
                 break
@@ -112,6 +113,35 @@ def parse_annotations(path):
     return []
 
 
+def build_pose_extractor(pose_family="yolo-pose", model_path="weights/yolo11n-pose.pt"):
+    """Construct a pose processor, mirroring
+    PostureAnalysisSystem._build_pose_processor (badminton_analysis/posture/system.py).
+
+    Constructed lazily — heavy imports stay inside this function — so tests can
+    monkeypatch this seam instead of loading a real model.
+    """
+    if pose_family == "yolo-pose":
+        from badminton_analysis.detection.yolo_pose import YOLOPoseProcessor
+        return YOLOPoseProcessor(model_path=model_path)
+    from badminton_analysis.detection.rtmpose import RTMPoseProcessor
+    return RTMPoseProcessor(mode="balanced", pose_family=pose_family)
+
+
+def _pick_largest_person(keypoints):
+    """Return the largest keypoint-spread person's (17, 2) array.
+
+    Mirrors the single-player heuristic in badminton_analysis/posture/system.py
+    (PostureAnalysisSystem._capture_frame's `_spread`/`best_i` block).
+    """
+    def _spread(person):
+        xs = person[:, 0]
+        ys = person[:, 1]
+        return float((xs.max() - xs.min()) + (ys.max() - ys.min()))
+
+    best_i = max(range(len(keypoints)), key=lambda i: _spread(keypoints[i]))
+    return keypoints[best_i].astype(float)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Prepare quality-model dataset from MultiSenseBadminton"
@@ -135,13 +165,14 @@ def main():
         "--limit",
         type=int,
         default=None,
-        help="Max swings to process (for smoke testing)",
+        help="Max total swings to process across all sources (for smoke testing)",
     )
     ap.add_argument(
         "--min-pose-rate",
         type=float,
         default=0.8,
-        help="Minimum fraction of frames with valid pose; refuse silently if below",
+        help="Minimum fraction of frames with valid pose; exits loudly (before "
+             "writing the manifest) if the overall rate is below this",
     )
     ap.add_argument(
         "--pose-family",
@@ -159,14 +190,6 @@ def main():
     import cv2
     import numpy as np
     from badminton_analysis.quality.normalize import normalize_window
-    from badminton_analysis.pose import POSE_FAMILIES
-
-    # Validate pose family
-    if args.pose_family not in POSE_FAMILIES:
-        raise SystemExit(
-            f"Unknown pose family: {args.pose_family}\n"
-            f"Available: {list(POSE_FAMILIES.keys())}"
-        )
 
     root = Path(args.data)
     out_dir = Path(args.out)
@@ -180,12 +203,8 @@ def main():
         sources = sources[:1]  # Process only first player in smoke mode
         args.limit = 10
 
-    if args.limit:
-        sources = sources[:args.limit]
-
-    # Initialize pose extractor
-    pose_cls = POSE_FAMILIES[args.pose_family]
-    pose_extractor = pose_cls()
+    # Initialize pose extractor once (real construction stays mockable/lazy).
+    pose_extractor = build_pose_extractor(pose_family=args.pose_family)
 
     manifest = []
     total_swings = 0
@@ -194,6 +213,8 @@ def main():
 
     # Process each player
     for video_path, annot_path in sources:
+        video_path = Path(video_path)
+        annot_path = Path(annot_path)
         print(f"Processing {video_path.parent.name}...")
 
         # Parse annotations
@@ -229,7 +250,7 @@ def main():
             if start >= total_frames_in_video:
                 continue
 
-            # Read frames in window
+            # Read frames in window, extracting pose per frame
             frames_data = []
             frame_idx = 0
             cap.set(cv2.CAP_PROP_POS_FRAMES, start)
@@ -238,9 +259,11 @@ def main():
                 if not ret:
                     break
 
-                # Run pose extractor on frame
-                # (In real usage, this extracts keypoints; for testing, we skip)
-                frames_data.append({"keypoints": None})
+                keypoints, scores = pose_extractor.process_frame(frame)
+                kp = None
+                if keypoints is not None and len(keypoints) > 0:
+                    kp = _pick_largest_person(keypoints)
+                frames_data.append({"keypoints": kp})
                 frame_idx += 1
                 total_frames += 1
 
@@ -273,24 +296,27 @@ def main():
 
         cap.release()
 
-    # Write manifest
+    # Report + gate BEFORE writing the manifest: a below-threshold run must not
+    # leave a manifest.jsonl on disk pointing at an under-posed dataset.
+    print(f"\nProcessed {total_swings} swings, {len(manifest)} candidate manifest row(s)")
+    if total_frames > 0:
+        overall_pose_rate = total_posed_frames / total_frames
+        print(f"Overall pose rate: {overall_pose_rate:.1%}")
+        if overall_pose_rate < args.min_pose_rate:
+            raise SystemExit(
+                f"Overall pose rate {overall_pose_rate:.1%} below minimum {args.min_pose_rate:.1%}.\n"
+                f"Exiting before writing manifest.jsonl; discard any partial .npy tensors "
+                f"already written under {out_dir}."
+            )
+
+    # Write manifest only after the pose-rate gate has passed.
     manifest_path = Path(args.manifest)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8") as f:
         for row in manifest:
             f.write(json.dumps(row) + "\n")
 
-    # Report
-    print(f"\nProcessed {total_swings} swings, wrote {len(manifest)} to manifest")
-    if total_frames > 0:
-        overall_pose_rate = total_posed_frames / total_frames
-        print(f"Overall pose rate: {overall_pose_rate:.1%}")
-        if overall_pose_rate < args.min_pose_rate:
-            raise SystemExit(
-                f"Overall pose rate {overall_pose_rate:.1%} below minimum {args.min_pose_rate:.1%}"
-            )
-
-    print(f"Manifest written to {manifest_path}")
+    print(f"Wrote {len(manifest)} row(s) to manifest: {manifest_path}")
 
 
 if __name__ == "__main__":

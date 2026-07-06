@@ -491,8 +491,8 @@ git commit -m "feat(quality): weights auto-discovery + AI score chips in drill U
 **Interfaces:**
 - Consumes: `normalize_window` (Task 1).
 - Produces:
-  - Prep: `clip_window(hit_frame, fps, pre_s=1.2, post_s=0.8) -> (start, end)` (ints, start ≥ 0); `manifest_row(player_id, swing_id, stroke, view, label, spread, path) -> dict`; CLI that walks `data/multisense/`, locates annotation + video files (discovery function `find_sources(root)` returning a list of `(video_path, annotations_path)` or `SystemExit` with download instructions), extracts pose per swing window with our pose stack, saves `data/multisense/prepared/<swing_id>.npy` + `manifest.jsonl`; `--limit N` smoke; prints pose-success rate and refuses to finish silently below `--min-pose-rate` (default 0.8).
-  - Train: loads manifest + npy tensors; **player-level split** (`--val-players` fraction 0.2, seeded); TCN regressor (Conv1d 34→64→128 k5, GAP, MLP 128→64→1); MSE on mean coach score; reports val MAE, predict-mean baseline MAE, 3-bucket accuracy vs 33%; `--smoke` (2 epochs, ≤200 swings); exports TorchScript to `weights/quality-high_clear.pt`.
+  - Prep: `clip_window(hit_frame, fps, pre_s=1.2, post_s=0.8) -> (start, end)` (ints, start ≥ 0); `manifest_row(player_id, swing_id, stroke, view, label, spread, path) -> dict`; `build_pose_extractor(pose_family="yolo-pose", model_path="weights/yolo11n-pose.pt") -> processor` (mirrors `PostureAnalysisSystem._build_pose_processor`; heavy import stays inside the function so tests can monkeypatch the seam instead of loading a real model); CLI that walks `data/multisense/`, locates annotation + video files (discovery function `find_sources(root)` returning a list of `(video_path, annotations_path)` or `SystemExit` with download instructions), extracts pose per swing window for real via `extractor.process_frame(frame)` plus the posture pipeline's largest-person `_spread` heuristic, saves `data/multisense/prepared/<swing_id>.npy` + `manifest.jsonl`; `--limit N` caps total swings processed across all sources (smoke); prints pose-success rate and the `--min-pose-rate` gate (default 0.8) runs **before** the manifest write — a below-threshold run exits loudly (`SystemExit`) and leaves no `manifest.jsonl` on disk (partial `.npy` tensors already written should be discarded).
+  - Train: loads manifest + npy tensors; **player-level split** (`--val-players` fraction 0.2, seeded; `SystemExit` when fewer than 2 unique players are present, and `n_val` capped at `len(players) - 1` so train never empties); TCN regressor (Conv1d 34→64→128 k5, GAP, MLP 128→64→1); MSE on mean coach score; `--device` (default `cuda-if-available`, else the given torch device string — smoke/tests force `cpu` to avoid the live GPU job); reports val MAE, predict-mean baseline MAE, 3-bucket accuracy vs 33% + per-bucket recall; `--smoke` (2 epochs, ≤200 swings); exports TorchScript to `weights/quality-high_clear.pt` (best-val-MAE checkpoint captured via `copy.deepcopy(model.state_dict())`, not a shallow `.copy()`, so "best" cannot silently alias the last epoch).
 - The exact MultiSenseBadminton file layout is unknown until download — `find_sources` supports plausible layouts (per-player dirs with video+annotation files) and exits with instructions otherwise; Task 5 adapts it to the real layout and reports the adaptation (same bounded contingency that worked for RacketDB).
 
 - [ ] **Step 1: Tests** (`tests/test_quality_scripts.py`):
@@ -563,7 +563,7 @@ def manifest_row(player_id, swing_id, stroke, view, label, spread, tensor_path):
     return {"player": player_id, "swing": swing_id, "stroke": stroke, "view": view,
             "label": float(label), "spread": float(spread), "tensor": str(tensor_path)}
 ```
-`main()` flow: `find_sources(root)` → for each (video, annotations): parse swing entries (hit frame, per-coach ratings — parsing adapted at Task 5 against the real files, structured behind `parse_annotations(path) -> list[dict]`), `clip_window`, read frames via cv2, run pose extractor (constructed once; `--pose-family yolo-pose` default), pick largest person per frame (same `_spread` heuristic as the posture pipeline), `normalize_window`, save `.npy`, append manifest row; track posed-frame rate; final report + `--min-pose-rate` gate.
+`main()` flow: `find_sources(root)` → for each (video, annotations): parse swing entries (hit frame, per-coach ratings — parsing adapted at Task 5 against the real files, structured behind `parse_annotations(path) -> list[dict]`), `clip_window`, read frames via cv2, run the pose extractor built once via `build_pose_extractor(pose_family=...)` (`--pose-family yolo-pose` default) calling `extractor.process_frame(frame)` per frame, pick largest person per frame (same `_spread` heuristic as the posture pipeline), `normalize_window`, save `.npy`, append manifest row; track posed-frame rate; the `--min-pose-rate` gate is evaluated **before** `manifest.jsonl` is written (failure is a loud `SystemExit` and no manifest is written; only the final report print + write happen once the gate passes).
 
 `scripts/train_quality_model.py` helpers + model:
 ```python
@@ -574,9 +574,12 @@ def bucket_of(score):
 def player_split(rows, val_fraction=0.2, seed=0):
     import random
     players = sorted({r["player"] for r in rows})
+    if len(players) < 2:
+        raise SystemExit("player-level split needs >=2 players; got %d" % len(players))
     rng = random.Random(seed)
     rng.shuffle(players)
     n_val = max(1, int(round(len(players) * val_fraction)))
+    n_val = min(n_val, len(players) - 1)
     val_players = set(players[:n_val])
     train = [r for r in rows if r["player"] not in val_players]
     val = [r for r in rows if r["player"] in val_players]
@@ -598,9 +601,10 @@ class TCNRegressor(nn.Module):
     def forward(self, x):          # x: (B, T, 34)
         return self.head(self.net(x.transpose(1, 2)))
 ```
-Training loop: Adam 1e-3, MSE, 40 epochs (`--smoke`: 2 epochs, ≤200 swings), batch 64, seed 0, best-val-MAE checkpoint; metrics printed: val MAE, baseline MAE (predict train-mean), bucket accuracy + per-bucket recall; export `torch.jit.trace` on a `(1, 64, 34)` example → `--out weights/quality-high_clear.pt`.
+Training loop: Adam 1e-3, MSE, 40 epochs (`--smoke`: 2 epochs, ≤200 swings), batch 64, seed 0, `--device` (default `cuda-if-available`), best-val-MAE checkpoint captured via `copy.deepcopy(model.state_dict())` (a shallow `.copy()` aliases tensor views and silently degrades to the last epoch); metrics printed: val MAE, baseline MAE (predict train-mean), bucket accuracy — computed by direct string comparison of `bucket_of(...)` results, since `torch.tensor` cannot hold a list of bucket-name strings — + per-bucket recall; export `torch.jit.trace` on a `(1, 64, 34)` example → `--out weights/quality-high_clear.pt`.
 
 - [ ] **Step 4/5: GREEN + full suite** — 5 new tests; baseline + 22. Both scripts `--help` exit 0 without importing torch/cv2.
+  *(Post-review hardening pass: a broken `badminton_analysis.pose` import, a never-called pose extractor, and a string-tensor crash in the bucket-accuracy print reached this commit despite the above; 4 more hermetic tests were added — a two-player-minimum guard, `find_sources` failure-path wording, and CPU-only trainer/prep end-to-end smokes that exercise the real `build_pose_extractor` seam and TorchScript export — bringing this file to 9 tests and the full suite from 231 to 235. See Self-Review count-math note.)*
 
 - [ ] **Step 6: Commit**
 
@@ -629,7 +633,7 @@ Not a subagent task (large download + GPU + adaptation against the real figshare
 - **Spec coverage:** shared normalization (T1) ✓; scorer with DI + failure tolerance + runner/writer/system/CLI wiring + provenance (T2) ✓; auto-discovery + presence-keyed bilingual UI (T3) ✓; prep with pose-success gate + player-split TCN training + metrics-vs-baseline (T4) ✓; download-size-first discipline, license record, adaptation reporting, e2e + parity + dogfood (T5) ✓. v1 = high_clear only enforced in `_build_quality_scorer`.
 - **Placeholder scan:** T3 Step 1 contains two illustrative `pass` stubs explicitly ordered to be replaced by mirrored real tests in the same task — instruction, not placeholder. T4/T5's `parse_annotations` adaptation is the same bounded contingency proven on RacketDB, with helper seams (`find_sources`/`parse_annotations`) defined. No TBD/TODO.
 - **Type consistency:** `normalize_window(frames, mirror, target)` identical T1↔T2↔T4; `(T=64, 34)` tensor shape matches `TCNRegressor` input and `torch.jit.trace` example; `ai_score` (0–100 float 1dp) ↔ `to_display_score` ↔ UI `Math.round`; `mean_ai_score` writer↔UI; `quality-high_clear.pt` name identical in trainer `--out`, `_quality_weights`, spec; manifest keys (`player/swing/stroke/view/label/spread/tensor`) match `player_split` usage.
-- **Count math:** baseline B → B+6 (T1) → B+14 (T2) → B+17 (T3) → B+22 (T4).
+- **Count math:** baseline B → B+6 (T1) → B+14 (T2) → B+17 (T3) → B+22 (T4). Post-review fix pass on Task 4 (C1-C3/I4-I6 defects found after the initial T4 commit — see `.superpowers/sdd/task-4-report.md` fix addendum) added 4 more hermetic tests to close the coverage gaps that let those defects land; measured suite counts at fix time: 231 → 235.
 
 ## Notes for the executor
 
