@@ -59,6 +59,8 @@ Video preview: `assets/demo_en.mp4`.
 - **Stroke technique analysis** - Detects stroke types, analyzes key joint angles, generates biomechanical scores and improvement suggestions.
 - **Intelligent training plan** - Generates progressive multi-week training plans targeting detected weaknesses, with on-court and at-home exercises.
 
+> 📄 For training data, metrics, and licensing notes behind the racket detector and AI form-scoring models, see the [model cards](docs/model-cards.md).
+
 ## 🎯 Stroke Technique Analysis
 
 Enable technique analysis to automatically detect stroke types, analyze key joint angles, generate biomechanical scores with improvement suggestions, and create personalized training plans.
