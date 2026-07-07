@@ -12,6 +12,13 @@ RACKET_CONF = 0.15
 
 ROI_MARGIN = 0.75  # racket can extend ~a racket-length beyond the body; keep the box generous
 
+# The quality TCN was trained on full annotated swing windows (~4.1s mean); the rep
+# segmenter's peak-centered window (window_pre/window_post below) is much narrower
+# (~1.2s), which starves the scorer at inference. Widen just its input window to a
+# contact-centered +/-2.0s; heuristic per-metric scoring keeps the narrow rep window.
+QUALITY_WINDOW_PRE_S = 2.0
+QUALITY_WINDOW_POST_S = 2.0
+
 
 def person_roi(kp):
     """Bounding box around valid keypoints, expanded by ROI_MARGIN of its larger side.
@@ -77,6 +84,19 @@ class PostureRunner:
             })
         return frames
 
+    def _quality_window_frames(self, contact_frame, fps, frame_lookup):
+        """Wider, contact-centered window for the quality scorer only (QUALITY_WINDOW_*_S).
+
+        Missing frame numbers are simply absent (see _window_frames), so this is
+        naturally clamped to whatever frames are actually available; the lower
+        bound is also clamped explicitly so it never asks for negative frame keys.
+        """
+        pre_f = round(QUALITY_WINDOW_PRE_S * fps)
+        post_f = round(QUALITY_WINDOW_POST_S * fps)
+        window_start = max(0, contact_frame - pre_f)
+        window_end = contact_frame + post_f
+        return self._window_frames(window_start, window_end, frame_lookup)
+
     def run(self, track, frame_lookup, fps):
         from ..stroke.events import StrokeEvent
         reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post)
@@ -94,7 +114,8 @@ class PostureRunner:
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
             if self.quality_scorer is not None:
-                ai = self.quality_scorer.score(window_frames, dominant=self.dominant)
+                quality_frames = self._quality_window_frames(rep.peak_frame, fps, frame_lookup)
+                ai = self.quality_scorer.score(quality_frames, dominant=self.dominant)
                 if ai is not None:
                     report["ai_score"] = ai
             reports.append(report)
