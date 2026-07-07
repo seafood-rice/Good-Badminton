@@ -683,7 +683,7 @@ window.Kestrel = (function () {
     ],
     wrist_flexion: [
       '手腕处的角度（前臂–腕–拍头连线夹角），代表触球瞬间手腕/拍面的屈曲程度。',
-      'Wrist angle at contact, taken via the racket-head line (forearm to wrist to racket head).'
+      'Angle at the wrist (forearm-wrist-racket-head line) — the degree of wrist/racket-face flexion at contact.'
     ],
     knee_flexion: [
       '膝盖处的角度（髋–膝–踝夹角）；角度越小，屈膝越深、蹬地越充分。',
@@ -752,12 +752,12 @@ window.Kestrel = (function () {
       '单项评分（0–100）：实测值落在理想区间内得 100 分；超出区间后按超出量线性递减，超出量达到一个区间宽度时降为 0 分。',
       '综合评分：本次动作各项分数按权重加权平均（缺少测量值的项目不计入），四舍五入到 1 位小数。',
       '分数配色：≥70 绿色（良好），40–69 橙色（一般），<40 红色（需改进）——用于平均分、逐次分数徽章和分项进度条。',
-      'AI 评分：来自另一个独立训练的模型，用于预测专家教练打出的 1–7 分技术评级，并换算为 0–100 分：(原始分 - 1) / 6 * 100，超出范围会截断。该模型基于业余选手的专家评分数据训练；单次动作的 AI 分噪声较大，训练概览中按次平均得到的 AI 评分更可靠。'
+      'AI 评分：来自另一个独立训练的模型，用于预测专家教练打出的 1–7 分技术评级，并换算为 0–100 分：(原始分 - 1) / 6 * 100，超出范围会截断。该模型基于专家评分的挥拍数据训练；单次动作的 AI 分噪声较大，训练概览中按次平均得到的 AI 评分更可靠。'
     ] : [
       'Per-metric score (0–100): 100 if the measured value falls inside the ideal range; otherwise it decays linearly, reaching 0 once the deviation equals one full range-width beyond the boundary.',
       'Overall rep score: the per-metric scores for that rep, combined into a weighted average (metrics with no measurement are excluded), rounded to 1 decimal.',
-      'Score colors: green ≥70 (good), amber 40–69 (fair), red <40 (needs work) — used for the mean score, per-rep score badges, and metric bars.',
-      'AI score: from a separately trained model that predicts an expert coach rating on a 1–7 scale, then rescales it to 0–100 via (raw - 1) / 6 * 100, clamped to that range. It is trained on expert ratings of amateur players; per-rep values are noisy, so the averaged AI score in the drill summary is more reliable than any single rep.'
+      'Score colors: green ≥70 (good), orange 40–69 (fair), red <40 (needs work) — used for the mean score, per-rep score badges, and metric bars.',
+      'AI score: from a separately trained model that predicts an expert coach rating on a 1–7 scale, then rescales it to 0–100 via (raw - 1) / 6 * 100, clamped to that range. It is trained on expert-rated player swings; per-rep values are noisy, so the averaged AI score in the drill summary is more reliable than any single rep.'
     ];
     return '<ul class="plan-list">' + items.map(function (s) { return '<li>' + s + '</li>'; }).join('') + '</ul>';
   }
@@ -821,7 +821,10 @@ window.Kestrel = (function () {
           if (meta && meta.video && meta.video.fps) postureCtx.fps = meta.video.fps;
           var sumEl = document.getElementById('drill-summary');
           var prov = provenanceHTML(meta);
-          if (sumEl && prov) sumEl.innerHTML += prov;
+          // insertAdjacentHTML (not innerHTML +=) so it does not reparse/replace the
+          // existing children of #drill-summary -- an innerHTML += there would destroy
+          // and recreate #legend-toggle, silently dropping its click handler.
+          if (sumEl && prov) sumEl.insertAdjacentHTML('beforeend', prov);
         })
         .catch(function () {});
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
