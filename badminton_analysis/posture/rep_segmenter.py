@@ -20,14 +20,32 @@ def _dist(a, b):
     return float(np.hypot(a[0] - b[0], a[1] - b[1]))
 
 
+# Genuine wrist speed tops out ~30-80 px/frame at 1080p/30fps; a person-flip
+# (multi-person scenes picking a different person) or a hard cut jumps the
+# tracked wrist 300-800 px in a single frame. Deltas far above the clip's
+# own typical motion are track breaks, not motion.
+TELEPORT_MIN_PX = 100.0
+TELEPORT_MEDIAN_MULT = 10.0
+
+
 def _wrist_speed(track):
-    """Per-position wrist speed (px/frame); 0 where either endpoint is missing."""
+    """Per-position wrist speed (px/frame); 0 where either endpoint is
+    missing, or where the delta is an implausible teleport (identity switch
+    or hard cut) rather than real motion.
+    """
     speed = [0.0] * len(track)
     for i in range(1, len(track)):
         a = track[i - 1].get("wrist")
         b = track[i].get("wrist")
         if a is not None and b is not None:
             speed[i] = _dist(a, b)
+
+    positive = [s for s in speed if s > 0.0]
+    if positive:
+        teleport_floor = max(TELEPORT_MIN_PX, TELEPORT_MEDIAN_MULT * float(np.median(positive)))
+        for i in range(len(speed)):
+            if speed[i] > teleport_floor:
+                speed[i] = 0.0
     return speed
 
 

@@ -3,6 +3,8 @@ import pytest
 
 from badminton_analysis.posture.system import PostureAnalysisSystem, person_roi
 from badminton_analysis.detection.racket import RacketDetector
+from badminton_analysis.visualization.skeleton import draw_skeleton
+from badminton_analysis.visualization.technique_overlay import draw_technique_overlay
 import badminton_analysis.analysis.joint_angles as ja
 import app as webapp
 
@@ -37,6 +39,105 @@ def test_person_roi_expands_bbox_by_margin():
     kp = _kp()  # R_ELBOW (100, 100), R_WRIST (120, 80) -> bbox 20 x 20
     # pad = ROI_MARGIN(0.75) * max(width=20, height=20) = 15
     assert person_roi(kp) == [(85.0, 65.0), (135.0, 115.0)]
+
+
+# ── Sticky person selection: _capture_frame must not flip between people ───
+# Picking whoever currently has the largest keypoint spread, independently
+# every frame, flips the pick in multi-person scenes; each flip teleports
+# the tracked wrist by hundreds of px. _select_person instead stays locked
+# onto the previous pick unless it jumps further than PERSON_STICKY_MAX_JUMP.
+
+def _person(cx, cy, size=20):
+    """A full (17,2) keypoint array centered at (cx, cy): every joint is
+    valid (x>1, y>1) so mean-of-valid-joints == (cx, cy) exactly, and the
+    bounding-box spread ((max-min) summed over x and y) == 2*size.
+    """
+    kp = np.full((17, 2), (float(cx), float(cy)), dtype=float)
+    kp[ja.R_ELBOW] = (cx - size / 2, cy - size / 2)
+    kp[ja.R_WRIST] = (cx + size / 2, cy + size / 2)
+    return kp
+
+
+class _QueuedPose:
+    """Fake pose processor: returns one pre-scripted (keypoints, scores) per
+    call, in order - lets a test script exactly what each frame "detects".
+    """
+    def __init__(self, frames):
+        self._frames = list(frames)
+
+    def process_frame(self, frame):
+        return self._frames.pop(0)
+
+
+def _capture(sys_, frame, frame_count, pose):
+    sys_._capture_frame(frame, frame_count, pose, None, ja.R_WRIST, ja,
+                        draw_technique_overlay, draw_skeleton)
+    return sys_._frames[frame_count]["keypoints"]
+
+
+def test_no_anchor_picks_largest_spread(tmp_path):
+    """A1: with no established anchor (fresh system, first frame ever),
+    selection is largest-spread - the pre-fix behavior, preserved for the
+    very first pick (there is nothing yet to be sticky to).
+    """
+    sys_ = _system(tmp_path, show_overlay=False)
+    frame = np.zeros((600, 800, 3), dtype=np.uint8)
+    p = _person(100, 100, size=20)
+    q = _person(700, 500, size=200)
+    pose = _QueuedPose([([p, q], None)])
+    got = _capture(sys_, frame, 1, pose)
+    assert np.array_equal(got, q)
+
+
+def test_sticky_selection_keeps_anchored_person_despite_larger_rival(tmp_path):
+    """A2 (red before the fix - the money test): once P is the tracked
+    person, a farther, much-larger-spread person Q must not steal the pick
+    frame-to-frame. Before the fix, `_capture_frame` re-picks the largest
+    spread every single frame, so Q wins and the tracked wrist teleports
+    ~700px. After the fix, selection stays anchored on P because P remains
+    within PERSON_STICKY_MAX_JUMP of the anchor on every frame.
+    """
+    sys_ = _system(tmp_path, show_overlay=False)
+    frame = np.zeros((600, 800, 3), dtype=np.uint8)
+
+    p1 = _person(100, 100, size=20)
+    p2 = _person(110, 105, size=20)   # P drifts slightly frame to frame
+    p3 = _person(105, 110, size=20)
+    q = _person(700, 500, size=200)   # opposite corner, much larger spread
+
+    # First frame contains only P, so the anchor locks onto P. Every frame
+    # after that contains both, in varying order, so a non-sticky picker
+    # would flip to Q (larger spread) as soon as Q appears.
+    pose = _QueuedPose([
+        ([p1], None),
+        ([q, p2], None),
+        ([p2, q], None),
+        ([q, p3], None),
+    ])
+    expected = [p1, p2, p2, p3]
+
+    for frame_count, exp in enumerate(expected, start=1):
+        got = _capture(sys_, frame, frame_count, pose)
+        assert np.array_equal(got, exp), "frame %d picked the wrong person" % frame_count
+
+
+def test_lost_anchor_falls_back_to_largest_spread(tmp_path):
+    """A3: P disappears and only the far Q remains -> fall back to
+    largest-spread re-acquisition (no crash, and the anchor re-locks onto Q
+    instead of staying permanently stuck on the now-vanished P).
+    """
+    sys_ = _system(tmp_path, show_overlay=False)
+    frame = np.zeros((600, 800, 3), dtype=np.uint8)
+
+    p = _person(100, 100, size=20)
+    q = _person(700, 500, size=200)
+    pose = _QueuedPose([([p], None), ([q], None)])
+
+    _capture(sys_, frame, 1, pose)
+    got = _capture(sys_, frame, 2, pose)
+
+    assert np.array_equal(got, q)
+    assert sys_._person_anchor == (700.0, 500.0)
 
 
 class _FakeDetector:

@@ -12,6 +12,11 @@ RACKET_CONF = 0.15
 
 ROI_MARGIN = 0.75  # racket can extend ~a racket-length beyond the body; keep the box generous
 
+# A tracked person can't cross a quarter of the frame diagonal between two
+# consecutive frames; a bigger jump means an identity switch (a different
+# person was picked) or a hard cut, not real motion.
+PERSON_STICKY_MAX_JUMP_FRAC = 0.25
+
 # The quality TCN was trained on full annotated swing windows (~4.1s mean); the rep
 # segmenter's peak-centered window (window_pre/window_post below) is much narrower
 # (~1.2s), which starves the scorer at inference. Widen just its input window to a
@@ -55,6 +60,27 @@ def analyzing_pct(frame_count, total_frames):
 def _today():
     import datetime
     return datetime.date.today().isoformat()
+
+
+def _spread(person):
+    """Bounding-box footprint of one person's keypoints: (max_x-min_x) + (max_y-min_y)."""
+    xs = person[:, 0]
+    ys = person[:, 1]
+    return float((xs.max() - xs.min()) + (ys.max() - ys.min()))
+
+
+def _person_center(person):
+    """Mean of a person's valid joints (x>1 and y>1 sentinel convention, same
+    as person_roi), falling back to the mean of all joints if none are valid.
+    """
+    person = np.asarray(person, dtype=float)
+    valid = (person[:, 0] > 1.0) & (person[:, 1] > 1.0)
+    pts = person[valid] if np.count_nonzero(valid) > 0 else person
+    return (float(np.mean(pts[:, 0])), float(np.mean(pts[:, 1])))
+
+
+def _center_dist(a, b):
+    return float(np.hypot(a[0] - b[0], a[1] - b[1]))
 
 
 class PostureRunner:
@@ -157,6 +183,7 @@ class PostureAnalysisSystem:
 
         self._track = []
         self._frames = {}
+        self._person_anchor = None
 
     def _build_pose_processor(self):
         if self.pose_family == "yolo-pose":
@@ -312,6 +339,30 @@ class PostureAnalysisSystem:
         self._racket_stats["inferred"] += 1
         return ja.infer_racket_head(kp, dominant=self.dominant_hand)
 
+    def _select_person(self, keypoints, frame_shape):
+        """Pick which detected person to track this frame.
+
+        Re-picking the largest keypoint spread independently every frame
+        flips the pick in multi-person scenes (e.g. a feeder vs. the
+        drilling player); each flip teleports the tracked wrist by hundreds
+        of px. Instead, stay locked onto whoever is nearest the previous
+        pick's center unless that jump is implausibly large (see
+        PERSON_STICKY_MAX_JUMP_FRAC), in which case re-acquire via
+        largest-spread (initial pick, track loss, or a hard cut).
+        """
+        centers = [_person_center(p) for p in keypoints]
+        if self._person_anchor is not None:
+            height, width = frame_shape[0], frame_shape[1]
+            max_jump = PERSON_STICKY_MAX_JUMP_FRAC * float(np.hypot(width, height))
+            nearest_i = min(range(len(centers)),
+                            key=lambda i: _center_dist(centers[i], self._person_anchor))
+            if _center_dist(centers[nearest_i], self._person_anchor) <= max_jump:
+                self._person_anchor = centers[nearest_i]
+                return nearest_i
+        best_i = max(range(len(keypoints)), key=lambda i: _spread(keypoints[i]))
+        self._person_anchor = centers[best_i]
+        return best_i
+
     def _capture_frame(self, frame, frame_count, pose, ball_model, dom_wrist,
                        ja, draw_technique_overlay, draw_skeleton):
         keypoints, scores = pose.process_frame(frame)
@@ -321,12 +372,9 @@ class PostureAnalysisSystem:
         centroid = None
         conf_row = None
         if keypoints is not None and len(keypoints) > 0:
-            # Single-player drill: take the largest-bbox person (max keypoint spread).
-            def _spread(person):
-                xs = person[:, 0]
-                ys = person[:, 1]
-                return float((xs.max() - xs.min()) + (ys.max() - ys.min()))
-            best_i = max(range(len(keypoints)), key=lambda i: _spread(keypoints[i]))
+            # Single-player drill: sticky selection avoids flipping between
+            # people frame to frame (see _select_person).
+            best_i = self._select_person(keypoints, frame.shape)
             kp = keypoints[best_i].astype(float)
             conf_row = scores[best_i] if scores is not None else None
         # Detector must see the clean frame (before any overlay drawing), and runs
