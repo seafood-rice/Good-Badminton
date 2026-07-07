@@ -662,6 +662,11 @@ window.Kestrel = (function () {
         lines.push(zh ? 'AI 评分：未启用' : 'AI scoring: off');
       }
     }
+    var reps = (meta.reps && typeof meta.reps === 'object') ? meta.reps : null;
+    if (reps && reps.gated && reps.filtered_non_overhead > 0) {
+      lines.push(zh ? ('已排除 ' + reps.filtered_non_overhead + ' 个非头顶挥拍（仅统计高远球头顶动作）')
+                    : (reps.filtered_non_overhead + ' non-overhead swing(s) excluded (only full overhead clears counted)'));
+    }
     return '<div class="provenance muted mono">' + lines.map(function (l) { return '<div>' + l + '</div>'; }).join('') + '</div>';
   }
   // Legend for the drill-summary panel: static bilingual explanations of what each

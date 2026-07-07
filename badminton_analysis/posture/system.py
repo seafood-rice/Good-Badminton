@@ -24,6 +24,19 @@ PERSON_STICKY_MAX_JUMP_FRAC = 0.25
 QUALITY_WINDOW_PRE_S = 2.0
 QUALITY_WINDOW_POST_S = 2.0
 
+# Overhead-swing gate: only count full overhead swings (high_clear) as reps.
+# Empirically established on 50 genuine Sub05 clears: a full overhead swing
+# lifts the dominant wrist above the dominant shoulder at the swing apex
+# (positive elevation ratio); a soft/low return keeps the wrist at or below
+# the shoulder (ratio <= 0). View-dependent (weaker on front/side camera
+# angles, strong on behind-the-player views), so the threshold below is a
+# documented, tunable constant and errs toward KEEPING reps.
+OVERHEAD_APEX_S = 1.5            # half-window (seconds) searched for the swing apex
+OVERHEAD_MIN_ELEVATION = 0.10    # min (shoulder_y - wrist_y)/torso at apex to count as
+                                 # a full overhead swing. Tuned to favor keeping clears;
+                                 # view-dependent (front/side camera angles read lower).
+OVERHEAD_GATED_STROKES = ("high_clear",)  # only these stroke types are gated
+
 
 def person_roi(kp):
     """Bounding box around valid keypoints, expanded by ROI_MARGIN of its larger side.
@@ -44,6 +57,40 @@ def person_roi(kp):
     y1, y2 = float(ys.min()), float(ys.max())
     pad = ROI_MARGIN * max(x2 - x1, y2 - y1)
     return [(x1 - pad, y1 - pad), (x2 + pad, y2 + pad)]
+
+
+def apex_overhead_elevation(window_frames, dominant="right"):
+    """Max over the window of (shoulder_y - wrist_y) / torso for the dominant side.
+
+    torso = |shoulder_y - hip_y| (dominant side). Frames missing a valid dominant
+    shoulder/wrist/hip (sentinel x<=1,y<=1) are skipped; torso<1px frames skipped.
+    Returns a float, or None when no frame yields a valid measurement (caller treats
+    None as 'cannot judge -> keep the rep').
+    """
+    from ..analysis import joint_angles as ja
+    shoulder_idx, wrist_idx, hip_idx = (
+        (ja.R_SHOULDER, ja.R_WRIST, ja.R_HIP) if dominant == "right"
+        else (ja.L_SHOULDER, ja.L_WRIST, ja.L_HIP)
+    )
+    best = None
+    for f in window_frames:
+        kp = f.get("keypoints")
+        if kp is None:
+            continue
+        conf = f.get("conf")
+        if not (ja.is_valid(kp, shoulder_idx, conf) and ja.is_valid(kp, wrist_idx, conf)
+                and ja.is_valid(kp, hip_idx, conf)):
+            continue
+        shoulder_y = float(kp[shoulder_idx][1])
+        wrist_y = float(kp[wrist_idx][1])
+        hip_y = float(kp[hip_idx][1])
+        torso = abs(shoulder_y - hip_y)
+        if torso < 1.0:
+            continue
+        elevation = (shoulder_y - wrist_y) / torso
+        if best is None or elevation > best:
+            best = elevation
+    return best
 
 
 def format_progress(pct, stage):
@@ -123,10 +170,19 @@ class PostureRunner:
         window_end = contact_frame + post_f
         return self._window_frames(window_start, window_end, frame_lookup)
 
+    def _apex_window_frames(self, contact_frame, fps, frame_lookup):
+        """Apex-search window for the overhead-swing gate (OVERHEAD_APEX_S both sides)."""
+        apex_f = round(OVERHEAD_APEX_S * fps)
+        window_start = max(0, contact_frame - apex_f)
+        window_end = contact_frame + apex_f
+        return self._window_frames(window_start, window_end, frame_lookup)
+
     def run(self, track, frame_lookup, fps):
         from ..stroke.events import StrokeEvent
         reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post)
         reports = []
+        gated = self.stroke_type in OVERHEAD_GATED_STROKES
+        filtered_non_overhead = 0
         for rep in reps:
             event = StrokeEvent(
                 stroke_type=self.stroke_type,
@@ -139,13 +195,23 @@ class PostureRunner:
             window_frames = self._window_frames(rep.window_start, rep.window_end, frame_lookup)
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
+
+            apex_frames = self._apex_window_frames(rep.peak_frame, fps, frame_lookup)
+            elev = apex_overhead_elevation(apex_frames, self.dominant)
+            report["overhead_elevation"] = None if elev is None else round(elev, 3)
+            if gated and elev is not None and elev < OVERHEAD_MIN_ELEVATION:
+                filtered_non_overhead += 1
+                continue
+
             if self.quality_scorer is not None:
                 quality_frames = self._quality_window_frames(rep.peak_frame, fps, frame_lookup)
                 ai = self.quality_scorer.score(quality_frames, dominant=self.dominant)
                 if ai is not None:
                     report["ai_score"] = ai
             reports.append(report)
-        return reports, reps
+        gate_info = {"counted": len(reports), "filtered_non_overhead": filtered_non_overhead,
+                     "gated": gated}
+        return reports, reps, gate_info
 
 
 class PostureAnalysisSystem:
@@ -279,7 +345,7 @@ class PostureAnalysisSystem:
         runner = PostureRunner(BiomechanicalAnalyzer(dominant=self.dominant_hand),
                                stroke_type=self.stroke_type, dominant=self.dominant_hand,
                                quality_scorer=self._quality_scorer)
-        reports, reps = runner.run(self._track, self._frames.get, fps)
+        reports, reps, gate_info = runner.run(self._track, self._frames.get, fps)
 
         write_rep_reports(os.path.join(self.save_dir, "drill_reps.jsonl"), reports)
         summary = build_drill_summary(reports, self.stroke_type)
@@ -295,6 +361,9 @@ class PostureAnalysisSystem:
                        "model": self.racket_model_path},
             "quality": {"model": self.quality_model_path if self._quality_scorer else None,
                         "scored_reps": sum(1 for r in reports if "ai_score" in r)},
+            "reps": {"counted": gate_info["counted"],
+                     "filtered_non_overhead": gate_info["filtered_non_overhead"],
+                     "gated": gate_info["gated"]},
         })
         print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
@@ -302,6 +371,8 @@ class PostureAnalysisSystem:
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
         print("Racket source: %d detected / %d inferred"
               % (self._racket_stats["detected"], self._racket_stats["inferred"]), flush=True)
+        print("Overhead gate: %d counted, %d non-overhead excluded (stroke=%s)"
+              % (gate_info["counted"], gate_info["filtered_non_overhead"], self.stroke_type), flush=True)
         return reports
 
     def _build_racket_detector(self):

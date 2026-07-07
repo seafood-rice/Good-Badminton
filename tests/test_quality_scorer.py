@@ -207,7 +207,7 @@ def test_quality_scorer_receives_wider_window_than_heuristic_rep_window():
     runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
                            stroke_type="high_clear", dominant="right",
                            quality_scorer=scorer)
-    reports, reps = runner.run(_swing_track(400, spike_at=200), frame_lookup, fps=fps)
+    reports, reps, gate_info = runner.run(_swing_track(400, spike_at=200), frame_lookup, fps=fps)
 
     assert len(reps) == 1
     assert len(scorer.windows) == 1
@@ -231,7 +231,7 @@ def test_quality_scorer_window_clamped_at_video_start():
     runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
                            stroke_type="high_clear", dominant="right",
                            quality_scorer=scorer)
-    reports, reps = runner.run(_swing_track(120, spike_at=10), frame_lookup, fps=fps)
+    reports, reps, gate_info = runner.run(_swing_track(120, spike_at=10), frame_lookup, fps=fps)
 
     assert len(reps) == 1
     window = scorer.windows[0]
