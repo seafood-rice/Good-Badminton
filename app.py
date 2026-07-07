@@ -286,6 +286,13 @@ def api_stats():
                     'rallies': rallies, 'avg_technique_score': avg})
 
 
+@app.route('/api/models')
+def api_models():
+    """Which optional trained models (racket detector, AI quality scorer) are installed."""
+    return jsonify({'racket': _racket_weights() is not None,
+                    'quality': _quality_weights() is not None})
+
+
 @app.route('/api/upload', methods=['POST'])
 def api_upload():
     """上传视频"""

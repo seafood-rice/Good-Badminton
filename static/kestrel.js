@@ -365,8 +365,9 @@ window.Kestrel = (function () {
   }
   function renderStepConfig(body) {
     var zh = state.lang === 'zh';
+    var isPosture = wiz.mode === 'posture';
     var fields;
-    if (wiz.mode === 'posture') {
+    if (isPosture) {
       fields =
         fieldRow('击球类型','Stroke', selectHTML('cfg-stroke', [['high_clear','高远球','High clear'],['smash','杀球','Smash'],['drop_shot','吊球','Drop shot'],['serve','发球','Serve']])) +
         fieldRow('持拍手','Dominant hand', selectHTML('cfg-hand', [['right','右手','Right'],['left','左手','Left']])) +
@@ -379,10 +380,26 @@ window.Kestrel = (function () {
         '<label class="field field-check"><input type="checkbox" id="cfg-tech" checked><span class="field-label">' + (zh?'技术分析':'Technique analysis') + '</span></label>';
     }
     body.innerHTML = '<div class="cfg-form">' + fields + '</div>' +
+      (isPosture ? '<div id="cfg-model-chips" class="chip-row"></div>' : '') +
       '<div class="wiz-actions"><button class="btn-ghost" id="wiz-back">' + (zh?'返回':'Back') + '</button>' +
         '<button class="btn-primary" id="wiz-start">' + (zh?'开始分析':'Start Analysis') + '</button></div>';
     document.getElementById('wiz-back').onclick = function () { goStep(wiz.mode === 'match' ? 'court' : 'upload'); };
     document.getElementById('wiz-start').onclick = startAnalysis;
+    // Availability chips: non-blocking, so a fetch failure just renders nothing.
+    if (isPosture) {
+      fetch('/api/models').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+        var el = document.getElementById('cfg-model-chips');
+        if (!el || !d) return;
+        var rktOn = !!d.racket, qmOn = !!d.quality;
+        el.innerHTML =
+          '<span class="chip" style="color:' + (rktOn ? 'var(--good)' : 'var(--faint)') + '">' +
+            (zh ? (rktOn ? '球拍检测模型 ✓' : '球拍检测模型 未安装') : (rktOn ? 'Racket model ✓' : 'Racket model not installed')) +
+          '</span>' +
+          '<span class="chip" style="color:' + (qmOn ? 'var(--good)' : 'var(--faint)') + '">' +
+            (zh ? (qmOn ? 'AI 评分模型 ✓' : 'AI 评分模型 未安装') : (qmOn ? 'AI scoring model ✓' : 'AI scoring model not installed')) +
+          '</span>';
+      }).catch(function () {});
+    }
   }
   function startAnalysis() {
     var btn = document.getElementById('wiz-start'); btn.disabled = true;
@@ -616,6 +633,37 @@ window.Kestrel = (function () {
       }; });
     }).catch(function () { document.getElementById('tech-status').textContent = zh?'技术分析加载失败':'Failed to load technique'; });
   }
+  // Model-usage provenance for a posture run: which optional trained models (racket
+  // detector, AI quality scorer) actually ran, so a silently-degraded run (stale
+  // server, missing weights) is visible instead of invisible. '' when metadata is
+  // missing/old (pre-dates these blocks) or both blocks are absent.
+  function provenanceHTML(meta) {
+    if (!meta) return '';
+    var zh = state.lang === 'zh';
+    var racket = (meta.racket && typeof meta.racket === 'object') ? meta.racket : null;
+    var quality = (meta.quality && typeof meta.quality === 'object') ? meta.quality : null;
+    if (!racket && !quality) return '';
+    var lines = [];
+    if (racket) {
+      if (racket.model) {
+        var det = racket.detected_frames || 0, inf = racket.inferred_frames || 0, total = det + inf;
+        lines.push(zh ? ('球拍检测：' + det + '/' + total + ' 帧（其余手腕推断）')
+                      : ('Racket detection: ' + det + '/' + total + ' frames (rest wrist-inferred)'));
+      } else {
+        lines.push(zh ? '球拍检测：未启用（使用手腕推断）' : 'Racket detection: off (wrist inference)');
+      }
+    }
+    if (quality) {
+      if (quality.model) {
+        var scored = quality.scored_reps || 0;
+        lines.push(zh ? ('AI 评分：已启用（' + scored + ' 次动作已评分）')
+                      : ('AI scoring: on (' + scored + ' reps scored)'));
+      } else {
+        lines.push(zh ? 'AI 评分：未启用' : 'AI scoring: off');
+      }
+    }
+    return '<div class="provenance muted mono">' + lines.map(function (l) { return '<div>' + l + '</div>'; }).join('') + '</div>';
+  }
   function renderPostureResults(body) {
     var zh = state.lang === 'zh'; var stem = state.resultsVideo;
     postureCtx = { stem: stem, reps: [], fps: 30, sel: -1 };
@@ -639,7 +687,12 @@ window.Kestrel = (function () {
       var s = d.summary; postureCtx.reps = d.reps || [];
       var metaReady = fetch('/api/output/' + stem + '/posture/metadata.json')
         .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (meta) { if (meta && meta.video && meta.video.fps) postureCtx.fps = meta.video.fps; })
+        .then(function (meta) {
+          if (meta && meta.video && meta.video.fps) postureCtx.fps = meta.video.fps;
+          var sumEl = document.getElementById('drill-summary');
+          var prov = provenanceHTML(meta);
+          if (sumEl && prov) sumEl.innerHTML += prov;
+        })
         .catch(function () {});
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       var mean = (s.mean_score === null || s.mean_score === undefined) ? null : Math.round(s.mean_score);
