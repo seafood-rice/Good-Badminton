@@ -26,10 +26,13 @@ Fine-tuned on RacketDB, converted from the dataset authors' CVAT project backup 
 (whole source videos stay in one split — RacketDB does not publish an official split
 manifest).
 
-> **License:** RacketDB publishes no license. These weights are for local, personal use
-> only — do not redistribute or commit them. Consistent with that, this repository never
-> ships `weights/yolo11n-racket.pt`; you have to train your own copy with
-> `scripts/train_racket_detector.py` (see "Regenerating the trained weights" below).
+> **License:** RacketDB is licensed **CC-BY-4.0**, per the license field of its Hugging
+> Face dataset card (the paper and the GitHub repo's own text are otherwise silent on
+> licensing). Weights derived from it may be shared **with attribution** to the RacketDB
+> authors/dataset. This repository still doesn't commit or ship
+> `weights/yolo11n-racket.pt` — that's a size/hygiene choice, not a license restriction —
+> so you train your own copy with `scripts/train_racket_detector.py` (see "Regenerating
+> the trained weights" below).
 
 **Metrics**
 

@@ -8,8 +8,10 @@ first, e.g.:
     ./.venv/Scripts/python.exe -c "from huggingface_hub import snapshot_download; \
 snapshot_download('muhabdulhaq/racketdb', repo_type='dataset', local_dir='data/racketdb')"
 
-License note: the RacketDB repository states no license. Weights trained on it are for
-local/personal use; do not commit or redistribute them until the license is clarified.
+License note: RacketDB is licensed CC-BY-4.0 (per the license field of its Hugging Face
+dataset card). Weights trained on it may be shared with attribution to the RacketDB
+authors/dataset; this project still doesn't commit them to the repo, for size/hygiene
+reasons rather than licensing ones.
 """
 import argparse
 import re
@@ -99,8 +101,8 @@ def main():
     if license_file is not None:
         print("RacketDB license file found: " + str(license_file))
     else:
-        print("NOTE: RacketDB states no license. Trained weights are for local use only; "
-              "do not commit or redistribute them.")
+        print("NOTE: RacketDB is licensed CC-BY-4.0 (Hugging Face dataset card). Trained "
+              "weights may be shared with attribution to the RacketDB authors/dataset.")
 
     yaml_path = build_dataset_yaml(root, root / "racketdb.ultralytics.yaml")
     print("Dataset yaml: " + str(yaml_path))
