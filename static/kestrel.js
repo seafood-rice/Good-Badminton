@@ -664,6 +664,136 @@ window.Kestrel = (function () {
     }
     return '<div class="provenance muted mono">' + lines.map(function (l) { return '<div>' + l + '</div>'; }).join('') + '</div>';
   }
+  // Legend for the drill-summary panel: static bilingual explanations of what each
+  // summary item and per-metric score means, plus a numeric ideal-range/weight table
+  // rendered FROM the loaded rep data so it always matches what this run actually used
+  // (ranges differ per stroke type -- badminton_analysis/analysis/reference_ranges.py).
+  // The static text never depends on rep data; only the table does, and it is omitted
+  // gracefully when there are no reps yet. Collapsed by default (#legend-panel hidden).
+  var LEGEND_METRIC_ORDER = ['elbow_extension', 'trunk_rotation', 'wrist_flexion',
+    'knee_flexion', 'hip_shoulder_separation', 'weight_transfer'];
+  var METRIC_MEANING = {
+    elbow_extension: [
+      '触球瞬间手肘的伸展角度（肩–肘–腕夹角）；角度越大，手臂伸得越直。',
+      'Elbow angle at contact (shoulder-elbow-wrist); larger means a straighter arm.'
+    ],
+    trunk_rotation: [
+      '肩线相对画面水平线的角度，用作躯干旋转幅度的替代指标。',
+      'Angle of the line between the shoulders, relative to horizontal in the frame — a stand-in for how far the trunk has rotated.'
+    ],
+    wrist_flexion: [
+      '手腕处的角度（前臂–腕–拍头连线夹角），代表触球瞬间手腕/拍面的屈曲程度。',
+      'Wrist angle at contact, taken via the racket-head line (forearm to wrist to racket head).'
+    ],
+    knee_flexion: [
+      '膝盖处的角度（髋–膝–踝夹角）；角度越小，屈膝越深、蹬地越充分。',
+      'Knee angle (hip-knee-ankle); a smaller angle means a deeper bend and more leg load.'
+    ],
+    hip_shoulder_separation: [
+      '肩线与髋线两个角度之差（折算到 0–90° 范围内），代表挥拍时肩部相对髋部多转了多少。',
+      'Difference between the shoulder-line and hip-line angles, folded into 0–90 degrees — how far the shoulders lead the hips.'
+    ],
+    weight_transfer: [
+      '从动作起始到触球瞬间，髋部中点的水平位移量除以肩宽得到的比值；数值越大，重心前移越多。',
+      'Horizontal hip-center displacement from the start of the rep to contact, divided by shoulder width; larger means more forward transfer.'
+    ]
+  };
+  function legendSummaryHTML(zh) {
+    var items = [
+      [zh ? '次数' : 'Reps',
+       zh ? '本次训练检测到的挥拍次数（含姿态识别失败、无法评分的次数）。'
+          : 'Number of swings detected in this drill run (includes reps that could not be scored, e.g. failed pose detection).'],
+      [zh ? '平均分' : 'Mean',
+       zh ? '各次动作综合得分（0–100）的平均值。'
+          : 'Average of the per-rep overall scores (0–100).'],
+      [zh ? '一致性' : 'Consistency',
+       zh ? '各次综合得分的标准差；数值越小，动作越稳定一致。'
+          : 'Standard deviation of the per-rep overall scores; a smaller number means more consistent reps.'],
+      [zh ? '最佳 · 最差' : 'Best · Worst',
+       zh ? '综合得分最高的一次和最低的一次。'
+          : 'The highest-scoring and lowest-scoring reps by overall score.'],
+      [zh ? 'AI 评分' : 'AI score',
+       zh ? '独立训练的动作质量模型给出的评分（见下方「评分方法」），仅在该模型可用时显示。'
+          : 'Score from a separately trained form-quality model (see Scoring below); only shown when that model is available.']
+    ];
+    return '<ul class="plan-list">' + items.map(function (it) {
+      return '<li><b>' + it[0] + '</b> — ' + it[1] + '</li>';
+    }).join('') + '</ul>';
+  }
+  function legendMetricTableHTML(reps, zh) {
+    var first = (Array.isArray(reps) && reps.length && reps[0] && reps[0].per_metric &&
+                 typeof reps[0].per_metric === 'object') ? reps[0].per_metric : null;
+    if (!first) { return ''; }
+    var keys = LEGEND_METRIC_ORDER.filter(function (k) { return first[k]; });
+    Object.keys(first).forEach(function (k) { if (keys.indexOf(k) === -1) { keys.push(k); } });
+    if (!keys.length) { return ''; }
+    var rows = keys.map(function (k) {
+      var m = first[k] || {};
+      var ideal = (Array.isArray(m.ideal_range) && m.ideal_range.length >= 2)
+        ? (m.ideal_range[0] + '–' + m.ideal_range[1]) : '—';
+      var weight = (typeof m.weight === 'number') ? (Math.round(m.weight * 100) + '%') : '—';
+      return '<tr><td>' + metricLabel(k) + '</td><td class="mono">' + ideal + '</td><td class="mono">' + weight + '</td></tr>';
+    }).join('');
+    return '<table class="legend-table"><thead><tr><th>' + (zh ? '指标' : 'Metric') +
+      '</th><th>' + (zh ? '理想区间' : 'Ideal range') + '</th><th>' + (zh ? '权重' : 'Weight') +
+      '</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function legendMetricNoteHTML(zh) {
+    return '<p class="legend-note">' + (zh
+        ? '方向：实测值低于区间下限记为「偏低」，高于上限记为「偏高」。'
+        : 'Direction: "under" means the measured value is below the ideal range; "over" means above it.') +
+      '</p><p class="legend-note">' + (zh
+        ? '以上角度均为摄像机画面的二维投影角度（非真实三维关节角），理想区间为初版经验值，会随数据持续校准，且因挥拍类型而异。'
+        : 'All angles are 2D projections from the camera view (not true 3D joint angles); ideal ranges are first-release estimates, get refined over time, and vary by stroke type.') +
+      '</p>';
+  }
+  function legendScoringHTML(zh) {
+    var items = zh ? [
+      '单项评分（0–100）：实测值落在理想区间内得 100 分；超出区间后按超出量线性递减，超出量达到一个区间宽度时降为 0 分。',
+      '综合评分：本次动作各项分数按权重加权平均（缺少测量值的项目不计入），四舍五入到 1 位小数。',
+      '分数配色：≥70 绿色（良好），40–69 橙色（一般），<40 红色（需改进）——用于平均分、逐次分数徽章和分项进度条。',
+      'AI 评分：来自另一个独立训练的模型，用于预测专家教练打出的 1–7 分技术评级，并换算为 0–100 分：(原始分 - 1) / 6 * 100，超出范围会截断。该模型基于业余选手的专家评分数据训练；单次动作的 AI 分噪声较大，训练概览中按次平均得到的 AI 评分更可靠。'
+    ] : [
+      'Per-metric score (0–100): 100 if the measured value falls inside the ideal range; otherwise it decays linearly, reaching 0 once the deviation equals one full range-width beyond the boundary.',
+      'Overall rep score: the per-metric scores for that rep, combined into a weighted average (metrics with no measurement are excluded), rounded to 1 decimal.',
+      'Score colors: green ≥70 (good), amber 40–69 (fair), red <40 (needs work) — used for the mean score, per-rep score badges, and metric bars.',
+      'AI score: from a separately trained model that predicts an expert coach rating on a 1–7 scale, then rescales it to 0–100 via (raw - 1) / 6 * 100, clamped to that range. It is trained on expert ratings of amateur players; per-rep values are noisy, so the averaged AI score in the drill summary is more reliable than any single rep.'
+    ];
+    return '<ul class="plan-list">' + items.map(function (s) { return '<li>' + s + '</li>'; }).join('') + '</ul>';
+  }
+  function legendHTML(reps) {
+    var zh = state.lang === 'zh';
+    var table = legendMetricTableHTML(reps, zh);
+    var meanings = LEGEND_METRIC_ORDER.map(function (k) {
+      var mm = METRIC_MEANING[k];
+      return '<li><b>' + metricLabel(k) + '</b> — ' + (mm ? (zh ? mm[0] : mm[1]) : '') + '</li>';
+    }).join('');
+    return '<button class="btn-ghost legend-toggle" id="legend-toggle" type="button" aria-expanded="false" aria-controls="legend-panel">' +
+        (zh ? '▸ 说明' : '▸ Legend') +
+      '</button>' +
+      '<div class="plan-detail legend-panel" id="legend-panel" hidden>' +
+        '<div class="plan-sub">' + (zh ? '概览指标' : 'Summary items') + '</div>' +
+        legendSummaryHTML(zh) +
+        '<div class="plan-sub">' + (zh ? '分项指标' : 'Per-metric') + '</div>' +
+        '<ul class="plan-list">' + meanings + '</ul>' +
+        (table || '<p class="muted">' + (zh ? '暂无逐次数据，无法显示理想区间/权重表。' : 'No per-rep data yet, so the ideal-range/weight table is unavailable.') + '</p>') +
+        legendMetricNoteHTML(zh) +
+        '<div class="plan-sub">' + (zh ? '评分方法' : 'Scoring') + '</div>' +
+        legendScoringHTML(zh) +
+      '</div>';
+  }
+  function bindLegendToggle() {
+    var btn = document.getElementById('legend-toggle');
+    var panel = document.getElementById('legend-panel');
+    if (!btn || !panel) { return; }
+    btn.onclick = function () {
+      var zh = state.lang === 'zh';
+      var show = !!panel.hidden;
+      panel.hidden = !show;
+      btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+      btn.textContent = (show ? '▾ ' : '▸ ') + (zh ? '说明' : 'Legend');
+    };
+  }
   function renderPostureResults(body) {
     var zh = state.lang === 'zh'; var stem = state.resultsVideo;
     postureCtx = { stem: stem, reps: [], fps: 30, sel: -1 };
@@ -706,7 +836,9 @@ window.Kestrel = (function () {
           '<div><span>' + (zh?'最佳':'Best') + '</span><b>' + (s.best_rep ? '#' + s.best_rep.rep_id : '—') + '</b></div>' +
           '<div><span>' + (zh?'最差':'Worst') + '</span><b>' + (s.worst_rep ? '#' + s.worst_rep.rep_id : '—') + '</b></div>' +
           (s.mean_ai_score !== undefined && s.mean_ai_score !== null ? '<div><span>' + (zh?'AI 评分':'AI score') + '</span><b>' + Math.round(s.mean_ai_score) + '</b></div>' : '') +
-        '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '');
+        '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') +
+        legendHTML(postureCtx.reps);
+      bindLegendToggle();
       document.getElementById('rep-list').innerHTML = postureCtx.reps.map(function (rep, i) {
         return '<li><button class="rep-row" data-i="' + i + '"><span class="mono">#' + rep.rep_id + '</span>' +
           scoreChipHTML(rep.overall_score) +
