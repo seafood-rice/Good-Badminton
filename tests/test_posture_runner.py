@@ -139,6 +139,10 @@ def test_gate_drops_non_overhead_rep_and_keeps_overhead_rep():
     window (frames 0-85, OVERHEAD_APEX_S=1.5s @ 30fps = +/-45) never sees an
     elevated wrist -> dropped. Rep 2's apex window (65-155) includes frame
     100, which is elevated -> kept.
+
+    Before the contiguous-numbering fix the sole survivor kept its raw,
+    pre-gate id (2, since it was segment_reps's second rep). After the fix
+    run() renumbers survivors 1..N, so the lone kept report becomes rep_id 1.
     """
     low_kp = _gate_kp(elevated=False)
     high_kp = _gate_kp(elevated=True)
@@ -153,8 +157,9 @@ def test_gate_drops_non_overhead_rep_and_keeps_overhead_rep():
     reports, reps, gate_info = runner.run(_track_with_two_swings(), frame_lookup, fps=30)
 
     assert len(reps) == 2  # segmentation itself is unaffected by the gate
+    assert [r.rep_id for r in reps] == [1, 2]  # RepWindow list is left as-is (not renumbered)
     assert len(reports) == 1
-    assert [r["rep_id"] for r in reports] == [2]
+    assert [r["rep_id"] for r in reports] == [1]
     assert gate_info == {"counted": 1, "filtered_non_overhead": 1, "gated": True}
     assert reports[0]["overhead_elevation"] is not None
     assert reports[0]["overhead_elevation"] >= OVERHEAD_MIN_ELEVATION
@@ -199,3 +204,46 @@ def test_gate_keeps_rep_when_elevation_cannot_be_judged():
     assert len(reports) == 1
     assert reports[0]["overhead_elevation"] is None
     assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": True}
+
+
+# ── Contiguous rep numbering after the overhead gate drops a middle rep ─────
+# The gate runs per-rep and filters AFTER segment_reps assigned rep_ids, so a
+# gated-out middle rep would otherwise leave surviving reports at their
+# original, gapped ids (e.g. 1, 3). run() must renumber survivors 1..N.
+
+def _track_with_three_swings(n=280):
+    track = []
+    for i in range(n):
+        wrist = (100, 100)
+        if i in (40, 110, 220):
+            wrist = (260, 100)  # big displacement -> speed spike
+        track.append({"frame": i, "wrist": wrist, "shuttle": None})
+    return track
+
+
+def test_gate_drop_of_middle_rep_renumbers_survivors_contiguously():
+    """Three genuine swings (peaks near frames 40, 110, 220); only the middle
+    one (110) reads non-overhead and is gated out. Before the renumbering fix
+    the surviving reports keep their original ids [1, 3] (a gap); after the
+    fix they must be contiguous [1, 2].
+    """
+    low_kp = _gate_kp(elevated=False)
+    high_kp = _gate_kp(elevated=True)
+
+    def frame_lookup(idx):
+        # Elevated wrist only near the first and third swings' apex windows;
+        # the middle swing's apex window (see test_gate_drops_... above for
+        # the same window-isolation reasoning) never sees an elevated wrist.
+        kp = high_kp if idx in (40, 220) else low_kp
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": None, "centroid": (100, 300)}
+
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                           stroke_type="high_clear", dominant="right")
+    reports, reps, gate_info = runner.run(_track_with_three_swings(), frame_lookup, fps=30)
+
+    assert len(reps) == 3  # segmentation itself is unaffected by the gate
+    assert [r.rep_id for r in reps] == [1, 2, 3]  # RepWindow list is left as-is (not renumbered)
+    assert len(reports) == 2  # middle rep gated out
+    assert [r["rep_id"] for r in reports] == [1, 2]  # contiguous, no gap left at the old id 3
+    assert gate_info == {"counted": 2, "filtered_non_overhead": 1, "gated": True}

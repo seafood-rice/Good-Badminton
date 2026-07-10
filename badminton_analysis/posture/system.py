@@ -216,6 +216,12 @@ class PostureRunner:
             reports.append(report)
         gate_info = {"counted": len(reports), "filtered_non_overhead": filtered_non_overhead,
                      "gated": gated}
+        # Renumber survivors 1..N so downstream consumers (write_rep_reports,
+        # build_drill_summary, the coach report table) never show gapped ids
+        # left behind by reps the overhead gate dropped above. The `reps`
+        # RepWindow list is not renumbered: it isn't consumed downstream.
+        for new_id, report in enumerate(reports, start=1):
+            report["rep_id"] = new_id
         return reports, reps, gate_info
 
 

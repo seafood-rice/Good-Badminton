@@ -132,6 +132,24 @@ def segment_reps(track, fps, min_gap_sec=1.5, pre=20, post=15, k=1.0,
                     best_pos = p
         if best_pos is not None:
             peak_frame = track[best_pos]["frame"]
+        else:
+            # No shuttle to anchor contact: fall back to the wrist apex (highest
+            # point = min image-y) in the window. For overhead strokes this sits at
+            # or near contact and avoids centering the rep on the faster
+            # follow-through/backswing speed peak. Overhead-oriented heuristic: for
+            # an underhand serve the apex is not the contact, but serves are
+            # typically shuttle-anchored so this fallback rarely applies to them.
+            apex_pos, apex_y = None, None
+            for p in range(len(track)):
+                f = track[p]["frame"]
+                if f < window_start or f > window_end:
+                    continue
+                wr = track[p].get("wrist")
+                if wr is not None and (apex_y is None or wr[1] < apex_y):
+                    apex_y = wr[1]
+                    apex_pos = p
+            if apex_pos is not None:
+                peak_frame = track[apex_pos]["frame"]
 
         reps.append(RepWindow(
             rep_id=rep_id,

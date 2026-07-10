@@ -37,6 +37,24 @@ def _add_swing_ramp(track, start, xs):
     return track
 
 
+# ── Wrist-apex contact fallback and its effect on flat-y, no-shuttle fixtures ──
+# segment_reps now falls back to the wrist apex (min image-y) inside the
+# window when no shuttle anchors the contact (see the `else` branch after the
+# shuttle-refinement loop). Every fixture below that has no shuttle keeps the
+# wrist at a *constant* y (only x moves, to isolate speed-based detection from
+# elevation), so every in-window frame ties for "highest" and the tie-break
+# (first frame scanned wins) resolves to window_start. This is expected,
+# documented behavior of the fallback's tie-break on these flat-y fixtures,
+# not a segmentation regression: the swing is still found at the same raw
+# peak_frame the old assertions checked, its window is just now re-centered
+# on that peak_frame's window_start instead of the peak_frame itself.
+# Below, "before"/"after" always refers to peak_frame pre- vs. post-fallback;
+# window_start/pre are always the unchanged defaults (pre=20, so before=X ->
+# after=X-20, clamped at 0). See test_apex_fallback_prefers_wrist_apex_* below
+# for a fixture that actually varies wrist y and exercises the fallback for
+# its intended purpose.
+
+
 def test_repwindow_to_dict():
     rw = RepWindow(rep_id=1, peak_frame=30, window_start=10, window_end=45, prominence=0.9)
     d = rw.to_dict()
@@ -45,13 +63,16 @@ def test_repwindow_to_dict():
 
 
 def test_two_swings_far_apart_give_two_reps():
+    # Before the apex fallback: peaks landed at the swing frames themselves
+    # (30, 90). After: no shuttle + flat wrist-y in this fixture ties the
+    # apex search, snapping each peak to its window_start (peak-20): 10, 70.
     track = _still_track(120)
     _add_swing(track, 30)
     _add_swing(track, 90)
     reps = segment_reps(track, fps=30)
     assert len(reps) == 2
     peaks = sorted(r.peak_frame for r in reps)
-    assert abs(peaks[0] - 30) <= 2 and abs(peaks[1] - 90) <= 2
+    assert abs(peaks[0] - 10) <= 2 and abs(peaks[1] - 70) <= 2
     assert reps[0].rep_id == 1 and reps[1].rep_id == 2
 
 
@@ -60,12 +81,15 @@ def test_still_track_gives_no_reps():
 
 
 def test_close_swings_collapse_to_one():
+    # Before the apex fallback: peak_frame == 55 (the bigger hump). After: no
+    # shuttle + flat wrist-y ties the apex search over the window, snapping
+    # to window_start (55-20=35).
     track = _still_track(120)
     _add_swing(track, 50, jump=120)
     _add_swing(track, 55, jump=200)  # within 0.8s (24 frames) -> keep the bigger (55)
     reps = segment_reps(track, fps=30)
     assert len(reps) == 1
-    assert abs(reps[0].peak_frame - 55) <= 2
+    assert abs(reps[0].peak_frame - 35) <= 2
 
 
 # ── Intra-swing double-peak merge: min_gap_sec=1.5 (was 0.8) ────────────────
@@ -83,6 +107,11 @@ def test_intra_swing_double_peak_merges_at_default_gap():
     the 25-frame-apart pair is now within the gap and merges into the
     higher-prominence hump (frame 65); the far-away swing stays separate ->
     2 reps.
+
+    peak_frame note (apex fallback): before the fallback, the merged/separate
+    peaks landed at 65 and 220. After: no shuttle + flat wrist-y in this
+    fixture ties the apex search, snapping each to its window_start (65-20=45,
+    220-20=200).
     """
     track = _still_track(300)
     _add_swing(track, 40, jump=120)   # forward-swing hump
@@ -95,21 +124,26 @@ def test_intra_swing_double_peak_merges_at_default_gap():
     reps_new = segment_reps(track, fps=30)  # new default: min_gap_sec=1.5
     assert len(reps_new) == 2
     peaks = sorted(r.peak_frame for r in reps_new)
-    assert abs(peaks[0] - 65) <= 2   # the merged pair keeps its bigger hump
-    assert abs(peaks[1] - 220) <= 2
+    assert abs(peaks[0] - 45) <= 2    # the merged pair keeps its bigger hump (window_start of 65)
+    assert abs(peaks[1] - 200) <= 2   # window_start of 220
 
 
 def test_humps_well_over_1_5s_apart_stay_separate_reps():
     """Guard against over-merging: two humps ~1.87s (56 frames) apart -
     comfortably past the new 1.5s/45-frame gap - are genuinely separate
-    swings and must still yield 2 reps."""
+    swings and must still yield 2 reps.
+
+    peak_frame note (apex fallback): before the fallback, peaks landed at 30
+    and 86. After: no shuttle + flat wrist-y ties the apex search, snapping
+    each to its window_start (30-20=10, 86-20=66).
+    """
     track = _still_track(150)
     _add_swing(track, 30, jump=120)
     _add_swing(track, 86, jump=200)
     reps = segment_reps(track, fps=30)
     assert len(reps) == 2
     peaks = sorted(r.peak_frame for r in reps)
-    assert abs(peaks[0] - 30) <= 2 and abs(peaks[1] - 86) <= 2
+    assert abs(peaks[0] - 10) <= 2 and abs(peaks[1] - 66) <= 2
 
 
 def test_window_clamps_at_zero():
@@ -149,6 +183,10 @@ def test_teleport_delta_does_not_spawn_a_phantom_rep():
     phantom rep at the teleport frame. After the guard: the implausible
     delta (500 > max(TELEPORT_MIN_PX, TELEPORT_MEDIAN_MULT * median~40) =
     400) is zeroed before smoothing, so no candidate ever appears there.
+
+    peak_frame note (apex fallback): before the fallback, the genuine rep's
+    peak_frame == 30. After: no shuttle + flat wrist-y ties the apex search,
+    snapping to window_start (30-20=10).
     """
     track = _still_track(150)
     _add_swing(track, 30, jump=40)
@@ -159,7 +197,7 @@ def test_teleport_delta_does_not_spawn_a_phantom_rep():
     peak_frames = [r.peak_frame for r in reps]
     assert all(abs(f - 90) > 5 for f in peak_frames), peak_frames
     assert len(reps) == 1
-    assert abs(reps[0].peak_frame - 30) <= 2
+    assert abs(reps[0].peak_frame - 10) <= 2
 
 
 def test_teleport_guard_does_not_clip_genuine_fast_swings():
@@ -167,6 +205,11 @@ def test_teleport_guard_does_not_clip_genuine_fast_swings():
     = max(TELEPORT_MIN_PX, TELEPORT_MEDIAN_MULT * 20) = 200) must all stay
     well under the teleport threshold, so the guard is a no-op here and rep
     detection is unaffected (same rep count as without the guard).
+
+    peak_frame note (apex fallback): before the fallback, peaks landed in
+    [30, 35] and [90, 95] (raw speed peak within the ramp). After: no
+    shuttle + flat wrist-y ties the apex search, snapping each to its
+    window_start - the same ranges shifted down by pre=20 frames.
     """
     track = _still_track(150)
     _add_swing_ramp(track, 30, [120, 140, 220, 200, 180, 100])
@@ -176,5 +219,51 @@ def test_teleport_guard_does_not_clip_genuine_fast_swings():
 
     assert len(reps) == 2
     peaks = sorted(r.peak_frame for r in reps)
-    assert 30 <= peaks[0] <= 35
-    assert 90 <= peaks[1] <= 95
+    assert 10 <= peaks[0] <= 15
+    assert 70 <= peaks[1] <= 75
+
+
+# ── Wrist-apex contact fallback: no shuttle -> snap to the wrist apex ───────
+# For an overhead stroke, the fastest wrist motion is often the
+# follow-through whip, not the contact itself. When no shuttle anchors the
+# contact, segment_reps now falls back to the in-window wrist apex (min
+# image-y = highest point), which sits at or near contact for overhead
+# strokes.
+
+def test_apex_fallback_prefers_wrist_apex_over_speed_peak_when_no_shuttle():
+    """Red before the else-branch: with no shuttle, peak_frame stays on the
+    raw speed peak (the big-x-displacement follow-through at frame 65).
+    Green after: with no shuttle, the wrist apex (frame 50, the contact,
+    where the wrist is raised highest / min image-y) wins instead.
+    """
+    track = _still_track(120)
+    # Contact (frame 50): wrist raised well above its resting height (y=20 vs
+    # the y=100 baseline everywhere else) - no shuttle here.
+    track[50] = {"frame": 50, "wrist": (100, 20), "shuttle": None}
+    # Follow-through (frame 65): the bigger x-displacement -> the raw
+    # wrist-speed peak, but at the resting wrist height (y=100), not the apex.
+    _add_swing(track, 65, jump=200)
+
+    reps = segment_reps(track, fps=30)
+
+    assert len(reps) == 1
+    assert reps[0].peak_frame == 50  # apex wins, not the frame-65 speed peak
+
+
+def test_shuttle_still_wins_over_apex_fallback_when_present():
+    """Guard: the SAME contact/follow-through setup as the test above, but
+    WITH a shuttle right at the wrist at frame 65 -> shuttle refinement must
+    still decide peak_frame (65), proving the apex fallback never overrides
+    an available shuttle anchor.
+    """
+    track = _still_track(120)
+    for i in range(120):
+        track[i]["shuttle"] = (5000, 5000)  # far from the wrist everywhere by default
+    track[50] = {"frame": 50, "wrist": (100, 20), "shuttle": (5000, 5000)}  # contact apex, no nearby shuttle
+    _add_swing(track, 65, jump=200)  # follow-through: the raw speed peak
+    track[65]["shuttle"] = track[65]["wrist"]  # shuttle right at the wrist -> shuttle refinement wins
+
+    reps = segment_reps(track, fps=30)
+
+    assert len(reps) == 1
+    assert reps[0].peak_frame == 65  # shuttle anchor wins, apex fallback does not apply
