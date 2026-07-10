@@ -32,9 +32,14 @@ QUALITY_WINDOW_POST_S = 2.0
 # angles, strong on behind-the-player views), so the threshold below is a
 # documented, tunable constant and errs toward KEEPING reps.
 OVERHEAD_APEX_S = 1.5            # half-window (seconds) searched for the swing apex
-OVERHEAD_MIN_ELEVATION = 0.10    # min (shoulder_y - wrist_y)/torso at apex to count as
-                                 # a full overhead swing. Tuned to favor keeping clears;
-                                 # view-dependent (front/side camera angles read lower).
+OVERHEAD_MIN_ELEVATION = 0.35    # min (shoulder_y - wrist_y)/torso at apex to count as
+                                 # a full overhead swing. Calibrated on IMG_1270: real
+                                 # overhead clears score 0.48-0.70 there while soft/
+                                 # non-overhead actions score ~0.26; 0.35 sits in that
+                                 # gap. (Raised from an earlier conservative 0.10 set
+                                 # before that footage was available.) View-dependent
+                                 # (foreshortened front/far-view cameras read lower) and
+                                 # tunable.
 OVERHEAD_GATED_STROKES = ("high_clear",)  # only these stroke types are gated
 
 

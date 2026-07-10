@@ -10,12 +10,12 @@ from badminton_analysis.posture.system import (
 def _smash_kp():
     # Wrist raised above the shoulder so this fixture reads as a full overhead
     # swing and survives the overhead-swing gate (see apex_overhead_elevation
-    # below): shoulder_y - wrist_y = 100-60 = 40, torso (|shoulder_y-hip_y|)
-    # = 150, ratio 0.267 > OVERHEAD_MIN_ELEVATION.
+    # below): shoulder_y - wrist_y = 100-40 = 60, torso (|shoulder_y-hip_y|)
+    # = 150, ratio 0.4 > OVERHEAD_MIN_ELEVATION (0.35).
     kp = np.zeros((17, 2))
     kp[ja.R_SHOULDER] = (100, 100)
     kp[ja.R_ELBOW] = (140, 110)
-    kp[ja.R_WRIST] = (180, 60)
+    kp[ja.R_WRIST] = (180, 40)
     kp[ja.L_SHOULDER] = (60, 90)
     kp[ja.L_HIP] = (60, 250)
     kp[ja.R_HIP] = (100, 250)
@@ -119,12 +119,13 @@ def test_apex_elevation_left_dominant_uses_left_indices():
 def _gate_kp(elevated):
     """Right-dominant pose; elevated=True lifts the wrist above the shoulder,
     elevated=False keeps it well below (ratio comfortably on either side of
-    OVERHEAD_MIN_ELEVATION=0.10, torso=150).
+    OVERHEAD_MIN_ELEVATION=0.35, torso=150): elevated -> (100-40)/150=0.4,
+    non-elevated -> (100-150)/150=-0.333.
     """
     kp = np.zeros((17, 2))
     kp[ja.R_SHOULDER] = (100, 100)
     kp[ja.R_ELBOW] = (140, 110)
-    kp[ja.R_WRIST] = (180, 60 if elevated else 150)
+    kp[ja.R_WRIST] = (180, 40 if elevated else 150)
     kp[ja.L_SHOULDER] = (60, 90)
     kp[ja.L_HIP] = (60, 250)
     kp[ja.R_HIP] = (100, 250)

@@ -61,7 +61,12 @@ def _smooth(values, window):
     return out
 
 
-def segment_reps(track, fps, min_gap_sec=0.8, pre=20, post=15, k=1.0,
+# One full overhead clear spans >1.5s (backswing -> contact -> recovery); two
+# wrist-speed peaks closer together than that are the forward swing and its
+# follow-through/recovery of the SAME stroke, not two separate reps. (Raised
+# from 0.8s after IMG_1270 calibration: every double-counted rep pair there
+# was 24-26 frames / 0.80-0.87s apart, i.e. right on the old boundary.)
+def segment_reps(track, fps, min_gap_sec=1.5, pre=20, post=15, k=1.0,
                  smooth=3, min_speed_px=5.0, max_reps=50):
     if not track:
         return []
