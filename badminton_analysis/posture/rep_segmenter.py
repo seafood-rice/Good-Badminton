@@ -61,12 +61,20 @@ def _smooth(values, window):
     return out
 
 
-# One full overhead clear spans >1.5s (backswing -> contact -> recovery); two
-# wrist-speed peaks closer together than that are the forward swing and its
-# follow-through/recovery of the SAME stroke, not two separate reps. (Raised
-# from 0.8s after IMG_1270 calibration: every double-counted rep pair there
-# was 24-26 frames / 0.80-0.87s apart, i.e. right on the old boundary.)
-def segment_reps(track, fps, min_gap_sec=1.5, pre=20, post=15, k=1.0,
+# A fixed time gap cannot separate a swing's own follow-through from a
+# genuinely separate fast stroke: on IMG_1270 intra-swing peaks sit ~0.8s
+# apart, but on IMG_9691 distinct fed strokes are ~0.7s apart too - the two
+# cases overlap in timing. The real discriminator is the wrist-speed VALLEY
+# between the two peaks: within one swing the wrist never rests (valley stays
+# 25-100% of the smaller peak); between distinct strokes the wrist resets
+# (valley drops to 1-5%). VALLEY_RATIO sits cleanly in that gap. MIN_SEP_SEC
+# is a noise floor: peaks closer than this are always the same stroke
+# regardless of valley depth.
+VALLEY_RATIO = 0.15
+MIN_SEP_SEC = 0.3
+
+
+def segment_reps(track, fps, pre=20, post=15, k=1.0,
                  smooth=3, min_speed_px=5.0, max_reps=50):
     if not track:
         return []
@@ -93,15 +101,27 @@ def segment_reps(track, fps, min_gap_sec=1.5, pre=20, post=15, k=1.0,
     if not candidates:
         return []
 
-    # Enforce a minimum gap: keep the higher-speed peak within each gap window.
-    min_gap = max(1, int(min_gap_sec * fps))
-    candidates.sort(key=lambda idx: arr[idx], reverse=True)
+    # Valley merge: candidates are already in time order (local maxima scan
+    # above runs low-to-high index). Two peaks are the SAME stroke when the
+    # wrist never rests between them (min speed between > VALLEY_RATIO of the
+    # smaller peak) or when they're closer than the MIN_SEP_SEC noise floor.
+    # A deeper valley = a reset = a genuinely new stroke.
+    min_sep_frames = max(1, int(MIN_SEP_SEC * fps))
     kept = []
-    for idx in candidates:
-        frame_idx = track[idx]["frame"]
-        if all(abs(frame_idx - track[j]["frame"]) >= min_gap for j in kept):
-            kept.append(idx)
-    kept.sort(key=lambda idx: track[idx]["frame"])
+    for cand in candidates:
+        if not kept:
+            kept.append(cand)
+            continue
+        last = kept[-1]
+        frames_apart = track[cand]["frame"] - track[last]["frame"]
+        valley = float(np.min(arr[last:cand + 1]))
+        same_stroke = frames_apart < min_sep_frames or valley > VALLEY_RATIO * min(arr[last], arr[cand])
+        if same_stroke:
+            # Merge: keep the higher-speed peak as this stroke's representative.
+            if arr[cand] > arr[last]:
+                kept[-1] = cand
+        else:
+            kept.append(cand)  # genuine reset -> new stroke
 
     scale = fps / 30.0
     pre_f = int(round(pre * scale))
