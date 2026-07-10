@@ -1,4 +1,9 @@
-from badminton_analysis.posture.rep_segmenter import RepWindow, segment_reps
+import numpy as np
+import pytest
+
+from badminton_analysis.posture.rep_segmenter import (
+    RepWindow, segment_reps, _wrist_speed, _smooth,
+)
 
 
 def _still_track(n, wrist=(100, 100)):
@@ -57,6 +62,44 @@ def _add_valley_ramp(track, start, deltas):
     return track
 
 
+def _add_busy_baseline(track, start, end, step=30):
+    """A long, continuous back-and-forth wrist wobble simulating a fast,
+    unbroken drill (IMG_9691's "always moving" baseline): alternates +-step
+    px every frame from `start` to `end`, producing a constant ~step
+    smoothed px/frame throughout - never at rest, unlike a real inter-stroke
+    reset. `end - start` is even so the wobble cancels out and the wrist is
+    back at its start position by `end` (no lingering drift into whatever
+    follows).
+    """
+    x = track[start - 1]["wrist"][0]
+    for i in range(start, end + 1):
+        x += step if (i - start) % 2 == 0 else -step
+        track[i] = {"frame": track[i]["frame"], "wrist": (x, 100),
+                   "shuttle": track[i].get("shuttle")}
+    return track
+
+
+def _add_stroke_spike(track, start, step, hold=5):
+    """A single genuine stroke: `hold` frames ramping up by `step` px/frame
+    then `hold` frames easing back down by the same amount - a real speed
+    peak of ~step px/frame (post-smoothing) that returns to rest afterward,
+    unlike `_add_busy_baseline`'s continuous, never-resting wobble.
+    """
+    x = track[start - 1]["wrist"][0]
+    xs = []
+    for _ in range(hold):
+        x += step
+        xs.append(x)
+    for _ in range(hold):
+        x -= step
+        xs.append(x)
+    for offset, val in enumerate(xs):
+        idx = start + offset
+        track[idx] = {"frame": track[idx]["frame"], "wrist": (val, 100),
+                     "shuttle": track[idx].get("shuttle")}
+    return track
+
+
 # ── Wrist-apex contact fallback and its effect on flat-y, no-shuttle fixtures ──
 # segment_reps now falls back to the wrist apex (min image-y) inside the
 # window when no shuttle anchors the contact (see the `else` branch after the
@@ -100,22 +143,76 @@ def test_still_track_gives_no_reps():
     assert segment_reps(_still_track(120), fps=30) == []
 
 
-# ── Valley-based merge: VALLEY_RATIO=0.15, MIN_SEP_SEC=0.3 ─────────────────
+# ── Peak-relative floor: PEAK_FLOOR_FRAC=0.25 (see rep-floor-brief.md) ──────
+# The removed mean+std floor (`mean(arr) + k*std(arr)`) scales with a video's
+# OWN busy/idle baseline, not with stroke intensity: a long, continuous,
+# never-resting wobble (real IMG_9691 drills run ~55 px/frame throughout)
+# inflates mean+std past the size of real, only-moderately-fast strokes,
+# burying them as candidates. `PEAK_FLOOR_FRAC * max(smoothed speed)` scales
+# with the video's OWN peak instead, so it isn't fooled by a busy baseline.
+
+def test_peak_relative_floor_catches_strokes_a_mean_std_floor_would_bury():
+    """IMG_9691's fast-cadence case in miniature: a long busy baseline (~30
+    px/frame, continuous, never at rest - by itself well below either floor,
+    so it is not itself mistaken for a stroke) followed by one big stroke
+    (130 px/frame) and three moderate strokes (36 px/frame each), all
+    separated by genuine rests (valley resets to 0).
+
+    Measured on this fixture's smoothed speed array:
+      max = 130.0
+      removed mean+std floor (k=1, computed here only for documentation -
+        the old formula no longer exists in segment_reps) = 39.12
+      new floor = max(0.25 * 130.0, min_speed_px=5.0) = 32.5
+
+    Red under the removed mean+std floor: 39.12 > 36 (the moderate strokes'
+    own peak) -> their local maxima never clear the floor -> buried; only
+    the big stroke would survive as a candidate (1 rep).
+    Green under the new peak-relative floor: 32.5 < 36 -> all three moderate
+    strokes clear it -> 4 reps total (the big stroke + all 3 moderates),
+    matching the ground-truth stroke count.
+    """
+    baseline_len = 700
+    spike_step = 30
+    track = _still_track(baseline_len + 350)
+    _add_busy_baseline(track, 1, baseline_len, step=spike_step)
+
+    spike_start = baseline_len + 30
+    _add_stroke_spike(track, spike_start, step=130)          # the big stroke
+    _add_stroke_spike(track, spike_start + 80, step=36)       # moderate stroke 1
+    _add_stroke_spike(track, spike_start + 160, step=36)      # moderate stroke 2
+    _add_stroke_spike(track, spike_start + 240, step=36)      # moderate stroke 3
+
+    # Document the red/green floor comparison against the actual smoothed track
+    # (proves the removed formula, not just the hardcoded numbers above, would
+    # have buried the moderate strokes).
+    arr = np.asarray(_smooth(_wrist_speed(track), 3), dtype=float)
+    old_mean_std_floor = float(arr.mean() + 1.0 * arr.std())
+    moderate_stroke_peak = 36.0
+    assert old_mean_std_floor > moderate_stroke_peak  # red: old floor buries it
+
+    reps = segment_reps(track, fps=30)
+    assert len(reps) == 4
+    prominences = sorted(r.prominence for r in reps)
+    assert prominences[0] == prominences[1] == prominences[2] == pytest.approx(36 / 130, abs=0.01)
+    assert prominences[3] == 1.0
+
+
+# ── Valley-based merge: VALLEY_RATIO=0.25, MIN_SEP_SEC=0.3 ─────────────────
 # A fixed time gap can't tell a swing's own follow-through (peaks close in
 # time, wrist never rests between them) apart from two genuinely separate
 # strokes fed back-to-back at a similar cadence (peaks also close in time,
 # but the wrist DOES reset between them). segment_reps now merges two
 # time-adjacent speed peaks based on the min smoothed speed BETWEEN them
 # (the valley), relative to the smaller of the two peaks:
-#   - valley <= 15% of the smaller peak -> a reset -> genuinely new stroke.
-#   - valley > 15% of the smaller peak -> never rested -> same stroke, merge.
+#   - valley <= 25% of the smaller peak -> a reset -> genuinely new stroke.
+#   - valley > 25% of the smaller peak -> never rested -> same stroke, merge.
 # Peaks less than MIN_SEP_SEC=0.3s (9 frames @ 30fps) apart always merge,
 # regardless of valley depth (noise floor).
 
 def test_min_sep_floor_merges_regardless_of_valley():
     """Two peaks 5 frames (0.167s) apart - under the MIN_SEP_SEC=0.3s/9-frame
     floor - always merge to one stroke, even though the valley between them
-    is a genuine 0 (measured: valley[50:56]=0.0 vs 0.15*min(80,133.33)=12.0,
+    is a genuine 0 (measured: valley[50:56]=0.0 vs 0.25*min(80,133.33)=20.0,
     i.e. by valley depth ALONE this pair looks like two separate resets). The
     noise floor overrides the valley test at this range: real inter-frame
     jitter this close together is never two strokes.
@@ -136,7 +233,7 @@ def test_deep_valley_between_peaks_gives_two_reps():
     """The IMG_9691 fast-cadence case: two genuinely separate fed strokes
     ~0.7s apart, each an isolated hump with several fully-at-rest frames
     between them (the wrist RESETS). Measured: valley[30:52]=0.0 vs
-    0.15*min(peak1,peak2)=12.0 - the valley is far below the 15% cutoff, and
+    0.25*min(peak1,peak2)=20.0 - the valley is far below the 25% cutoff, and
     the 21-frame gap is well past the MIN_SEP_SEC=9-frame floor, so the
     valley test alone applies and correctly keeps them separate.
 
@@ -164,7 +261,7 @@ def test_shallow_valley_between_peaks_merges_to_one_rep():
     two wrist-speed humps (forward swing then follow-through) ~0.9s apart,
     but the wrist never rests between them - it only slows to a shallow
     trough before re-accelerating. Measured: valley[41:69]=30.3 vs
-    0.15*min(90,105)=13.5 - the valley sits well above the 15% cutoff (a
+    0.25*min(90,105)=22.5 - the valley sits well above the 25% cutoff (a
     "never rested" profile, not a reset), so the two peaks merge into the
     higher-speed one as this stroke's representative.
 

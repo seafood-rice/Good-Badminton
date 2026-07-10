@@ -67,14 +67,28 @@ def _smooth(values, window):
 # cases overlap in timing. The real discriminator is the wrist-speed VALLEY
 # between the two peaks: within one swing the wrist never rests (valley stays
 # 25-100% of the smaller peak); between distinct strokes the wrist resets
-# (valley drops to 1-5%). VALLEY_RATIO sits cleanly in that gap. MIN_SEP_SEC
-# is a noise floor: peaks closer than this are always the same stroke
-# regardless of valley depth.
-VALLEY_RATIO = 0.15
+# (valley drops to 1-5%). VALLEY_RATIO sits cleanly in that gap and is the
+# value swept and validated against BOTH real pipeline tracks (IMG_1270 and
+# IMG_9691, see rep-floor-brief.md): stable across valley in [0.20, 0.30],
+# giving IMG_1270=6 pre-gate and IMG_9691=7, matching frame-verified ground
+# truth on both. MIN_SEP_SEC is a noise floor: peaks closer than this are
+# always the same stroke regardless of valley depth.
+VALLEY_RATIO = 0.25
 MIN_SEP_SEC = 0.3
 
+# A stroke's wrist-speed peak must exceed this fraction of the video's OWN
+# peak wrist speed to count as a candidate. Scales with stroke intensity
+# rather than the video's idle/continuous baseline, unlike a mean+std floor:
+# a fast, continuous drill (e.g. IMG_9691, wrist always moving, mean ~55
+# px/frame) inflates mean+std to ~105 and buries real strokes, while a
+# mostly-idle video (e.g. IMG_1270) leaves mean+std fine - one mean-based
+# floor cannot serve both. Swept and validated on both real pipeline tracks
+# (rep-floor-brief.md): 0.25 gives IMG_1270=6 pre-gate / IMG_9691=7, matching
+# frame-verified ground truth on both.
+PEAK_FLOOR_FRAC = 0.25
 
-def segment_reps(track, fps, pre=20, post=15, k=1.0,
+
+def segment_reps(track, fps, pre=20, post=15,
                  smooth=3, min_speed_px=5.0, max_reps=50):
     if not track:
         return []
@@ -84,8 +98,7 @@ def segment_reps(track, fps, pre=20, post=15, k=1.0,
     if arr.size == 0 or float(np.max(arr)) <= 0.0:
         return []
 
-    threshold = float(np.mean(arr) + k * np.std(arr))
-    floor = max(threshold, min_speed_px)
+    floor = max(PEAK_FLOOR_FRAC * float(arr.max()), min_speed_px)
 
     # Candidate local maxima above the floor.
     candidates = []
