@@ -5,6 +5,7 @@ pillow>=9.2.0,<12.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 torchvision==0.20.1+cpu
+positional-encodings==6.0.4
 ultralytics>=8.0.0
 rtmlib>=0.0.1
 onnxruntime==1.18.1
