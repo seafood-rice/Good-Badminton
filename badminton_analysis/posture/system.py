@@ -159,6 +159,7 @@ class PostureRunner:
                 "conf": rec.get("conf"),
                 "racket_head": rec.get("racket_head"),
                 "centroid": rec.get("centroid"),
+                "racket_head_detected": rec.get("racket_head_detected", False),
             })
         return frames
 
@@ -415,11 +416,11 @@ class PostureAnalysisSystem:
             head = self._racket_detector.detect_racket_head(frame, roi_corners=person_roi(kp))
             if head is not None:
                 self._racket_stats["detected"] += 1
-                return head
+                return head, True
         if kp is None:
-            return None
+            return None, False
         self._racket_stats["inferred"] += 1
-        return ja.infer_racket_head(kp, dominant=self.dominant_hand)
+        return ja.infer_racket_head(kp, dominant=self.dominant_hand), False
 
     def _select_person(self, keypoints, frame_shape):
         """Pick which detected person to track this frame.
@@ -461,7 +462,7 @@ class PostureAnalysisSystem:
             conf_row = scores[best_i] if scores is not None else None
         # Detector must see the clean frame (before any overlay drawing), and runs
         # even when pose detection failed - mirroring the match pipeline.
-        racket_head = self._resolve_racket_head(frame, kp, ja)
+        racket_head, racket_detected = self._resolve_racket_head(frame, kp, ja)
         if kp is not None:
             draw_skeleton(frame, kp, conf=conf_row)
             if ja.is_valid(kp, dom_wrist, conf_row):
@@ -490,4 +491,5 @@ class PostureAnalysisSystem:
         self._frames[frame_count] = {
             "frame": frame_count, "keypoints": kp, "conf": conf_row,
             "racket_head": racket_head, "centroid": centroid,
+            "racket_head_detected": racket_detected,
         }

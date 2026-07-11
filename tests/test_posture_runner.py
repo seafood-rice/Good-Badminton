@@ -36,6 +36,9 @@ def _track_with_two_swings(n=160):
 
 def test_runner_one_report_per_rep_with_rep_id():
     kp = _smash_kp()
+    # racket_head_detected is absent from the frame record here (the pre-fix
+    # shape) -> _window_frames defaults it to False, matching this fixture's
+    # racket being kinematically inferred (never actually detected).
     racket = ja.infer_racket_head(kp, dominant="right")
 
     def frame_lookup(idx):
@@ -51,7 +54,56 @@ def test_runner_one_report_per_rep_with_rep_id():
     assert reports[0]["stroke_type"] == "high_clear"
     assert reports[0]["player_side"] == "single"
     assert "overall_score" in reports[0]
+    # Inferred (not detected) racket head -> wrist_flexion is unmeasurable (None),
+    # not scored as 0 for the ~180 deg collinear fallback angle.
+    assert reports[0]["per_metric"]["wrist_flexion"]["measured"] is None
     assert gate_info == {"counted": 2, "filtered_non_overhead": 0, "gated": True}
+
+
+def test_runner_wrist_flexion_measured_when_racket_head_detected():
+    """With racket_head_detected=True carried on the frame record, wrist_flexion
+    is computed (non-None) and contributes to overall_score - the counterpart
+    to test_runner_one_report_per_rep_with_rep_id's inferred (None) case.
+    """
+    kp = _smash_kp()
+    detected_head = (kp[ja.R_WRIST][0] + 20, kp[ja.R_WRIST][1])
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": detected_head, "racket_head_detected": True,
+                "centroid": (100 + (idx % 5), 300)}
+
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                           stroke_type="high_clear", dominant="right")
+    reports, reps, gate_info = runner.run(_track_with_two_swings(), frame_lookup, fps=30)
+    assert len(reports) == 2
+    assert reports[0]["per_metric"]["wrist_flexion"]["measured"] is not None
+
+
+# ── PostureRunner._window_frames: racket_head_detected plumbing ────────────
+
+def test_window_frames_propagates_racket_head_detected_flag():
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": None, "conf": None,
+                "racket_head": (1.0, 2.0), "centroid": None,
+                "racket_head_detected": idx == 5}
+
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"), stroke_type="high_clear")
+    frames = runner._window_frames(4, 6, frame_lookup)
+    by_frame = {f["frame"]: f["racket_head_detected"] for f in frames}
+    assert by_frame == {4: False, 5: True, 6: False}
+
+
+def test_window_frames_defaults_racket_head_detected_to_false_when_absent():
+    """Older/incomplete frame records without the key must default to False
+    (unmeasurable/inferred), never silently True."""
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": None, "conf": None,
+                "racket_head": None, "centroid": None}
+
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"), stroke_type="high_clear")
+    frames = runner._window_frames(1, 1, frame_lookup)
+    assert frames[0]["racket_head_detected"] is False
 
 
 def test_runner_empty_track_no_reports():

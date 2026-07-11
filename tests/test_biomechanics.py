@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from badminton_analysis.analysis.biomechanics import BiomechanicalAnalyzer
 from badminton_analysis.analysis import joint_angles as ja
 from badminton_analysis.stroke.events import StrokeEvent
@@ -17,7 +18,7 @@ def _good_smash_keypoints():
     return kp
 
 
-def _window_frames(contact_frame, kp, racket_head, n_pre=20, n_post=15):
+def _window_frames(contact_frame, kp, racket_head, n_pre=20, n_post=15, detected=True):
     frames = []
     start = contact_frame - n_pre
     for f in range(start, contact_frame + n_post + 1):
@@ -27,6 +28,7 @@ def _window_frames(contact_frame, kp, racket_head, n_pre=20, n_post=15):
             "conf": None,
             "racket_head": racket_head if f == contact_frame else None,
             "centroid": (100 + (f - start), 300),
+            "racket_head_detected": detected if f == contact_frame else False,
         })
     return frames
 
@@ -40,6 +42,39 @@ def test_analyze_produces_report_with_scores():
     assert report["player_side"] == "upper"
     assert report["overall_score"] is not None
     assert "elbow_extension" in report["per_metric"]
+    # racket_head_detected=True (the _window_frames default) -> wrist_flexion
+    # is measured and contributes to the weighted average.
+    assert report["per_metric"]["wrist_flexion"]["measured"] is not None
+
+
+def test_wrist_flexion_none_when_racket_head_inferred_not_detected():
+    """When the racket head came from the kinematic fallback (not a real
+    detection), racket_head_detected is False and wrist_flexion must be
+    None (unmeasurable) - not scored as 0 for the ~180 deg collinear angle
+    the fallback produces. Compares the renormalized overall_score against
+    the old score-it-as-0 behavior for an otherwise-identical rep.
+    """
+    analyzer = BiomechanicalAnalyzer(dominant="right")
+    ev = StrokeEvent("high_clear", 30, 10, 45, "single", 0.8)
+    kp = _good_smash_keypoints()
+    inferred_head = ja.infer_racket_head(kp, dominant="right")  # collinear, ~180 deg
+
+    frames = _window_frames(30, kp, racket_head=inferred_head, detected=False)
+    report = analyzer.analyze(ev, frames)
+
+    assert report["per_metric"]["wrist_flexion"]["measured"] is None
+    assert report["per_metric"]["wrist_flexion"]["score"] is None
+
+    # Old (pre-fix) behavior: the inferred head was fed to scoring
+    # unconditionally, so wrist_flexion measured the ~180 deg collinear
+    # angle and was scored as if detected (near 0, far outside 80-100).
+    from badminton_analysis.analysis.scoring import score_stroke
+    old_metrics = {name: entry["measured"] for name, entry in report["per_metric"].items()}
+    old_metrics["wrist_flexion"] = ja.angle_at(kp[ja.R_ELBOW], kp[ja.R_WRIST], inferred_head)
+    old_scored = score_stroke(old_metrics, "high_clear")
+
+    assert old_scored["per_metric"]["wrist_flexion"]["score"] == pytest.approx(0.0, abs=1e-6)
+    assert report["overall_score"] > old_scored["overall"]
 
 
 def test_weaknesses_carry_descriptions():

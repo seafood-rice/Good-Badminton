@@ -63,10 +63,12 @@ class BiomechanicalAnalyzer:
         kp = contact.get("keypoints") if contact else None
         conf = contact.get("conf") if contact else None
         racket_head = contact.get("racket_head") if contact else None
+        racket_detected = contact.get("racket_head_detected") if contact else False
 
         if kp is not None:
-            metrics = ja.compute_joint_angles(kp, racket_head=racket_head,
-                                              dominant=self.dominant, conf=conf)
+            metrics = ja.compute_joint_angles(
+                kp, racket_head=(racket_head if racket_detected else None),
+                dominant=self.dominant, conf=conf)
         else:
             metrics = {k: None for k in
                        ("elbow_extension", "shoulder_abduction", "trunk_rotation",
