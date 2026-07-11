@@ -241,3 +241,116 @@ def test_quality_scorer_window_clamped_at_video_start():
     assert min(frame_numbers) == 0              # truncated at frame 0
     peak = reps[0].peak_frame
     assert max(frame_numbers) == peak + round(2.0 * fps)
+
+
+# --- quality scorer window bounded to a single stroke (neighbor-midpoint clamp) ---
+#
+# ±2s scores 3-4 neighboring strokes on fast drills (contacts 0.7-1.4s apart),
+# flattening the AI scores (measured spread 8.8 across 7 reps at +/-2s vs 41-47
+# when the window is narrowed to one stroke). Fix: clamp each rep's quality
+# window to the midpoints between its contact and its neighboring segmented
+# reps' contacts, keeping the +/-2s cap for slow drills.
+
+def _multi_swing_track(n, spikes):
+    """Wrist track with several big-displacement spikes -> one rep per spike."""
+    track = []
+    for i in range(n):
+        wrist = (100.0, 100.0)
+        if i in spikes:
+            wrist = (260.0, 100.0)
+        track.append({"frame": i, "wrist": wrist, "shuttle": None})
+    return track
+
+
+def test_quality_scorer_window_bounded_to_neighbor_midpoints_on_fast_cadence():
+    """Key test: on a fast drill, the AI window must not bleed into neighbors.
+
+    Contacts ~20 frames apart at fps 30 (~0.7s, matching IMG_9691's cadence).
+    Unbounded +/-2s would span ~121 frames per rep, overlapping neighbors.
+    This must FAIL against the pre-fix unbounded code and PASS after bounding.
+    """
+    fps = 30
+    kp = _pose_kp()
+    scorer = _CapturingScorer()
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": None, "centroid": (100.0, 300.0)}
+
+    spikes = [100, 120, 140]
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                           stroke_type="high_clear", dominant="right",
+                           quality_scorer=scorer)
+    reports, reps, gate_info = runner.run(_multi_swing_track(250, spikes), frame_lookup, fps=fps)
+
+    assert len(reps) == 3
+    assert len(scorer.windows) == 3
+
+    mid_rep = reps[1]
+    prev_c, mid_c, next_c = reps[0].peak_frame, mid_rep.peak_frame, reps[2].peak_frame
+    lo_bound = (prev_c + mid_c) // 2
+    hi_bound = (mid_c + next_c) // 2
+
+    mid_window = scorer.windows[1]
+    frame_numbers = [f["frame"] for f in mid_window]
+    # Bounded to the neighbor midpoints, not the full +/-2s (121 frames).
+    assert min(frame_numbers) == lo_bound
+    assert max(frame_numbers) == hi_bound
+    assert len(frame_numbers) == hi_bound - lo_bound + 1
+    assert len(frame_numbers) < round(4.0 * fps) + 1
+
+
+def test_quality_scorer_window_unbounded_on_slow_cadence():
+    """Slow-cadence unchanged: neighbors seconds away -> midpoints are far
+    beyond the +/-2s cap, so the cap (not the neighbor bound) still wins.
+    """
+    fps = 30
+    kp = _pose_kp()
+    scorer = _CapturingScorer()
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": None, "centroid": (100.0, 300.0)}
+
+    # Spikes several seconds apart (fps=30): 100, 400, 700.
+    spikes = [100, 400, 700]
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                           stroke_type="high_clear", dominant="right",
+                           quality_scorer=scorer)
+    reports, reps, gate_info = runner.run(_multi_swing_track(800, spikes), frame_lookup, fps=fps)
+
+    assert len(reps) == 3
+    mid_window = scorer.windows[1]
+    assert len(mid_window) == round(4.0 * fps) + 1
+
+
+def test_quality_scorer_window_bound_edges_first_and_last_rep():
+    """First rep has no previous neighbor (lo_bound=0); last rep has no next
+    neighbor (no upper bound). Neither should crash or yield negative/
+    overlapping frame numbers.
+    """
+    fps = 30
+    kp = _pose_kp()
+    scorer = _CapturingScorer()
+
+    def frame_lookup(idx):
+        if idx < 0:
+            return None
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": None, "centroid": (100.0, 300.0)}
+
+    spikes = [10, 30, 50]
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                           stroke_type="high_clear", dominant="right",
+                           quality_scorer=scorer)
+    reports, reps, gate_info = runner.run(_multi_swing_track(200, spikes), frame_lookup, fps=fps)
+
+    assert len(reps) == 3
+
+    first_window = [f["frame"] for f in scorer.windows[0]]
+    assert all(n >= 0 for n in first_window)
+    assert min(first_window) == 0   # no previous neighbor -> lo_bound=0
+
+    last_window = [f["frame"] for f in scorer.windows[2]]
+    last_peak = reps[2].peak_frame
+    assert max(last_window) == last_peak + round(2.0 * fps)   # no next neighbor -> +/-2s cap wins

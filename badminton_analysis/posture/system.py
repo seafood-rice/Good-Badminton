@@ -21,8 +21,24 @@ PERSON_STICKY_MAX_JUMP_FRAC = 0.25
 # segmenter's peak-centered window (window_pre/window_post below) is much narrower
 # (~1.2s), which starves the scorer at inference. Widen just its input window to a
 # contact-centered +/-2.0s; heuristic per-metric scoring keeps the narrow rep window.
+#
+# On fast drills (contacts <4s apart) an unclamped +/-2s bleeds into 3-4
+# neighboring strokes, scoring a multi-swing pose sequence and flattening the
+# AI scores (measured: spread 8.8 across 7 reps at +/-2s vs 41-47 when the
+# window is narrowed). run() therefore clamps this window to the midpoint
+# between each rep's contact and its neighboring segmented reps' contacts
+# (see _quality_window_frames' lo_bound/hi_bound). For slow drills those
+# midpoints sit far beyond the +/-2s cap, so the cap still dominates and
+# behavior is unchanged; for fast drills the midpoints bound each rep to its
+# own stroke.
 QUALITY_WINDOW_PRE_S = 2.0
 QUALITY_WINDOW_POST_S = 2.0
+
+# Sentinel hi_bound for a rep with no next neighbor to bound against (last rep
+# in the segmented list): far beyond any real video length, so the +/-2s cap
+# is the only thing that can shrink the window. _window_frames only returns
+# frames frame_lookup actually has, so an over-large hi_bound is harmless.
+_NO_NEXT_NEIGHBOR_HI_SENTINEL = 10 ** 9
 
 # Overhead-swing gate: only count full overhead swings (high_clear) as reps.
 # Empirically established on 50 genuine Sub05 clears: a full overhead swing
@@ -163,8 +179,10 @@ class PostureRunner:
             })
         return frames
 
-    def _quality_window_frames(self, contact_frame, fps, frame_lookup):
-        """Wider, contact-centered window for the quality scorer only (QUALITY_WINDOW_*_S).
+    def _quality_window_frames(self, contact_frame, fps, frame_lookup, lo_bound=0, hi_bound=None):
+        """Wider, contact-centered window for the quality scorer only (QUALITY_WINDOW_*_S),
+        clamped to `lo_bound`/`hi_bound` (the midpoints to the neighboring segmented
+        reps' contacts - see run()) so it never bleeds into an adjacent stroke.
 
         Missing frame numbers are simply absent (see _window_frames), so this is
         naturally clamped to whatever frames are actually available; the lower
@@ -172,8 +190,10 @@ class PostureRunner:
         """
         pre_f = round(QUALITY_WINDOW_PRE_S * fps)
         post_f = round(QUALITY_WINDOW_POST_S * fps)
-        window_start = max(0, contact_frame - pre_f)
+        window_start = max(0, contact_frame - pre_f, lo_bound)
         window_end = contact_frame + post_f
+        if hi_bound is not None:
+            window_end = min(window_end, hi_bound)
         return self._window_frames(window_start, window_end, frame_lookup)
 
     def _apex_window_frames(self, contact_frame, fps, frame_lookup):
@@ -189,7 +209,7 @@ class PostureRunner:
         reports = []
         gated = self.stroke_type in OVERHEAD_GATED_STROKES
         filtered_non_overhead = 0
-        for rep in reps:
+        for i, rep in enumerate(reps):
             event = StrokeEvent(
                 stroke_type=self.stroke_type,
                 contact_frame=rep.peak_frame,
@@ -210,7 +230,18 @@ class PostureRunner:
                 continue
 
             if self.quality_scorer is not None:
-                quality_frames = self._quality_window_frames(rep.peak_frame, fps, frame_lookup)
+                # Bound the AI window to this rep's own stroke: clamp at the
+                # midpoint to each neighboring segmented rep's contact. Uses
+                # the full `reps` list (not `reports`) - a physically-adjacent
+                # stroke pollutes the pose sequence whether or not the
+                # overhead gate later drops it.
+                prev_c = reps[i - 1].peak_frame if i > 0 else None
+                next_c = reps[i + 1].peak_frame if i < len(reps) - 1 else None
+                lo_bound = (prev_c + rep.peak_frame) // 2 if prev_c is not None else 0
+                hi_bound = ((rep.peak_frame + next_c) // 2 if next_c is not None
+                            else rep.peak_frame + _NO_NEXT_NEIGHBOR_HI_SENTINEL)
+                quality_frames = self._quality_window_frames(
+                    rep.peak_frame, fps, frame_lookup, lo_bound=lo_bound, hi_bound=hi_bound)
                 ai = self.quality_scorer.score(quality_frames, dominant=self.dominant)
                 if ai is not None:
                     report["ai_score"] = ai
