@@ -188,6 +188,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .dsum-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-bottom:12px;}
 .dsum-grid > div{display:flex;flex-direction:column;} .dsum-grid span{font-size:11px;color:var(--faint);}
 .dsum-grid b{font-size:20px;color:var(--ink);}
+/* AI drill-summary tile: de-emphasized (smaller, muted, own row) -- experimental,
+   not part of the final score (see compute_final_score in writer.py). */
+.dsum-ai{margin:0 0 12px;padding-top:8px;border-top:1px dashed var(--border);}
+.dsum-ai-label{font-size:11px;margin-right:8px;}
+.dsum-ai-val{font-size:14px;font-weight:600;}
+.dsum-ai-cap{font-size:11px;font-family:inherit;}
 .provenance{margin-top:10px;font-size:12px;line-height:1.7;}
 .provenance div{margin-bottom:2px;}
 .rep-list{list-style:none;display:flex;flex-direction:column;gap:6px;margin:0;padding:0;}
@@ -196,6 +202,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .rep-row:hover{border-color:var(--faint);} .rep-row.on{border-color:var(--accent);background:var(--accent-soft);}
 .ai-chip{background:var(--accent-soft);color:var(--accent);border-radius:var(--radius-pill);
   padding:2px 8px;font-size:11px;font-weight:700;margin-left:6px;}
+/* Experimental AI chip: muted/grey instead of the accent color, so it visually
+   recedes behind the primary (final-score) chip. */
+.ai-chip-beta{background:var(--fill);color:var(--faint);}
+.final-line{font-size:14px;font-weight:700;margin:0 0 8px;}
 .ai-line{font-size:13px;color:var(--muted);margin:0 0 10px;}
 .scrubber{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;}
 .scrubber .btn-ghost{padding:6px 12px;font-size:13px;}

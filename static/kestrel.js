@@ -708,18 +708,18 @@ window.Kestrel = (function () {
       [zh ? '次数' : 'Reps',
        zh ? '本次训练检测到的挥拍次数（含姿态识别失败、无法评分的次数）。'
           : 'Number of swings detected in this drill run (includes reps that could not be scored, e.g. failed pose detection).'],
-      [zh ? '平均分' : 'Mean',
-       zh ? '各次动作综合得分（0–100）的平均值。'
-          : 'Average of the per-rep overall scores (0–100).'],
+      [zh ? '最终评分' : 'Final score',
+       zh ? '各次动作最终评分（0–100，即加权综合得分）的平均值。'
+          : 'Average of the per-rep final scores (0–100, the weighted biomechanical score).'],
       [zh ? '一致性' : 'Consistency',
        zh ? '各次综合得分的标准差；数值越小，动作越稳定一致。'
           : 'Standard deviation of the per-rep overall scores; a smaller number means more consistent reps.'],
       [zh ? '最佳 · 最差' : 'Best · Worst',
-       zh ? '综合得分最高的一次和最低的一次。'
-          : 'The highest-scoring and lowest-scoring reps by overall score.'],
-      [zh ? 'AI 评分' : 'AI score',
-       zh ? '独立训练的动作质量模型给出的评分（见下方「评分方法」），仅在该模型可用时显示。'
-          : 'Score from a separately trained form-quality model (see Scoring below); only shown when that model is available.']
+       zh ? '最终评分最高的一次和最低的一次。'
+          : 'The highest-scoring and lowest-scoring reps by final score.'],
+      [zh ? 'AI 评分（实验）' : 'AI score (beta)',
+       zh ? '独立训练的动作质量模型给出的评分（见下方「评分方法」）；实验性，未计入最终评分，仅供参考，仅在该模型可用时显示。'
+          : 'Score from a separately trained form-quality model (see Scoring below); experimental and not part of the final score — shown for reference only, and only when that model is available.']
     ];
     return '<ul class="plan-list">' + items.map(function (it) {
       return '<li><b>' + it[0] + '</b> — ' + it[1] + '</li>';
@@ -755,14 +755,14 @@ window.Kestrel = (function () {
   function legendScoringHTML(zh) {
     var items = zh ? [
       '单项评分（0–100）：实测值落在理想区间内得 100 分；超出区间后按超出量线性递减，超出量达到一个区间宽度时降为 0 分。',
-      '综合评分：本次动作各项分数按权重加权平均（缺少测量值的项目不计入），四舍五入到 1 位小数。',
-      '分数配色：≥70 绿色（良好），40–69 橙色（一般），<40 红色（需改进）——用于平均分、逐次分数徽章和分项进度条。',
-      'AI 评分：来自另一个独立训练的模型，用于预测专家教练打出的 1–7 分技术评级，并换算为 0–100 分：(原始分 - 1) / 6 * 100，超出范围会截断。该模型基于专家评分的挥拍数据训练；单次动作的 AI 分噪声较大，训练概览中按次平均得到的 AI 评分更可靠。'
+      '最终评分（即综合评分）：本次动作各项分数按权重加权平均（缺少测量值的项目不计入），四舍五入到 1 位小数——这就是生物力学启发式评分，训练概览与逐次列表中显示的最终评分均来自它。',
+      '分数配色：≥70 绿色（良好），40–69 橙色（一般），<40 红色（需改进）——用于最终评分、逐次分数徽章和分项进度条。',
+      'AI 评分（实验性）：来自另一个独立训练的模型，用于预测专家教练打出的 1–7 分技术评级，并换算为 0–100 分：(原始分 - 1) / 6 * 100，超出范围会截断。该模型基于域外（非本次训练场景）的挥拍数据训练，单次动作的评分不可靠，仅供参考——不计入最终评分。'
     ] : [
       'Per-metric score (0–100): 100 if the measured value falls inside the ideal range; otherwise it decays linearly, reaching 0 once the deviation equals one full range-width beyond the boundary.',
-      'Overall rep score: the per-metric scores for that rep, combined into a weighted average (metrics with no measurement are excluded), rounded to 1 decimal.',
-      'Score colors: green ≥70 (good), orange 40–69 (fair), red <40 (needs work) — used for the mean score, per-rep score badges, and metric bars.',
-      'AI score: from a separately trained model that predicts an expert coach rating on a 1–7 scale, then rescales it to 0–100 via (raw - 1) / 6 * 100, clamped to that range. It is trained on expert-rated player swings; per-rep values are noisy, so the averaged AI score in the drill summary is more reliable than any single rep.'
+      'Final score (the overall rep score): the per-metric scores for that rep, combined into a weighted average (metrics with no measurement are excluded), rounded to 1 decimal — this is the biomechanical heuristic, and it is the final score shown in the drill summary and per-rep list.',
+      'Score colors: green ≥70 (good), orange 40–69 (fair), red <40 (needs work) — used for the final score, per-rep score badges, and metric bars.',
+      'AI score (experimental): from a separately trained model that predicts an expert coach rating on a 1–7 scale, then rescales it to 0–100 via (raw - 1) / 6 * 100, clamped to that range. It is trained on out-of-domain footage; per-rep values are unreliable and shown for reference only — it is NOT part of the final score.'
     ];
     return '<ul class="plan-list">' + items.map(function (s) { return '<li>' + s + '</li>'; }).join('') + '</ul>';
   }
@@ -833,24 +833,38 @@ window.Kestrel = (function () {
         })
         .catch(function () {});
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
-      var mean = (s.mean_score === null || s.mean_score === undefined) ? null : Math.round(s.mean_score);
+      // Primary tile = the FINAL score (heuristic). Falls back to mean_score for
+      // outputs written before mean_final_score existed.
+      var finalMeanRaw = (s.mean_final_score === null || s.mean_final_score === undefined) ? s.mean_score : s.mean_final_score;
+      var mean = (finalMeanRaw === null || finalMeanRaw === undefined) ? null : Math.round(finalMeanRaw);
       var cons = (s.consistency === null || s.consistency === undefined) ? null : Math.round(s.consistency * 10) / 10;
+      var aiMean = (s.mean_ai_score === null || s.mean_ai_score === undefined) ? null : Math.round(s.mean_ai_score);
       document.getElementById('drill-summary').innerHTML =
         '<h2>' + (zh?'训练概览':'Drill summary') + '</h2>' +
         '<div class="dsum-grid mono">' +
           '<div><span>' + (zh?'次数':'Reps') + '</span><b>' + s.rep_count + '</b></div>' +
-          '<div><span>' + (zh?'平均分':'Mean') + '</span><b' + (mean === null ? '' : ' style="color:' + scoreHue(mean) + '"') + '>' + (mean === null ? '—' : mean) + '</b></div>' +
+          '<div><span>' + (zh?'最终评分':'Final score') + '</span><b' + (mean === null ? '' : ' style="color:' + scoreHue(mean) + '"') + '>' + (mean === null ? '—' : mean) + '</b></div>' +
           '<div><span>' + (zh?'一致性':'Consistency') + '</span><b>' + (cons === null ? '—' : cons) + '</b></div>' +
           '<div><span>' + (zh?'最佳':'Best') + '</span><b>' + (s.best_rep ? '#' + s.best_rep.rep_id : '—') + '</b></div>' +
           '<div><span>' + (zh?'最差':'Worst') + '</span><b>' + (s.worst_rep ? '#' + s.worst_rep.rep_id : '—') + '</b></div>' +
-          (s.mean_ai_score !== undefined && s.mean_ai_score !== null ? '<div><span>' + (zh?'AI 评分':'AI score') + '</span><b>' + Math.round(s.mean_ai_score) + '</b></div>' : '') +
-        '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') +
+        '</div>' +
+        // AI tile: de-emphasized (muted, own row) and labeled experimental -- it is
+        // NOT part of the final score above (see compute_final_score in writer.py).
+        (aiMean !== null ? '<div class="dsum-ai muted mono">' +
+            '<span class="dsum-ai-label">' + (zh?'AI 评分（实验）':'AI score (beta)') + '</span>' +
+            '<span class="dsum-ai-val">' + aiMean + '</span>' +
+            '<div class="dsum-ai-cap">' + (zh?'实验性，未计入最终评分':'experimental — not part of the final score') + '</div>' +
+          '</div>' : '') +
+        (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') +
         legendHTML(postureCtx.reps);
       bindLegendToggle();
       document.getElementById('rep-list').innerHTML = postureCtx.reps.map(function (rep, i) {
+        var repFinal = (rep.final_score === null || rep.final_score === undefined) ? rep.overall_score : rep.final_score;
         return '<li><button class="rep-row" data-i="' + i + '"><span class="mono">#' + rep.rep_id + '</span>' +
-          scoreChipHTML(rep.overall_score) +
-          (rep.ai_score !== undefined && rep.ai_score !== null ? '<span class="ai-chip mono" title="AI">AI ' + Math.round(rep.ai_score) + '</span>' : '') +
+          scoreChipHTML(repFinal) +
+          (rep.ai_score !== undefined && rep.ai_score !== null ? '<span class="ai-chip ai-chip-beta mono" title="' +
+            (zh?'AI 评分（实验），未计入最终评分':'AI score (beta) — experimental, not part of the final score') +
+            '">AI·beta ' + Math.round(rep.ai_score) + '</span>' : '') +
           '</button></li>'; }).join('');
       document.querySelectorAll('.rep-row').forEach(function (b) { b.onclick = function () { selectRep(postureCtx.reps, Number(b.getAttribute('data-i'))); }; });
       if (postureCtx.reps.length) {
@@ -875,9 +889,12 @@ window.Kestrel = (function () {
     document.querySelectorAll('.rep-row').forEach(function (x) { x.classList.toggle('on', Number(x.getAttribute('data-i')) === i); });
     var bars = Object.keys(rep.per_metric || {}).map(function (k) { return metricBarHTML(k, rep.per_metric[k]); }).join('');
     var ws = (rep.weaknesses || []).map(weaknessLineHTML).join('');
+    var repFinal = (rep.final_score === null || rep.final_score === undefined) ? rep.overall_score : rep.final_score;
     document.getElementById('rep-detail').innerHTML =
       '<h2>' + (zh?('第 ' + rep.rep_id + ' 次详情'):('Rep #' + rep.rep_id)) + '</h2>' +
-      (rep.ai_score !== undefined && rep.ai_score !== null ? '<p class="ai-line">' + (zh?'AI 动作评分（模型判定）：':'AI form score (model-based): ') + '<b class="mono">' + rep.ai_score + '</b>/100</p>' : '') +
+      (repFinal !== null && repFinal !== undefined ? '<p class="final-line">' + (zh?'最终评分：':'Final score: ') +
+        '<b class="mono" style="color:' + scoreHue(repFinal) + '">' + repFinal + '</b>/100</p>' : '') +
+      (rep.ai_score !== undefined && rep.ai_score !== null ? '<p class="ai-line">' + (zh?'AI 动作评分（实验性，未计入最终评分）：':'AI form score (experimental — not in the final score): ') + '<b class="mono">' + rep.ai_score + '</b>/100</p>' : '') +
       bars + (ws ? '<ul class="weak-list">' + ws + '</ul>' : '');
     // Scrubber controls under the video.
     var sc = document.getElementById('rep-scrubber');

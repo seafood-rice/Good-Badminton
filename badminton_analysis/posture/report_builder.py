@@ -48,6 +48,7 @@ def _one_language(lang, reports, summary, meta):
     verdict_key = _verdict_key(mean_score, consistency, rep_count)
     summary_block = {
         "mean_score": mean_score,
+        "mean_final_score": summary.get("mean_final_score", mean_score),
         "consistency": consistency,
         "verdict_text": kb.t(lang, verdict_key,
                              score=("%.0f" % mean_score) if mean_score is not None else "N/A",
@@ -92,9 +93,12 @@ def _one_language(lang, reports, summary, meta):
         weak = rep.get("weaknesses", [])
         if weak:
             top = max(weak, key=lambda w: _SEVERITY_RANK.get(w.get("severity"))).get("metric")
+        overall = rep.get("overall_score")
+        final = rep.get("final_score")
         per_rep.append({
             "rep_id": rep.get("rep_id"),
-            "overall_score": rep.get("overall_score"),
+            "overall_score": overall,
+            "final_score": final if final is not None else overall,
             "top_weakness": top,
         })
 

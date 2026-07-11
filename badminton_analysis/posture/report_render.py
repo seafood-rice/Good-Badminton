@@ -38,8 +38,11 @@ def render_html(report):
     parts.append("<div class='meta'>" + _esc(h.get("date")) + " · " + _esc(h.get("rep_count"))
                  + " reps · " + _esc(h.get("dominant_hand")) + " · " + _esc(h.get("pose_family")) + "</div>")
 
+    # Primary score = the final score (biomechanical heuristic). Falls back to
+    # mean_score for older reports built before mean_final_score existed.
+    final_mean = s.get("mean_final_score", s.get("mean_score"))
     parts.append("<div class='verdict'><b>"
-                 + ("Score " + _esc(s.get("mean_score")) if s.get("mean_score") is not None else "")
+                 + ("Final score " + _esc(final_mean) if final_mean is not None else "")
                  + (" · Consistency " + _esc(s.get("consistency")) if s.get("consistency") is not None else "")
                  + "</b><br>" + _esc(s.get("verdict_text")) + "</div>")
 
@@ -70,7 +73,12 @@ def render_html(report):
                      + "<table><tr><th>" + _esc(lbl_col_rep) + "</th><th>" + _esc(lbl_col_score)
                      + "</th><th>" + _esc(lbl_col_weakness) + "</th></tr>")
         for r in per_rep:
-            parts.append("<tr><td>" + _esc(r.get("rep_id")) + "</td><td>" + _esc(r.get("overall_score"))
+            # Final score (heuristic) is the score of record; fall back to overall_score
+            # for older report dicts built before final_score existed.
+            final = r.get("final_score")
+            if final is None:
+                final = r.get("overall_score")
+            parts.append("<tr><td>" + _esc(r.get("rep_id")) + "</td><td>" + _esc(final)
                          + "</td><td>" + _esc(r.get("top_weakness")) + "</td></tr>")
         parts.append("</table>")
 
