@@ -40,18 +40,14 @@ _MIN_POSED_FRAMES = SEQ_LEN // 3
 
 N_JOINTS = 17
 
-# Standard COCO-17 keypoint skeleton edges (19 bone pairs, 0-indexed) --
-# upstream's `get_bone_pairs()` (stroke_classification/preparing_data/
-# shuttleset_dataset.py) was not vendored (see CONTRACT.md "What was
-# vendored"), so this uses the well-known COCO keypoint connectivity (the
-# same "skeleton" edge list published in pycocotools' person_keypoints
-# annotations / used by mmpose etc.), which matches the 19-bone count
-# CONTRACT.md derives POSE_IN_DIM=72 from.
+# Exact upstream get_bone_pairs() 'coco' order (BST training); order is
+# load-bearing -- bone features concatenate in this sequence.
 BONE_PAIRS = [
-    (15, 13), (13, 11), (16, 14), (14, 12), (11, 12),
-    (5, 11), (6, 12), (5, 6), (5, 7), (6, 8),
-    (7, 9), (8, 10), (1, 2), (0, 1), (0, 2),
-    (1, 3), (2, 4), (3, 5), (4, 6),
+    (0, 1), (0, 2), (1, 2), (1, 3), (2, 4),      # head
+    (3, 5), (4, 6),                              # ears->shoulders
+    (5, 7), (7, 9), (6, 8), (8, 10),             # arms
+    (5, 6), (5, 11), (6, 12), (11, 12),          # torso
+    (11, 13), (13, 15), (12, 14), (14, 16),      # legs
 ]
 assert len(BONE_PAIRS) == 19
 

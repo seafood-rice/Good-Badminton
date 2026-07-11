@@ -106,3 +106,18 @@ def test_positions_fall_back_to_centroid_without_ankles():
     # Centroid-derived position should be within the normalized [0, ~1] band.
     assert 0.0 <= result["positions"][contact_index, 0, 0] <= 1.2
     assert 0.0 <= result["positions"][contact_index, 0, 1] <= 1.2
+
+
+def test_bone_pairs_match_exact_upstream_order():
+    # Guards against re-drift from the exact upstream get_bone_pairs() 'coco'
+    # order (BST training) -- bone features concatenate in this sequence, so
+    # a different order/membership silently miscodes the model input.
+    expected = [
+        (0, 1), (0, 2), (1, 2), (1, 3), (2, 4),
+        (3, 5), (4, 6),
+        (5, 7), (7, 9), (6, 8), (8, 10),
+        (5, 6), (5, 11), (6, 12), (11, 12),
+        (11, 13), (13, 15), (12, 14), (14, 16),
+    ]
+    assert bi.BONE_PAIRS == expected
+    assert len(bi.BONE_PAIRS) == 19
