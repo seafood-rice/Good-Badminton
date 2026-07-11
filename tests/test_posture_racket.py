@@ -177,6 +177,20 @@ def test_fallback_when_no_detector(tmp_path):
     assert sys_._racket_stats == {"detected": 0, "inferred": 1}
 
 
+def test_pose_less_frame_skips_detector_and_stats(tmp_path):
+    # kp None: no person bbox to ROI-gate against, so the detector must NOT run
+    # (an ungated detection could land on a racket-lookalike like a wall fan) and
+    # neither stat should move -- keeps the detected/inferred provenance honest.
+    sys_ = _system(tmp_path)
+    det = _FakeDetector((5.0, 6.0))
+    sys_._racket_detector = det
+    head, detected = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head is None
+    assert detected is False
+    assert det.calls == 0
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
+
+
 def test_missing_weights_path_does_not_raise(tmp_path):
     sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "nope.pt"))
     sys_._build_racket_detector()
@@ -184,15 +198,6 @@ def test_missing_weights_path_does_not_raise(tmp_path):
     head, detected = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
     assert head is not None
     assert detected is False
-
-
-def test_detector_runs_without_pose(tmp_path):
-    sys_ = _system(tmp_path)
-    sys_._racket_detector = _FakeDetector((7.0, 8.0))
-    head, detected = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
-    assert head == (7.0, 8.0)
-    assert detected is True
-    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
 
 
 def test_no_pose_and_no_detection_yields_none(tmp_path):
@@ -287,13 +292,16 @@ def test_gate_rejects_detection_far_from_person(tmp_path):
     assert sys_._racket_stats == {"detected": 0, "inferred": 1}
 
 
-def test_gate_allows_detector_result_when_pose_missing(tmp_path):
+def test_gate_ignores_detector_result_when_pose_missing(tmp_path):
+    # Even a real detector that WOULD return a box is not consulted on a pose-less
+    # frame: with no person bbox there is nothing to ROI-gate the box against, so an
+    # ungated detection (e.g. a wall fan at (900, 900)) must not be accepted.
     sys_ = _system(tmp_path)
     sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[900, 900, 10, 10]], conf=[0.9]))
     head, detected = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
-    assert head == (900, 900)
-    assert detected is True
-    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+    assert head is None
+    assert detected is False
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
 
 
 def test_posture_builds_racket_detector_with_conf_0_15(tmp_path, monkeypatch):

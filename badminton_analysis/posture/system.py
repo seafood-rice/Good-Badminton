@@ -443,13 +443,18 @@ class PostureAnalysisSystem:
             self._quality_scorer = None
 
     def _resolve_racket_head(self, frame, kp, ja):
+        # No pose this frame: there is no person bbox to anchor the ROI to (and no
+        # wrist for the kinematic fallback), so skip detection entirely rather than
+        # accept an ungated detection that could land on a racket-lookalike such as a
+        # wall fan. Such frames are never contact frames, so this only keeps the
+        # detected/inferred stats honest.
+        if kp is None:
+            return None, False
         if self._racket_detector is not None:
             head = self._racket_detector.detect_racket_head(frame, roi_corners=person_roi(kp))
             if head is not None:
                 self._racket_stats["detected"] += 1
                 return head, True
-        if kp is None:
-            return None, False
         self._racket_stats["inferred"] += 1
         return ja.infer_racket_head(kp, dominant=self.dominant_hand), False
 
