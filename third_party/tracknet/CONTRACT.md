@@ -126,3 +126,66 @@ library, used only by their training/data-prep helpers — e.g.
 `convert_gt_to_coco_json`, `generate_data_frames` — which this vendoring never
 calls, but the import must still resolve at module load time). Added `parse`
 (no version pin; upstream itself does not pin it) to `requirements.txt`.
+
+## `infer.py` edits vs upstream (Task 2)
+
+`third_party/tracknet/infer.py` is our own extraction, not vendored
+verbatim. It contains:
+- Three helpers copied **verbatim** from upstream `test.py`:
+  `get_ensemble_weight` (`test.py:25-50`), `predict_location`
+  (`test.py:52-79`), `generate_inpaint_mask` (`test.py:223-258`) — copied
+  directly into `infer.py` instead of `from test import ...`, so
+  `third_party/tracknet` never imports `test.py` (and thus never triggers its
+  `pycocotools` import).
+- `predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1))` copied
+  **verbatim** from upstream `predict.py:14-69`.
+- `run_prediction(...)` — transcribed from upstream `predict.py`'s
+  `if __name__ == '__main__':` block (`predict.py:86-306`), with these exact
+  edits:
+  1. Signature: `def run_prediction(video_file, tracknet_file,
+     inpaintnet_file='', batch_size=16, eval_mode='weight',
+     large_video=True, max_sample_num=1800, video_range=None,
+     device=None):` — replaces the upstream `argparse` CLI.
+  2. Device resolution added at the top of the function:
+     `device = device or ('cuda' if torch.cuda.is_available() else 'cpu')`.
+  3. Every `args.X` reference replaced with the corresponding parameter `X`.
+     Deleted the `argparse`/CLI setup entirely, plus the
+     `num_workers = args.batch_size if args.batch_size <= 16 else 16`
+     computation, `video_name`, `out_csv_file`, `out_video_file`, and the
+     `if not os.path.exists(args.save_dir): os.makedirs(args.save_dir)`
+     block (no `save_dir` concept in `run_prediction` — callers own where
+     results go).
+  4. `torch.load(args.tracknet_file)` → `torch.load(tracknet_file,
+     map_location=device, weights_only=False)`; same substitution for
+     `inpaintnet_file`. Required because torch >= 2.6 defaults
+     `weights_only=True`, which refuses to unpickle the `param_dict`
+     structure embedded in these checkpoints (see the pre-existing
+     "`torch.load(..., weights_only=False)` requirement" section above).
+  5. `.cuda()` → `.to(device)` on both model constructions
+     (`get_model('TrackNet', ...).cuda()` and
+     `get_model('InpaintNet').cuda()`); `x.float().cuda()` →
+     `x.float().to(device)` at both call sites (non-overlap and overlap
+     TrackNet inference loops); `inpaintnet(coor_pred.cuda(),
+     inpaint_mask.cuda())` → `inpaintnet(coor_pred.to(device),
+     inpaint_mask.to(device))` at both call sites (non-overlap and overlap
+     InpaintNet refinement loops).
+  6. `num_workers=num_workers` → `num_workers=0` in every `DataLoader(...)`
+     call (Windows-safe: avoids multiprocessing pickling of in-memory frame
+     arrays across worker processes, which upstream's Linux-oriented default
+     does not need to handle).
+  7. Deleted the CSV/video-writing block (upstream `predict.py:304-311`,
+     `write_pred_csv`/`write_pred_video` calls and the `--output_video`
+     branch). `run_prediction` instead ends with `return inpaint_pred_dict
+     if inpaintnet is not None else tracknet_pred_dict`.
+
+  Everything else — the non-overlap/overlap dataset branching, the
+  large/small-video branching, the temporal-ensemble buffer bookkeeping, and
+  the two-pass TrackNet → InpaintNet refinement structure — carries over
+  unchanged from `predict.py`'s `__main__` block (faithful mechanical
+  extraction; no branches pruned).
+
+Covered by `tests/test_tracknet_infer.py` (weight-free unit tests: `predict`
+coordinate-scaling math, `get_ensemble_weight` symmetry/normalization,
+`generate_inpaint_mask` gap-marking). `run_prediction`'s end-to-end path
+(model loading + video decoding) requires real checkpoint weights and is
+validated by a later task/controller, not by this test file.
