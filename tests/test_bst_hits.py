@@ -77,3 +77,13 @@ def test_hit_events_hitter_unknown_when_lookup_returns_none():
 
 def test_hit_events_empty_track_returns_empty_list():
     assert hits.hit_events([]) == []
+
+
+def test_hit_events_sorted_by_frame_even_if_contacts_unordered(monkeypatch):
+    # hit_events must sort explicitly, not rely on detect_contacts / track order.
+    monkeypatch.setattr(
+        hits, "detect_contacts",
+        lambda track: [{"contact_frame": 90}, {"contact_frame": 30}, {"contact_frame": 60}],
+    )
+    events = hits.hit_events([])
+    assert [e["frame"] for e in events] == [30, 60, 90]

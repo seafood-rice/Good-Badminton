@@ -29,8 +29,8 @@ def hit_events(track, frame_lookup=None):
     Returns
     -------
     list of {"frame": int, "hitter": str}
-        Sorted by frame ascending (contacts already come out of
-        ``detect_contacts`` in frame order).
+        Sorted by frame ascending (sorted explicitly rather than relying on
+        ``detect_contacts`` / the input track already being in frame order).
     """
     contacts = detect_contacts(track)
     events = []
@@ -42,4 +42,4 @@ def hit_events(track, frame_lookup=None):
             if rec is not None:
                 hitter = rec.get("player_side", "unknown")
         events.append({"frame": frame, "hitter": hitter})
-    return events
+    return sorted(events, key=lambda e: e["frame"])
