@@ -202,3 +202,34 @@ limitation above.
 
 **T9 semantic validation: BLOCKED** — needs an elevated-back-court singles rally clip (the
 only available footage is single-player drills). Ships experimental until then.
+
+## T9 validation result (2026-07-12) — BLOCKED UPSTREAM (shuttle/contact detection)
+
+Ran the real match pipeline + BST on an elevated-back-court **singles broadcast rally**
+(Axelsen vs Kodai, "Nice Angle" 4K→1080p, 25 s segment @30 fps) — ideal BST-domain footage.
+Substrate confirmed: court auto-detected (clean 4-point trapezoid), both players tracked.
+**But 0 strokes were produced**, and the cause is upstream of BST:
+
+- The shuttle detector (`weights/yolo11s-ball.pt`) detects the shuttle in only **~35 % of
+  frames** on this broadcast footage (small, fast, motion-blurred shuttle).
+- The trajectory-based contact detector (`stroke.events.detect_contacts`) needs a denser
+  track; on the 65 %-gappy trajectory it finds **0 contacts at every threshold tried**
+  (defaults, contact_px 150/dir 30, contact_px 250/dir 25/lookahead 5).
+- With 0 detected hits, BST has nothing to classify — so the end-to-end match-stroke
+  feature is effectively **dormant on real broadcast footage**, regardless of BST quality.
+
+This is a pre-existing pipeline limitation (shuttle tracking + contact detection), surfaced
+by BST's dependency on it — NOT a BST-code defect. BST itself is verified correct in
+isolation (real checkpoint → finite (25,) logits → coarse mapping + confidence gate;
+garbage input → `uncertain`). The known hitter/opponent limitation (person-0 pose) is moot
+until hits are detected at all.
+
+**Also found:** BST recognition consumes `_analysis_track`, which is only populated when
+`analyze_technique=True` — so `--bst-model` alone (without `--analyze-technique`) silently
+no-ops. The web match flow defaults `analyze_technique=True`, so this only bites bare CLI
+use; worth making BST imply the analysis capture in a follow-up.
+
+**Path to a working match-stroke feature:** replace/augment shuttle tracking with a dense
+badminton-specific tracker — **TrackNetV3**, which is exactly what the BST authors used to
+build ShuttleSet. That is a substantial separate project (own spec/plan). Until then the
+BST feature ships **experimental and dormant on real footage**.
