@@ -173,6 +173,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .clip-item:hover{text-decoration:underline;}
 .tech-sum{margin-bottom:14px;} .chip-row{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;}
 .chip-metric{background:var(--fill);border-radius:var(--radius-pill);padding:4px 10px;font-size:12px;color:var(--ink);}
+.res-subhead{font-size:12px;font-weight:700;color:var(--faint);text-transform:uppercase;letter-spacing:.04em;margin:14px 0 6px;}
+/* Rally stroke-type timeline (BST strokes.json): compact scrollable chip row. Text
+   color is left unset so the .muted modifier (uncertain hits) applies cleanly. */
+.stroke-timeline{display:flex;align-items:center;gap:6px;overflow-x:auto;padding-bottom:4px;max-width:100%;}
+.timeline-item{flex:0 0 auto;background:var(--fill);border-radius:var(--radius-pill);padding:4px 10px;font-size:12.5px;white-space:nowrap;}
+.timeline-arrow{flex:0 0 auto;color:var(--faint);font-size:12px;}
 .weak span{font-size:12px;} .weak ul,.weak-list{margin:6px 0 0;padding-left:18px;font-size:13px;color:var(--muted);}
 .stroke-list{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;}
 .stroke-row{display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border);

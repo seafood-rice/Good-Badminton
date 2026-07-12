@@ -535,6 +535,17 @@ window.Kestrel = (function () {
     drop_shot: ['吊球', 'Drop shot'], serve: ['发球', 'Serve']
   };
   function strokeTypeLabel(k) { var m = STROKE_TYPE_LABELS[k]; return m ? (state.lang==='zh'?m[0]:m[1]) : String(k).replace(/_/g,' '); }
+  // Coarse stroke-type vocabulary from the BST rally labeler (Task 6 outputs/<stem>/strokes.json),
+  // distinct from STROKE_TYPE_LABELS above (which covers the biomechanics posture-drill stroke set).
+  var STROKE_COARSE_LABELS = {
+    serve: ['发球', 'Serve'], clear: ['高远球', 'Clear'], smash: ['杀球', 'Smash'],
+    drop: ['吊球', 'Drop'], drive: ['平抽球', 'Drive'], net: ['网前球', 'Net']
+  };
+  var STROKE_COARSE_ORDER = ['serve', 'clear', 'smash', 'drop', 'drive', 'net'];
+  function strokeCoarseLabel(k) {
+    var m = STROKE_COARSE_LABELS[k];
+    return m ? (state.lang === 'zh' ? m[0] : m[1]) : String(k == null ? '' : k).replace(/_/g, ' ');
+  }
   function weaknessLineHTML(w) {
     var zh = state.lang === 'zh';
     if (w.description && (!zh || !w.metric)) return '<li>' + w.description + '</li>';
@@ -568,7 +579,11 @@ window.Kestrel = (function () {
           '<p class="muted" id="rally-info">' + (zh?'加载中…':'Loading…') + '</p>' +
           '<button class="btn-primary" id="clip-btn" disabled>' + (zh?'生成回合剪辑':'Generate clips') + '</button> ' +
           '<button class="btn-ghost danger-link" id="clips-del">🗑 ' + (zh?'删除剪辑':'Delete clips') + '</button>' +
-          '<div id="clip-list" class="clip-list"></div></div></div></div>' +
+          '<div id="clip-list" class="clip-list"></div></div>' +
+          '<div class="res-section" id="dist-box" style="display:none"><h3 class="res-subhead">' + (zh?'击球分布':'Stroke distribution') + '</h3>' +
+            '<p class="mono" id="dist-list"></p></div></div></div>' +
+      '<div class="res-section" id="timeline-box" style="display:none"><h2>' + (zh?'击球类型时间线':'Stroke timeline') + '</h2>' +
+        '<div id="stroke-timeline" class="stroke-timeline"></div></div>' +
       '<div class="res-section"><h2>' + (zh?'位置可视化':'Position visualization') + '</h2>' +
         '<div class="viz-row"><div class="viz-cell" id="viz-heat"><img class="res-viz" src="' + heat + '" alt="heatmap"><div class="viz-cap mono">' + (zh?'热力图':'Heatmap') + '</div></div>' +
           '<div class="viz-cell" id="viz-scat"><img class="res-viz" src="' + scat + '" alt="scatter"><div class="viz-cap mono">' + (zh?'散点图':'Scatter') + '</div></div></div></div>' +
@@ -607,6 +622,33 @@ window.Kestrel = (function () {
           else { alert(zh ? (d.error || '生成失败') : 'Clip generation failed'); } })
         .catch(function () { btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false; alert(zh ? '网络错误，请重试' : 'Network error — please try again'); });
     };
+
+    // Rally stroke-type timeline + distribution (BST; Task 6 outputs/<stem>/strokes.json).
+    // Presence-keyed: this file only exists when BST weights were present at analysis
+    // time, so a 404/absent/malformed response must render nothing (no error, no empty box).
+    fetch('/api/output/' + stem + '/strokes.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d) return;
+      var strokes = Array.isArray(d.strokes) ? d.strokes : [];
+      if (strokes.length) {
+        document.getElementById('stroke-timeline').innerHTML = strokes.map(function (s, i) {
+          var uncertain = !!(s && s.uncertain);
+          var label = strokeCoarseLabel(s && s.stroke);
+          var title = uncertain ? ' title="' + (zh ? '不确定' : 'Uncertain') + '"' : '';
+          var item = '<span class="timeline-item' + (uncertain ? ' muted' : '') + '"' + title + '>' + label + '</span>';
+          return i < strokes.length - 1 ? item + '<span class="timeline-arrow">→</span>' : item;
+        }).join('');
+        var tbox = document.getElementById('timeline-box'); if (tbox) tbox.style.display = '';
+      }
+      var dist = (d.distribution && typeof d.distribution === 'object') ? d.distribution : null;
+      if (dist) {
+        var keys = STROKE_COARSE_ORDER.filter(function (k) { return dist[k] > 0; })
+          .concat(Object.keys(dist).filter(function (k) { return STROKE_COARSE_ORDER.indexOf(k) === -1 && dist[k] > 0; }));
+        if (keys.length) {
+          document.getElementById('dist-list').textContent = keys.map(function (k) { return strokeCoarseLabel(k) + ' ' + dist[k]; }).join(' · ');
+          var dbox = document.getElementById('dist-box'); if (dbox) dbox.style.display = '';
+        }
+      }
+    }).catch(function () {});
 
     // Technique analysis.
     fetch('/api/technique/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
