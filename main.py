@@ -29,6 +29,8 @@ def main():
                         help='启用击球姿态生物力学分析，输出 strokes.jsonl 与 technique_summary.json')
     parser.add_argument('--racket-model', default='weights/yolo11s-racket.pt', type=str,
                         help='YOLO 球拍检测模型路径（用于击球分析）')
+    parser.add_argument('--bst-model', default=None, type=str,
+                        help='BST 击球类型识别模型路径（可选，用于击球分析）')
     parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
                         help='球员持拍手，默认 right')
     parser.add_argument('--language', default='zh', choices=['zh', 'en'], help='选择界面语言 (zh/en)')
@@ -62,6 +64,7 @@ def main():
         analyze_technique=args.analyze_technique,
         racket_model_path=args.racket_model,
         dominant_hand=args.dominant_hand,
+        bst_weights=args.bst_model,
     )
 
     system.keep_audio = args.audio == 'true'
