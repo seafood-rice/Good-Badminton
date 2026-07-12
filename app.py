@@ -170,6 +170,20 @@ def _bst_weights(base=None):
     return str(p) if p.is_file() else None
 
 
+def _tracknet_weights(base=None):
+    """Path to the TrackNetV3 tracking model when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'tracknet.pt'
+    return str(p) if p.is_file() else None
+
+
+def _inpaintnet_weights(base=None):
+    """Path to the TrackNetV3 InpaintNet rectifier when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'inpaintnet.pt'
+    return str(p) if p.is_file() else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
@@ -298,7 +312,8 @@ def api_models():
     """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer) are installed."""
     return jsonify({'racket': _racket_weights() is not None,
                     'quality': _quality_weights() is not None,
-                    'bst': _bst_weights() is not None})
+                    'bst': _bst_weights() is not None,
+                    'tracknet': _tracknet_weights() is not None})
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -493,6 +508,13 @@ def api_analyze():
     bst_weights = _bst_weights()
     if bst_weights:
         cmd += ['--bst-model', bst_weights]
+
+    tracknet_weights = _tracknet_weights()
+    if tracknet_weights:
+        cmd += ['--tracknet-model', tracknet_weights]
+    inpaintnet_weights = _inpaintnet_weights()
+    if inpaintnet_weights:
+        cmd += ['--inpaintnet-model', inpaintnet_weights]
 
     job_id = video_path.stem
     jobs[job_id] = {

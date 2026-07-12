@@ -629,6 +629,13 @@ window.Kestrel = (function () {
     fetch('/api/output/' + stem + '/strokes.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d) return;
       var strokes = Array.isArray(d.strokes) ? d.strokes : [];
+      if (d && d.shuttle_source === 'tracknet') {
+        var prov = document.getElementById('dist-list');
+        if (prov) {
+          var note = (state.lang === 'zh' ? '密集羽毛球追踪：TrackNetV3' : 'Dense shuttle tracking: TrackNetV3');
+          prov.insertAdjacentHTML('afterend', '<div class="prov-note faint">' + note + '</div>');
+        }
+      }
       if (strokes.length) {
         document.getElementById('stroke-timeline').innerHTML = strokes.map(function (s, i) {
           var uncertain = !!(s && s.uncertain);

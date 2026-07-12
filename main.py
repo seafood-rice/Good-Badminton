@@ -31,6 +31,10 @@ def main():
                         help='YOLO 球拍检测模型路径（用于击球分析）')
     parser.add_argument('--bst-model', default=None, type=str,
                         help='BST 击球类型识别模型路径（可选，用于击球分析）')
+    parser.add_argument('--tracknet-model', default=None, type=str,
+                        help='TrackNetV3 追踪模型路径（可选，密集羽毛球轨迹）')
+    parser.add_argument('--inpaintnet-model', default=None, type=str,
+                        help='TrackNetV3 InpaintNet 轨迹修补模型路径（可选）')
     parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
                         help='球员持拍手，默认 right')
     parser.add_argument('--language', default='zh', choices=['zh', 'en'], help='选择界面语言 (zh/en)')
@@ -65,6 +69,8 @@ def main():
         racket_model_path=args.racket_model,
         dominant_hand=args.dominant_hand,
         bst_weights=args.bst_model,
+        tracknet_weights=args.tracknet_model,
+        inpaintnet_weights=args.inpaintnet_model,
     )
 
     system.keep_audio = args.audio == 'true'
