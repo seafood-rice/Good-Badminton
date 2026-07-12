@@ -156,3 +156,49 @@ Same discipline as the racket/quality models:
 - Match pipeline behavior with no BST weights present must be unchanged.
 - Torch/heavy imports lazy; do not regress weightless/`--help` paths.
 - Windows/venv: `.venv/Scripts/python.exe`, `PYTHONUTF8=1`.
+
+## Outcome addendum (2026-07-12)
+
+**Status: code-complete, EXPERIMENTAL.** All 8 code tasks implemented, per-task reviewed,
+whole-branch reviewed, and fixed. Semantic accuracy is UNVALIDATED — see below.
+
+**Final-review Critical (fixed, commit f0d6d0f):** the integration passed the 2-point court
+ROI (`court_roi_corners`) to the recognizer instead of the 4-point court quad
+(`court_corners`); `CourtMapper`/`cv2.getPerspectiveTransform` requires 4 points, so every
+real weights-present match run crashed (and, unguarded, died before `_cleanup`, corrupting
+the match video). Root cause was plan drift (this plan's Task 6 named the wrong attribute).
+Also hardened: `_run_stroke_recognition`'s body is now wrapped try/except → any runtime
+error leaves the feature silently off and the match run intact (the spec's never-fatal
+contract, previously load-only).
+
+**KNOWN LIMITATION — hitter/opponent selection (deferred, must fix before trusting labels):**
+The match pipeline captures one player's pose per frame, selected as the "lower"/tracked
+player, and `player_side` is ~always `"lower"` in a two-player match. So (a) the `hitter`
+field in strokes.json is wrong for upper-player strokes, and (b) BST's person-0 "hitter"
+pose slot receives the *receiver's* pose for upper-player hits. The opponent (person-1)
+pose/position are zero-filled (v1). A correct fix requires capturing both players'
+poses/positions per frame and selecting the hitter by shuttle proximity at each contact —
+this must land BEFORE meaningful T9 semantic validation, else T9 evidence is corrupted for
+~half the strokes.
+
+**Descoped / deviations:**
+- Video overlay output surface (spec §Output) was NOT built: recognition runs after the
+  annotated match video is written, so a per-hit overlay would need a second pass — out of
+  v1 scope. Timeline + distribution surfaces shipped instead.
+- The per-type distribution is written in `strokes.json` (`{"strokes":[...],"distribution":{}}`),
+  not a `metadata.json` block (metadata is written before the frame loop). Self-consistent
+  with the UI.
+
+**Verified:** coarse-6 mapping + confidence gate; graceful degradation (no weights → no
+torch, no output, match unchanged); real-checkpoint plumbing (build_inputs → predict →
+to_coarse yields finite (25,) logits and correctly returns `uncertain` on non-stroke input).
+
+**Fidelity checklist for T9 (when rally footage exists):** class-index→CLASS_NAMES alignment
+(structurally supported via strict state_dict load + shape cross-checks; semantically
+unvalidated); bbox-from-joint-min/max pose normalization (upstream's exact bbox formula not
+vendored); 30-frame contact-centered window vs upstream stroke-segment clipping;
+shuttle/positions not clamped to [0,1] for out-of-frame/court points; and the hitter/pose
+limitation above.
+
+**T9 semantic validation: BLOCKED** — needs an elevated-back-court singles rally clip (the
+only available footage is single-player drills). Ships experimental until then.
