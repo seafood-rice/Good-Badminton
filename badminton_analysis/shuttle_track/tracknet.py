@@ -23,7 +23,7 @@ _VENDOR_NAMES = ("infer", "model", "dataset", "utils")
 
 
 def _is_vendor_module(name):
-    return name in _VENDOR_NAMES or name.startswith("utils.")
+    return name in _VENDOR_NAMES or any(name.startswith(n + ".") for n in _VENDOR_NAMES)
 
 
 @contextlib.contextmanager
