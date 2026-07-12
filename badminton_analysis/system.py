@@ -66,7 +66,8 @@ class BadmintonAnalysisSystem:
                  ball_model_path='weights/yolo11s-ball.pt', template_path=None,
                  pose_mode='balanced', pose_family='rtmpose',
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
-                 analyze_technique=False, racket_model_path=None, dominant_hand="right"):
+                 analyze_technique=False, racket_model_path=None, dominant_hand="right",
+                 bst_weights=None):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -79,6 +80,7 @@ class BadmintonAnalysisSystem:
         self.analyze_technique = analyze_technique
         self.racket_model_path = racket_model_path
         self.dominant_hand = dominant_hand
+        self.bst_weights = bst_weights
         self._analysis_track = []   # contact detection track
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
@@ -256,6 +258,8 @@ class BadmintonAnalysisSystem:
 
         if self.analyze_technique:
             self._run_technique_analysis()
+
+        self._run_stroke_recognition()
 
         self._cleanup(cap)
 
@@ -495,7 +499,7 @@ class BadmintonAnalysisSystem:
             "frame": frame_count, "keypoints": keypoints, "conf": None,
             "racket_head": racket_head, "centroid": centroid, "nose": nose,
             "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
-            "player_side": side,
+            "player_side": side, "shuttle": shuttle,
         }
 
     def _run_technique_analysis(self):
@@ -513,6 +517,37 @@ class BadmintonAnalysisSystem:
         write_stroke_reports(strokes_path, reports)
         write_json(summary_path, build_match_summary(reports))
         print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
+
+    def _run_stroke_recognition(self):
+        """Post-loop BST coarse stroke labeling -- entirely optional.
+
+        No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
+        constructor, so the default behavior of the pipeline is byte-for-byte
+        unchanged. ``StrokeRecognizer`` already degrades gracefully (returns
+        ``[]``) if the weights fail to load, so this is safe to call
+        unconditionally from ``process_video``.
+
+        v1 limitation: ``stroke_recog.inputs.build_inputs`` (Task 3) only
+        fills in the tracked hitter's own pose/position (person index 0) plus
+        the shuttle; the opponent (person index 1) pose/position stay
+        zero-filled every frame. This is a documented v1 simplification --
+        whether coarse labels survive it on real footage is what the T9
+        validation decides, not something this task attempts to fix.
+        """
+        if not self.bst_weights:
+            return
+
+        from collections import Counter
+        from .stroke_recog.recognizer import StrokeRecognizer
+
+        labels = StrokeRecognizer(self.bst_weights).label_rally(
+            self._analysis_track, self._analysis_frames.get,
+            self.court_roi_corners, (self.frame_width, self.frame_height),
+        )
+        strokes_path = os.path.join(self.save_dir, "strokes.json")
+        distribution = dict(Counter(label["stroke"] for label in labels))
+        write_json(strokes_path, {"strokes": labels, "distribution": distribution})
+        print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
 
     def _get_template_path(self):
         """Get the court template image path."""
