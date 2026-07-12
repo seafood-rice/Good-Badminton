@@ -641,8 +641,10 @@ window.Kestrel = (function () {
       }
       var dist = (d.distribution && typeof d.distribution === 'object') ? d.distribution : null;
       if (dist) {
+        // "uncertain" is already shown muted in the timeline above; exclude it here
+        // so it doesn't fall through strokeCoarseLabel() untranslated in the distribution line.
         var keys = STROKE_COARSE_ORDER.filter(function (k) { return dist[k] > 0; })
-          .concat(Object.keys(dist).filter(function (k) { return STROKE_COARSE_ORDER.indexOf(k) === -1 && dist[k] > 0; }));
+          .concat(Object.keys(dist).filter(function (k) { return k !== 'uncertain' && STROKE_COARSE_ORDER.indexOf(k) === -1 && dist[k] > 0; }));
         if (keys.length) {
           document.getElementById('dist-list').textContent = keys.map(function (k) { return strokeCoarseLabel(k) + ' ' + dist[k]; }).join(' · ');
           var dbox = document.getElementById('dist-box'); if (dbox) dbox.style.display = '';

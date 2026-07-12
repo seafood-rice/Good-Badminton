@@ -527,6 +527,17 @@ class BadmintonAnalysisSystem:
         ``[]``) if the weights fail to load, so this is safe to call
         unconditionally from ``process_video``.
 
+        Uses ``self.court_corners`` -- the 4-point court quad set alongside
+        court annotation in ``process_video`` -- rather than
+        ``self.court_roi_corners`` (a 2-point pose-detection ROI rectangle):
+        ``build_inputs`` -> ``CourtMapper`` requires exactly 4 corners.
+
+        Never fatal: any exception raised while recognizing strokes (bad
+        court data, a build_inputs/predict failure, etc.) is caught here and
+        only turns stroke recognition off for this run -- it must never abort
+        ``process_video`` before ``_cleanup(cap)`` runs. Writes nothing when
+        there are no hits, so ``strokes.json``'s presence stays meaningful.
+
         v1 limitation: ``stroke_recog.inputs.build_inputs`` (Task 3) only
         fills in the tracked hitter's own pose/position (person index 0) plus
         the shuttle; the opponent (person index 1) pose/position stay
@@ -537,17 +548,23 @@ class BadmintonAnalysisSystem:
         if not self.bst_weights:
             return
 
-        from collections import Counter
-        from .stroke_recog.recognizer import StrokeRecognizer
+        try:
+            from collections import Counter
+            from .stroke_recog.recognizer import StrokeRecognizer
 
-        labels = StrokeRecognizer(self.bst_weights).label_rally(
-            self._analysis_track, self._analysis_frames.get,
-            self.court_roi_corners, (self.frame_width, self.frame_height),
-        )
-        strokes_path = os.path.join(self.save_dir, "strokes.json")
-        distribution = dict(Counter(label["stroke"] for label in labels))
-        write_json(strokes_path, {"strokes": labels, "distribution": distribution})
-        print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
+            labels = StrokeRecognizer(self.bst_weights).label_rally(
+                self._analysis_track, self._analysis_frames.get,
+                self.court_corners, (self.frame_width, self.frame_height),
+            )
+            if not labels:
+                return
+            strokes_path = os.path.join(self.save_dir, "strokes.json")
+            distribution = dict(Counter(label["stroke"] for label in labels))
+            write_json(strokes_path, {"strokes": labels, "distribution": distribution})
+            print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
+        except Exception as e:
+            print(f"Stroke recognition skipped: {e}")
+            return
 
     def _get_template_path(self):
         """Get the court template image path."""

@@ -17,10 +17,21 @@ to the same (patched) class object.
 import json
 import os
 
+import numpy as np
+
 from badminton_analysis import system as system_mod
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.system import BadmintonAnalysisSystem
+from badminton_analysis.stroke_recog import bst_model as bst_model_mod
+from badminton_analysis.stroke_recog import recognizer as recognizer_mod
 from badminton_analysis.stroke_recog.recognizer import StrokeRecognizer
+
+# A real 4-point court quad (order doesn't matter for these tests, only that
+# CourtMapper's cv2.getPerspectiveTransform gets exactly 4 points). Finding 1:
+# the match pipeline must pass *this* -- self.court_corners -- into
+# label_rally, never the 2-point self.court_roi_corners (pose-detection ROI
+# rectangle) which cv2.getPerspectiveTransform rejects.
+VALID_COURT_CORNERS = [(100, 100), (900, 100), (900, 700), (100, 700)]
 
 
 def _bare_system(tmp_path, bst_weights, monkeypatch):
@@ -34,10 +45,53 @@ def _bare_system(tmp_path, bst_weights, monkeypatch):
     sys_.save_dir = str(tmp_path)
     sys_._analysis_track = []
     sys_._analysis_frames = {}
+    sys_.court_corners = list(VALID_COURT_CORNERS)
+    # ROI stays 2-point on purpose: it's a pose-detection rectangle, unrelated
+    # to CourtMapper's 4-point perspective transform. Kept here so a
+    # regression that reads the wrong attribute is caught rather than masked
+    # by its absence.
     sys_.court_roi_corners = [(0, 0), (100, 100)]
     sys_.frame_width = 100
     sys_.frame_height = 100
     return sys_
+
+
+def _build_synthetic_track_and_frames(contact_frame=30, total_frames=60):
+    """Synthesize a minimal ``_analysis_track`` + ``_analysis_frames`` pair
+    that (a) yields exactly one detected hit via the real
+    ``stroke.events.detect_contacts`` / ``stroke_recog.hits.hit_events``, and
+    (b) has >=10 posed frames (both hips valid) in that hit's
+    ``build_inputs`` window, so the real (unstubbed) recognition path runs
+    end to end.
+
+    Shuttle path is a "V": diagonally descending up to ``contact_frame``,
+    then diagonally ascending afterwards, so ``detect_contacts``'s
+    direction-change check (>=45 degrees) fires exactly at ``contact_frame``.
+    ``racket_head`` is only populated at ``contact_frame`` so no other frame
+    is even a contact candidate.
+    """
+    step = 10.0
+    track = []
+    frames = {}
+    for f in range(1, total_frames + 1):
+        if f <= contact_frame:
+            x, y = step * f, step * f
+        else:
+            offset = f - contact_frame
+            x = step * contact_frame + step * offset
+            y = step * contact_frame - step * offset
+        shuttle = (x, y)
+        racket_head = shuttle if f == contact_frame else None
+        track.append({"frame": f, "racket_head": racket_head, "shuttle": shuttle})
+
+        keypoints = np.full((17, 2), 50.0, dtype=float)
+        frames[f] = {
+            "frame": f, "keypoints": keypoints, "conf": None,
+            "racket_head": racket_head, "centroid": (50.0, 50.0),
+            "nose": (50.0, 50.0), "shoulder": (50.0, 50.0), "hip": (50.0, 50.0),
+            "elbow_angle": 170.0, "player_side": "lower", "shuttle": shuttle,
+        }
+    return track, frames
 
 
 def test_run_stroke_recognition_writes_strokes_json_and_distribution(tmp_path, monkeypatch):
@@ -67,7 +121,7 @@ def test_run_stroke_recognition_writes_strokes_json_and_distribution(tmp_path, m
     assert payload["strokes"] == canned
     assert payload["distribution"] == {"smash": 2, "clear": 1}
     assert seen["weights_path"] == "weights/bst.pt"
-    assert seen["court_corners"] == [(0, 0), (100, 100)]
+    assert seen["court_corners"] == VALID_COURT_CORNERS
     assert seen["video_wh"] == (100, 100)
 
 
@@ -110,3 +164,88 @@ def test_capture_analysis_frame_enriches_record_with_shuttle(tmp_path):
     record = sys_._analysis_frames[5]
     assert "shuttle" in record
     assert record["shuttle"] == (42.0, 24.0)
+
+
+class _DummyBstModel:
+    """Stands in for the real torch model object bst_model.load_bst returns."""
+
+
+def test_run_stroke_recognition_real_pipeline_uses_four_point_court_corners(tmp_path, monkeypatch):
+    """Finding 1 regression (red before the fix, green after).
+
+    Exercises the *real* label_rally -> hit_events -> build_inputs ->
+    CourtMapper path end to end -- only ``bst_model.load_bst``/``predict``
+    (the actual torch model) are stubbed. Before the fix, system.py passed
+    ``self.court_roi_corners`` (a 2-point ROI rectangle) into label_rally;
+    ``build_inputs`` -> ``CourtMapper.__init__`` -> ``cv2.getPerspectiveTransform``
+    requires exactly 4 points and raises ``cv2.error`` for that 2-point
+    input, so this test fails red pre-fix and passes green post-fix.
+    """
+    canned_logits = np.zeros(25, dtype=np.float32)
+    canned_logits[3] = 10.0  # "Top_殺球" -> coarse "smash" (see stroke_recog/classes.py)
+
+    monkeypatch.setattr(bst_model_mod, "load_bst", lambda weights_path: _DummyBstModel())
+    monkeypatch.setattr(bst_model_mod, "predict", lambda model, pose, shuttle, positions: canned_logits)
+
+    track, frames = _build_synthetic_track_and_frames()
+    sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
+    sys_._analysis_track = track
+    sys_._analysis_frames = frames
+    sys_.frame_width = 1000
+    sys_.frame_height = 1000
+
+    sys_._run_stroke_recognition()
+
+    strokes_path = os.path.join(str(tmp_path), "strokes.json")
+    assert os.path.exists(strokes_path)
+    with open(strokes_path, encoding="utf-8") as f:
+        payload = json.load(f)
+
+    assert len(payload["strokes"]) == 1
+    stroke = payload["strokes"][0]
+    assert stroke["frame"] == 30
+    assert stroke["hitter"] == "lower"
+    assert stroke["stroke"] == "smash"
+    assert payload["distribution"] == {"smash": 1}
+
+
+def test_run_stroke_recognition_swallows_recognition_exceptions(tmp_path, monkeypatch):
+    """Finding 2: a raise anywhere in the recognition path (hit_events,
+    build_inputs, predict, CourtMapper) must never be fatal to the match
+    run -- _run_stroke_recognition must swallow it and return quietly so
+    process_video can still reach _cleanup(cap)."""
+    monkeypatch.setattr(bst_model_mod, "load_bst", lambda weights_path: _DummyBstModel())
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("synthetic build_inputs failure")
+
+    monkeypatch.setattr(recognizer_mod, "build_inputs", _boom)
+
+    track, frames = _build_synthetic_track_and_frames()
+    sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
+    sys_._analysis_track = track
+    sys_._analysis_frames = frames
+    sys_.frame_width = 1000
+    sys_.frame_height = 1000
+
+    sys_._run_stroke_recognition()  # must not raise
+
+    assert not os.path.exists(os.path.join(str(tmp_path), "strokes.json"))
+
+
+def test_run_stroke_recognition_writes_nothing_when_no_hits(tmp_path, monkeypatch):
+    """Finding 4: zero detected hits -> no strokes.json written at all
+    (rather than an empty {"strokes": [], "distribution": {}} file), so the
+    file's presence stays a meaningful signal that BST ran and found hits."""
+    monkeypatch.setattr(bst_model_mod, "load_bst", lambda weights_path: _DummyBstModel())
+    monkeypatch.setattr(
+        bst_model_mod, "predict",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("predict should not run with zero hits")),
+    )
+
+    sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
+    # _analysis_track/_analysis_frames already [] / {} from _bare_system -> no contacts.
+
+    sys_._run_stroke_recognition()
+
+    assert not os.path.exists(os.path.join(str(tmp_path), "strokes.json"))
