@@ -43,6 +43,8 @@ def _bare_system(tmp_path, bst_weights, monkeypatch):
     sys_ = object.__new__(BadmintonAnalysisSystem)
     sys_.bst_weights = bst_weights
     sys_.save_dir = str(tmp_path)
+    sys_._shuttle_trajectory = None
+    sys_._shuttle_source = "yolo"
     sys_._analysis_track = []
     sys_._analysis_frames = {}
     sys_.court_corners = list(VALID_COURT_CORNERS)
@@ -144,6 +146,8 @@ def test_capture_analysis_frame_enriches_record_with_shuttle(tmp_path):
     (badminton_analysis/stroke_recog/inputs.py's _shuttle_xy reads
     rec.get("shuttle")); previously only _analysis_track carried it."""
     sys_ = object.__new__(BadmintonAnalysisSystem)
+    sys_._shuttle_trajectory = None
+    sys_._shuttle_source = "yolo"
     sys_._analysis_track = []
     sys_._analysis_frames = {}
     sys_.dominant_hand = "right"

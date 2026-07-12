@@ -67,7 +67,7 @@ class BadmintonAnalysisSystem:
                  pose_mode='balanced', pose_family='rtmpose',
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
-                 bst_weights=None):
+                 bst_weights=None, tracknet_weights=None, inpaintnet_weights=None):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -81,6 +81,10 @@ class BadmintonAnalysisSystem:
         self.racket_model_path = racket_model_path
         self.dominant_hand = dominant_hand
         self.bst_weights = bst_weights
+        self.tracknet_weights = tracknet_weights
+        self.inpaintnet_weights = inpaintnet_weights
+        self._shuttle_trajectory = None
+        self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
@@ -209,8 +213,9 @@ class BadmintonAnalysisSystem:
         self.court_roi_corners = roi_corners
 
         self._write_metadata(fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height)
+        self._run_shuttle_pretrack()
         self.detection_writer = JsonlDetectionWriter(self.detections_path)
-        
+
 
         self.court_mapper = CourtMapper(corners)
         self.player_pose_visualizer.court_mapper = self.court_mapper
@@ -489,7 +494,11 @@ class BadmintonAnalysisSystem:
             racket_head = infer_racket_head(keypoints, dominant=self.dominant_hand)
 
         shuttle = None
-        if ball_position and ball_position != [0, 0]:
+        if self._shuttle_trajectory is not None:
+            pt = self._shuttle_trajectory.get(frame_count)
+            if pt is not None:
+                shuttle = (float(pt[0]), float(pt[1]))
+        elif ball_position and ball_position != [0, 0]:
             shuttle = (float(ball_position[0]), float(ball_position[1]))
 
         self._analysis_track.append({
@@ -501,6 +510,39 @@ class BadmintonAnalysisSystem:
             "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
             "player_side": side, "shuttle": shuttle,
         }
+
+    def _run_shuttle_pretrack(self):
+        """Offline TrackNetV3 dense-shuttle pre-pass. Never fatal.
+
+        Populates ``self._shuttle_trajectory`` (keyed by match-loop
+        ``frame_count`` = TrackNet 0-based frame + 1) and sets
+        ``self._shuttle_source = 'tracknet'``. On any failure or when weights
+        are absent, leaves the trajectory None so ``_capture_analysis_frame``
+        falls back to the yolo shuttle (byte-identical to today).
+        """
+        if not (self.tracknet_weights and self.analyze_technique):
+            return
+        try:
+            from .shuttle_track import tracknet as tnmod
+            from .shuttle_track import trajectory as tjmod
+
+            params = {"eval_mode": "weight",
+                      "inpaint": bool(self.inpaintnet_weights)}
+            cache_path = os.path.join(self.save_dir, "shuttle_trajectory.json")
+            key = tjmod.cache_key(self.video_path, params)
+            traj0 = tjmod.load_cache(cache_path, key)
+            if traj0 is None:
+                models = tnmod.load_tracknet(self.tracknet_weights, self.inpaintnet_weights)
+                traj0 = tnmod.track_video(self.video_path, models, court_roi=self.court_roi_corners)
+                tjmod.save_cache(cache_path, key, traj0)
+            # Align TrackNet 0-based frames to the match loop's 1-based frame_count.
+            self._shuttle_trajectory = {f + 1: pt for f, pt in traj0.items()}
+            self._shuttle_source = "tracknet"
+            print(f"Dense shuttle tracking: {len(traj0)} frames via TrackNetV3")
+        except Exception as e:  # never fatal
+            print(f"TrackNetV3 pre-pass unavailable ({e}); using yolo shuttle.")
+            self._shuttle_trajectory = None
+            self._shuttle_source = "yolo"
 
     def _run_technique_analysis(self):
         from .analysis.biomechanics import BiomechanicalAnalyzer
@@ -560,7 +602,8 @@ class BadmintonAnalysisSystem:
                 return
             strokes_path = os.path.join(self.save_dir, "strokes.json")
             distribution = dict(Counter(label["stroke"] for label in labels))
-            write_json(strokes_path, {"strokes": labels, "distribution": distribution})
+            write_json(strokes_path, {"strokes": labels, "distribution": distribution,
+                                      "shuttle_source": self._shuttle_source})
             print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
         except Exception as e:
             print(f"Stroke recognition skipped: {e}")
