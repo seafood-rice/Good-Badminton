@@ -1,3 +1,5 @@
+import cv2
+
 import badminton_analysis.system as sysmod
 from badminton_analysis.stroke.events import detect_contacts
 
@@ -75,6 +77,39 @@ def test_pretrack_applies_plus_one_offset(tmp_path, monkeypatch):
     s._run_shuttle_pretrack()
     assert s._shuttle_trajectory == {1: (500.0, 300.0), 6: None}
     assert s._shuttle_source == "tracknet"
+
+
+def test_pretrack_skips_video_over_frame_budget(tmp_path, monkeypatch):
+    s = _make_system(tmp_path, tracknet_weights="tn.pt")
+
+    class _FakeCap:
+        def __init__(self, n):
+            self._n = n
+        def get(self, prop):
+            return self._n
+        def release(self):
+            pass
+
+    over = sysmod.SHUTTLE_PRETRACK_MAX_FRAMES + 1
+    # cv2 is normally set as a module global by system.py's
+    # load_runtime_dependencies() (called once at app startup); wire it
+    # directly here since this test builds a BadmintonAnalysisSystem without
+    # going through that heavy startup path (same pattern as write_json in
+    # tests/test_bst_integration.py).
+    monkeypatch.setattr(sysmod, "cv2", cv2, raising=False)
+    monkeypatch.setattr(sysmod.cv2, "VideoCapture", lambda p: _FakeCap(over))
+
+    import badminton_analysis.shuttle_track.tracknet as tnmod
+    calls = {"n": 0}
+    def _should_not_run(*a, **k):
+        calls["n"] += 1
+        raise AssertionError("pre-pass must not load the model on an over-budget video")
+    monkeypatch.setattr(tnmod, "load_tracknet", _should_not_run)
+
+    s._run_shuttle_pretrack()
+    assert calls["n"] == 0
+    assert s._shuttle_trajectory is None
+    assert s._shuttle_source == "yolo"
 
 
 def test_pretrack_uses_warm_cache_without_reinference(tmp_path, monkeypatch):

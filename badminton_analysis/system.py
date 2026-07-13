@@ -5,6 +5,12 @@ import tkinter as tk
 import time
 import argparse
 
+# TrackNetV3 dense pre-pass is only feasible on short clips: eval_mode='weight'
+# runs ~0.4s/frame, so a full-length match (tens of thousands of frames) would
+# take hours. Above this frame budget we skip the pre-pass and fall back to the
+# yolo shuttle so match analysis stays responsive.
+SHUTTLE_PRETRACK_MAX_FRAMES = 2000
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -521,6 +527,16 @@ class BadmintonAnalysisSystem:
         falls back to the yolo shuttle (byte-identical to today).
         """
         if not (self.tracknet_weights and self.analyze_technique):
+            return
+        try:
+            _cap = cv2.VideoCapture(self.video_path)
+            n_frames = int(_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            _cap.release()
+        except Exception:
+            n_frames = 0
+        if n_frames > SHUTTLE_PRETRACK_MAX_FRAMES:
+            print(f"TrackNetV3 pre-pass skipped: {n_frames} frames > "
+                  f"{SHUTTLE_PRETRACK_MAX_FRAMES} budget; using yolo shuttle.")
             return
         try:
             from .shuttle_track import tracknet as tnmod
