@@ -527,7 +527,8 @@ class BadmintonAnalysisSystem:
             from .shuttle_track import trajectory as tjmod
 
             params = {"eval_mode": "weight",
-                      "inpaint": bool(self.inpaintnet_weights)}
+                      "inpaint": bool(self.inpaintnet_weights),
+                      "roi": self.court_roi_corners}
             cache_path = os.path.join(self.save_dir, "shuttle_trajectory.json")
             key = tjmod.cache_key(self.video_path, params)
             traj0 = tjmod.load_cache(cache_path, key)
@@ -538,7 +539,8 @@ class BadmintonAnalysisSystem:
             # Align TrackNet 0-based frames to the match loop's 1-based frame_count.
             self._shuttle_trajectory = {f + 1: pt for f, pt in traj0.items()}
             self._shuttle_source = "tracknet"
-            print(f"Dense shuttle tracking: {len(traj0)} frames via TrackNetV3")
+            detected = sum(1 for pt in traj0.values() if pt is not None)
+            print(f"Dense shuttle tracking: {detected}/{len(traj0)} frames via TrackNetV3")
         except Exception as e:  # never fatal
             print(f"TrackNetV3 pre-pass unavailable ({e}); using yolo shuttle.")
             self._shuttle_trajectory = None
@@ -602,8 +604,10 @@ class BadmintonAnalysisSystem:
                 return
             strokes_path = os.path.join(self.save_dir, "strokes.json")
             distribution = dict(Counter(label["stroke"] for label in labels))
-            write_json(strokes_path, {"strokes": labels, "distribution": distribution,
-                                      "shuttle_source": self._shuttle_source})
+            payload = {"strokes": labels, "distribution": distribution}
+            if self._shuttle_source == "tracknet":
+                payload["shuttle_source"] = "tracknet"
+            write_json(strokes_path, payload)
             print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
         except Exception as e:
             print(f"Stroke recognition skipped: {e}")

@@ -127,6 +127,33 @@ def test_run_stroke_recognition_writes_strokes_json_and_distribution(tmp_path, m
     assert seen["video_wh"] == (100, 100)
 
 
+def test_run_stroke_recognition_shuttle_source_key_conditional(tmp_path, monkeypatch):
+    """Fix 2: strokes.json must omit "shuttle_source" entirely when the
+    dense TrackNetV3 pre-pass did not run (self._shuttle_source == "yolo"),
+    preserving byte-identical output for the no-TrackNet-weights case, and
+    must include "shuttle_source": "tracknet" only when it did run."""
+    canned = [
+        {"frame": 10, "hitter": "lower", "stroke": "smash", "confidence": 0.9, "uncertain": False},
+    ]
+    monkeypatch.setattr(StrokeRecognizer, "label_rally", lambda self, *a, **kw: canned)
+
+    sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
+    sys_._shuttle_source = "yolo"
+    sys_._run_stroke_recognition()
+
+    strokes_path = os.path.join(str(tmp_path), "strokes.json")
+    with open(strokes_path, encoding="utf-8") as f:
+        payload = json.load(f)
+    assert "shuttle_source" not in payload
+
+    os.remove(strokes_path)
+    sys_._shuttle_source = "tracknet"
+    sys_._run_stroke_recognition()
+    with open(strokes_path, encoding="utf-8") as f:
+        payload = json.load(f)
+    assert payload["shuttle_source"] == "tracknet"
+
+
 def test_run_stroke_recognition_no_op_without_bst_weights(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(

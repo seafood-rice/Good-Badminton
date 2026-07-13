@@ -75,3 +75,24 @@ def test_pretrack_applies_plus_one_offset(tmp_path, monkeypatch):
     s._run_shuttle_pretrack()
     assert s._shuttle_trajectory == {1: (500.0, 300.0), 6: None}
     assert s._shuttle_source == "tracknet"
+
+
+def test_pretrack_uses_warm_cache_without_reinference(tmp_path, monkeypatch):
+    import os
+    import badminton_analysis.shuttle_track.tracknet as tnmod
+    import badminton_analysis.shuttle_track.trajectory as tjmod
+    s = _make_system(tmp_path, tracknet_weights="tn.pt")
+    params = {"eval_mode": "weight", "inpaint": bool(s.inpaintnet_weights),
+              "roi": s.court_roi_corners}
+    key = tjmod.cache_key(s.video_path, params)
+    tjmod.save_cache(os.path.join(s.save_dir, "shuttle_trajectory.json"), key,
+                     {0: (10.0, 20.0), 3: None})
+
+    def _boom(*a, **k):
+        raise AssertionError("track_video must not run on a cache hit")
+    monkeypatch.setattr(tnmod, "track_video", _boom)
+    monkeypatch.setattr(tnmod, "load_tracknet",
+                        lambda *a, **k: {"tracknet_file": "tn.pt", "inpaintnet_file": None, "device": None})
+    s._run_shuttle_pretrack()
+    assert s._shuttle_trajectory == {1: (10.0, 20.0), 4: None}
+    assert s._shuttle_source == "tracknet"
