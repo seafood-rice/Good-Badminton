@@ -423,12 +423,13 @@ window.Kestrel = (function () {
   }
   var STAGE_LABELS = {
     loading: ['加载模型', 'Loading model'], analyzing: ['分析动作', 'Analyzing'],
+    court_setup: ['球场设置', 'Court setup'], visualizing: ['生成可视化', 'Visualizing'],
     scoring: ['评分', 'Scoring'], report: ['生成报告', 'Building report'],
     encoding: ['转码视频', 'Encoding video'], done: ['完成', 'Done'], error: ['失败', 'Failed']
   };
   function progressStages() {
     return wiz.mode === 'posture' ? ['loading','analyzing','scoring','report','encoding','done']
-                                  : ['analyzing','encoding','done'];
+                                  : ['court_setup','analyzing','visualizing','encoding','done'];
   }
   function renderStepProgress(body) {
     var zh = state.lang === 'zh';
@@ -436,6 +437,7 @@ window.Kestrel = (function () {
       '<div class="prog-wrap"><div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>' +
         '<div class="prog-pct mono" id="prog-pct">0%</div></div>' +
       '<ul class="stage-list" id="stage-list"></ul>' +
+      '<div id="wiz-heartbeat" class="wiz-heartbeat"></div>' +
       '<div class="wiz-actions" id="prog-actions"></div>';
     pollJob();
   }
@@ -463,6 +465,16 @@ window.Kestrel = (function () {
         fill.style.width = pct + '%';
         document.getElementById('prog-pct').textContent = pct + '%';
         renderStages(d.stage || 'analyzing');
+        var hb = document.getElementById('wiz-heartbeat');
+        if (hb) {
+          var now = Date.now() / 1000;
+          var age = d.updated ? Math.max(0, Math.round(now - d.updated)) : null;
+          hb.textContent = (d.status === 'running')
+            ? (state.lang === 'zh'
+                ? '分析进行中… ' + (d.message || '') + (age !== null ? '（' + age + '秒前更新）' : '')
+                : 'Analysis in progress… ' + (d.message || '') + (age !== null ? ' (updated ' + age + 's ago)' : ''))
+            : '';
+        }
         if (d.status === 'completed') {
           clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; }
           document.getElementById('prog-actions').innerHTML =

@@ -148,6 +148,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .prog-fill{height:100%;width:0;background:var(--accent);border-radius:var(--radius-pill);transition:width .4s ease;}
 .prog-pct{font-size:14px;font-weight:600;color:var(--ink);min-width:44px;text-align:right;}
 .stage-list{list-style:none;display:flex;flex-direction:column;gap:10px;max-width:560px;margin-bottom:24px;}
+.wiz-heartbeat{font-size:13px;color:var(--faint);max-width:560px;margin:-14px 0 20px;min-height:16px;}
 .stage{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--faint);}
 .stage-mark{width:20px;text-align:center;}
 .stage.active{color:var(--ink);font-weight:600;} .stage.active .stage-mark{color:var(--accent);}
