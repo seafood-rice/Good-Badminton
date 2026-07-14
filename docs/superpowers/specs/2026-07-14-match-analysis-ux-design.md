@@ -163,3 +163,40 @@ frontend displays the correct-language images; only one visualization module rem
 - A "chopped rally clips" export mode (the video is now always full-duration).
 - Any accuracy/perf work beyond the measured lossless wins + the Fast stride (e.g., model
   retraining, TensorRT) is a separate performance project.
+
+## Profiling results (A3a)
+
+**Method:** `scripts/profile_pipeline.py` times the three per-frame calls `_process_frame`
+makes (`badminton_analysis/system.py`) directly against frames of a representative
+court-view clip: `is_court_view`'s `cv2.matchTemplate` (grayscale, full-frame template),
+`player_pose_visualizer.detect_players` (YOLO pose), and `shuttlecock_tracker.detect_ball`
+(YOLO ball). No court annotation is available headlessly, so the pose/ball ROI is
+approximated as the full frame rather than the true (smaller) annotated crop — a
+conservative approximation that, if anything, makes production pose/ball costs *lower*
+than measured here, not higher. 250 frames measured after a 10-frame CUDA warmup, on
+`rally_seg.mp4` (750 court-view frames, 1080p).
+
+**Machine:** RTX 4090 (`torch.cuda.get_device_name(0)` confirmed), models run on
+`device=0`.
+
+**Measured (mean ms/frame, two runs for stability):**
+
+| stage              | run 1 (ms) | run 2 (ms) |
+|--------------------|-----------:|-----------:|
+| court_view_check   |      28.82 |      27.17 |
+| pose               |      16.88 |      16.02 |
+| ball               |      13.74 |      13.07 |
+| total              |      59.44 |      56.25 |
+
+**Bottleneck:** `is_court_view` (CPU-bound `cv2.matchTemplate` against a full 1080p
+grayscale template) is the single largest per-frame cost — larger than the GPU-accelerated
+pose and ball inference *combined*. Pose and ball, running on the RTX 4090, are already
+inexpensive relative to this CPU-bound check.
+
+**Recommendation:** the court-view-check cadence optimization (A3, "lossless wins") is
+**strongly worthwhile** — it targets the actual bottleneck (~48% of per-frame time) with a
+low-risk change (holding state between checks, since rally-boundary thresholds already
+span several frames). GPU batching of pose/ball is **not warranted as a near-term
+follow-up**: those stages are already fast on this hardware and are not the dominant
+cost; revisit only if a future profile on different hardware (e.g., no/weaker GPU) shows
+otherwise.
