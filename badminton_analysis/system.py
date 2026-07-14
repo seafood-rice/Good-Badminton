@@ -12,6 +12,11 @@ import argparse
 # yolo shuttle so match analysis stays responsive.
 SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 
+# Court-view state changes slowly (rally boundaries span >=5 frames); recompute the
+# template match only every N frames and hold the result between checks. Lossless
+# within the existing 5-frame rally thresholds.
+COURT_VIEW_CHECK_INTERVAL = 3
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -178,6 +183,8 @@ class BadmintonAnalysisSystem:
 
         self.is_court_view_count = 0
         self.consecutive_non_court_frames = 0
+        self._court_view_cached = None
+        self._court_view_last_frame = -10
         self.rally_active = False
         self.rally_count = 0
         self.rally_segments = []  # [(rally_id, start_frame, end_frame), ...]
@@ -322,7 +329,7 @@ class BadmintonAnalysisSystem:
         
         # frame = self.draw_court_roi(frame, corners, roi_corners)
 
-        is_court = self.is_court_view(gray_frame, template_gray)
+        is_court = self._court_view_for_frame(gray_frame, template_gray, frame_count)
         
         if is_court:
             self.is_court_view_count += 1
@@ -796,6 +803,17 @@ class BadmintonAnalysisSystem:
         result = cv2.matchTemplate(frame, template_gray, cv2.TM_CCOEFF_NORMED)
         # print("match score: ", result)
         return np.max(result) >= threshold
+
+    def _court_view_for_frame(self, gray_frame, template_gray, frame_count):
+        """Recompute is_court_view only every COURT_VIEW_CHECK_INTERVAL frames,
+        holding the cached result between checks. Lossless within the existing
+        5-frame rally thresholds (boundaries may shift by <= interval-1 frames)."""
+        cached = getattr(self, "_court_view_cached", None)
+        last_frame = getattr(self, "_court_view_last_frame", -10)
+        if cached is None or frame_count - last_frame >= COURT_VIEW_CHECK_INTERVAL:
+            self._court_view_cached = self.is_court_view(gray_frame, template_gray)
+            self._court_view_last_frame = frame_count
+        return self._court_view_cached
 
     def draw_court_roi(self, frame, corners, roi_corners):
         self.court_mapper = CourtMapper(corners)
