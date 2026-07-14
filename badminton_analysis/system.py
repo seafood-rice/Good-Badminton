@@ -1,4 +1,5 @@
 ﻿import os
+import json
 import tempfile
 from tkinter import filedialog
 import tkinter as tk
@@ -136,6 +137,8 @@ class BadmintonAnalysisSystem:
         self.video_name = os.path.basename(self.video_path)[:-4]
         self.save_dir = output_dir or os.path.join('outputs', self.video_name)
         os.makedirs(self.save_dir, exist_ok=True)
+        self._total_frames = 0
+        self._write_progress("initializing")
         self.images_save_dir = os.path.join(self.save_dir, 'detect_images')
         os.makedirs(self.images_save_dir, exist_ok=True)
         
@@ -196,6 +199,7 @@ class BadmintonAnalysisSystem:
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._total_frames = total_frames
         if fps <= 0:
             raise RuntimeError(f"Unable to read FPS from video: {self.video_path}")
         video_duration = total_frames / fps
@@ -217,6 +221,8 @@ class BadmintonAnalysisSystem:
         corners, roi_corners, mid_height = self._setup_court_annotation(template_color)
         self.court_corners = corners
         self.court_roi_corners = roi_corners
+        self._write_progress("court_setup")
+        progress_interval = max(1, int(fps))
 
         self._write_metadata(fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height)
         self._run_shuttle_pretrack()
@@ -244,6 +250,8 @@ class BadmintonAnalysisSystem:
             if not ret:
                 break
             frame_count += 1
+            if frame_count % progress_interval == 0:
+                self._write_progress("analyzing", current_frame=frame_count)
             frame, detect_frame_count = self._process_frame(frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count)
 
         # 视频结束时如果还在回合中，记录最后一个回合
@@ -267,6 +275,7 @@ class BadmintonAnalysisSystem:
         print(f"处理耗时: {processing_time:.2f} 秒")
         print(f"处理速度比: {processing_time/video_duration:.2f}x")
 
+        self._write_progress("visualizing")
         if self.analyze_technique:
             self._run_technique_analysis()
 
@@ -716,6 +725,35 @@ class BadmintonAnalysisSystem:
             f.write(f"mid_height={mid_height}\n")
         return corners, roi_corners, mid_height
 
+    # Per-stage fixed pct for non-analyzing stages; analyzing derives from frames.
+    _PROGRESS_STAGE_PCT = {
+        "initializing": 1, "court_setup": 3, "analyzing": None,
+        "visualizing": 97, "encoding": 99, "done": 100,
+    }
+
+    def _write_progress(self, stage, current_frame=None):
+        """Write a progress heartbeat to <save_dir>/progress.json. Never fatal."""
+        try:
+            total = int(getattr(self, "_total_frames", 0) or 0)
+            fixed = self._PROGRESS_STAGE_PCT.get(stage)
+            if fixed is not None:
+                pct = fixed
+            elif total > 0 and current_frame is not None:
+                pct = max(3, min(96, int(current_frame / total * 100)))
+            else:
+                pct = 3
+            payload = {
+                "stage": stage,
+                "current_frame": int(current_frame or 0),
+                "total_frames": total,
+                "pct": int(pct),
+                "updated": time.time(),
+            }
+            with open(os.path.join(self.save_dir, "progress.json"), "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+        except Exception:
+            pass
+
     def _cleanup(self, cap):
         """Clean up resources and merge audio when needed."""
         if self.detection_writer is not None:
@@ -731,6 +769,7 @@ class BadmintonAnalysisSystem:
         if self.show_display:
             cv2.destroyAllWindows()
 
+        self._write_progress("encoding")
         if hasattr(self, 'keep_audio') and self.keep_audio:
             vap.process_video_with_audio(
                 video_path=self.video_path,
@@ -743,6 +782,8 @@ class BadmintonAnalysisSystem:
                 temp_video_path=self.temp_output_video_path,
                 output_path=self.output_video_path
             )
+
+        self._write_progress("done")
 
     def analyze_shuttlecock(self, roi_corners, corners):
         """Hit-point analysis is currently disabled."""
