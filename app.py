@@ -184,6 +184,27 @@ def _inpaintnet_weights(base=None):
     return str(p) if p.is_file() else None
 
 
+def _read_progress_file(save_dir):
+    """Read <save_dir>/progress.json written by the analysis subprocess, or None."""
+    p = os.path.join(str(save_dir), 'progress.json')
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding='utf-8') as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _log_tail(path, n=40):
+    """Return the last n lines of a log file, or '' if unreadable."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            return ''.join(fh.readlines()[-n:])
+    except OSError:
+        return ''
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
@@ -526,44 +547,34 @@ def api_analyze():
         'stage': 'analyzing',
     }
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    log_path = os.path.join(str(save_dir), 'analyze.log')
+    log_fh = open(log_path, 'w', encoding='utf-8')
+    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT,
                             text=True, cwd=str(PROJECT_ROOT), env=env)
     jobs[job_id]['proc'] = proc
     jobs[job_id]['status'] = 'running'
+    jobs[job_id]['log_path'] = log_path
 
     # 启动进度跟踪线程
     import threading
 
     def track_progress():
         job = jobs[job_id]
-        detections_file = os.path.join(job['save_dir'], 'detections.jsonl')
-
-        # 先从视频获取总帧数
-        total_frames = 100  # fallback
-        try:
-            import cv2
-            cap = cv2.VideoCapture(str(video_path))
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-        except:
-            pass
 
         while job['status'] == 'running' and proc.poll() is None:
-            # 通过 detections.jsonl 行数估算进度
-            if os.path.exists(detections_file):
-                try:
-                    with open(detections_file) as f:
-                        count = sum(1 for _ in f)
-                    pct = min(99, max(0, int(count / total_frames * 100)))
-                except:
-                    count = 0
-                    pct = 0
-                job['progress'] = pct
-                job['message'] = f'分析中... {count}/{total_frames} 帧'
-                job['stage'] = 'analyzing'
-            time.sleep(1.5)
+            prog = _read_progress_file(job['save_dir'])
+            if prog is not None:
+                job['progress'] = int(prog.get('pct', job.get('progress', 0)))
+                job['stage'] = prog.get('stage', job.get('stage'))
+                job['updated'] = prog.get('updated')
+                job['message'] = f"分析中... {prog.get('current_frame', 0)}/{prog.get('total_frames', 0)} 帧"
+            time.sleep(1.0)
 
         proc.wait()
+        try:
+            log_fh.close()
+        except Exception:
+            pass
 
         if proc.returncode == 0:
             job['status'] = 'reencoding'
@@ -621,7 +632,8 @@ def api_analyze():
         else:
             job['status'] = 'error'
             job['stage'] = 'error'
-            job['message'] = f'分析失败 (exit={proc.returncode})'
+            tail = _log_tail(job.get('log_path', ''), n=40)
+            job['message'] = f'分析失败 (exit={proc.returncode})\n{tail}'
 
     threading.Thread(target=track_progress, daemon=True).start()
     return jsonify({'ok': True, 'job_id': job_id})
@@ -639,6 +651,7 @@ def api_status(job_id):
         'message': job.get('message', ''),
         'result': job.get('result'),
         'stage': job.get('stage'),
+        'updated': job.get('updated'),
     })
 
 
