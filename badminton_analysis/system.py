@@ -340,6 +340,12 @@ class BadmintonAnalysisSystem:
 
 
         if not is_court:
+            # Full-duration output: write the raw (un-annotated) frame instead of
+            # dropping it, so the result video matches the input duration.
+            if self.show_display:
+                cv2.imshow('frame', frame)
+                cv2.waitKey(1)
+            out.write(frame)
             return frame, detect_frame_count
 
         detect_frame_count += 1
