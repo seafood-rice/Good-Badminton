@@ -2,6 +2,7 @@
 import os
 
 from badminton_analysis.system import BadmintonAnalysisSystem, load_runtime_dependencies
+from badminton_analysis.visualization.player_positions import analyze_player_positions
 
 
 
@@ -44,11 +45,6 @@ def main():
 
     load_runtime_dependencies()
 
-    if args.language == 'en':
-        from badminton_analysis.visualization.player_positions_en import analyze_player_positions
-    else:
-        from badminton_analysis.visualization.player_positions_zh import analyze_player_positions
-
     system = BadmintonAnalysisSystem(
         args.video_path,
         show_display=args.display == 'true',
@@ -81,7 +77,7 @@ def main():
 
     if args.visualize_positions == 'true':
         print("\n开始生成球员位置可视化...")
-        analyze_player_positions(system.detections_path, os.path.join(system.save_dir, 'position_visualizations'), fps=system.fps)
+        analyze_player_positions(system.detections_path, os.path.join(system.save_dir, 'position_visualizations'), fps=system.fps, language=args.language)
         print("球员位置可视化完成")
 
 if __name__ == "__main__":
