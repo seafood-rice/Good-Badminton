@@ -489,6 +489,7 @@ def api_analyze():
     language = data.get('language', 'zh')
     pose_family = data.get('pose_family', 'yolo-pose')
     analyze_technique = data.get('analyze_technique', True)
+    quality = data.get('analysis_quality', 'accurate')
 
     video_path = VIDEOS / video_name
     if not video_path.exists():
@@ -519,6 +520,7 @@ def api_analyze():
         '--visualize-positions', 'true',
         '--performance-stats',
     ]
+    cmd += ['--analysis-quality', quality]
     if analyze_technique:
         cmd.append('--analyze-technique')
 

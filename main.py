@@ -35,6 +35,8 @@ def main():
                         help='TrackNetV3 追踪模型路径（可选，密集羽毛球轨迹）')
     parser.add_argument('--inpaintnet-model', default=None, type=str,
                         help='TrackNetV3 InpaintNet 轨迹修补模型路径（可选）')
+    parser.add_argument('--analysis-quality', default='accurate', choices=['accurate', 'fast'],
+                        help='accurate=每帧分析（默认）；fast=抽帧快速预览（密集分析关闭）')
     parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
                         help='球员持拍手，默认 right')
     parser.add_argument('--language', default='zh', choices=['zh', 'en'], help='选择界面语言 (zh/en)')
@@ -71,6 +73,7 @@ def main():
         bst_weights=args.bst_model,
         tracknet_weights=args.tracknet_model,
         inpaintnet_weights=args.inpaintnet_model,
+        analysis_quality=args.analysis_quality,
     )
 
     system.keep_audio = args.audio == 'true'

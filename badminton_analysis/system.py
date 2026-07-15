@@ -17,6 +17,9 @@ SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 # within the existing 5-frame rally thresholds.
 COURT_VIEW_CHECK_INTERVAL = 3
 
+# Fast mode analyzes every Nth court frame (quick look).
+FAST_FRAME_STRIDE = 3
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -79,7 +82,8 @@ class BadmintonAnalysisSystem:
                  pose_mode='balanced', pose_family='rtmpose',
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
-                 bst_weights=None, tracknet_weights=None, inpaintnet_weights=None):
+                 bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
+                 analysis_quality="accurate"):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -90,6 +94,9 @@ class BadmintonAnalysisSystem:
         self.yolo_pose_model = yolo_pose_model
         self.show_pose_roi = show_pose_roi
         self.analyze_technique = analyze_technique
+        self.analysis_quality = analysis_quality
+        if analysis_quality == "fast":
+            self.analyze_technique = False  # dense analytics need every frame
         self.racket_model_path = racket_model_path
         self.dominant_hand = dominant_hand
         self.bst_weights = bst_weights
@@ -323,6 +330,17 @@ class BadmintonAnalysisSystem:
         }
         write_json(self.metadata_path, metadata)
 
+    def _analyze_this_frame(self, frame_count):
+        """Gate for the heavy per-frame analysis (pose/ball/draw).
+
+        Accurate mode analyzes every court frame (behavior-preserving). Fast mode
+        strides the heavy analysis to every FAST_FRAME_STRIDE-th court frame for a
+        quick overview.
+        """
+        if self.analysis_quality != "fast":
+            return True
+        return frame_count % FAST_FRAME_STRIDE == 0
+
     def _process_frame(self, frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count):
 
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -373,6 +391,15 @@ class BadmintonAnalysisSystem:
             cv2.rectangle(frame, roi_corners[0], roi_corners[1], (255, 0, 0), 2)
             cv2.putText(frame, "Pose ROI", (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2, cv2.LINE_AA)
 
+        if not self._analyze_this_frame(frame_count):
+            # Fast mode: this court frame is outside the analysis stride, so skip
+            # the heavy pose/ball/draw work and write the raw frame through,
+            # mirroring the non-court passthrough above.
+            if self.show_display:
+                cv2.imshow('frame', frame)
+                cv2.waitKey(1)
+            out.write(frame)
+            return frame, detect_frame_count
 
         pose_t0 = time.time()
         centroids, point_left_hands, point_right_hands = self.player_pose_visualizer.detect_players(roi, x1, y1)

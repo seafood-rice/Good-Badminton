@@ -377,6 +377,7 @@ window.Kestrel = (function () {
       fields =
         fieldRow('语言','Language', selectHTML('cfg-lang', [['zh','中文','Chinese'],['en','English','English']])) +
         fieldRow('姿态模型','Pose model', selectHTML('cfg-pose', [['yolo-pose','YOLO Pose (快)','YOLO Pose (fast)'],['rtmpose','RTMPose (准)','RTMPose (accurate)']])) +
+        fieldRow('分析质量','Analysis quality', selectHTML('cfg-quality', [['accurate','精确（每帧）','Accurate (every frame)'],['fast','快速（抽帧预览）','Fast (sampled preview)']])) +
         '<label class="field field-check"><input type="checkbox" id="cfg-tech" checked><span class="field-label">' + (zh?'技术分析':'Technique analysis') + '</span></label>';
     }
     body.innerHTML = '<div class="cfg-form">' + fields + '</div>' +
@@ -413,7 +414,8 @@ window.Kestrel = (function () {
     } else {
       url = '/api/analyze';
       payload = { video: wiz.video, language: document.getElementById('cfg-lang').value,
-        pose_family: document.getElementById('cfg-pose').value, analyze_technique: document.getElementById('cfg-tech').checked };
+        pose_family: document.getElementById('cfg-pose').value, analyze_technique: document.getElementById('cfg-tech').checked,
+        analysis_quality: document.getElementById('cfg-quality').value };
     }
     fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { return r.json(); })
