@@ -90,18 +90,20 @@ _LANG = {
 
 
 # 设置中文字体 - 使用项目根目录的 simhei.ttf
+# 注意：本函数不再修改全局 plt.rcParams['font.family'] / ['font.sans-serif']，
+# 因为那是进程级别的全局状态：一旦某个 zh 实例调用过一次，rcParams 就会一直保持
+# SimHei，导致同一进程内后续构造的 en 实例（fontproperties=None）也会误用中文字体
+# 渲染英文图表。字体现在完全通过每个实例显式的 FontProperties 对象（self.font_prop）
+# 传递给每一次文本渲染调用，不依赖也不修改任何全局绘图状态。
 def _load_chinese_font():
     font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'simhei.ttf'))
-    plt.rcParams['axes.unicode_minus'] = False
+    plt.rcParams['axes.unicode_minus'] = False  # 语言无关，负号显示问题，可全局设置
 
     if not os.path.exists(font_path):
         return None
 
     fm.fontManager.addfont(font_path)
     font_prop = fm.FontProperties(fname=font_path)
-    font_name = font_prop.get_name()
-    plt.rcParams['font.family'] = [font_name, 'sans-serif']
-    plt.rcParams['font.sans-serif'] = [font_name]
     return font_prop
 
 
@@ -126,7 +128,18 @@ class PlayerPositionVisualizer:
         self.language = language
         self.strings = _LANG.get(language, _LANG['zh'])
         # Font is per-instance (not a module global) so language is honored per call.
-        self.chinese_font = _load_chinese_font() if language == 'zh' else None
+        # self.font_prop is ALWAYS an explicit FontProperties instance (never None),
+        # so no text call can silently fall back to (possibly polluted) rcParams:
+        # - zh: the loaded SimHei FontProperties (falls back to the matplotlib
+        #   default if simhei.ttf is missing, rather than leaving font resolution
+        #   to ambient rcParams).
+        # - en (or any other language): an explicit matplotlib-default FontProperties().
+        if language == 'zh':
+            self.font_prop = _load_chinese_font() or fm.FontProperties()
+        else:
+            self.font_prop = fm.FontProperties()
+        # Kept as an alias in case other code references the old attribute name.
+        self.chinese_font = self.font_prop
 
         # Set output directory
         if output_dir is None:
@@ -632,9 +645,9 @@ class PlayerPositionVisualizer:
         # Set plot properties - 适合深色背景的样式
         plt.xlim(0, self.court_width)
         plt.ylim(self.court_length, 0)  # Invert Y axis for correct orientation
-        plt.title(self.strings["heatmap_title"], color='white', fontsize=14, fontproperties=self.chinese_font)
-        plt.xlabel(self.strings["court_width"], color='white', fontproperties=self.chinese_font)
-        plt.ylabel(self.strings["court_length"], color='white', fontproperties=self.chinese_font)
+        plt.title(self.strings["heatmap_title"], color='white', fontsize=14, fontproperties=self.font_prop)
+        plt.xlabel(self.strings["court_width"], color='white', fontproperties=self.font_prop)
+        plt.ylabel(self.strings["court_length"], color='white', fontproperties=self.font_prop)
         plt.tick_params(colors='white')  # 坐标轴刻度标签改为白色
 
         # Save plot
@@ -745,7 +758,7 @@ class PlayerPositionVisualizer:
                 fontsize=14,  # 进一步增大字体
                 weight='bold',
                 color='#ffffff',
-                fontproperties=self.chinese_font,
+                fontproperties=self.font_prop,
                 **font_kwargs)  # 白色文本适合深色背景
 
     def _generate_scatter_plot(self, upper_df, lower_df, filename):
@@ -825,16 +838,16 @@ class PlayerPositionVisualizer:
         # Set plot properties - 适合深色背景的样式
         plt.xlim(0, self.court_width)
         plt.ylim(self.court_length, 0)  # Invert Y axis for correct orientation
-        plt.title(self.strings["scatter_title"], color='white', fontsize=14, fontproperties=self.chinese_font)
-        plt.xlabel(self.strings["court_width"], color='white', fontproperties=self.chinese_font)
-        plt.ylabel(self.strings["court_length"], color='white', fontproperties=self.chinese_font)
+        plt.title(self.strings["scatter_title"], color='white', fontsize=14, fontproperties=self.font_prop)
+        plt.xlabel(self.strings["court_width"], color='white', fontproperties=self.font_prop)
+        plt.ylabel(self.strings["court_length"], color='white', fontproperties=self.font_prop)
         plt.tick_params(colors='white')  # 坐标轴刻度标签改为白色
         plt.legend(
             loc='upper right',
             facecolor='#333333',
             edgecolor='#666666',
             labelcolor='white',
-            prop=self.chinese_font,
+            prop=self.font_prop,
         )
 
         # Save plot
