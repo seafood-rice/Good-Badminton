@@ -377,7 +377,7 @@ window.Kestrel = (function () {
       fields =
         fieldRow('语言','Language', selectHTML('cfg-lang', [['zh','中文','Chinese'],['en','English','English']])) +
         fieldRow('姿态模型','Pose model', selectHTML('cfg-pose', [['yolo-pose','YOLO Pose (快)','YOLO Pose (fast)'],['rtmpose','RTMPose (准)','RTMPose (accurate)']])) +
-        fieldRow('分析质量','Analysis quality', selectHTML('cfg-quality', [['accurate','精确（每帧）','Accurate (every frame)'],['fast','快速（抽帧预览）','Fast (sampled preview)']])) +
+        fieldRow('分析质量','Analysis quality', selectHTML('cfg-quality', [['accurate','精确（完整分析）','Accurate (full analytics)'],['fast','快速（抽帧预览）','Fast (sampled preview)']])) +
         '<label class="field field-check"><input type="checkbox" id="cfg-tech" checked><span class="field-label">' + (zh?'技术分析':'Technique analysis') + '</span></label>';
     }
     body.innerHTML = '<div class="cfg-form">' + fields + '</div>' +
@@ -425,13 +425,14 @@ window.Kestrel = (function () {
   }
   var STAGE_LABELS = {
     loading: ['加载模型', 'Loading model'], analyzing: ['分析动作', 'Analyzing'],
+    initializing: ['初始化', 'Initializing'],
     court_setup: ['球场设置', 'Court setup'], visualizing: ['生成可视化', 'Visualizing'],
     scoring: ['评分', 'Scoring'], report: ['生成报告', 'Building report'],
     encoding: ['转码视频', 'Encoding video'], done: ['完成', 'Done'], error: ['失败', 'Failed']
   };
   function progressStages() {
     return wiz.mode === 'posture' ? ['loading','analyzing','scoring','report','encoding','done']
-                                  : ['court_setup','analyzing','visualizing','encoding','done'];
+                                  : ['initializing','court_setup','analyzing','visualizing','encoding','done'];
   }
   function renderStepProgress(body) {
     var zh = state.lang === 'zh';

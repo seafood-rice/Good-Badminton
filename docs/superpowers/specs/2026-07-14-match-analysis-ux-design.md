@@ -200,3 +200,17 @@ span several frames). GPU batching of pose/ball is **not warranted as a near-ter
 follow-up**: those stages are already fast on this hardware and are not the dominant
 cost; revisit only if a future profile on different hardware (e.g., no/weaker GPU) shows
 otherwise.
+
+## Amendment (2026-07-14): court-view cadence in Accurate mode
+
+The A3b court-view-check cadence (`COURT_VIEW_CHECK_INTERVAL = 3` in
+`badminton_analysis/system.py`) applies in **both** Fast and Accurate mode — it was kept
+as-is by product decision, since it is the lossless speedup this spec recommends above.
+This means Accurate mode is not byte-for-byte "every frame": pose and ball detection run
+on every frame regardless of mode, but the court-view check itself is only recomputed
+every 3 frames (holding the cached result in between), so a rally boundary may shift by
+up to 2 frames. This is within the existing 5-frame rally-detection thresholds, so rally
+detection and downstream analytics are unaffected — Accurate mode is correctly described
+as **"analytics-preserving within rally tolerance,"** not literally "every frame." The UI
+copy (`static/kestrel.js`, `cfg-quality` select) was corrected from "精确（每帧）" /
+"Accurate (every frame)" to "精确（完整分析）" / "Accurate (full analytics)" to match.

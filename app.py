@@ -196,6 +196,16 @@ def _read_progress_file(save_dir):
         return None
 
 
+def _reset_progress_file(save_dir):
+    """Remove a stale progress.json before a (re-)run so the UI starts clean."""
+    try:
+        p = os.path.join(str(save_dir), 'progress.json')
+        if os.path.isfile(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
 def _log_tail(path, n=40):
     """Return the last n lines of a log file, or '' if unreadable."""
     try:
@@ -497,6 +507,7 @@ def api_analyze():
 
     save_dir = OUTPUTS / video_path.stem
     save_dir.mkdir(exist_ok=True)
+    _reset_progress_file(save_dir)
 
     # 检查球场标注
     has_annotations = (save_dir / 'court_annotations.txt').exists()

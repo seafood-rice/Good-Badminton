@@ -20,3 +20,14 @@ def test_log_tail(tmp_path):
     p.write_text("\n".join(f"line{i}" for i in range(100)))
     tail = webapp._log_tail(str(p), n=5)
     assert "line99" in tail and "line0" not in tail
+
+
+def test_reset_progress_file_removes_stale(tmp_path):
+    p = tmp_path / "progress.json"
+    p.write_text('{"stage":"done","pct":100}')
+    webapp._reset_progress_file(str(tmp_path))
+    assert not p.exists()
+
+
+def test_reset_progress_file_missing_is_noop(tmp_path):
+    webapp._reset_progress_file(str(tmp_path))  # must not raise
