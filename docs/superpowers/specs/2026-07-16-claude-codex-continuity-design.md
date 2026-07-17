@@ -1,8 +1,7 @@
 # Claude-Codex Project Continuity - Design Spec
 
 **Date:** 2026-07-16
-**Status:** Local upstream-anchored migration complete; remote fork publication blocked by
-the authenticated GitHub account policy.
+**Status:** Fork-anchored migration and development-branch publication complete.
 
 ## Goal
 
@@ -28,17 +27,23 @@ Supporting all 45 Git repositories immediately is out of scope.
 
 - Protected integration branch: `main` at verified source commit `c39e4af`; agents must not
   commit directly to it.
-- Source remote: `upstream` -> `https://github.com/qwpyyx/Good-Badminton.git`.
+- Source remote: fetch-only `upstream` ->
+  `https://github.com/qwpyyx/Good-Badminton.git`.
+- Fork remote: `origin` -> `https://github.com/seafood-rice/Good-Badminton.git`; GitHub
+  reports parent `qwpyyx/Good-Badminton`, default branch `main`, and inherited commit
+  `c39e4af`.
 - Current development branch: `codex/good-badminton-development`, rebuilt as a descendant
   of `upstream/main` while preserving the complete committed project tree and logical
-  commit sequence. Fresh Git inspection remains authoritative for its current `HEAD`.
+  commit sequence, published to the fork, and tracking the same branch under `origin`.
+  Fresh Git inspection remains authoritative for its current `HEAD`.
 - Preserved disconnected refs: `archive/pre-fork-good-badminton-development-2026-07-17`
   and `archive/pre-fork-master-2026-07-17`.
-- No `origin` is configured. Creating `clement-chung_nttltd/Good-Badminton` failed with
-  GitHub HTTP 403 because the authenticated account is an Enterprise Managed User that
-  cannot fork this public repository outside its enterprise.
+- The initial fork attempt under Enterprise Managed User `clement-chung_nttltd` failed with
+  GitHub HTTP 403 and created no repository. The user then activated permitted personal
+  account `seafood-rice`, and fork creation succeeded.
 - Match Analysis UX Sub-project A is complete.
 - Last recorded verification for Sub-project A: 356 tests plus a runtime smoke test.
+- Fresh migration verification: 355 tests passed and 1 optional-model test skipped.
 - The existing session work is unpushed.
 - `.superpowers/sdd/progress.md` is the detailed historical ledger.
 - Sub-project B, full-match stroke recognition, is next but its product completion bar
@@ -733,25 +738,27 @@ changing the original dirty worktree:
 6. Apply a five-file baseline delta and verify its staged tree hash is exactly
    `4c64a1869376f53381d821fb1dcd1b8d71b072e6`, matching local baseline `962e1f9`.
 7. Replay all 198 post-baseline commits in original topological order without conflict.
-8. Verify `upstream/main` is an ancestor, the migrated branch is 201 commits ahead before
-   this status revision, and its tree hash exactly matches the archived development head.
+8. Verify `upstream/main` is an ancestor, all 201 migration commits precede later
+   status-only commits, and the migrated tree initially matched the archived development
+   head exactly.
 
-Remote publication remains incomplete. `gh repo fork qwpyyx/Good-Badminton` was attempted
-with authenticated account `clement-chung_nttltd` and rejected by GitHub because Enterprise
-Managed Users cannot fork this public repository outside their enterprise. Do not create a
-lookalike non-fork repository or push archive refs as a workaround.
+Remote publication completed on 2026-07-17:
 
-To finish publication:
+1. The initial `clement-chung_nttltd` fork attempt failed under GitHub's Enterprise Managed
+   User restriction and created no repository.
+2. Activate permitted personal account `seafood-rice` and create the real fork
+   `seafood-rice/Good-Badminton`.
+3. Verify GitHub reports `isFork: true`, parent `qwpyyx/Good-Badminton`, default branch
+   `main`, and fork `main` at `c39e4af`, identical to `upstream/main`.
+4. Configure the fork as `origin`; retain the source as fetch-only `upstream`.
+5. Publish initial migrated head `0ae369f` only as
+   `origin/codex/good-badminton-development` and establish branch tracking.
+6. Leave fork-inherited `main` unchanged and keep both `archive/pre-fork-*` refs local.
 
-1. Authenticate `gh` with a personal GitHub account permitted to fork public repositories.
-2. Fork `qwpyyx/Good-Badminton` under that account and verify its `main` equals
-   `upstream/main`.
-3. Configure `origin` to the fork and retain `upstream` as the source repository.
-4. Retain the fork-inherited `main`; push only the migrated local
-   `codex/good-badminton-development` ref, set upstream tracking, and verify the remote
-   branch head and ancestry. Never force-push `main` or publish archive refs.
-5. Protect fork branch `main`; integrate only through a reviewed pull request.
-6. Record the fork URL, pushed commit, and result in `.ai/PROJECT_STATUS.md`.
+Future publication keeps the same boundaries: never force-push `main`, never publish archive
+refs, and integrate development through a reviewed pull request. Record the fork URL and
+current pushed commit in `.ai/PROJECT_STATUS.md` when the continuity pilot creates that
+file.
 
 ## Initial Workstreams
 
@@ -802,9 +809,9 @@ To finish publication:
   hotspot.
 - Restricting project-status edits to integration milestones creates a small coordinator
   responsibility.
-- The remote-derived protected baseline is now verified and local history is migrated.
-  Remote fork publication remains blocked until `gh` is authenticated with a non-Enterprise
-  Managed User account permitted to fork the public source.
+- The remote-derived protected baseline is verified, local history is migrated, and the
+  development branch is published. Future GitHub writes require the permitted personal
+  account; the Enterprise Managed User remains read-only outside its enterprise.
 - Milestone records can drift after a crash; lease expiry plus fresh Git inspection makes
   that drift visible rather than hiding it.
 - RTK is currently not available on Codex's reduced PATH. The continuity design preserves
