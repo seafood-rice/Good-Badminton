@@ -1,13 +1,14 @@
 # Claude-Codex Project Continuity - Design Spec
 
 **Date:** 2026-07-16
-**Status:** Design revised for protected-branch, commit-based handoffs; awaiting review.
+**Status:** Local upstream-anchored migration complete; remote fork publication blocked by
+the authenticated GitHub account policy.
 
 ## Goal
 
 Make Good Badminton a pilot repository that Claude and Codex can safely continue from
 one another, whether they alternate in one working tree or work concurrently in linked
-Git worktrees. All write work must occur on a non-`master` branch, and every handoff must
+Git worktrees. All write work must occur on a non-`main` branch, and every handoff must
 reference committed work. Both tools must see the same durable project intent, progress,
 decisions, verification evidence, blockers, and next actions without replacing their
 tool-specific instructions.
@@ -25,13 +26,17 @@ Supporting all 45 Git repositories immediately is out of scope.
 
 ## Current State
 
-- Protected integration branch: `master`; agents must not commit directly to it.
-- Current development/backfill branch: `codex/good-badminton-development`, created from
-  `e4d2a79`; fresh Git inspection remains authoritative for its current `HEAD`.
-- No Git remote or upstream is configured.
-- `master` still points at `e4d2a79` pending an explicit baseline decision. The locally
-  evidenced import baseline candidate is `962e1f9`; moving `master` is a separate guarded
-  migration step, not part of editing this specification.
+- Protected integration branch: `main` at verified source commit `c39e4af`; agents must not
+  commit directly to it.
+- Source remote: `upstream` -> `https://github.com/qwpyyx/Good-Badminton.git`.
+- Current development branch: `codex/good-badminton-development`, rebuilt as a descendant
+  of `upstream/main` while preserving the complete committed project tree and logical
+  commit sequence. Fresh Git inspection remains authoritative for its current `HEAD`.
+- Preserved disconnected refs: `archive/pre-fork-good-badminton-development-2026-07-17`
+  and `archive/pre-fork-master-2026-07-17`.
+- No `origin` is configured. Creating `clement-chung_nttltd/Good-Badminton` failed with
+  GitHub HTTP 403 because the authenticated account is an Enterprise Managed User that
+  cannot fork this public repository outside its enterprise.
 - Match Analysis UX Sub-project A is complete.
 - Last recorded verification for Sub-project A: 356 tests plus a runtime smoke test.
 - The existing session work is unpushed.
@@ -54,7 +59,7 @@ assuming this snapshot is still current.
    requirements.
 3. **Parallel work is isolated.** Concurrent agents use separate branches/worktrees and
    non-overlapping path-prefix claims.
-4. **Protect integration history.** Agents never write or commit directly on `master`.
+4. **Protect integration history.** Agents never write or commit directly on `main`.
    Feature work is integrated only by an explicit user-authorized merge or pull request.
 5. **Committed handoffs.** Before ownership changes, all in-scope changes and the durable
    next action are committed on the workstream branch. Unrelated pre-existing dirt remains
@@ -306,7 +311,8 @@ content changes are conflicts, not proof that the agent preserved the file.
 
 ### Branch validation
 
-- Mutating operations reject detached `HEAD`, `master`, and any branch that is not named
+- Mutating operations reject detached `HEAD`, the configured protected integration branch
+  (`main` for this pilot), and any branch that is not named
   `codex/<workstream-id>` or `claude/<workstream-id>`.
 - The existing `codex/good-badminton-development` backfill branch is a documented exception
   for implementing the continuity pilot and preserving imported history. New workstreams
@@ -468,7 +474,7 @@ on the protected integration branch.
 
 ### Branch and commit policy
 
-- `master` is the protected integration branch. Read-only inspection is allowed there;
+- `main` is the protected integration branch. Read-only inspection is allowed there;
   `start`, `update`, `handoff`, `accept`, and `takeover` reject it with exit `2` and no
   mutation.
 - Before write work, create or switch to a non-protected branch. New branches use
@@ -484,10 +490,10 @@ on the protected integration branch.
   status update is covered by the clean-scope and commit checks.
 - Pre-existing unrelated dirty paths outside the claim scope may remain and must never be
   staged merely to make the repository globally clean.
-- Only the user or a reviewed pull-request service may update `master`. Agents prepare and
+- Only the user or a reviewed pull-request service may update `main`. Agents prepare and
   report the feature branch, verification evidence, pull request, or exact integration
   commands; they never execute a merge, rebase, direct commit, ref update, force-update,
-  or push that changes `master`.
+  or push that changes `main`.
 
 ### Startup
 
@@ -672,7 +678,8 @@ Required tests:
 20. Reserved Windows device-name workstream IDs are rejected case-insensitively.
 21. Pre-existing out-of-scope dirt remains allowed, while new out-of-scope dirt blocks
     handoff and preserves the active claim.
-22. Every mutating operation rejects `master`, while read-only `status` remains available.
+22. Every mutating operation rejects protected `main`, while read-only `status` remains
+    available.
 23. Alternating agents can hand off one non-protected branch only after all in-scope paths
     and the workstream status are committed.
 24. Same-path status, kind, worktree content, index mode/stage/object IDs, or rename source
@@ -706,47 +713,45 @@ Verification gates:
 9. Commit in narrow logical commits on the workstream branch without staging unrelated
    user changes and without pushing.
 10. Complete a commit-based handoff/accept cycle. Prepare integration evidence for the user
-    or reviewed pull-request service; the agent does not update `master`.
+    or reviewed pull-request service; the agent does not update `main`.
 11. Use the pilot during Sub-project B and record friction or drift.
 12. Only after a stable pilot, create a separate design/plan for the remaining 12
     Claude-enabled repositories.
 
-## Existing-History Backfill
+## Existing-History Migration And Fork
 
-The repository was initialized locally and has no configured remote or upstream. Repository
-documentation identifies `https://github.com/qwpyyx/Good-Badminton` as the imported project
-and `https://github.com/yo-WASSUP/Good-Badminton` as its upstream, but local Git metadata
-does not prove which remote commit should anchor `master`.
+The source repository and default branch were verified as
+`https://github.com/qwpyyx/Good-Badminton` and `main`. Local migration completed without
+changing the original dirty worktree:
 
-The safe first backfill step is complete: `codex/good-badminton-development` was created at
-`e4d2a79`, preserving the current history, including the continuity design commit, before
-any protected-branch repair. Current dirty user paths remain in the worktree and were not
-staged or changed.
+1. Add and fetch source remote `upstream`; pin the migration base to `c39e4af`.
+2. Preserve the disconnected development and integration refs under the two dated
+   `archive/pre-fork-*` names above.
+3. Create protected local `main` at `upstream/main`.
+4. Create `codex/good-badminton-development` from `upstream/main` in an isolated worktree.
+5. Replay the two pre-baseline design/planning commits.
+6. Apply a five-file baseline delta and verify its staged tree hash is exactly
+   `4c64a1869376f53381d821fb1dcd1b8d71b072e6`, matching local baseline `962e1f9`.
+7. Replay all 198 post-baseline commits in original topological order without conflict.
+8. Verify `upstream/main` is an ancestor, the migrated branch is 201 commits ahead before
+   this status revision, and its tree hash exactly matches the archived development head.
 
-Moving the `master` reference or creating a remote fork requires a separate explicit
-decision:
+Remote publication remains incomplete. `gh repo fork qwpyyx/Good-Badminton` was attempted
+with authenticated account `clement-chung_nttltd` and rejected by GitHub because Enterprise
+Managed Users cannot fork this public repository outside their enterprise. Do not create a
+lookalike non-fork repository or push archive refs as a workaround.
 
-1. Verify the intended original repository and exact baseline commit.
-2. Capture the expected old `master` SHA and inspect `git worktree list --porcelain`.
-   Abort if any worktree has `master` checked out or if a concurrent ref change occurs.
-3. Verify that the complete development history and current revision commit are reachable
-   from the backfill branch.
-4. If the user chooses local repair, the user moves only the local ref with compare-and-swap:
-   `git update-ref refs/heads/master <approved-baseline> <expected-old-master-sha>`. Do not
-   use `branch -f`, `reset --hard`, checkout-based restoration, or any operation that
-   rewrites the dirty worktree.
-5. Re-read both refs, worktrees, status, and reachability immediately afterward. A mismatch
-   is a failed migration, not a condition to force through.
-6. Alternatively, create a user-selected remote fork, preserve the development branch, and
-   integrate through pull requests. Do not infer a GitHub account or destination.
-7. Record the chosen baseline, remote, and result in `.ai/PROJECT_STATUS.md` before the
-   first integration.
+To finish publication:
 
-The backfill checklist is manually verified in a disposable repository: a checked-out
-`master` and an expected-old-SHA mismatch must both fail without moving the ref.
-
-Until that decision is made, `master` and the backfill branch may point to the same commit,
-but all new commits must be made only on the backfill or another non-protected branch.
+1. Authenticate `gh` with a personal GitHub account permitted to fork public repositories.
+2. Fork `qwpyyx/Good-Badminton` under that account and verify its `main` equals
+   `upstream/main`.
+3. Configure `origin` to the fork and retain `upstream` as the source repository.
+4. Retain the fork-inherited `main`; push only the migrated local
+   `codex/good-badminton-development` ref, set upstream tracking, and verify the remote
+   branch head and ancestry. Never force-push `main` or publish archive refs.
+5. Protect fork branch `main`; integrate only through a reviewed pull request.
+6. Record the fork URL, pushed commit, and result in `.ai/PROJECT_STATUS.md`.
 
 ## Initial Workstreams
 
@@ -769,12 +774,15 @@ but all new commits must be made only on the backfill or another non-protected b
 7. Focused tests, `git diff --check`, the full suite, and manual two-worktree smoke all pass.
 8. No local settings, secrets, caches, absolute-path manifests, or unrelated files are
    committed.
-9. No agent writes or commits directly on `master`; all handoffs identify a committed
+9. No agent writes or commits directly on `main`; all handoffs identify a committed
    non-protected branch and full commit SHA.
 10. Mutating helper operations enforce `codex/<workstream-id>` or
     `claude/<workstream-id>`, except for the documented existing backfill branch.
 11. A handoff remains blocking until the recipient accepts the unchanged commit, status
     blob, clean claimed scope, and pre-existing dirty fingerprints.
+12. `upstream/main` is an ancestor of the development branch, the migrated tree preserves
+    all committed local work, the fork retains its inherited `main`, and only the migrated
+    development ref is actively pushed from local history.
 
 ## Non-Goals
 
@@ -794,9 +802,9 @@ but all new commits must be made only on the backfill or another non-protected b
   hotspot.
 - Restricting project-status edits to integration milestones creates a small coordinator
   responsibility.
-- The repository currently has no remote-derived protected baseline. The backfill branch
-  prevents history loss, but moving `master` or creating a fork remains blocked on an
-  explicit baseline/destination decision.
+- The remote-derived protected baseline is now verified and local history is migrated.
+  Remote fork publication remains blocked until `gh` is authenticated with a non-Enterprise
+  Managed User account permitted to fork the public source.
 - Milestone records can drift after a crash; lease expiry plus fresh Git inspection makes
   that drift visible rather than hiding it.
 - RTK is currently not available on Codex's reduced PATH. The continuity design preserves
