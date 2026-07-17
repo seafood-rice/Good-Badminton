@@ -1,43 +1,22 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Virtual environment
 .venv/
-venv/
-env/
-.agents/
 
-# Local inputs and generated outputs
-results/
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Analysis outputs
 outputs/
-*.log
 
-# User videos and auto-generated templates
-videos/*
-!videos/demo.mp4
-!videos/demo1.mp4
-templates/_auto_*
-*.mp4
-*.mov
-*.avi
-*.mkv
+# Auto-extracted templates
+templates/_auto_*.png
 
-# Model weights are intentionally not published
-weights/*
-!weights/.gitkeep
-*.pt
-*.pth
-*.onnx
+# Model weights (downloaded separately)
+weights/
 
-# OS and editor files
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+# Uploaded videos
+videos/
 
-# Dev files
-.local/
+# SDD scratch (progress ledger lives here)
+.superpowers/

@@ -20,7 +20,18 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
-_venv_python = str(PROJECT_ROOT / '.venv' / 'bin' / 'python3')
+def _find_venv_python():
+    candidates = [
+        PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe',  # Windows
+        PROJECT_ROOT / '.venv' / 'bin' / 'python3',          # macOS/Linux
+        PROJECT_ROOT / '.venv' / 'bin' / 'python',
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return sys.executable
+
+_venv_python = _find_venv_python()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -286,7 +297,7 @@ def api_analyze():
             sd = str(save_dir)
             raw_video = os.path.join(sd, f'detect_{vs}.mp4')
             h264_video = os.path.join(sd, f'detect_{vs}_h264.mp4')
-            ffmpeg_bin = os.path.expanduser('~/.local/bin/ffmpeg')
+            ffmpeg_bin = shutil.which('ffmpeg') or os.path.expanduser('~/.local/bin/ffmpeg')
 
             try:
                 subprocess.run([
