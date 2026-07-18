@@ -28,15 +28,23 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('status', 'start', 'update', 'handoff', 'accept', 'takeover')]
+    # Deliberately undecorated with [Parameter(Mandatory)], [ValidateSet], or
+    # [ValidateRange]: those declarative attributes throw at parameter-binding
+    # time, before the top-level try/catch/finally below ever runs, which
+    # would print a raw PowerShell error to stderr with nothing on stdout and
+    # exit `1` instead of the stable exit `2` + one JSON object the design
+    # contract requires. Assert-ValidOperation and Assert-LeaseHoursInRange
+    # (defined below) perform the equivalent checks INSIDE the top-level try
+    # so every validation failure -- bad/missing operation, out-of-range
+    # -LeaseHours, and future validated parameters -- funnels through the same
+    # catch to exit 2 with exactly one JSON object on stdout.
+    [Parameter(Position = 0)]
     [string] $Operation,
 
     [string] $Workstream,
     [string] $Agent,
     [string] $SessionId,
     [string[]] $Scope,
-    [ValidateRange(1, 24)]
     [int] $LeaseHours,
     [string] $ClaimId,
     [string] $Summary,
@@ -78,6 +86,11 @@ class ContinuityStateException : System.Exception {
 class ContinuityGitContextException : System.Exception {
     ContinuityGitContextException([string] $Message) : base($Message) {}
 }
+
+# The complete set of operations the approved helper contract declares.
+# `status` is implemented; the rest are recognized but not yet implemented
+# (later tasks add them) and route to a validation error until then.
+$Script:ValidOperations = @('status', 'start', 'update', 'handoff', 'accept', 'takeover')
 
 # Configured protected integration branch for this pilot (design spec,
 # "Branch validation"). Read-only inspection is allowed there; mutating
@@ -313,6 +326,142 @@ function Normalize-ScopePath {
     return $normalized
 }
 
+function Assert-ValidOperation {
+    <#
+    .SYNOPSIS
+        Validates the required `-Operation` argument INSIDE the top-level
+        try, instead of via a declarative [Parameter(Mandatory)]/[ValidateSet]
+        attribute, so a missing or unrecognized operation funnels through the
+        same ContinuityValidationException catch as every other validation
+        failure (stable exit 2, exactly one JSON object on stdout) instead of
+        failing at parameter-binding time with a raw PowerShell error and
+        exit 1.
+    #>
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $Operation
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Operation)) {
+        throw [ContinuityValidationException]::new(
+            "An operation is required; expected one of: $($Script:ValidOperations -join ', ')."
+        )
+    }
+    if ($Script:ValidOperations -notcontains $Operation) {
+        throw [ContinuityValidationException]::new(
+            "Operation '$Operation' is not recognized; expected one of: $($Script:ValidOperations -join ', ')."
+        )
+    }
+}
+
+function Assert-LeaseHoursInRange {
+    <#
+    .SYNOPSIS
+        Validates an explicitly supplied `-LeaseHours` INSIDE the top-level
+        try, instead of via a declarative [ValidateRange(1, 24)] attribute, so
+        an out-of-range value funnels through the same
+        ContinuityValidationException catch as every other validation failure
+        (stable exit 2, exactly one JSON object on stdout) instead of failing
+        at parameter-binding time with a raw PowerShell error and exit 1. A
+        `-LeaseHours` never supplied by the caller is not validated here; the
+        default only matters to operations that use it (added in later
+        tasks).
+    #>
+    param(
+        [int] $LeaseHours,
+        [Parameter(Mandatory = $true)]
+        [bool] $WasSupplied
+    )
+
+    if (-not $WasSupplied) {
+        return
+    }
+    if ($LeaseHours -lt 1 -or $LeaseHours -gt 24) {
+        throw [ContinuityValidationException]::new(
+            "LeaseHours '$LeaseHours' is out of range; expected an integer between 1 and 24."
+        )
+    }
+}
+
+function Test-ScopePrefixesOverlap {
+    <#
+    .SYNOPSIS
+        True when two normalized repository-relative scope path prefixes
+        overlap: identical, or one is a path-boundary-respecting ancestor of
+        the other (design spec, Local Claim Model: "overlap when either
+        normalized prefix contains the other at a path boundary"). Comparison
+        is case-insensitive, matching Windows filesystem semantics.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Left,
+        [Parameter(Mandatory = $true)]
+        [string] $Right
+    )
+
+    if ($Left -eq $Right) {
+        return $true
+    }
+    if ($Right.StartsWith("$Left/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    if ($Left.StartsWith("$Right/", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return $false
+}
+
+function Test-ClaimsScopeOverlap {
+    <#
+    .SYNOPSIS
+        True when any scope path prefix recorded on one claim overlaps any
+        scope path prefix recorded on another claim.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Left,
+        [Parameter(Mandatory = $true)]
+        $Right
+    )
+
+    foreach ($leftPath in @($Left.scope_paths)) {
+        foreach ($rightPath in @($Right.scope_paths)) {
+            if (Test-ScopePrefixesOverlap -Left $leftPath -Right $rightPath) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+function ConvertFrom-ContinuityTimestamp {
+    <#
+    .SYNOPSIS
+        Parses a claim's RFC3339 UTC timestamp field into a [DateTimeOffset].
+        An unparseable value is malformed durable state (exit 3), so this
+        raises ContinuityStateException rather than letting a raw .NET
+        FormatException leak out as an unexpected error.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Value,
+        [Parameter(Mandatory = $true)]
+        [string] $FieldName,
+        [Parameter(Mandatory = $true)]
+        [string] $ClaimId
+    )
+
+    try {
+        return [DateTimeOffset]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    catch {
+        throw [ContinuityStateException]::new(
+            "Claim '$ClaimId' has an unparseable '$FieldName' timestamp: '$Value'."
+        )
+    }
+}
+
 function Read-ContinuityState {
     <#
     .SYNOPSIS
@@ -389,7 +538,15 @@ function New-OperationResult {
         successor-owned state). `ok` is true only when Errors is empty.
     #>
     param(
+        # Mandatory but explicitly AllowNull/AllowEmptyString: an operation
+        # validation failure (missing or unrecognized -Operation) reports
+        # through this same result builder with whatever raw, possibly
+        # null/empty, value the caller supplied. A bare [string] Mandatory
+        # parameter would otherwise reject null AND empty string at bind
+        # time, turning that reporting path itself into an uncaught crash.
         [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyString()]
         [string] $Operation,
         # RepoRoot/GitCommonDir/WorkstreamId/ClaimId are intentionally
         # untyped (not [string]) so an absent value stays JSON `null`
@@ -504,11 +661,13 @@ function Write-Result {
 function Invoke-Status {
     <#
     .SYNOPSIS
-        Read-only report of Git state, claims, malformed claims, and expired
-        leases. Never acquires the common lock and never creates
-        `.git/ai-continuity`. Detached HEAD and the protected branch are
-        reported as warnings, not errors; `status` remains available on
-        `main`.
+        Read-only report of Git state and claims: expired leases, ordinary
+        Git drift (a live claim's recorded base commit no longer matches
+        current HEAD), and overlapping live claim scopes. Never acquires the
+        common lock and never creates `.git/ai-continuity`. Detached HEAD,
+        the protected branch, expiry, and drift are reported as warnings
+        (exit 0); overlapping live claims are reported as a conflict error
+        (exit 2). `status` remains available on `main`.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -527,6 +686,7 @@ function Invoke-Status {
     $claims = @($state.Claims)
 
     $warnings = @()
+    $errors = @()
 
     if ($context.Detached) {
         $warnings += @{ code = 'detached-head'; message = 'HEAD is detached.' }
@@ -535,6 +695,41 @@ function Invoke-Status {
         $warnings += @{
             code    = 'protected-branch'
             message = "Current branch '$($context.ProtectedBranch)' is the protected integration branch; mutating operations are rejected here."
+        }
+    }
+
+    # "Live" claims (design spec, Local Claim Model: "Active claim files use
+    # state: active or state: handoff-ready") are the ones whose lease can
+    # expire, whose recorded base commit can drift from current HEAD, and
+    # whose scope can conflict with another live claim.
+    $liveClaims = @($claims | Where-Object { $_.state -eq 'active' -or $_.state -eq 'handoff-ready' })
+    $nowUtc = [DateTimeOffset]::UtcNow
+
+    foreach ($claim in $liveClaims) {
+        $leaseUntil = ConvertFrom-ContinuityTimestamp -Value $claim.lease_until_utc -FieldName 'lease_until_utc' -ClaimId $claim.claim_id
+        if ($leaseUntil -le $nowUtc) {
+            $warnings += @{
+                code    = 'expired-lease'
+                message = "Claim '$($claim.claim_id)' for workstream '$($claim.workstream_id)' has an expired lease (lease_until_utc: $($claim.lease_until_utc))."
+            }
+        }
+
+        if ($context.Head -and $claim.base_commit -and ($claim.base_commit -ne $context.Head)) {
+            $warnings += @{
+                code    = 'git-drift'
+                message = "Claim '$($claim.claim_id)' for workstream '$($claim.workstream_id)' recorded base commit '$($claim.base_commit)', but current HEAD is '$($context.Head)'."
+            }
+        }
+    }
+
+    for ($i = 0; $i -lt $liveClaims.Count; $i++) {
+        for ($j = $i + 1; $j -lt $liveClaims.Count; $j++) {
+            if (Test-ClaimsScopeOverlap -Left $liveClaims[$i] -Right $liveClaims[$j]) {
+                $errors += @{
+                    code    = 'overlapping-claims'
+                    message = "Claim '$($liveClaims[$i].claim_id)' (workstream '$($liveClaims[$i].workstream_id)') and claim '$($liveClaims[$j].claim_id)' (workstream '$($liveClaims[$j].workstream_id)') have overlapping scope."
+                }
+            }
         }
     }
 
@@ -563,7 +758,7 @@ function Invoke-Status {
         -Git ([PSCustomObject] $gitInfo) `
         -Claims $claims `
         -Warnings $warnings `
-        -Errors @()
+        -Errors $errors
 }
 
 # ---------------------------------------------------------------------------
@@ -589,6 +784,9 @@ function Get-KnownGitCommonDirForResult {
 }
 
 try {
+    Assert-ValidOperation -Operation $Operation
+    Assert-LeaseHoursInRange -LeaseHours $LeaseHours -WasSupplied $PSBoundParameters.ContainsKey('LeaseHours')
+
     $repositoryContext = Get-RepositoryContext
 
     $result = switch ($Operation) {

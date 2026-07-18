@@ -534,3 +534,151 @@ def test_helper_wrapper_passes_two_element_array_parameters(continuity_repo):
     parsed = parse_json_stdout(result)
     assert parsed["operation"] == "status"
     assert parsed["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Review-finding regression tests: validation must route through the stable
+# exit-code contract (finding 1), and `status` must detect overlapping live
+# claims, expired leases, and ordinary Git drift (finding 2).
+# ---------------------------------------------------------------------------
+
+
+def test_status_returns_exit_2_and_json_for_invalid_operation(continuity_repo):
+    """A bogus operation name is a validation failure, not a raw
+    parameter-binding crash: it must return the stable exit `2` with exactly
+    one JSON object naming a validation error, never exit `1` with empty
+    stdout and a raw PowerShell error on stderr."""
+    result = run_helper(continuity_repo, "bogus-operation", Json=True)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected a validation error"
+    assert any(error["code"] == "validation" for error in parsed["errors"])
+
+
+def test_status_returns_exit_2_for_missing_operation(continuity_repo):
+    """No operation supplied is also a validation failure routed through the
+    stable exit-code contract, not exit `1` with empty stdout."""
+    result = run_helper(continuity_repo, "", Json=True)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected a validation error"
+    assert any(error["code"] == "validation" for error in parsed["errors"])
+
+
+def test_status_returns_exit_2_for_out_of_range_lease_hours(continuity_repo):
+    """An out-of-range `-LeaseHours` is a validation failure routed through
+    the stable exit-code contract, not exit `1` with empty stdout, even
+    though `status` itself never consumes the value."""
+    result = run_helper(continuity_repo, "status", LeaseHours=99, Json=True)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected a validation error"
+    assert any(error["code"] == "validation" for error in parsed["errors"])
+
+
+def _claims_dir_for(repo_dir: Path) -> Path:
+    """Resolve `<git-common-dir>/ai-continuity/claims` for a disposable
+    repository, creating it directly the same way
+    `test_status_reports_malformed_claim_as_exit_3` does, without going
+    through `start` (not implemented yet)."""
+    baseline = run_helper(repo_dir, "status", Json=True)
+    assert baseline.returncode == 0, baseline.stderr
+    git_common_dir = Path(parse_json_stdout(baseline)["git_common_dir"])
+    claims_dir = git_common_dir / "ai-continuity" / "claims"
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    return claims_dir
+
+
+def _write_claim(claims_dir: Path, file_name: str, **overrides) -> dict:
+    """Write one well-formed live claim JSON file directly into the claims
+    directory, shaped like the design's Local Claim Model, with sensible
+    defaults callers override for the field(s) under test."""
+    claim = {
+        "schema_version": 1,
+        "claim_id": "00000000-0000-4000-8000-000000000000",
+        "workstream_id": "continuity-pilot",
+        "agent": "codex",
+        "session_id": "session-1",
+        "worktree_path": "/tmp/does-not-matter",
+        "branch": "codex/continuity-pilot",
+        "base_commit": "0" * 40,
+        "scope_paths": [".ai"],
+        "started_utc": "2026-01-01T00:00:00Z",
+        "heartbeat_utc": "2026-01-01T00:00:00Z",
+        "lease_until_utc": "2999-01-01T00:00:00Z",
+        "state": "active",
+    }
+    claim.update(overrides)
+    (claims_dir / file_name).write_text(json.dumps(claim), encoding="utf-8")
+    return claim
+
+
+def test_status_reports_overlapping_live_claims_as_exit_2(continuity_repo):
+    """Two live claims (`active`/`handoff-ready`) whose normalized scope
+    paths overlap at a path boundary make `status` fail with the stable
+    exit `2`, `ok: false`, and a conflict entry in `errors` -- distinct from
+    the exit-`3` malformed-claim-JSON case."""
+    claims_dir = _claims_dir_for(continuity_repo)
+    head = _run_git(["rev-parse", "HEAD"], cwd=continuity_repo).stdout.strip()
+
+    _write_claim(
+        claims_dir,
+        "continuity-pilot.json",
+        claim_id="11111111-1111-4111-8111-111111111111",
+        workstream_id="continuity-pilot",
+        scope_paths=[".ai"],
+        base_commit=head,
+        state="active",
+    )
+    _write_claim(
+        claims_dir,
+        "match-stroke-recognition-b.json",
+        claim_id="22222222-2222-4222-8222-222222222222",
+        workstream_id="match-stroke-recognition-b",
+        scope_paths=[".ai/workstreams"],
+        base_commit=head,
+        state="handoff-ready",
+    )
+
+    result = run_helper(continuity_repo, "status", Json=True)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected an overlapping-claims conflict error"
+    assert any(error["code"] == "overlapping-claims" for error in parsed["errors"])
+
+
+def test_status_warns_on_expired_lease(continuity_repo):
+    """A live claim whose `lease_until_utc` is in the past makes `status`
+    report an expiry warning at the stable exit `0`, never an error and
+    never a non-zero exit."""
+    claims_dir = _claims_dir_for(continuity_repo)
+    head = _run_git(["rev-parse", "HEAD"], cwd=continuity_repo).stdout.strip()
+
+    _write_claim(
+        claims_dir,
+        "continuity-pilot.json",
+        claim_id="33333333-3333-4333-8333-333333333333",
+        workstream_id="continuity-pilot",
+        scope_paths=[".ai"],
+        base_commit=head,
+        lease_until_utc="2000-01-01T00:00:00Z",
+        state="active",
+    )
+
+    result = run_helper(continuity_repo, "status", Workstream="continuity-pilot", Json=True)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["errors"] == []
+    assert parsed["claim_id"] == "33333333-3333-4333-8333-333333333333"
+    assert parsed["warnings"], "expected an expired-lease warning"
+    assert any(warning["code"] == "expired-lease" for warning in parsed["warnings"])
