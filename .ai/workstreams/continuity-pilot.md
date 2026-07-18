@@ -47,13 +47,13 @@ implementation plan's per-task checklists in
 ## Verification
 
 - `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>`
-  - RED confirmed 2026-07-18T08:06Z: 4 failed (missing `.ai` files, duplicate/wrong-case
+  - RED confirmed 2026-07-18T08:06:51Z: 4 failed (missing `.ai` files, duplicate/wrong-case
     `AGENTS.md` references), 13 passed (portable-team-file and staging-audit tests).
   - GREEN confirmed 2026-07-18T08:12:05Z, dirty tree at `HEAD`
     `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3` (Task 1 changed paths listed above): 17
     passed.
 - `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>`
-  (existing full suite plus this file): 373 passed, same dirty tree/commit, 2026-07-18T08:12Z.
+  (existing full suite plus this file): 373 passed, same dirty tree/commit, 2026-07-18T08:12:05Z.
 
 ## Blockers
 

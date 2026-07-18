@@ -211,3 +211,25 @@ def test_candidate_staged_path_outside_allowlist_fails_audit(tmp_path):
     assert audit.ok is False
     assert audit.extra == ["server.log"]
     assert audit.missing == []
+
+
+def test_candidate_missing_allowlisted_path_fails_audit(tmp_path):
+    """The exact-path staging audit rejects a candidate whose staged set
+    omits an allowlisted path, naming only the missing path and reporting
+    no extras."""
+    repo_dir = tmp_path / "audit-missing-repo"
+    _init_repo(repo_dir)
+
+    staged_path = "AGENTS.md"
+    missing_path = "CLAUDE.md"
+    (repo_dir / staged_path).write_text("@RTK.md\n", encoding="utf-8")
+    (repo_dir / missing_path).write_text("@.ai/WORKFLOW.md\n", encoding="utf-8")
+
+    add_result = _run_git(["add", "--", staged_path], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+
+    audit = audit_staged_paths(repo_dir, [staged_path, missing_path])
+
+    assert audit.ok is False
+    assert audit.extra == []
+    assert audit.missing == [missing_path]

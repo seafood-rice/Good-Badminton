@@ -69,9 +69,9 @@ the complete historical ledger.
 |---|---|---|---|
 | Migration-worktree pytest run (whole repo) | 355 passed, 1 optional-model test skipped | Migrated `codex/good-badminton-development` tree matching the archived pre-fork development head | 2026-07-17 |
 | Later fresh-virtual-environment pytest run (whole repo) | 356 passed | Same migrated tree | 2026-07-17 |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` | RED: 4 failed, 13 passed (missing `.ai` files; duplicate/wrong-case `AGENTS.md` references) | Dirty tree at `HEAD` `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`, Task 1 changed paths | 2026-07-18T08:06Z |
+| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` | RED: 4 failed, 13 passed (missing `.ai` files; duplicate/wrong-case `AGENTS.md` references) | Dirty tree at `HEAD` `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`, Task 1 changed paths | 2026-07-18T08:06:51Z |
 | `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` | GREEN: 17 passed | Same dirty tree/commit | 2026-07-18T08:12:05Z |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` (existing full suite plus this file) | 373 passed | Same dirty tree/commit | 2026-07-18T08:12Z |
+| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` (existing full suite plus this file) | 373 passed | Same dirty tree/commit | 2026-07-18T08:12:05Z |
 
 Full Task 1 evidence, including the exact RED/GREEN command output, is recorded in
 `.ai/workstreams/continuity-pilot.md` and the Task 1 implementation report.
