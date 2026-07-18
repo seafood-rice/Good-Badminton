@@ -1,7 +1,8 @@
 # Claude-Codex Project Continuity - Design Spec
 
 **Date:** 2026-07-16
-**Status:** Fork-anchored migration and development-branch publication complete.
+**Status:** Approved for implementation on 2026-07-17; fork-anchored migration and
+development-branch publication complete.
 
 ## Goal
 
@@ -42,9 +43,11 @@ Supporting all 45 Git repositories immediately is out of scope.
   GitHub HTTP 403 and created no repository. The user then activated permitted personal
   account `seafood-rice`, and fork creation succeeded.
 - Match Analysis UX Sub-project A is complete.
-- Last recorded verification for Sub-project A: 356 tests plus a runtime smoke test.
-- Fresh migration verification: 355 tests passed and 1 optional-model test skipped.
-- The existing session work is unpushed.
+- Historical verification for Sub-project A: 356 tests plus a runtime smoke test.
+- Migration-worktree verification on 2026-07-17: 355 tests passed and 1 optional-model
+  test skipped. A later fresh virtual-environment run passed all 356 tests.
+- Development commits through `565d02b` are pushed to `origin`; pre-existing dirty paths
+  remain local and uncommitted.
 - `.superpowers/sdd/progress.md` is the detailed historical ledger.
 - Sub-project B, full-match stroke recognition, is next but its product completion bar
   remains unresolved. That decision is outside this continuity pilot and does not block
