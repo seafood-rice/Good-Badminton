@@ -6,17 +6,24 @@ portable team configuration described in
 also exercise the exact-path staging audit that every continuity commit must
 pass before it is created (see the implementation plan's Global Constraints).
 
-Later tasks extend this module with tests for ``scripts/ai-handoff.ps1``.
+Task 2 adds the black-box harness that drives ``scripts/ai-handoff.ps1`` as a
+subprocess (``run_helper``/``parse_json_stdout`` below) plus tests for the
+read-only ``status`` operation. Later tasks extend this module with tests for
+``start``, ``update``, ``handoff``, ``accept``, and ``takeover``.
 """
 
+import json
 import re
+import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "ai-handoff.ps1"
 
 # The exact portable implementation allowlist from the approved design spec
 # (docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md,
@@ -128,6 +135,128 @@ def _init_repo(repo_dir: Path) -> None:
     _run_git(["config", "core.longpaths", "true"], cwd=repo_dir)
 
 
+# ---------------------------------------------------------------------------
+# Black-box harness for scripts/ai-handoff.ps1
+#
+# Every invocation goes through one fixed pwsh wrapper script. Test
+# parameters always travel as one JSON object on stdin, converted with
+# ConvertFrom-Json -AsHashtable and splatted into the helper; no test input
+# is ever concatenated into PowerShell source. This is what keeps array
+# parameters (Scope, ChangedPath, VerificationDirtyPath) subprocess-safe
+# ahead of Task 3, and it is why a JSON-parsing helper is required: stdout
+# must be exactly one JSON object with no diagnostic text mixed in.
+# ---------------------------------------------------------------------------
+
+
+def _find_pwsh() -> str:
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("pwsh (PowerShell 7) is not available on PATH")
+    return pwsh
+
+
+# Fixed wrapper source, identical for every call regardless of test input.
+_HELPER_WRAPPER_SCRIPT = textwrap.dedent(
+    """
+    $ErrorActionPreference = 'Stop'
+    $raw = [Console]::In.ReadToEnd()
+    $parameters = if ([string]::IsNullOrEmpty($raw)) { @{} } else { $raw | ConvertFrom-Json -AsHashtable }
+    $scriptPath = $parameters['ScriptPath']
+    $operation = $parameters['Operation']
+    $parameters.Remove('ScriptPath') | Out-Null
+    $parameters.Remove('Operation') | Out-Null
+    & $scriptPath $operation @parameters
+    exit $LASTEXITCODE
+    """
+).strip()
+
+
+class HelperResult(NamedTuple):
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def run_helper(cwd: Path, operation: str, **parameters) -> HelperResult:
+    """Invoke scripts/ai-handoff.ps1 as a black box through the fixed pwsh
+    wrapper above.
+
+    All parameters (including PowerShell switches like ``Json=True`` and
+    arrays like ``Scope=[".ai/", "scripts/"]``) travel as one JSON object on
+    stdin, so the real array/splat mechanics are exercised without building
+    any PowerShell source from test-controlled strings.
+    """
+    pwsh = _find_pwsh()
+    payload = {"ScriptPath": str(SCRIPT_PATH), "Operation": operation, **parameters}
+    completed = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", _HELPER_WRAPPER_SCRIPT],
+        cwd=cwd,
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return HelperResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def parse_json_stdout(result: HelperResult) -> dict:
+    """Decode stdout as exactly one JSON object.
+
+    Fails loudly if stdout is empty, is not valid JSON, or contains any
+    extra non-JSON text before or after the JSON object -- for example a
+    stray PowerShell warning/verbose line that leaked onto stdout and would
+    otherwise silently corrupt a caller's ``json.loads``.
+    """
+    stripped = result.stdout.strip()
+    assert stripped, (
+        f"expected exactly one JSON object on stdout, got none. "
+        f"returncode={result.returncode} stderr={result.stderr!r}"
+    )
+    decoder = json.JSONDecoder()
+    try:
+        parsed, end = decoder.raw_decode(stripped)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"stdout is not valid JSON: {exc}\n"
+            f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        ) from exc
+    trailing = stripped[end:].strip()
+    assert trailing == "", f"unexpected extra stdout after the JSON object: {trailing!r}"
+    return parsed
+
+
+def _write_minimal_ai_records(repo_dir: Path) -> None:
+    """Minimal `.ai` records for the disposable harness repository, shaped
+    like the real project's layout (Task 2 brief, Step 1)."""
+    workstreams_dir = repo_dir / ".ai" / "workstreams"
+    workstreams_dir.mkdir(parents=True, exist_ok=True)
+    (repo_dir / ".ai" / "WORKFLOW.md").write_text("# Workflow\n", encoding="utf-8")
+    (repo_dir / ".ai" / "PROJECT_STATUS.md").write_text("# Project Status\n", encoding="utf-8")
+    (workstreams_dir / "continuity-pilot.md").write_text(
+        "# Workstream: continuity-pilot\n\n" f"{MARKER_START}\n{MARKER_END}\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture()
+def continuity_repo(tmp_path: Path) -> Path:
+    """A disposable Git repository shaped like the real project: `main` with
+    minimal `.ai` records committed, then checked out on the
+    `codex/continuity-pilot` workstream branch (Task 2 brief, Step 1)."""
+    repo_dir = tmp_path / "continuity-repo"
+    _init_repo(repo_dir)
+    _write_minimal_ai_records(repo_dir)
+
+    add_result = _run_git(["add", "."], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Initial commit"], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+    checkout_result = _run_git(["checkout", "-b", "codex/continuity-pilot"], cwd=repo_dir)
+    assert checkout_result.returncode == 0, checkout_result.stderr
+
+    return repo_dir
+
+
 def test_root_instruction_references_resolve_once():
     """AGENTS.md and CLAUDE.md each load the shared documents exactly once,
     in the exact order the approved design specifies, and every reference
@@ -233,3 +362,175 @@ def test_candidate_missing_allowlisted_path_fails_audit(tmp_path):
     assert audit.ok is False
     assert audit.extra == []
     assert audit.missing == [missing_path]
+
+
+# ---------------------------------------------------------------------------
+# Task 2: read-only `status` operation
+# ---------------------------------------------------------------------------
+
+# The exact top-level JSON keys the approved design specifies for every
+# operation result (design spec, "Helper Contract"). `status` never sets
+# `recovery` -- that key only appears for an operation that ends in a
+# recoverable successor-owned state (Task 6+) -- so the stable shape here is
+# exactly these eleven keys, no more and no fewer.
+STATUS_TOP_LEVEL_KEYS = {
+    "schema_version",
+    "ok",
+    "operation",
+    "repo_root",
+    "git_common_dir",
+    "workstream_id",
+    "claim_id",
+    "git",
+    "claims",
+    "warnings",
+    "errors",
+}
+
+
+def test_status_returns_exit_4_outside_git(tmp_path):
+    """Running `status` outside any Git working tree returns the stable
+    exit `4` with a Git-context error, never exit `0` and never a stray
+    uncaught exception."""
+    outside_dir = tmp_path / "not-a-repo"
+    outside_dir.mkdir()
+
+    result = run_helper(outside_dir, "status", Json=True)
+
+    assert result.returncode == 4, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["operation"] == "status"
+    assert parsed["repo_root"] is None
+    assert parsed["git_common_dir"] is None
+    assert parsed["errors"], "expected at least one error describing the missing Git context"
+
+
+def test_status_json_has_stable_top_level_shape(continuity_repo):
+    """`-Json` emits exactly one JSON object whose top-level keys match the
+    approved design's `status` shape exactly, with `operation == "status"`,
+    a full 40-character Git SHA, and canonical absolute `repo_root`/
+    `git_common_dir`."""
+    result = run_helper(continuity_repo, "status", Json=True)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+
+    assert set(parsed.keys()) == STATUS_TOP_LEVEL_KEYS
+    assert parsed["schema_version"] == 1
+    assert parsed["ok"] is True
+    assert parsed["operation"] == "status"
+    assert parsed["claims"] == []
+    assert parsed["warnings"] == []
+    assert parsed["errors"] == []
+
+    repo_root = Path(parsed["repo_root"])
+    assert repo_root.is_absolute()
+    assert repo_root.resolve() == continuity_repo.resolve()
+
+    git_common_dir = Path(parsed["git_common_dir"])
+    assert git_common_dir.is_absolute()
+
+    assert re.fullmatch(r"[0-9a-f]{40}", parsed["git"]["head"]), parsed["git"]["head"]
+    assert parsed["git"]["branch"] == "codex/continuity-pilot"
+    assert parsed["git"]["detached"] is False
+    assert parsed["git"]["protected_branch"] == "main"
+
+
+def test_status_is_available_on_protected_main(continuity_repo):
+    """Read-only `status` remains available on the protected `main` branch;
+    only mutating operations reject it (design spec, "Branch commit
+    policy")."""
+    checkout_result = _run_git(["checkout", "main"], cwd=continuity_repo)
+    assert checkout_result.returncode == 0, checkout_result.stderr
+
+    result = run_helper(continuity_repo, "status", Json=True)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["errors"] == []
+    assert parsed["git"]["branch"] == "main"
+    assert parsed["git"]["protected_branch"] == "main"
+    warning_codes = {warning["code"] for warning in parsed["warnings"]}
+    assert "protected-branch" in warning_codes
+
+
+def test_status_does_not_create_continuity_directory(continuity_repo):
+    """`status` never acquires a write lock and never creates
+    `<git-common-dir>/ai-continuity`, even when it completes successfully."""
+    result = run_helper(continuity_repo, "status", Json=True)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+
+    git_common_dir = Path(parsed["git_common_dir"])
+    assert not (git_common_dir / "ai-continuity").exists()
+
+
+def test_status_reports_shared_git_common_directory(continuity_repo):
+    """A linked worktree of the same repository sees the identical
+    canonical absolute Git common directory that the primary worktree
+    reports, even though each worktree has its own distinct top-level
+    `repo_root` and the primary worktree's own `--git-common-dir` output is
+    relative (`.git`) rather than absolute."""
+    linked_worktree = continuity_repo.parent / "linked-worktree"
+    worktree_result = _run_git(
+        ["worktree", "add", "-b", "codex/continuity-pilot-secondary", str(linked_worktree), "main"],
+        cwd=continuity_repo,
+    )
+    assert worktree_result.returncode == 0, worktree_result.stderr
+
+    primary_result = run_helper(continuity_repo, "status", Json=True)
+    assert primary_result.returncode == 0, primary_result.stderr
+    primary_parsed = parse_json_stdout(primary_result)
+
+    linked_result = run_helper(linked_worktree, "status", Json=True)
+    assert linked_result.returncode == 0, linked_result.stderr
+    linked_parsed = parse_json_stdout(linked_result)
+
+    assert primary_parsed["git_common_dir"] == linked_parsed["git_common_dir"]
+    assert primary_parsed["repo_root"] != linked_parsed["repo_root"]
+
+
+def test_status_reports_malformed_claim_as_exit_3(continuity_repo):
+    """Malformed claim JSON under
+    `<git-common-dir>/ai-continuity/claims` makes `status` fail closed with
+    exit `3` rather than reporting a false success or crashing
+    uncontrolled."""
+    baseline = run_helper(continuity_repo, "status", Json=True)
+    assert baseline.returncode == 0, baseline.stderr
+    git_common_dir = Path(parse_json_stdout(baseline)["git_common_dir"])
+
+    claims_dir = git_common_dir / "ai-continuity" / "claims"
+    claims_dir.mkdir(parents=True, exist_ok=True)
+    (claims_dir / "broken.json").write_text("{ not valid json", encoding="utf-8")
+
+    result = run_helper(continuity_repo, "status", Json=True)
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected a malformed-state error"
+
+
+def test_helper_wrapper_passes_two_element_array_parameters(continuity_repo):
+    """The JSON-over-stdin wrapper marshals PowerShell array parameters
+    correctly for two-element arrays, ahead of Task 3 wiring `start`'s
+    `-Scope` and Task 4 wiring `-ChangedPath`/`-VerificationDirtyPath` to
+    real logic. `status` declares but does not use these parameters yet, so
+    this proves the harness's array plumbing independently of any one
+    operation (Task 2 brief, Step 1)."""
+    result = run_helper(
+        continuity_repo,
+        "status",
+        Json=True,
+        Scope=[".ai/", "scripts/"],
+        ChangedPath=["a.txt", "b.txt"],
+        VerificationDirtyPath=["c.txt", "d.txt"],
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["operation"] == "status"
+    assert parsed["ok"] is True
