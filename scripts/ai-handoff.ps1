@@ -766,8 +766,26 @@ function Test-ScopeSetEqual {
         [System.StringComparer]::Ordinal
     }
 
-    $leftSorted = @($Left | Sort-Object -Culture ([System.Globalization.CultureInfo]::InvariantCulture))
-    $rightSorted = @($Right | Sort-Object -Culture ([System.Globalization.CultureInfo]::InvariantCulture))
+    # `Sort-Object -Culture` binds to a [string] culture NAME, and
+    # InvariantCulture's Name is the empty string -- which Sort-Object treats
+    # as "unspecified" and silently falls back to the current culture. A
+    # genuine [System.StringComparer]::InvariantCulture comparer instance has
+    # no such pitfall (Task 3 review fix 6; matches the fix applied to the
+    # preexisting_dirty sort in Invoke-Start).
+    $leftSorted = @(
+        [System.Linq.Enumerable]::OrderBy(
+            [string[]] $Left,
+            [Func[string, string]] { param($item) $item },
+            [System.StringComparer]::InvariantCulture
+        )
+    )
+    $rightSorted = @(
+        [System.Linq.Enumerable]::OrderBy(
+            [string[]] $Right,
+            [Func[string, string]] { param($item) $item },
+            [System.StringComparer]::InvariantCulture
+        )
+    )
     if ($leftSorted.Count -ne $rightSorted.Count) {
         return $false
     }
@@ -1667,14 +1685,31 @@ function Invoke-Start {
             throw [ContinuityValidationException]::new(($inScopeMessages -join ' '))
         }
 
+        # Culture-invariant, stable ascending sort by path -- matching the
+        # InvariantCulture discipline Test-ScopeSetEqual already applies, so
+        # this JSON array's order never depends on the current process's
+        # culture. `Sort-Object -Culture` takes a culture NAME string, and
+        # the invariant culture's Name is the empty string, which Sort-Object
+        # silently treats as "unspecified" and falls back to the current
+        # culture; [System.StringComparer]::InvariantCulture is a genuine
+        # comparer instance and has no such pitfall.
         $preexistingDirtySorted = @(
-            $preexistingDirty | Sort-Object -Property @{ Expression = 'path'; Ascending = $true }
+            [System.Linq.Enumerable]::OrderBy(
+                [object[]] $preexistingDirty,
+                [Func[object, string]] { param($item) $item.path },
+                [System.StringComparer]::InvariantCulture
+            )
         )
 
         # --- Build (new or renewed) claim ------------------------------------
+        # InvariantCulture is mandatory here: "yyyy-MM-ddTHH:mm:ssZ" treats ':'
+        # as the current culture's time-separator PLACEHOLDER, not a literal
+        # character, so under a non-English culture (for example da-DK) this
+        # would otherwise render as "01.14.34" and corrupt the required
+        # RFC3339 UTC format.
         $nowUtc = [DateTimeOffset]::UtcNow
-        $nowText = $nowUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        $leaseUntilText = $nowUtc.AddHours($leaseHours).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $nowText = $nowUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+        $leaseUntilText = $nowUtc.AddHours($leaseHours).ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
 
         if ($isRenewal) {
             $claimId = $existingClaim.claim_id
@@ -1737,10 +1772,17 @@ function Invoke-Start {
                     'Atomic claim write did not complete after replacing the target file; the new claim is authoritative.'
                 )
                 $stateException.ClaimId = $claimId
+                # Normalize-ScopePath does not forbid a literal single quote in a
+                # scope segment (for example "o'brien/notes"), so each segment
+                # must have its embedded quotes escaped as '' before it is
+                # spliced into this single-quoted PowerShell array literal --
+                # otherwise the emitted retry_command is not valid, copy-pasteable
+                # PowerShell source.
+                $escapedScope = @($normalizedScope | ForEach-Object { $_.Replace("'", "''") })
                 $stateException.Recovery = [PSCustomObject][ordered]@{
                     claim_id             = $claimId
                     authoritative_owner  = 'new-claim'
-                    retry_command        = "start -Agent $agent -SessionId $sessionId -Workstream $workstreamId -Scope @('$($normalizedScope -join "', '")')"
+                    retry_command        = "start -Agent $agent -SessionId $sessionId -Workstream $workstreamId -Scope @('$($escapedScope -join "', '")')"
                 }
                 throw $stateException
             }

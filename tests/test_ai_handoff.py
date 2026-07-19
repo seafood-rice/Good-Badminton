@@ -1400,6 +1400,47 @@ def test_start_after_replace_fault_reports_new_claim_authoritative_and_retry_ren
     assert len(retry_parsed["claims"]) == 1
 
 
+def test_start_after_replace_fault_retry_command_is_copy_pasteable_with_quoted_scope(continuity_repo):
+    """`Normalize-ScopePath` permits a literal single quote in a scope
+    segment (for example `o'brien/notes`); the same-identity `retry_command`
+    the exit-3 recovery payload emits embeds the normalized scope inside a
+    single-quoted PowerShell array literal (`@('...')`) and must escape any
+    embedded quote as `''`, or the emitted text is not valid PowerShell
+    source a human could copy-paste (Task 3 review fix 2)."""
+    quoted_scope = "o'brien/notes"
+    result = _start(
+        continuity_repo,
+        Scope=[quoted_scope],
+        env={"AI_CONTINUITY_TEST_FAULT": "start-after-claim-replace"},
+    )
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    retry_command = parsed["recovery"]["retry_command"]
+    assert "''" in retry_command, (
+        f"expected the embedded single quote escaped as '' in retry_command, got {retry_command!r}"
+    )
+
+    pwsh = _find_pwsh()
+    invocation = f"& '{SCRIPT_PATH}' {retry_command} -Json"
+    completed = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", invocation],
+        cwd=continuity_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, (
+        f"retry_command was not copy-pasteable PowerShell source: "
+        f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+    )
+    retried = parse_json_stdout(HelperResult(completed.returncode, completed.stdout, completed.stderr))
+    assert retried["ok"] is True
+    assert retried["claim_id"] == parsed["claim_id"]
+    assert retried["claims"][0]["scope_paths"] == [quoted_scope]
+
+
 def test_start_rejects_unknown_test_fault_value(continuity_repo):
     """The single test-fault hook accepts only the fixed set of known
     boundary names; any other value fails closed before mutation, and is
@@ -1508,6 +1549,39 @@ def _setup_symlink(repo_dir: Path, prefix: str) -> dict:
     }
 
 
+def _setup_junction(repo_dir: Path, prefix: str) -> dict:
+    """A previously tracked file whose exact worktree path is replaced by an
+    unprivileged directory junction (`New-Item -ItemType Junction`, the same
+    approach the Step-1 escape test at `_create_junction` above uses)
+    pointing outside the repository. Directory junctions are always
+    traversable at the filesystem level -- unlike a file symlink, Git walks
+    straight through one when scanning untracked content -- so a purely
+    untracked junction never itself appears as a `git status` entry (either
+    Git recurses into it, reporting paths beyond it, or, empty, reports
+    nothing at all). Replacing an already-tracked path with a junction is
+    the one scenario where Git reports the junction path itself: the
+    tracked blob is gone (status ' D', exactly like `_setup_deleted`), yet
+    the path still resolves to a real filesystem object -- the reparse
+    point -- so `Get-DirtyFingerprint` must take the junction branch (kind
+    `junction`, a non-null hash), never the `absent` branch."""
+    rel = f"{prefix}/tracked-becomes-junction"
+    (repo_dir / prefix).mkdir(parents=True, exist_ok=True)
+    (repo_dir / rel).write_text("tracked content before the junction replaces it\n", encoding="utf-8")
+    _run_git(["add", "--", rel], cwd=repo_dir)
+    _run_git(["commit", "-m", f"add {rel}"], cwd=repo_dir)
+    (repo_dir / rel).unlink()
+    target_dir = repo_dir.parent / "junction-target-content"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_file = target_dir / "must-never-be-hashed.txt"
+    target_file.write_text("junction target content that must never be hashed\n", encoding="utf-8")
+    _create_junction(repo_dir / rel, target_dir)
+    return {
+        "path": rel, "status": " D", "original_path": None,
+        "kind": "junction", "has_hash": True, "expect_index_entries": True,
+        "target": target_file,
+    }
+
+
 DIRTY_KIND_SETUPS = {
     "modified": _setup_modified,
     "added": _setup_added,
@@ -1516,6 +1590,7 @@ DIRTY_KIND_SETUPS = {
     "untracked": _setup_untracked,
     "executable-mode": _setup_executable_mode,
     "symlink": _setup_symlink,
+    "junction": _setup_junction,
 }
 
 
@@ -1628,6 +1703,113 @@ def test_start_captures_out_of_scope_unmerged_entry_with_all_index_stages(contin
     assert entry["worktree_sha256"] is not None
     stages = sorted(index_entry["stage"] for index_entry in entry["index_entries"])
     assert stages == [1, 2, 3]
+
+
+_FORCE_CULTURE_WRAPPER_SCRIPT = textwrap.dedent(
+    """
+    $ErrorActionPreference = 'Stop'
+    [System.Threading.Thread]::CurrentThread.CurrentCulture =
+        [System.Globalization.CultureInfo]::GetCultureInfo('da-DK')
+    $raw = [Console]::In.ReadToEnd()
+    $parameters = if ([string]::IsNullOrEmpty($raw)) { @{} } else { $raw | ConvertFrom-Json -AsHashtable }
+    $scriptPath = $parameters['ScriptPath']
+    $operation = $parameters['Operation']
+    $parameters.Remove('ScriptPath') | Out-Null
+    $parameters.Remove('Operation') | Out-Null
+    & $scriptPath $operation @parameters
+    exit $LASTEXITCODE
+    """
+).strip()
+
+
+def _start_with_forced_culture(repo_dir: Path, **parameters) -> HelperResult:
+    """Invoke `start` exactly like `run_helper`, except the current thread's
+    culture is forced to Danish (`da-DK`) before the helper script ever
+    runs -- in the very thread the wrapper's `&` call operator later
+    dot-invokes it on, so the override reaches the script. Danish/Norwegian
+    collation famously folds a leading `aa` together with `å` at the very
+    end of the alphabet, which lets this prove `preexisting_dirty`'s path
+    order is genuinely culture-invariant rather than incidentally correct
+    on whatever locale this machine's own account happens to use (Task 3
+    review fix 3)."""
+    pwsh = _find_pwsh()
+    payload = {"ScriptPath": str(SCRIPT_PATH), "Operation": "start", **parameters}
+    completed = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", _FORCE_CULTURE_WRAPPER_SCRIPT],
+        cwd=repo_dir,
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return HelperResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def test_start_orders_preexisting_dirty_by_path_culture_invariantly(continuity_repo):
+    """`preexisting_dirty` is sorted by `path` using a fixed, culture-
+    invariant order, matching the InvariantCulture sort `Test-ScopeSetEqual`
+    already uses -- not whatever linguistic collation the process's current
+    culture happens to select. Forcing the current culture to Danish
+    (`da-DK`), which sorts a leading `aa` after `z`, proves the ordering is
+    genuinely invariant rather than only correct by accident on this
+    machine's own locale (Task 3 review fix 3)."""
+    (continuity_repo / "keep").mkdir(parents=True, exist_ok=True)
+    for name in ("aa-file.txt", "m-file.txt", "z-file.txt"):
+        (continuity_repo / "keep" / name).write_text("dirty\n", encoding="utf-8")
+
+    result = _start_with_forced_culture(
+        continuity_repo,
+        Agent="codex",
+        SessionId="session-1",
+        Workstream="continuity-pilot",
+        Scope=["claim"],
+        Json=True,
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    paths = [
+        entry["path"]
+        for entry in parsed["claims"][0]["preexisting_dirty"]
+        if entry["path"].startswith("keep/")
+    ]
+    assert paths == ["keep/aa-file.txt", "keep/m-file.txt", "keep/z-file.txt"], (
+        "expected a fixed, culture-invariant ascending path order regardless of "
+        f"the process's current culture, got {paths!r}"
+    )
+
+
+RFC3339_UTC_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def test_start_emits_colon_separated_rfc3339_timestamps_under_forced_non_english_culture(
+    continuity_repo,
+):
+    """`started_utc`/`heartbeat_utc`/`lease_until_utc` must be genuine
+    colon-separated RFC3339 UTC timestamps regardless of the process's
+    current culture. `.ToString("yyyy-MM-ddTHH:mm:ssZ")` treats `:` as the
+    current culture's time-separator PLACEHOLDER, not a literal character,
+    unless the format call is passed InvariantCulture explicitly; Danish
+    (`da-DK`) collation renders that placeholder as `.`, corrupting the
+    format into something like `2026-07-19T01.14.34Z` (Task 3 review fix 5)."""
+    result = _start_with_forced_culture(
+        continuity_repo,
+        Agent="codex",
+        SessionId="session-1",
+        Workstream="continuity-pilot",
+        Scope=["claim"],
+        Json=True,
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    claim = parsed["claims"][0]
+    for field in ("started_utc", "heartbeat_utc", "lease_until_utc"):
+        value = claim[field]
+        assert RFC3339_UTC_PATTERN.match(value), (
+            f"{field} was not a colon-separated RFC3339 UTC timestamp under a forced "
+            f"non-English culture: {value!r}"
+        )
 
 
 @pytest.mark.parametrize("kind", ["modified", "untracked", "deleted"])
