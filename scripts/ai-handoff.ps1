@@ -2611,22 +2611,37 @@ function Invoke-Update {
     }
 }
 
-function Get-LastMilestoneChangedPaths {
+function Get-AllMilestoneChangedPaths {
     <#
     .SYNOPSIS
-        Extracts the backtick-quoted paths from the `  - Changed paths: ...`
-        line of the LAST (most recently appended) top-level milestone bullet
-        in the managed marker section -- the one the handoff-triggering
-        `update -State handoff -ChangedPath ...` call itself produced
-        (design spec, Helper Contract: "listed in the committed workstream's
-        changed paths"). A top-level bullet line always starts with `- `
-        with no leading indentation (Invoke-Update's own milestone-line
-        shape); its indented `  - ` continuation lines never match that
-        pattern, so the last matching index unambiguously starts the final
-        entry. Returns an empty array when that entry has no such line
-        (Invoke-Update omits the line entirely when `-ChangedPath` was not
-        supplied), which Test-HandoffCoverage then correctly treats as
-        missing coverage rather than silently-complete.
+        Extracts the backtick-quoted paths from EVERY `  - Changed paths:
+        ...` line across ALL top-level milestone bullets in the managed
+        marker section -- not just the most recently appended one -- and
+        returns their union (design spec, Helper Contract: "listed in the
+        committed workstream's changed paths"). Test-HandoffCoverage
+        validates the ENTIRE committed `base_commit..HEAD` diff, and an
+        agent following the design's normal milestone cadence may call
+        `update` more than once before `handoff` -- e.g. an earlier
+        milestone recording changed paths for its own already-committed
+        change, followed by the handoff-triggering
+        `update -State handoff -ChangedPath ...` call recording only the
+        workstream file itself. A path committed under that earlier
+        milestone must still count as listed, so every bullet's evidence is
+        unioned rather than only the last one's (Task 5 review Fix A). A
+        top-level bullet line always starts with `- ` with no leading
+        indentation (Invoke-Update's own milestone-line shape); its
+        indented `  - ` continuation lines never match that pattern, but
+        the union does not depend on locating bullet boundaries at all --
+        it simply collects every `  - Changed paths:` line found anywhere
+        in the marker region. Returns an empty, deduplicated array when no
+        such line exists anywhere (Invoke-Update omits the line entirely
+        when `-ChangedPath` was not supplied for every milestone so far),
+        which Test-HandoffCoverage then correctly treats as missing
+        coverage rather than silently-complete. Widening the listed set
+        this way is safe: Test-HandoffCoverage only requires every
+        committed path to be a SUBSET of the listed paths, so extra listed
+        paths from earlier milestones are harmless and can never cause a
+        false rejection.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -2637,26 +2652,18 @@ function Get-LastMilestoneChangedPaths {
         [int] $MarkerEndIndex
     )
 
-    $lastBulletIndex = $null
+    $allPaths = [System.Collections.Generic.List[string]]::new()
     for ($i = $MarkerStartIndex + 1; $i -lt $MarkerEndIndex; $i++) {
-        if ($Lines[$i].Content -cmatch '^- ') {
-            $lastBulletIndex = $i
-        }
-    }
-
-    if ($null -eq $lastBulletIndex) {
-        return @()
-    }
-
-    for ($i = $lastBulletIndex; $i -lt $MarkerEndIndex; $i++) {
         if ($Lines[$i].Content -cmatch '^  - Changed paths: (.+)$') {
             $rawList = $Matches[1]
             $backtickMatches = [regex]::Matches($rawList, '`([^`]*)`')
-            return @($backtickMatches | ForEach-Object { $_.Groups[1].Value.Replace('\', '/') })
+            foreach ($backtickMatch in $backtickMatches) {
+                $allPaths.Add($backtickMatch.Groups[1].Value.Replace('\', '/'))
+            }
         }
     }
 
-    return @()
+    return @($allPaths | Select-Object -Unique)
 }
 
 function Read-CommittedWorkstream {
@@ -2714,9 +2721,15 @@ function Read-CommittedWorkstream {
     $label = "Committed workstream file '$RepoRelativePath' at HEAD"
     $shape = Get-WorkstreamDocumentShape -Lines $lines -WorkstreamId $WorkstreamId -Label $label
 
-    $changedPaths = Get-LastMilestoneChangedPaths -Lines $lines `
+    $changedPaths = Get-AllMilestoneChangedPaths -Lines $lines `
         -MarkerStartIndex $shape.MarkerStartIndex -MarkerEndIndex $shape.MarkerEndIndex
 
+    # The SHA-256 below hashes the decoded-and-re-encoded UTF-8-no-BOM bytes
+    # of $rawText, not the raw bytes `git show` wrote to its own stdout pipe.
+    # This equals the committed blob's bytes for every workstream file this
+    # pilot ever writes, because Write-TextAtomic never emits a BOM; a
+    # blob that was manually committed with a BOM prefix (never produced by
+    # this tool) would hash differently here than its raw committed bytes.
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $sha256 = Get-Sha256HexOfBytes -Bytes $utf8NoBom.GetBytes($rawText)
 
@@ -3054,6 +3067,45 @@ function Invoke-Handoff {
         #     same handoff call must report the existing handoff-ready claim,
         #     never mutate again, and never create another claim. -----------
         if ($claim.state -eq 'handoff-ready') {
+            $retryWarnings = [System.Collections.Generic.List[object]]::new()
+            $retryWarnings.Add(@{
+                code    = 'already-handoff-ready'
+                message = "Claim '$($claim.claim_id)' is already handoff-ready; no new mutation was made."
+            })
+
+            # Best-effort: compare the resupplied -NextAction against the one
+            # recorded in the workstream document at the commit this claim
+            # actually became handoff-ready against. A mismatch does not fail
+            # the retry (no mutation is ever made in this branch) but is
+            # surfaced as a warning rather than silently accepted (Task 5
+            # review Fix C). Any failure reading that historical commit is
+            # swallowed: this comparison is a diagnostic convenience only,
+            # never a new failure mode for an already-successful, idempotent
+            # retry.
+            try {
+                if (-not [string]::IsNullOrEmpty($claim.durable_status_path) -and
+                    -not [string]::IsNullOrEmpty($claim.handoff_commit)) {
+                    $recordedShowResult = Invoke-Git -Arguments @(
+                        'show', "$($claim.handoff_commit):$($claim.durable_status_path)"
+                    ) -WorkingDirectory $Context.RepoRoot
+                    if ($recordedShowResult.ExitCode -eq 0) {
+                        $recordedLines = ConvertTo-DocumentLines -Text $recordedShowResult.StdOut
+                        $recordedShape = Get-WorkstreamDocumentShape -Lines $recordedLines -WorkstreamId $workstreamId `
+                            -Label "Committed workstream file '$($claim.durable_status_path)' at its recorded handoff commit"
+                        if ($recordedShape.NextActionBody -cne $trimmedNextAction) {
+                            $retryWarnings.Add(@{
+                                code    = 'next-action-mismatch'
+                                message = "Resupplied -NextAction does not match the next action recorded when claim '$($claim.claim_id)' became handoff-ready; no new mutation was made."
+                            })
+                        }
+                    }
+                }
+            }
+            catch {
+                # Swallowed: this comparison is a diagnostic warning only and
+                # must never turn an already-successful retry into a failure.
+            }
+
             return New-OperationResult -Operation 'handoff' `
                 -RepoRoot (ConvertTo-ForwardSlashPath -Path $Context.RepoRoot) `
                 -GitCommonDir (ConvertTo-ForwardSlashPath -Path $Context.GitCommonDir) `
@@ -3061,12 +3113,7 @@ function Invoke-Handoff {
                 -ClaimId $claim.claim_id `
                 -Git ([PSCustomObject] $gitInfo) `
                 -Claims @($claim) `
-                -Warnings @(
-                    @{
-                        code    = 'already-handoff-ready'
-                        message = "Claim '$($claim.claim_id)' is already handoff-ready; no new mutation was made."
-                    }
-                ) `
+                -Warnings @($retryWarnings) `
                 -Errors @()
         }
 

@@ -2997,6 +2997,35 @@ def test_handoff_rejects_dirty_claimed_scope(handoff_repo):
     assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
 
 
+def test_handoff_workstream_never_committed_at_head(handoff_repo):
+    """Task 5 review Fix B: this locks the intended behavior for the two
+    distinct ways the owned workstream file can fail to be "the committed
+    state at HEAD". (1) An uncommitted edit to an EXISTING committed version
+    is caught earlier, as fresh dirty-in-scope evidence, at exit `2`
+    (`test_handoff_rejects_dirty_claimed_scope` above). (2) The file
+    genuinely does not exist at `HEAD` at all -- here, deleted and that
+    deletion itself committed, so the current tree is clean -- and
+    `Read-CommittedWorkstream`'s `git show HEAD:<path>` fails outright before
+    any dirty-scope check ever runs. That is malformed/missing durable
+    state, not a working-tree validation failure, so it is a deliberate
+    stable exit `3` (ContinuityStateException); the claim is left
+    unchanged."""
+    rm_result = _run_git(
+        ["rm", "--", ".ai/workstreams/continuity-pilot.md"], cwd=handoff_repo.repo_dir
+    )
+    assert rm_result.returncode == 0, rm_result.stderr
+    commit_result = _run_git(
+        ["commit", "-m", "Remove the owned workstream file entirely"], cwd=handoff_repo.repo_dir
+    )
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
 def test_handoff_rejects_committed_state_not_handoff(handoff_repo):
     """The committed workstream file at `HEAD` must record state `handoff`;
     a well-formed but still-`active` committed document is rejected."""
@@ -3194,6 +3223,45 @@ def test_handoff_accepts_committed_in_scope_change_of_every_kind(handoff_repo, k
     result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
 
     assert result.returncode == 0, f"kind={kind!r} stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["claims"][0]["state"] == "handoff-ready"
+
+
+def test_handoff_accepts_paths_recorded_across_multiple_milestones(handoff_repo):
+    """Task 5 review Fix A: an agent following the design's normal milestone
+    cadence may call `update` more than once before `handoff` -- e.g. an
+    earlier milestone recording a changed path for its own commit, followed
+    by the handoff-triggering `update -State handoff` call recording only
+    the workstream file itself. `Test-HandoffCoverage` validates the ENTIRE
+    committed `base_commit..HEAD` diff, so the changed-path coverage must be
+    the UNION across ALL committed milestone bullets, not just the most
+    recently appended one, or the earlier milestone's own committed path is
+    wrongly rejected as "not listed"."""
+    (handoff_repo.repo_dir / "shared").mkdir(parents=True, exist_ok=True)
+    (handoff_repo.repo_dir / "shared" / "path-a.txt").write_text(
+        "first milestone content\n", encoding="utf-8"
+    )
+
+    first_update = _update(
+        handoff_repo.repo_dir,
+        handoff_repo.claim_id,
+        Summary="First milestone.",
+        ChangedPath=["shared/path-a.txt"],
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+    )
+    assert first_update.returncode == 0, f"stdout={first_update.stdout!r} stderr={first_update.stderr!r}"
+    add_result = _run_git(["add", "--", ".ai", "shared"], cwd=handoff_repo.repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "First milestone"], cwd=handoff_repo.repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     parsed = parse_json_stdout(result)
     assert parsed["ok"] is True
     assert parsed["claims"][0]["state"] == "handoff-ready"
@@ -3577,3 +3645,46 @@ def test_handoff_after_claim_rewrite_fault_leaves_handoff_ready_authoritative_an
     assert len(retry_parsed["claims"]) == 1
     assert retry_parsed["claims"][0]["claim_id"] == handoff_repo.claim_id
     assert retry_parsed["claims"][0]["state"] == "handoff-ready"
+
+
+def test_handoff_ready_retry_warns_on_next_action_mismatch(handoff_repo):
+    """Task 5 review Fix C: an idempotent `handoff` retry against an
+    already-`handoff-ready` claim still returns `ok: true` and makes no new
+    mutation even when the resupplied `-NextAction` differs from the one
+    recorded when the claim became handoff-ready -- but that mismatch is now
+    surfaced as a warning rather than silently accepted."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    first = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert first.returncode == 0, f"stdout={first.stdout!r} stderr={first.stderr!r}"
+
+    retry = _handoff(
+        handoff_repo.repo_dir, handoff_repo.claim_id, "A completely different next action."
+    )
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["state"] == "handoff-ready"
+    warning_codes = {warning["code"] for warning in retry_parsed["warnings"]}
+    assert "already-handoff-ready" in warning_codes
+    assert "next-action-mismatch" in warning_codes
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "handoff-ready"
+
+
+def test_handoff_ready_retry_no_warning_on_exact_next_action_match(handoff_repo):
+    """The same idempotent retry with the EXACT SAME `-NextAction` as the one
+    recorded when the claim became handoff-ready reports only the
+    already-handoff-ready warning, never the mismatch warning (Task 5 review
+    Fix C)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    first = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert first.returncode == 0, f"stdout={first.stdout!r} stderr={first.stderr!r}"
+
+    retry = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    warning_codes = {warning["code"] for warning in retry_parsed["warnings"]}
+    assert "already-handoff-ready" in warning_codes
+    assert "next-action-mismatch" not in warning_codes
