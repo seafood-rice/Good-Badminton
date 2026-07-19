@@ -1856,3 +1856,759 @@ def test_helper_never_invokes_prohibited_git_mutation_commands():
             f"Invoke-Git call arguments {call_arguments!r} include prohibited "
             f"mutating token(s): {prohibited_hits}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 4: durable milestone updates and verification validation
+# ---------------------------------------------------------------------------
+
+
+def _full_workstream_document(
+    workstream_id: str,
+    head_commit: str,
+    state: str = "active",
+    last_milestone: str = "none yet",
+    next_action: str = "Do the first thing.",
+) -> str:
+    """A fully-shaped owned workstream document containing every field and
+    marker `Read-WorkstreamDocument` requires, wrapped in boilerplate prose
+    that `update` must never change (Task 4 brief, Steps 1 and 3)."""
+    return (
+        f"# Workstream: {workstream_id}\n\n"
+        "## Overview\n\n"
+        "This paragraph is untouched boilerplate prose that `update` must "
+        "never change.\n\n"
+        f"- **workstream_id:** `{workstream_id}`\n"
+        "- **Objective:** Exercise the `update` operation in tests.\n"
+        f"- **State:** {state}\n"
+        f"- **Branch:** codex/{workstream_id}\n"
+        f"- **Head commit:** `{head_commit}`\n"
+        f"- **Last milestone:** {last_milestone}\n\n"
+        "## Next action\n\n"
+        f"{next_action}\n\n"
+        f"{MARKER_START}\n{MARKER_END}\n"
+    )
+
+
+class UpdateFixture(NamedTuple):
+    repo_dir: Path
+    claim_id: str
+    head: str
+    workstream_path: Path
+
+
+@pytest.fixture()
+def update_repo(continuity_repo: Path) -> UpdateFixture:
+    """A disposable repository with a fully-shaped, committed owned
+    workstream document and one active `continuity-pilot` claim scoped to
+    `.ai`, ready for `update` tests (Task 4 brief, Steps 1-3). The
+    document's own `Head commit` field is a placeholder distinct from the
+    repository's real `HEAD` (`update` always overwrites it on success and
+    never requires it to already match)."""
+    workstream_path = continuity_repo / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(
+        _full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8"
+    )
+    add_result = _run_git(["add", "."], cwd=continuity_repo)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(
+        ["commit", "-m", "Expand workstream document for update tests"], cwd=continuity_repo
+    )
+    assert commit_result.returncode == 0, commit_result.stderr
+    head = _run_git(["rev-parse", "HEAD"], cwd=continuity_repo).stdout.strip()
+
+    started = _start(continuity_repo, Scope=[".ai"])
+    assert started.returncode == 0, f"stdout={started.stdout!r} stderr={started.stderr!r}"
+    claim_id = parse_json_stdout(started)["claim_id"]
+
+    return UpdateFixture(repo_dir=continuity_repo, claim_id=claim_id, head=head, workstream_path=workstream_path)
+
+
+def _update(repo_dir: Path, claim_id: str, **overrides) -> HelperResult:
+    """Call `update` with reasonable defaults for the fields under test to
+    override individually."""
+    parameters = {
+        "ClaimId": claim_id,
+        "Agent": "codex",
+        "SessionId": "session-1",
+        "Summary": "Did a thing.",
+        "VerificationResult": "not-run",
+        "NotRunReason": "not run yet",
+        "Json": True,
+    }
+    parameters.update(overrides)
+    return run_helper(repo_dir, "update", **parameters)
+
+
+# ---------------------------------------------------------------------------
+# Step 1: identity, branch, and document-shape validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("missing", ["ClaimId", "Agent", "SessionId", "Summary"])
+def test_update_rejects_missing_required_parameter(update_repo, missing):
+    """Each required `update` parameter is validated before any filesystem
+    mutation; omitting one returns the stable exit `2`."""
+    result = _update(update_repo.repo_dir, update_repo.claim_id, **{missing: ""})
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+
+
+def test_update_rejects_unknown_claim_id(update_repo):
+    """A claim ID matching no live claim is rejected without renewing the
+    real claim or changing the workstream file."""
+    before_doc = update_repo.workstream_path.read_text(encoding="utf-8")
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+
+    result = _update(update_repo.repo_dir, "00000000-0000-4000-8000-000000000000")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_wrong_agent(update_repo):
+    """A different, otherwise-valid agent than the claim's own recorded
+    agent is an identity mismatch: exit `2`, no lease renewal, no Markdown
+    change (design spec, "Claim ownership identity")."""
+    before_doc = update_repo.workstream_path.read_text(encoding="utf-8")
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id, Agent="claude")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_wrong_session(update_repo):
+    """A different session ID than the claim's own recorded session is an
+    identity mismatch: exit `2`, no lease renewal, no Markdown change."""
+    before_doc = update_repo.workstream_path.read_text(encoding="utf-8")
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id, SessionId="session-2")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_wrong_branch(update_repo):
+    """Calling `update` from a branch that does not match the claim's own
+    workstream is rejected: exit `2`, no lease renewal, no Markdown
+    change."""
+    before_doc = update_repo.workstream_path.read_text(encoding="utf-8")
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    _checkout_new_branch(update_repo.repo_dir, "codex/other-workstream")
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_wrong_canonical_worktree(update_repo):
+    """Calling `update` for the claim's own workstream from a different,
+    linked worktree -- rather than the exact canonical worktree recorded on
+    the claim -- is an identity mismatch: exit `2`, no lease renewal, no
+    Markdown change in the original worktree."""
+    before_doc = update_repo.workstream_path.read_text(encoding="utf-8")
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    linked_worktree = update_repo.repo_dir.parent / "linked-worktree"
+    worktree_result = _run_git(
+        ["worktree", "add", "-b", "claude/continuity-pilot", str(linked_worktree)],
+        cwd=update_repo.repo_dir,
+    )
+    assert worktree_result.returncode == 0, worktree_result.stderr
+
+    result = _update(linked_worktree, update_repo.claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_when_claim_is_not_active(update_repo):
+    """`update` requires the claim to currently be `active`; any other
+    recorded state is rejected without mutation."""
+    claim_path = _claim_file_for(update_repo.repo_dir, "continuity-pilot")
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim["state"] = "handoff-ready"
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+    before_doc = update_repo.workstream_path.read_text(encoding="utf-8")
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
+
+
+def test_update_rejects_missing_managed_marker(update_repo):
+    """A workstream file missing the managed milestone marker pair returns
+    exit `3` without any mutation (Task 4 brief, Step 1)."""
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    text = _full_workstream_document("continuity-pilot", update_repo.head).replace(
+        f"{MARKER_START}\n{MARKER_END}\n", ""
+    )
+    update_repo.workstream_path.write_text(text, encoding="utf-8")
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id)
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == text
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_duplicate_managed_marker(update_repo):
+    """A workstream file with a duplicated managed marker pair returns exit
+    `3` without any mutation."""
+    text = _full_workstream_document("continuity-pilot", update_repo.head).replace(
+        f"{MARKER_END}\n", f"{MARKER_END}\n{MARKER_START}\n{MARKER_END}\n"
+    )
+    update_repo.workstream_path.write_text(text, encoding="utf-8")
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id)
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == text
+
+
+MALFORMED_WORKSTREAM_MUTATIONS = {
+    "missing-workstream-id": lambda text, head: text.replace(
+        "- **workstream_id:** `continuity-pilot`\n", ""
+    ),
+    "mismatched-workstream-id": lambda text, head: text.replace(
+        "- **workstream_id:** `continuity-pilot`\n",
+        "- **workstream_id:** `other-workstream`\n",
+    ),
+    "missing-state": lambda text, head: text.replace("- **State:** active\n", ""),
+    "missing-head-commit": lambda text, head: text.replace(f"- **Head commit:** `{head}`\n", ""),
+    "malformed-head-commit": lambda text, head: text.replace(f"`{head}`", "`abc123`"),
+    "missing-last-milestone": lambda text, head: text.replace("- **Last milestone:** none yet\n", ""),
+    "missing-next-action-heading": lambda text, head: text.replace("## Next action\n\n", ""),
+    "empty-next-action-body": lambda text, head: text.replace("Do the first thing.\n\n", ""),
+}
+
+
+@pytest.mark.parametrize(
+    "mutation_name", sorted(MALFORMED_WORKSTREAM_MUTATIONS), ids=sorted(MALFORMED_WORKSTREAM_MUTATIONS)
+)
+def test_update_rejects_malformed_workstream_document(update_repo, mutation_name):
+    """Every missing or malformed required workstream field returns exit `3`
+    without any claim mutation (Task 4 brief, Step 1)."""
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    text = _full_workstream_document("continuity-pilot", update_repo.head)
+    mutated = MALFORMED_WORKSTREAM_MUTATIONS[mutation_name](text, update_repo.head)
+    assert mutated != text, f"mutation {mutation_name!r} did not change the document"
+    update_repo.workstream_path.write_text(mutated, encoding="utf-8")
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id)
+
+    assert result.returncode == 3, (
+        f"mutation={mutation_name!r} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert parse_json_stdout(result)["ok"] is False
+    assert update_repo.workstream_path.read_text(encoding="utf-8") == mutated
+    after_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+# ---------------------------------------------------------------------------
+# Step 2: verification matrix
+# ---------------------------------------------------------------------------
+
+
+def test_update_rejects_invalid_verification_result_value(update_repo):
+    result = _update(
+        update_repo.repo_dir, update_repo.claim_id, VerificationResult="maybe", NotRunReason=""
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_passed_requires_command_and_commit(update_repo):
+    """`passed`/`failed` verification requires both `-VerificationCommand`
+    and a full `HEAD` commit SHA (design spec, verification matrix)."""
+    result = _update(
+        update_repo.repo_dir, update_repo.claim_id, VerificationResult="passed", NotRunReason=""
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_rejects_stale_commit(update_repo):
+    """A `-VerificationCommit` that is not the current `HEAD` is rejected as
+    stale evidence."""
+    stale_commit = "1" * 40
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        NotRunReason="",
+        VerificationCommand="pytest -q",
+        VerificationCommit=stale_commit,
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_rejects_malformed_commit_sha(update_repo):
+    """A `-VerificationCommit` that is not a full 40-character SHA is
+    rejected even if it happens to be a prefix of the real `HEAD`."""
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        NotRunReason="",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head[:7],
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_not_run_requires_reason(update_repo):
+    """`not-run` verification without `-NotRunReason` is rejected."""
+    result = _update(
+        update_repo.repo_dir, update_repo.claim_id, VerificationResult="not-run", NotRunReason=""
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_not_run_forbids_command_and_commit(update_repo):
+    """`not-run` verification must not also supply command/commit evidence."""
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="not-run",
+        NotRunReason="skipped for this test",
+        VerificationCommand="pytest -q",
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_passed_forbids_not_run_reason(update_repo):
+    """`passed`/`failed` verification must not also supply `-NotRunReason`."""
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="should not be here",
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_rejects_literal_dirty_placeholder(update_repo):
+    """The literal `dirty` placeholder is always invalid for
+    `-VerificationDirtyPath` (design spec, verification matrix)."""
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="",
+        VerificationDirtyPath=["dirty"],
+        ChangedPath=["dirty"],
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_dirty_path_must_be_currently_dirty(update_repo):
+    """A supplied dirty path that is not actually dirty is rejected."""
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="",
+        VerificationDirtyPath=[".ai/workstreams/continuity-pilot.md"],
+        ChangedPath=[".ai/workstreams/continuity-pilot.md"],
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_dirty_path_must_be_in_scope(update_repo):
+    """A currently-dirty path outside the claim's own scope is rejected as
+    verification-dirty-path evidence."""
+    (update_repo.repo_dir / "outside.txt").write_text("dirty\n", encoding="utf-8")
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="",
+        VerificationDirtyPath=["outside.txt"],
+        ChangedPath=["outside.txt"],
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_dirty_path_must_be_in_changed_path(update_repo):
+    """A currently-dirty, in-scope path omitted from `-ChangedPath` is
+    rejected as verification-dirty-path evidence, since it would not then be
+    listed in the owned workstream file."""
+    update_repo.workstream_path.write_text(
+        update_repo.workstream_path.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="",
+        VerificationDirtyPath=[".ai/workstreams/continuity-pilot.md"],
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_verification_passed_with_dirty_path_succeeds(update_repo):
+    """`passed` verification with a currently-dirty, in-scope,
+    changed-path-covered dirty path succeeds and records it in the
+    milestone (design spec, verification matrix)."""
+    update_repo.workstream_path.write_text(
+        update_repo.workstream_path.read_text(encoding="utf-8") + "\n", encoding="utf-8"
+    )
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="",
+        VerificationDirtyPath=[".ai/workstreams/continuity-pilot.md"],
+        ChangedPath=[".ai/workstreams/continuity-pilot.md"],
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is True
+    text = update_repo.workstream_path.read_text(encoding="utf-8")
+    assert ".ai/workstreams/continuity-pilot.md" in text
+    assert "passed" in text
+
+
+# ---------------------------------------------------------------------------
+# Step 3: mutation boundary, milestone shape, and lease renewal
+# ---------------------------------------------------------------------------
+
+
+def test_update_happy_path_appends_milestone_and_renews_lease(update_repo):
+    """A valid `update` call renews the claim's lease and appends exactly
+    one milestone entry recording the summary, state, changed paths,
+    verification, and next action (Task 4 brief, Steps 3 and 5)."""
+    before_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        Summary="Implemented the update operation.",
+        ChangedPath=["scripts/ai-handoff.ps1"],
+        State="active",
+        NextAction="Write more tests.",
+        VerificationResult="passed",
+        VerificationCommand="pytest -q",
+        VerificationCommit=update_repo.head,
+        NotRunReason="",
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["operation"] == "update"
+    assert parsed["claim_id"] == update_repo.claim_id
+    assert len(parsed["claims"]) == 1
+
+    renewed = parsed["claims"][0]
+    assert renewed["claim_id"] == before_claim["claim_id"]
+    assert renewed["heartbeat_utc"] != before_claim["heartbeat_utc"]
+    assert renewed["lease_until_utc"] != before_claim["lease_until_utc"]
+    for key in before_claim:
+        if key in ("heartbeat_utc", "lease_until_utc"):
+            continue
+        assert renewed[key] == before_claim[key], key
+
+    on_disk_claim = json.loads(
+        _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert on_disk_claim == renewed
+
+    text = update_repo.workstream_path.read_text(encoding="utf-8")
+    assert "Implemented the update operation." in text
+    assert "scripts/ai-handoff.ps1" in text
+    assert "Write more tests." in text
+    assert "passed" in text
+    assert f"- **Head commit:** `{update_repo.head}`" in text
+    assert text.count(MARKER_START) == 1
+    assert text.count(MARKER_END) == 1
+    assert text.index(MARKER_START) < text.index(MARKER_END)
+
+
+def test_update_preserves_bytes_outside_managed_section_and_explicit_fields(update_repo):
+    """`update` changes only the managed milestone section plus the
+    explicit `Last milestone`, `Head commit`, `State`, and `Next action`
+    fields; every other line is preserved exactly (Task 4 brief, Step 3)."""
+    before_text = update_repo.workstream_path.read_text(encoding="utf-8")
+    before_lines = before_text.splitlines(keepends=True)
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        Summary="Milestone for byte-preservation test.",
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+    after_lines = update_repo.workstream_path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    def is_always_changeable(line: str) -> bool:
+        return (
+            line.startswith("- **State:**")
+            or line.startswith("- **Head commit:**")
+            or line.startswith("- **Last milestone:**")
+        )
+
+    marker_region = False
+    for index, before_line in enumerate(before_lines):
+        if before_line.rstrip("\n") == MARKER_START:
+            marker_region = True
+        if marker_region:
+            continue
+        if is_always_changeable(before_line):
+            continue
+        assert after_lines[index] == before_line, (
+            f"line {index} changed unexpectedly: {before_line!r} -> {after_lines[index]!r}"
+        )
+
+
+def test_update_preserves_original_newline_style(update_repo):
+    """`update` preserves the owned workstream document's own newline style
+    -- including on the lines it rewrites or appends -- rather than always
+    emitting the platform default (design spec, Helper Contract)."""
+    lf_text = _full_workstream_document("continuity-pilot", "0" * 40)
+    assert "\r\n" not in lf_text
+    update_repo.workstream_path.write_bytes(lf_text.encode("utf-8"))
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    after_bytes = update_repo.workstream_path.read_bytes()
+    assert not after_bytes.startswith(b"\xef\xbb\xbf"), "expected UTF-8 without a BOM"
+    after_text = after_bytes.decode("utf-8")
+    assert "\r\n" not in after_text, (
+        "expected every line -- including the new milestone -- to keep the document's "
+        "original LF-only style"
+    )
+
+
+def test_update_rejects_invalid_state_value(update_repo):
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        State="merged",
+        VerificationResult="not-run",
+        NotRunReason="n/a",
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_state_blocked_records_blockers_line(update_repo):
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        Summary="Hit a blocker.",
+        State="blocked",
+        VerificationResult="not-run",
+        NotRunReason="blocked before verification",
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    text = update_repo.workstream_path.read_text(encoding="utf-8")
+    assert "- **State:** blocked" in text
+    assert "Blockers: Hit a blocker." in text
+
+
+def test_update_state_handoff_requires_next_action(update_repo):
+    """`-State handoff` requires a non-empty `-NextAction` (design spec,
+    Helper Contract: "state `handoff` requires a non-empty `-NextAction`")."""
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        State="handoff",
+        VerificationResult="not-run",
+        NotRunReason="handing off",
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_update_state_handoff_with_next_action_succeeds(update_repo):
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        State="handoff",
+        NextAction="Hand off to the other agent.",
+        VerificationResult="not-run",
+        NotRunReason="handing off",
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    text = update_repo.workstream_path.read_text(encoding="utf-8")
+    assert "- **State:** handoff" in text
+    assert "Hand off to the other agent." in text
+
+
+# ---------------------------------------------------------------------------
+# Step 6: claim-rewrite failure after a successful durable milestone write
+# ---------------------------------------------------------------------------
+
+
+def test_update_claim_rewrite_failure_leaves_old_claim_authoritative_and_retry_via_start_renews_it(
+    update_repo,
+):
+    """When the durable workstream write succeeds but the claim lease
+    rewrite afterward fails, the milestone remains applied, the existing
+    claim stays authoritative, and the reported recovery is an
+    identical-scope `start` retry -- never re-running `update`, so the
+    milestone can never be duplicated (Task 4 brief, Step 6).
+
+    The claim-rewrite failure is injected via the fixed test-fault hook
+    (`update-after-workstream-write`) rather than a real OS file lock on the
+    claim file: `update` reads every live claim (including this workstream's
+    own) from the same claim file before it ever attempts to rewrite it, so
+    an exclusive `FileShare.None` lock on that single path would also block
+    the earlier read the test needs to succeed, not just the later write.
+    """
+    claim_path = _claim_file_for(update_repo.repo_dir, "continuity-pilot")
+
+    result = _update(
+        update_repo.repo_dir,
+        update_repo.claim_id,
+        Summary="Milestone written despite a claim-rewrite failure.",
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+        env={"AI_CONTINUITY_TEST_FAULT": "update-after-workstream-write"},
+    )
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert "update-after-workstream-write" not in result.stdout
+    assert "update-after-workstream-write" not in result.stderr
+    assert parsed.get("recovery"), "expected recovery fields naming the authoritative claim"
+    recovery = parsed["recovery"]
+    assert recovery.get("durable_update_applied") is True
+    assert recovery.get("claim_id") == update_repo.claim_id
+    assert recovery.get("authoritative_owner") == "existing-claim"
+    retry_command = recovery.get("retry_command", "")
+    assert "start" in retry_command
+    assert "continuity-pilot" in retry_command
+
+    text = update_repo.workstream_path.read_text(encoding="utf-8")
+    assert "Milestone written despite a claim-rewrite failure." in text
+
+    on_disk_claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    assert on_disk_claim["claim_id"] == update_repo.claim_id
+
+    # `start` unconditionally rejects any dirty path inside the requested
+    # scope -- even an identical-identity/identical-scope renewal of the
+    # claim that owns it (design spec: "`start`... Reject... any dirty path
+    # inside the requested scope"). The durable milestone `update` just wrote
+    # is itself an in-scope dirty path, so the recovery retry only succeeds
+    # once that milestone is committed, matching how an agent would actually
+    # commit in-progress work before renewing a lease.
+    add_result = _run_git(["add", "--", ".ai"], cwd=update_repo.repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(
+        ["commit", "-m", "Record milestone despite claim-rewrite failure"],
+        cwd=update_repo.repo_dir,
+    )
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    retry = _start(update_repo.repo_dir, Scope=[".ai"])
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["claim_id"] == update_repo.claim_id
+    assert len(retry_parsed["claims"]) == 1

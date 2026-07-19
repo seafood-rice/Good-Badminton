@@ -135,8 +135,24 @@ $Script:ReservedDeviceNames = @(
 $Script:ValidAgentNames = @('claude', 'codex')
 
 # Default lease when `-LeaseHours` is not supplied (design spec, Helper
-# Contract: "The default lease is eight hours").
+# Contract: "The default lease is eight hours"). `update` also uses this
+# fixed default to renew a claim's lease; it has no `-LeaseHours` parameter
+# of its own (design spec, Helper Contract: "update" signature).
 $Script:DefaultLeaseHours = 8
+
+# Valid `-VerificationResult` values and valid `update`-only `-State` values
+# (design spec, Helper Contract: "update" signature; `update` may only set
+# `active`, `blocked`, or `handoff` -- `planned` and `merged` are set by
+# other operations).
+$Script:ValidVerificationResults = @('passed', 'failed', 'not-run')
+$Script:ValidUpdateStates = @('active', 'blocked', 'handoff')
+
+# The exact managed milestone marker pair every workstream template contains
+# (design spec, Helper Contract: "Workstream templates contain a
+# helper-managed section bounded by..."). `update` may edit only the content
+# between these two exact lines, plus the four explicit fields named below.
+$Script:MilestoneMarkerStart = '<!-- ai-continuity:milestones:start -->'
+$Script:MilestoneMarkerEnd = '<!-- ai-continuity:milestones:end -->'
 
 # The one documented backfill exception to the `codex/<workstream-id>` /
 # `claude/<workstream-id>` branch-naming rule (design spec, "Branch
@@ -152,14 +168,18 @@ $Script:LockRetryIntervalMilliseconds = 50
 
 # The complete set of fixed fault names honored by the single test hook
 # `AI_CONTINUITY_TEST_FAULT` (design spec / plan Global Constraints: "the
-# fixed boundary names listed in Tasks 3 and 5-7"). Only Task 3's two names
-# exist so far; later tasks extend this list as they add their own fixed
-# boundaries. The variable is inactive unless a test explicitly sets it, is
-# never serialized or printed, and any value outside this fixed set fails
-# closed before any mutation.
+# fixed boundary names listed in Tasks 3 and 5-7"). Task 3's two names exist
+# plus Task 4's one name (`update-after-workstream-write`, exercised by its
+# claim-rewrite-failure test: a real OS file lock cannot simulate this
+# boundary because it would also block the earlier read that locates the
+# claim, so this deterministic hook is used instead); later tasks extend
+# this list as they add their own fixed boundaries. The variable is inactive
+# unless a test explicitly sets it, is never serialized or printed, and any
+# value outside this fixed set fails closed before any mutation.
 $Script:KnownTestFaultNames = @(
     'start-before-claim-replace',
-    'start-after-claim-replace'
+    'start-after-claim-replace',
+    'update-after-workstream-write'
 )
 
 # Case sensitivity for scope/path comparisons is derived from the
@@ -185,6 +205,24 @@ function ConvertTo-ForwardSlashPath {
     )
 
     return $Path.Replace('\', '/')
+}
+
+function Format-CodeSpan {
+    <#
+    .SYNOPSIS
+        Wraps text in a Markdown inline-code span using a literal backtick
+        character built from its char code, so double-quoted string
+        interpolation elsewhere never has to fight PowerShell's own backtick
+        escape-character syntax.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Text
+    )
+
+    $backtick = [char] 0x60
+    return "$backtick$Text$backtick"
 }
 
 function Invoke-Git {
@@ -1824,6 +1862,687 @@ function Invoke-Start {
     }
 }
 
+function ConvertTo-DocumentLines {
+    <#
+    .SYNOPSIS
+        Splits raw text into an ordered list of `{ Content; Eol }` line
+        records, each line's own original newline terminator (`` `r`n ``,
+        `` `n ``, or none for a final unterminated line) preserved exactly,
+        so Write-WorkstreamDocument can change only specific lines while
+        reconstructing every other byte -- including the document's own
+        newline style -- exactly.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Text
+    )
+
+    $lines = [System.Collections.Generic.List[object]]::new()
+    $pos = 0
+    while ($true) {
+        $newlineIndex = $Text.IndexOf("`n", $pos)
+        if ($newlineIndex -lt 0) {
+            $lines.Add([PSCustomObject]@{ Content = $Text.Substring($pos); Eol = '' })
+            break
+        }
+        $eolStart = $newlineIndex
+        if ($newlineIndex -gt $pos -and $Text[$newlineIndex - 1] -eq "`r") {
+            $eolStart = $newlineIndex - 1
+        }
+        $content = $Text.Substring($pos, $eolStart - $pos)
+        $eol = $Text.Substring($eolStart, ($newlineIndex - $eolStart) + 1)
+        $lines.Add([PSCustomObject]@{ Content = $content; Eol = $eol })
+        $pos = $newlineIndex + 1
+    }
+    return $lines
+}
+
+function Write-TextAtomic {
+    <#
+    .SYNOPSIS
+        Same same-directory-temp-file-then-`File.Move` atomic pattern as
+        Write-JsonAtomic, but for plain UTF-8-no-BOM text instead of a
+        serialized JSON object; used to rewrite the owned workstream
+        Markdown file. Task 4 has no named test-fault boundary of its own
+        (the plan's global constraints reserve new fault names for Tasks 3
+        and 5-7), so this function accepts none -- the analogous production
+        failure (another process holding the destination file open when the
+        atomic replace runs) is exercised in tests directly, not injected.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+        [Parameter(Mandatory = $true)]
+        [string] $Text
+    )
+
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+
+    $tempPath = Join-Path $directory ([Guid]::NewGuid().ToString('N') + '.tmp')
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+    $stream = [System.IO.File]::Open(
+        $tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None
+    )
+    try {
+        $bytes = $utf8NoBom.GetBytes($Text)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    try {
+        [System.IO.File]::Move($tempPath, $Path, $true)
+    }
+    catch {
+        if (Test-Path -LiteralPath $tempPath) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Read-WorkstreamDocument {
+    <#
+    .SYNOPSIS
+        Parses one owned `.ai/workstreams/<workstream-id>.md` file into the
+        line-preserving structure `update` needs to change only the managed
+        milestone section plus the explicit `Last milestone`/`Head
+        commit`/`State`/`Next action` fields, leaving every other byte --
+        including the document's own newline style -- untouched (design
+        spec, Helper Contract: "update may edit only that bounded section
+        plus the template's explicit... fields"). Throws
+        ContinuityStateException (exit 3, no mutation) for a missing file, a
+        missing or duplicated managed marker, an out-of-order marker pair,
+        or a missing/duplicated/malformed required field.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+        [Parameter(Mandatory = $true)]
+        [string] $WorkstreamId
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' does not exist.")
+    }
+
+    $rawText = [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+    $lines = ConvertTo-DocumentLines -Text $rawText
+
+    $markerStartIndices = @()
+    $markerEndIndices = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i].Content -ceq $Script:MilestoneMarkerStart) { $markerStartIndices += $i }
+        if ($lines[$i].Content -ceq $Script:MilestoneMarkerEnd) { $markerEndIndices += $i }
+    }
+
+    if ($markerStartIndices.Count -eq 0 -or $markerEndIndices.Count -eq 0) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$Path' is missing the managed milestone marker pair."
+        )
+    }
+    if ($markerStartIndices.Count -gt 1 -or $markerEndIndices.Count -gt 1) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$Path' has a duplicate managed milestone marker."
+        )
+    }
+    $markerStartIndex = $markerStartIndices[0]
+    $markerEndIndex = $markerEndIndices[0]
+    if ($markerStartIndex -ge $markerEndIndex) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$Path' has the milestone end marker before the start marker."
+        )
+    }
+
+    $workstreamIdLineIndex = $null
+    $parsedWorkstreamId = $null
+    $stateLineIndex = $null
+    $currentState = $null
+    $headCommitLineIndex = $null
+    $lastMilestoneLineIndex = $null
+    $nextActionHeadingIndex = $null
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $content = $lines[$i].Content
+
+        if ($content -cmatch '^- \*\*workstream_id:\*\* `([^`]*)`$') {
+            if ($null -ne $workstreamIdLineIndex) {
+                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'workstream_id' field.")
+            }
+            $workstreamIdLineIndex = $i
+            $parsedWorkstreamId = $Matches[1]
+        }
+        elseif ($content -cmatch '^- \*\*workstream_id:\*\* ') {
+            throw [ContinuityStateException]::new("Owned workstream file '$Path' has a malformed 'workstream_id' field.")
+        }
+
+        if ($content -cmatch '^- \*\*State:\*\* (.+)$') {
+            if ($null -ne $stateLineIndex) {
+                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'State' field.")
+            }
+            $stateLineIndex = $i
+            $currentState = $Matches[1]
+        }
+        elseif ($content -cmatch '^- \*\*State:\*\* ') {
+            throw [ContinuityStateException]::new("Owned workstream file '$Path' has a malformed 'State' field.")
+        }
+
+        if ($content -cmatch '^- \*\*Head commit:\*\* `([0-9a-fA-F]{40})`$') {
+            if ($null -ne $headCommitLineIndex) {
+                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'Head commit' field.")
+            }
+            $headCommitLineIndex = $i
+        }
+        elseif ($content -cmatch '^- \*\*Head commit:\*\* ') {
+            throw [ContinuityStateException]::new(
+                "Owned workstream file '$Path' has a malformed 'Head commit' field; it must be a full 40-character commit SHA in backticks."
+            )
+        }
+
+        if ($content -cmatch '^- \*\*Last milestone:\*\* (.+)$') {
+            if ($null -ne $lastMilestoneLineIndex) {
+                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'Last milestone' field.")
+            }
+            $lastMilestoneLineIndex = $i
+        }
+        elseif ($content -cmatch '^- \*\*Last milestone:\*\* ') {
+            throw [ContinuityStateException]::new("Owned workstream file '$Path' has a malformed 'Last milestone' field.")
+        }
+
+        if ($content -ceq '## Next action') {
+            if ($null -ne $nextActionHeadingIndex) {
+                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'Next action' section.")
+            }
+            $nextActionHeadingIndex = $i
+        }
+    }
+
+    if ($null -eq $workstreamIdLineIndex) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'workstream_id' field.")
+    }
+    if ($parsedWorkstreamId -cne $WorkstreamId) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$Path' has workstream_id '$parsedWorkstreamId', expected '$WorkstreamId'."
+        )
+    }
+    if ($null -eq $stateLineIndex) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'State' field.")
+    }
+    if ($null -eq $headCommitLineIndex) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'Head commit' field.")
+    }
+    if ($null -eq $lastMilestoneLineIndex) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'Last milestone' field.")
+    }
+    if ($null -eq $nextActionHeadingIndex) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'Next action' section.")
+    }
+    if ($nextActionHeadingIndex -ge $markerStartIndex) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$Path' must have the 'Next action' section before the milestone marker."
+        )
+    }
+
+    $bodyLines = @()
+    if ($markerStartIndex - 1 -ge $nextActionHeadingIndex + 1) {
+        $bodyLines = @($lines[($nextActionHeadingIndex + 1)..($markerStartIndex - 1)])
+    }
+    $nextActionBody = (($bodyLines | ForEach-Object { $_.Content }) -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($nextActionBody)) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' has an empty required 'Next action' section.")
+    }
+
+    return [PSCustomObject]@{
+        Path                   = $Path
+        Lines                  = $lines
+        MarkerStartIndex       = $markerStartIndex
+        MarkerEndIndex         = $markerEndIndex
+        StateLineIndex         = $stateLineIndex
+        CurrentState           = $currentState
+        HeadCommitLineIndex    = $headCommitLineIndex
+        LastMilestoneLineIndex = $lastMilestoneLineIndex
+        NextActionHeadingIndex = $nextActionHeadingIndex
+        NextActionBody         = $nextActionBody
+    }
+}
+
+function Write-WorkstreamDocument {
+    <#
+    .SYNOPSIS
+        Atomically rewrites the owned workstream file, changing only: the
+        `State` field (when `-NewState` is supplied), the `Head commit`
+        field (always, to the current HEAD), the `Last milestone` field
+        (always, to the new milestone's one-line summary), the `Next
+        action` section body (only when `-NewNextAction` is supplied), and
+        the managed milestone marker region (always, appending
+        `-MilestoneEntryLines` after any prior entries). Every other byte of
+        the document, including its newline style, is copied through
+        unchanged because only these specific lines are ever replaced.
+        Edits are applied highest-line-index-first so an earlier edit never
+        shifts an index Read-WorkstreamDocument already recorded.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Document,
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $NewState,
+        [Parameter(Mandatory = $true)]
+        [string] $NewHeadCommit,
+        [Parameter(Mandatory = $true)]
+        [string] $LastMilestoneText,
+        [Parameter(Mandatory = $true)]
+        [string[]] $MilestoneEntryLines,
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $NewNextAction
+    )
+
+    $lines = [System.Collections.Generic.List[object]]::new($Document.Lines)
+    $eol = $lines[$Document.MarkerStartIndex].Eol
+    if ([string]::IsNullOrEmpty($eol)) { $eol = [Environment]::NewLine }
+
+    # 1) Highest index: insert the new milestone entry immediately before the
+    #    end marker, after any prior entries. This never shifts any index
+    #    below $Document.MarkerEndIndex.
+    $milestoneLineObjects = @($MilestoneEntryLines | ForEach-Object { [PSCustomObject]@{ Content = $_; Eol = $eol } })
+    $lines.InsertRange($Document.MarkerEndIndex, [object[]] $milestoneLineObjects)
+
+    # 2) Middle: replace the "Next action" body span (still at its original
+    #    indices; step 1 only touched indices at or above MarkerEndIndex).
+    if (-not [string]::IsNullOrEmpty($NewNextAction)) {
+        $removeStart = $Document.NextActionHeadingIndex + 1
+        $removeCount = $Document.MarkerStartIndex - $removeStart
+        if ($removeCount -gt 0) {
+            $lines.RemoveRange($removeStart, $removeCount)
+        }
+
+        $newBodyLines = [System.Collections.Generic.List[object]]::new()
+        $newBodyLines.Add([PSCustomObject]@{ Content = ''; Eol = $eol })
+        foreach ($textLine in ($NewNextAction -split "`r`n|`n|`r")) {
+            $newBodyLines.Add([PSCustomObject]@{ Content = $textLine; Eol = $eol })
+        }
+        $newBodyLines.Add([PSCustomObject]@{ Content = ''; Eol = $eol })
+        $lines.InsertRange($removeStart, [object[]] $newBodyLines)
+    }
+
+    # 3) Lowest: single-line, in-place field replacements; these indices are
+    #    always above the document's top and below the "Next action"
+    #    heading, so neither step 1 nor step 2 ever shifted them.
+    $lines[$Document.LastMilestoneLineIndex] = [PSCustomObject]@{
+        Content = '- **Last milestone:** ' + $LastMilestoneText
+        Eol     = $lines[$Document.LastMilestoneLineIndex].Eol
+    }
+    $lines[$Document.HeadCommitLineIndex] = [PSCustomObject]@{
+        Content = '- **Head commit:** ' + (Format-CodeSpan -Text $NewHeadCommit)
+        Eol     = $lines[$Document.HeadCommitLineIndex].Eol
+    }
+    if (-not [string]::IsNullOrEmpty($NewState)) {
+        $lines[$Document.StateLineIndex] = [PSCustomObject]@{
+            Content = '- **State:** ' + $NewState
+            Eol     = $lines[$Document.StateLineIndex].Eol
+        }
+    }
+
+    $rawText = ($lines | ForEach-Object { $_.Content + $_.Eol }) -join ''
+    Write-TextAtomic -Path $Document.Path -Text $rawText
+}
+
+function Test-VerificationArguments {
+    <#
+    .SYNOPSIS
+        Validates `-VerificationResult` and its dependent parameters against
+        the design's verification matrix (Helper Contract, "update"):
+        `not-run` requires only `-NotRunReason` and forbids
+        command/commit/dirty-path evidence; `passed`/`failed` require
+        `-VerificationCommand` and the full current `HEAD` commit SHA (a
+        stale, non-HEAD commit is rejected) and forbid `-NotRunReason`. Also
+        rejects the literal `dirty` placeholder up front, since that check
+        needs no Git call. Currently-dirty/scope/changed-path membership
+        checks for dirty paths are Test-DirtyVerificationPaths' job.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $VerificationResult,
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $VerificationCommand,
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $VerificationCommit,
+        [string[]] $VerificationDirtyPath,
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string] $NotRunReason,
+        [Parameter(Mandatory = $true)]
+        [string] $CurrentHead
+    )
+
+    if ($Script:ValidVerificationResults -notcontains $VerificationResult) {
+        throw [ContinuityValidationException]::new(
+            "-VerificationResult must be one of: $($Script:ValidVerificationResults -join ', ')."
+        )
+    }
+
+    $dirtyPaths = @()
+    if ($null -ne $VerificationDirtyPath) { $dirtyPaths = @($VerificationDirtyPath) }
+
+    if ($VerificationResult -eq 'not-run') {
+        if ([string]::IsNullOrWhiteSpace($NotRunReason)) {
+            throw [ContinuityValidationException]::new("-NotRunReason is required when -VerificationResult is 'not-run'.")
+        }
+        if (-not [string]::IsNullOrWhiteSpace($VerificationCommand)) {
+            throw [ContinuityValidationException]::new("-VerificationCommand must not be supplied when -VerificationResult is 'not-run'.")
+        }
+        if (-not [string]::IsNullOrWhiteSpace($VerificationCommit)) {
+            throw [ContinuityValidationException]::new("-VerificationCommit must not be supplied when -VerificationResult is 'not-run'.")
+        }
+        if ($dirtyPaths.Count -gt 0) {
+            throw [ContinuityValidationException]::new("-VerificationDirtyPath must not be supplied when -VerificationResult is 'not-run'.")
+        }
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($NotRunReason)) {
+        throw [ContinuityValidationException]::new("-NotRunReason must not be supplied when -VerificationResult is '$VerificationResult'.")
+    }
+    if ([string]::IsNullOrWhiteSpace($VerificationCommand)) {
+        throw [ContinuityValidationException]::new("-VerificationCommand is required when -VerificationResult is '$VerificationResult'.")
+    }
+    if ([string]::IsNullOrWhiteSpace($VerificationCommit)) {
+        throw [ContinuityValidationException]::new("-VerificationCommit is required when -VerificationResult is '$VerificationResult'.")
+    }
+    if ($VerificationCommit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw [ContinuityValidationException]::new('-VerificationCommit must be a full 40-character commit SHA.')
+    }
+    if (-not $VerificationCommit.Equals($CurrentHead, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw [ContinuityValidationException]::new(
+            "-VerificationCommit '$VerificationCommit' does not match the current HEAD '$CurrentHead'; stale commits are rejected."
+        )
+    }
+    foreach ($dirtyPath in $dirtyPaths) {
+        if ($dirtyPath -ceq 'dirty') {
+            throw [ContinuityValidationException]::new("-VerificationDirtyPath must not use the literal placeholder 'dirty'.")
+        }
+    }
+}
+
+function Test-DirtyVerificationPaths {
+    <#
+    .SYNOPSIS
+        Validates that every supplied `-VerificationDirtyPath` entry is
+        currently dirty, inside the claim's own scope, and also present in
+        this same `update` call's `-ChangedPath` evidence -- so it is
+        genuinely "listed in the owned workstream file" once the milestone
+        this call records is written (design spec, Helper Contract:
+        "supplied dirty paths are currently dirty, within the claim scope,
+        and listed in the owned workstream file"). Only called when at
+        least one dirty path was supplied.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [Parameter(Mandatory = $true)]
+        [string[]] $DirtyPath,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]] $ScopePath,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]] $ChangedPath
+    )
+
+    $statusEntries = Get-GitStatusEntries -RepoRoot $Context.RepoRoot
+    $currentlyDirtyPaths = @($statusEntries | ForEach-Object { $_.Path })
+
+    # The loop variable is deliberately NOT named `$dirtyPath`: PowerShell
+    # variable names are case-insensitive, so a loop variable matching the
+    # iterated collection's own name (`$DirtyPath`) reuses that same
+    # strongly-typed `[string[]]` variable slot. Each iteration's assignment
+    # then gets coerced back to `string[]`, silently re-wrapping the scalar
+    # element in a new single-element array instead of unwrapping it -- which
+    # breaks the -Path string parameter binding below.
+    foreach ($candidatePath in $DirtyPath) {
+        if ($currentlyDirtyPaths -notcontains $candidatePath) {
+            throw [ContinuityValidationException]::new("-VerificationDirtyPath '$candidatePath' is not currently dirty.")
+        }
+        if (-not (Test-PathWithinScope -Path $candidatePath -ScopePrefixes $ScopePath)) {
+            throw [ContinuityValidationException]::new("-VerificationDirtyPath '$candidatePath' is outside the claim's scope.")
+        }
+        if ($ChangedPath -notcontains $candidatePath) {
+            throw [ContinuityValidationException]::new(
+                "-VerificationDirtyPath '$candidatePath' must also be listed in -ChangedPath so it is recorded in the owned workstream file."
+            )
+        }
+    }
+}
+
+function Invoke-Update {
+    <#
+    .SYNOPSIS
+        Renews the lease on an existing active claim and appends one
+        durable milestone to its owned workstream file (design spec, Helper
+        Contract: "update"). Validates identity, branch, and the full
+        verification matrix BEFORE any filesystem mutation, then -- under
+        the single common lock -- locates the claim by `-ClaimId`, confirms
+        it is `active`, confirms the current branch is allowed and the
+        caller's identity matches, validates any dirty verification
+        evidence, atomically rewrites only the owned workstream file's
+        managed milestone section plus its explicit fields, and only THEN
+        atomically renews the claim's lease. A workstream-file write
+        failure leaves the claim completely unchanged. A claim-renewal
+        failure AFTER a successful workstream write leaves the old claim
+        authoritative and reports `durable_update_applied: true` plus an
+        identical-scope `start` retry command -- recovery is always
+        `start`, never `update`, so the milestone can never be duplicated.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [string] $ClaimId,
+        [string] $Agent,
+        [string] $SessionId,
+        [string] $Summary,
+        [string[]] $ChangedPath,
+        [string] $State,
+        [string] $NextAction,
+        [string] $VerificationResult,
+        [string] $VerificationCommand,
+        [string] $VerificationCommit,
+        [string[]] $VerificationDirtyPath,
+        [string] $NotRunReason
+    )
+
+    # --- Validation before any filesystem mutation -------------------------
+    Assert-RequiredParameter -Value $ClaimId -Name 'ClaimId'
+    Assert-RequiredParameter -Value $Agent -Name 'Agent'
+    Assert-RequiredParameter -Value $SessionId -Name 'SessionId'
+    Assert-RequiredParameter -Value $Summary -Name 'Summary'
+
+    $agent = Assert-ValidAgent -Value $Agent
+    $sessionId = Normalize-Id -Value $SessionId -Kind 'Session'
+
+    if (-not [string]::IsNullOrEmpty($State) -and $Script:ValidUpdateStates -notcontains $State) {
+        throw [ContinuityValidationException]::new("-State must be one of: $($Script:ValidUpdateStates -join ', ').")
+    }
+    if ($State -eq 'handoff' -and [string]::IsNullOrWhiteSpace($NextAction)) {
+        throw [ContinuityValidationException]::new("-NextAction is required and must be non-empty when -State is 'handoff'.")
+    }
+
+    Test-VerificationArguments -VerificationResult $VerificationResult `
+        -VerificationCommand $VerificationCommand -VerificationCommit $VerificationCommit `
+        -VerificationDirtyPath $VerificationDirtyPath -NotRunReason $NotRunReason `
+        -CurrentHead $Context.Head
+
+    $rawChangedPaths = @()
+    if ($null -ne $ChangedPath) { $rawChangedPaths = @($ChangedPath) }
+    $normalizedChangedPaths = @()
+    foreach ($rawPath in $rawChangedPaths) {
+        $normalizedChangedPaths += Normalize-ScopePath -Path $rawPath
+    }
+    $normalizedChangedPaths = @($normalizedChangedPaths | Select-Object -Unique)
+
+    $dirtyPaths = @()
+    if ($null -ne $VerificationDirtyPath) { $dirtyPaths = @($VerificationDirtyPath) }
+
+    # --- Under the common lock ---------------------------------------------
+    $continuityDir = Join-Path $Context.GitCommonDir $Script:ContinuityDirName
+    $lockPath = Join-Path $continuityDir $Script:LockFileName
+
+    return Use-ContinuityLock -LockPath $lockPath -ScriptBlock {
+        # Deliberately NOT named `$state`: PowerShell variable names are
+        # case-insensitive, so that name would reuse the same strongly-typed
+        # `[string] $State` parameter slot (Invoke-Update's own `-State`
+        # parameter), silently clobbering the caller-supplied state value
+        # with this continuity-state object for the rest of the closure.
+        $continuityState = Read-ContinuityState -GitCommonDir $Context.GitCommonDir
+        $claims = @($continuityState.Claims)
+
+        $matching = @($claims | Where-Object { $_.claim_id -ceq $ClaimId })
+        if ($matching.Count -eq 0) {
+            throw [ContinuityValidationException]::new("No claim found matching claim id '$ClaimId'.")
+        }
+        $claim = $matching[0]
+
+        if ($claim.state -ne 'active') {
+            throw [ContinuityValidationException]::new(
+                "Claim '$ClaimId' is not active (state '$($claim.state)'); update requires an active claim."
+            )
+        }
+
+        $workstreamId = $claim.workstream_id
+        Assert-WorkstreamBranchAllowed -Context $Context -WorkstreamId $workstreamId
+
+        $identityMatches = Test-ClaimIdentity -Claim $claim -Agent $agent -SessionId $sessionId `
+            -WorktreePath (ConvertTo-ForwardSlashPath -Path $Context.WorktreePath) -Branch $Context.Branch
+        if (-not $identityMatches) {
+            throw [ContinuityValidationException]::new(
+                "Claim '$ClaimId' does not match the current agent, session, worktree, or branch."
+            )
+        }
+
+        $claimScopePaths = @($claim.scope_paths)
+
+        if ($dirtyPaths.Count -gt 0) {
+            Test-DirtyVerificationPaths -Context $Context -DirtyPath $dirtyPaths `
+                -ScopePath $claimScopePaths -ChangedPath $normalizedChangedPaths
+        }
+
+        $workstreamPath = Join-Path $Context.RepoRoot (Join-Path '.ai' (Join-Path 'workstreams' "$workstreamId.md"))
+        $document = Read-WorkstreamDocument -Path $workstreamPath -WorkstreamId $workstreamId
+
+        $nowUtc = [DateTimeOffset]::UtcNow
+        $nowText = $nowUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+        $effectiveState = if (-not [string]::IsNullOrEmpty($State)) { $State } else { $document.CurrentState }
+
+        $milestoneLines = [System.Collections.Generic.List[string]]::new()
+        $milestoneLines.Add("- $nowText - state: $effectiveState - $Summary")
+
+        if ($normalizedChangedPaths.Count -gt 0) {
+            $quotedChanged = @($normalizedChangedPaths | ForEach-Object { Format-CodeSpan -Text $_ })
+            $milestoneLines.Add("  - Changed paths: $($quotedChanged -join ', ')")
+        }
+
+        if ($VerificationResult -eq 'not-run') {
+            $milestoneLines.Add("  - Verification: not-run - reason: $NotRunReason")
+        }
+        else {
+            $verificationLine = "  - Verification: $VerificationResult - command $(Format-CodeSpan -Text $VerificationCommand) - commit $(Format-CodeSpan -Text $VerificationCommit)"
+            if ($dirtyPaths.Count -gt 0) {
+                $quotedDirty = @($dirtyPaths | ForEach-Object { Format-CodeSpan -Text $_ })
+                $verificationLine += " - dirty paths: $($quotedDirty -join ', ')"
+            }
+            $milestoneLines.Add($verificationLine)
+        }
+
+        if ($effectiveState -eq 'blocked') {
+            $milestoneLines.Add("  - Blockers: $Summary")
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($NextAction)) {
+            $milestoneLines.Add("  - Next action: $NextAction")
+        }
+
+        Write-WorkstreamDocument -Document $document -NewState $State -NewHeadCommit $Context.Head `
+            -LastMilestoneText "$nowText - $Summary" -MilestoneEntryLines @($milestoneLines) `
+            -NewNextAction $NextAction
+
+        $renewedLeaseUntilText = $nowUtc.AddHours($Script:DefaultLeaseHours).ToString(
+            "yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture
+        )
+        $renewedClaim = [PSCustomObject][ordered]@{
+            schema_version          = $claim.schema_version
+            claim_id                = $claim.claim_id
+            workstream_id           = $claim.workstream_id
+            agent                   = $claim.agent
+            session_id              = $claim.session_id
+            worktree_path           = $claim.worktree_path
+            branch                  = $claim.branch
+            base_commit             = $claim.base_commit
+            scope_paths             = $claimScopePaths
+            started_utc             = $claim.started_utc
+            heartbeat_utc           = $nowText
+            lease_until_utc         = $renewedLeaseUntilText
+            state                   = $claim.state
+            preexisting_dirty       = @($claim.preexisting_dirty)
+            predecessor_claim_id    = $claim.predecessor_claim_id
+            replaces_claim_id       = $claim.replaces_claim_id
+            replacement_reason      = $claim.replacement_reason
+            durable_status_path     = $claim.durable_status_path
+            durable_status_sha256   = $claim.durable_status_sha256
+            durable_status_blob_oid = $claim.durable_status_blob_oid
+            handoff_commit          = $claim.handoff_commit
+        }
+
+        $claimsDir = Join-Path $continuityDir 'claims'
+        $claimPath = Join-Path $claimsDir "$workstreamId.json"
+        try {
+            Write-JsonAtomic -Path $claimPath -Object $renewedClaim `
+                -FaultBeforeReplace 'update-after-workstream-write'
+        }
+        catch {
+            $stateException = [ContinuityStateException]::new(
+                'The workstream milestone was written durably, but the claim lease could not be renewed afterward; the existing claim remains authoritative.'
+            )
+            $stateException.ClaimId = $claim.claim_id
+            $escapedScope = @($claimScopePaths | ForEach-Object { $_.Replace("'", "''") })
+            $stateException.Recovery = [PSCustomObject][ordered]@{
+                claim_id               = $claim.claim_id
+                authoritative_owner    = 'existing-claim'
+                durable_update_applied = $true
+                retry_command          = "start -Agent $($claim.agent) -SessionId $($claim.session_id) -Workstream $workstreamId -Scope @('$($escapedScope -join "', '")')"
+            }
+            throw $stateException
+        }
+
+        $gitInfo = [ordered]@{
+            worktree_path    = ConvertTo-ForwardSlashPath -Path $Context.WorktreePath
+            branch           = $Context.Branch
+            detached         = $Context.Detached
+            head             = $Context.Head
+            upstream         = $Context.Upstream
+            protected_branch = $Context.ProtectedBranch
+        }
+
+        return New-OperationResult -Operation 'update' `
+            -RepoRoot (ConvertTo-ForwardSlashPath -Path $Context.RepoRoot) `
+            -GitCommonDir (ConvertTo-ForwardSlashPath -Path $Context.GitCommonDir) `
+            -WorkstreamId $workstreamId `
+            -ClaimId $renewedClaim.claim_id `
+            -Git ([PSCustomObject] $gitInfo) `
+            -Claims @($renewedClaim) `
+            -Warnings @() `
+            -Errors @()
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Single top-level try/catch/finally: maps validation, malformed-state, and
 # Git-context exceptions to the stable exit codes 2, 3, and 4. Every other
@@ -1860,9 +2579,16 @@ try {
                 -Workstream $Workstream -Scope $Scope -LeaseHours $LeaseHours `
                 -LeaseHoursSupplied $PSBoundParameters.ContainsKey('LeaseHours')
         }
+        'update' {
+            Invoke-Update -Context $repositoryContext -ClaimId $ClaimId -Agent $Agent -SessionId $SessionId `
+                -Summary $Summary -ChangedPath $ChangedPath -State $State -NextAction $NextAction `
+                -VerificationResult $VerificationResult -VerificationCommand $VerificationCommand `
+                -VerificationCommit $VerificationCommit -VerificationDirtyPath $VerificationDirtyPath `
+                -NotRunReason $NotRunReason
+        }
         default {
             throw [ContinuityValidationException]::new(
-                "Operation '$Operation' is not implemented yet; only 'status' and 'start' are available."
+                "Operation '$Operation' is not implemented yet; only 'status', 'start', and 'update' are available."
             )
         }
     }
