@@ -4395,3 +4395,651 @@ def test_accept_recovers_from_post_activation_git_drift(accept_repo):
 
     history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
     assert not history_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Task 7: `takeover` -- explicit expired-claim takeover and immutable history
+# ---------------------------------------------------------------------------
+
+
+def _takeover_journal_path_for(repo_dir: Path, previous_claim_id: str) -> Path:
+    return (
+        _git_common_dir_for(repo_dir)
+        / "ai-continuity"
+        / "transactions"
+        / f"takeover-{previous_claim_id}.json"
+    )
+
+
+def _expire_claim(repo_dir: Path, workstream_id: str = "continuity-pilot") -> None:
+    """Directly rewrite a claim's `lease_until_utc` into the past, simulating
+    real lease expiry without waiting (mirrors
+    `test_accept_succeeds_after_lease_expiry_when_evidence_matches`)."""
+    claim_path = _claim_file_for(repo_dir, workstream_id)
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim["lease_until_utc"] = "2000-01-01T00:00:00Z"
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+
+
+def _takeover(repo_dir: Path, previous_claim_id: str, **overrides) -> HelperResult:
+    """Call `takeover` with reasonable defaults for the fields under test to
+    override individually. Defaults to a DIFFERENT agent/session than the
+    typical `codex`/`session-1` claim owner this module's fixtures create,
+    matching a genuine replacement by another agent after the original
+    owner's session is gone."""
+    parameters = {
+        "Agent": "claude",
+        "SessionId": "claude-session-1",
+        "Workstream": "continuity-pilot",
+        "PreviousClaimId": previous_claim_id,
+        "Reason": "Original owner's session was lost; picking up the workstream.",
+        "Scope": ["shared"],
+        "Json": True,
+    }
+    parameters.update(overrides)
+    return run_helper(repo_dir, "takeover", **parameters)
+
+
+# ---------------------------------------------------------------------------
+# Step 1: takeover validation -- a live claim cannot be taken over; an
+# expired claim requires the exact ID, non-empty reason, valid identity/
+# scope/branch, clean requested scope, and unchanged pre-existing dirt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("missing", ["Agent", "SessionId", "Workstream", "PreviousClaimId", "Reason"])
+def test_takeover_rejects_missing_required_parameter(continuity_repo, missing):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    assert start_result.returncode == 0, f"stdout={start_result.stdout!r} stderr={start_result.stderr!r}"
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    parameters = {
+        "Agent": "claude",
+        "SessionId": "claude-session-1",
+        "Workstream": "continuity-pilot",
+        "PreviousClaimId": claim_id,
+        "Reason": "a reason",
+    }
+    parameters[missing] = ""
+    result = run_helper(continuity_repo, "takeover", Json=True, Scope=["shared"], **parameters)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(continuity_repo)["claim_id"] == claim_id
+    assert not _takeover_journal_path_for(continuity_repo, claim_id).exists()
+
+
+def test_takeover_rejects_empty_scope_list(continuity_repo):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    result = _takeover(continuity_repo, claim_id, Scope=[])
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(continuity_repo)["claim_id"] == claim_id
+
+
+def test_takeover_rejects_live_active_claim_within_lease(continuity_repo):
+    """A live (unexpired) `active` claim cannot be taken over, even with the
+    exact claim ID and a valid reason (Task 7 brief, Step 1)."""
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+
+    result = _takeover(continuity_repo, claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(continuity_repo)
+    assert claim["claim_id"] == claim_id
+    assert claim["state"] == "active"
+    assert not _takeover_journal_path_for(continuity_repo, claim_id).exists()
+    assert not _history_path_for(continuity_repo, claim_id).exists()
+
+
+def test_takeover_rejects_live_handoff_ready_claim_within_lease(handoff_repo):
+    """A live (unexpired) `handoff-ready` claim cannot be taken over either;
+    only `accept` may claim it while its lease has not expired."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    handoff_result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    result = _takeover(handoff_repo.repo_dir, handoff_repo.claim_id, Scope=handoff_repo.scope)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(handoff_repo.repo_dir)
+    assert claim["claim_id"] == handoff_repo.claim_id
+    assert claim["state"] == "handoff-ready"
+
+
+def test_takeover_rejects_unknown_claim_id(continuity_repo):
+    result = _takeover(continuity_repo, "00000000-0000-4000-8000-000000000000")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_takeover_rejects_malformed_previous_claim_id(continuity_repo):
+    """`-PreviousClaimId` is spliced directly into the transaction journal's
+    filename, so it is validated as a GUID before any lock or mutation,
+    closing off path-injection-shaped input (mirrors accept's identical
+    guard)."""
+    result = _takeover(continuity_repo, "../../etc/passwd")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_takeover_rejects_stale_claim_id_when_real_expired_claim_exists(continuity_repo):
+    """A guessed/stale ID that does not match the current (expired) claim for
+    the workstream fails without mutation, even though a real expired claim
+    exists under a DIFFERENT claim ID (Task 7 brief, Step 1: "a stale or
+    guessed ID fails without mutation")."""
+    start_result = _start(continuity_repo, Scope=["shared"])
+    real_claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    result = _takeover(continuity_repo, "00000000-0000-4000-8000-000000000000")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(continuity_repo)
+    assert claim["claim_id"] == real_claim_id
+    assert claim["state"] == "active"
+
+
+def test_takeover_rejects_protected_main_branch(continuity_repo):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    checkout_result = _run_git(["checkout", "main"], cwd=continuity_repo)
+    assert checkout_result.returncode == 0, checkout_result.stderr
+
+    result = _takeover(continuity_repo, claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_takeover_rejects_detached_head(continuity_repo):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    head = _run_git(["rev-parse", "HEAD"], cwd=continuity_repo).stdout.strip()
+    checkout_result = _run_git(["checkout", head], cwd=continuity_repo)
+    assert checkout_result.returncode == 0, checkout_result.stderr
+
+    result = _takeover(continuity_repo, claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_takeover_rejects_wrong_branch(continuity_repo):
+    """A workstream's claim was recorded on `codex/continuity-pilot`;
+    `takeover` invoked from a DIFFERENT (but still validly-prefixed) branch
+    for the SAME workstream id is rejected by
+    Test-TakeoverPreActivationInvariants's own branch comparison, even though
+    the coarser Assert-WorkstreamBranchAllowed naming check alone would allow
+    it (mirrors Task 6 review Fix 3 for accept)."""
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    _checkout_new_branch(continuity_repo, "claude/continuity-pilot")
+
+    result = _takeover(continuity_repo, claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(continuity_repo)
+    assert claim["claim_id"] == claim_id
+    assert claim["state"] == "active"
+
+
+INVALID_TAKEOVER_SCOPE_FORMS = [
+    "",
+    ".",
+    "..",
+    "/",
+    "../escape",
+    "shared/../../escape",
+    "shared/*",
+    "C:/absolute",
+    "//server/share",
+    ".git",
+    "shared/.git",
+]
+
+
+@pytest.mark.parametrize("scope_value", INVALID_TAKEOVER_SCOPE_FORMS, ids=repr)
+def test_takeover_rejects_invalid_scope_forms(continuity_repo, scope_value):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    result = _takeover(continuity_repo, claim_id, Scope=[scope_value])
+
+    assert result.returncode == 2, (
+        f"scope={scope_value!r} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(continuity_repo)["claim_id"] == claim_id
+
+
+def test_takeover_rejects_dirty_path_inside_requested_scope(continuity_repo):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    (continuity_repo / "shared").mkdir(parents=True, exist_ok=True)
+    (continuity_repo / "shared" / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    result = _takeover(continuity_repo, claim_id, Scope=["shared"])
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(continuity_repo)
+    assert claim["claim_id"] == claim_id
+    assert claim["state"] == "active"
+    assert not _takeover_journal_path_for(continuity_repo, claim_id).exists()
+
+
+def test_takeover_rejects_scope_overlapping_other_live_claim(continuity_repo):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(continuity_repo)
+
+    _checkout_new_branch(continuity_repo, "codex/other-workstream")
+    other_start = _start(
+        continuity_repo, Workstream="other-workstream", SessionId="session-2", Scope=["other"]
+    )
+    assert other_start.returncode == 0, f"stdout={other_start.stdout!r} stderr={other_start.stderr!r}"
+
+    checkout_back = _run_git(["checkout", "codex/continuity-pilot"], cwd=continuity_repo)
+    assert checkout_back.returncode == 0, checkout_back.stderr
+
+    result = _takeover(continuity_repo, claim_id, Scope=["other"])
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_takeover_rejects_preexisting_dirty_content_drift(tmp_path):
+    """A pre-existing modified-but-unstaged out-of-scope path edited AGAIN
+    after the claim expires blocks takeover, reusing the exact same
+    `Test-PreexistingDirtyUnchanged` gate `handoff`/`accept` already exercise
+    exhaustively (Task 7 brief, Step 1: "unchanged pre-existing dirty
+    fingerprints from the prior claim")."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_modified)
+    _expire_claim(repo_dir)
+
+    (repo_dir / setup["path"]).write_text("drifted after expiry\n", encoding="utf-8")
+
+    result = _takeover(repo_dir, claim_id, Scope=fixture.scope)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(repo_dir)
+    assert claim["claim_id"] == claim_id
+    assert claim["state"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# Step 2: replacement shape and immutable-history cross-references
+# ---------------------------------------------------------------------------
+
+
+def test_takeover_happy_path_replaces_expired_active_claim(continuity_repo):
+    start_result = _start(continuity_repo, Scope=["shared"])
+    predecessor = parse_json_stdout(start_result)["claims"][0]
+    _expire_claim(continuity_repo)
+
+    result = _takeover(
+        continuity_repo, predecessor["claim_id"],
+        Agent="claude", SessionId="claude-session-1", Reason="Predecessor session crashed.",
+        Scope=["other-shared"],
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["operation"] == "takeover"
+    assert len(parsed["claims"]) == 1
+    replacement = parsed["claims"][0]
+
+    assert re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", replacement["claim_id"]
+    )
+    assert replacement["claim_id"] != predecessor["claim_id"]
+    assert replacement["workstream_id"] == predecessor["workstream_id"]
+    assert replacement["worktree_path"] == predecessor["worktree_path"]
+    assert replacement["branch"] == predecessor["branch"]
+    assert replacement["scope_paths"] == ["other-shared"]
+    assert replacement["scope_paths"] != predecessor["scope_paths"]
+    assert replacement["agent"] == "claude"
+    assert replacement["session_id"] == "claude-session-1"
+    assert replacement["state"] == "active"
+    assert replacement["predecessor_claim_id"] is None
+    assert replacement["replaces_claim_id"] == predecessor["claim_id"]
+    assert replacement["replacement_reason"] == "Predecessor session crashed."
+    assert replacement["durable_status_path"] is None
+    assert replacement["durable_status_sha256"] is None
+    assert replacement["durable_status_blob_oid"] is None
+    assert replacement["handoff_commit"] is None
+    assert replacement["preexisting_dirty"] == []
+    assert replacement["started_utc"] != predecessor["started_utc"]
+    assert replacement["lease_until_utc"] != predecessor["lease_until_utc"]
+
+    on_disk = _current_claim(continuity_repo)
+    assert on_disk == replacement
+
+    history_path = _history_path_for(continuity_repo, predecessor["claim_id"])
+    assert history_path.exists()
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["claim_id"] == predecessor["claim_id"]
+    assert history["final_state"] == "replaced"
+    assert history["scope_paths"] == predecessor["scope_paths"]
+    assert history["preexisting_dirty"] == predecessor["preexisting_dirty"]
+    assert history["successor_claim_id"] == replacement["claim_id"]
+    assert history["successor_agent"] == "claude"
+    assert history["successor_session_id"] == "claude-session-1"
+    assert history["takeover_reason"] == "Predecessor session crashed."
+    assert history.get("ended_utc")
+
+    assert not _takeover_journal_path_for(continuity_repo, predecessor["claim_id"]).exists()
+
+
+def test_takeover_happy_path_replaces_expired_handoff_ready_claim(handoff_repo):
+    """Design spec Testing item 27 / Local Claim Model: an expired
+    `handoff-ready` claim remains blocking and can be taken over only with
+    its exact ID, a reason, and normal safety validation."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    handoff_result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+    predecessor = _current_claim(handoff_repo.repo_dir)
+    assert predecessor["state"] == "handoff-ready"
+
+    _expire_claim(handoff_repo.repo_dir)
+
+    result = _takeover(
+        handoff_repo.repo_dir, handoff_repo.claim_id,
+        Agent="claude", SessionId="claude-session-1", Reason="Recipient never accepted.",
+        Scope=handoff_repo.scope,
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    replacement = parsed["claims"][0]
+    assert replacement["state"] == "active"
+    assert replacement["replaces_claim_id"] == handoff_repo.claim_id
+
+    history_path = _history_path_for(handoff_repo.repo_dir, handoff_repo.claim_id)
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["final_state"] == "replaced"
+    assert history["state"] == "handoff-ready"
+    assert history["durable_status_path"] == predecessor["durable_status_path"]
+    assert history["durable_status_sha256"] == predecessor["durable_status_sha256"]
+
+
+def test_takeover_fresh_dirty_baseline_captures_new_out_of_scope_dirt_beyond_predecessor(tmp_path):
+    """The replacement's `preexisting_dirty` baseline is captured FRESH at
+    takeover time: unlike `handoff` (which treats any NEW out-of-scope dirt
+    as a blocking conflict), `takeover` -- like `start` -- simply captures
+    it. A path outside the predecessor's own scope is preserved unchanged in
+    the predecessor's immutable history, while an ADDITIONAL out-of-scope
+    path that appeared only AFTER the predecessor's claim started is
+    captured fresh in the replacement's baseline even though the predecessor
+    never recorded it (Task 7 brief, Step 2: "capture a fresh complete
+    out-of-scope dirty baseline for the successor")."""
+    repo_dir = _make_repo_on_branch(tmp_path, "codex/continuity-pilot")
+    (repo_dir / "outside").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "outside" / "before-start.txt").write_text("pre-existing\n", encoding="utf-8")
+
+    start_result = _start(repo_dir, Scope=["scope-a"])
+    predecessor = parse_json_stdout(start_result)["claims"][0]
+    assert len(predecessor["preexisting_dirty"]) == 1
+    assert predecessor["preexisting_dirty"][0]["path"] == "outside/before-start.txt"
+    _expire_claim(repo_dir)
+
+    # A new out-of-scope dirty path appears only AFTER the claim started;
+    # takeover captures it fresh instead of treating it as a conflict.
+    (repo_dir / "outside" / "after-start.txt").write_text("appeared later\n", encoding="utf-8")
+
+    result = _takeover(
+        repo_dir, predecessor["claim_id"], Reason="Replacement continues with a new scope.",
+        Scope=["scope-b"],
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    replacement = parse_json_stdout(result)["claims"][0]
+    assert replacement["scope_paths"] == ["scope-b"]
+    replacement_dirty_paths = {entry["path"] for entry in replacement["preexisting_dirty"]}
+    assert replacement_dirty_paths == {"outside/before-start.txt", "outside/after-start.txt"}
+
+    history = json.loads(_history_path_for(repo_dir, predecessor["claim_id"]).read_text(encoding="utf-8"))
+    assert history["scope_paths"] == ["scope-a"]
+    assert history["preexisting_dirty"] == predecessor["preexisting_dirty"]
+
+
+# ---------------------------------------------------------------------------
+# Step 3: fault/retry at each fixed boundary
+# ---------------------------------------------------------------------------
+
+
+class TakeoverFixture(NamedTuple):
+    repo_dir: Path
+    workstream_id: str
+    predecessor_claim_id: str
+    scope: list
+    journal_path: Path
+
+
+def _make_takeover_fixture(repo_dir: Path, *, scope=("shared",)) -> TakeoverFixture:
+    start_result = _start(repo_dir, Scope=list(scope))
+    assert start_result.returncode == 0, f"stdout={start_result.stdout!r} stderr={start_result.stderr!r}"
+    claim_id = parse_json_stdout(start_result)["claim_id"]
+    _expire_claim(repo_dir)
+    return TakeoverFixture(
+        repo_dir=repo_dir,
+        workstream_id="continuity-pilot",
+        predecessor_claim_id=claim_id,
+        scope=list(scope),
+        journal_path=_takeover_journal_path_for(repo_dir, claim_id),
+    )
+
+
+@pytest.fixture()
+def takeover_repo(continuity_repo: Path) -> TakeoverFixture:
+    return _make_takeover_fixture(continuity_repo)
+
+
+def test_takeover_after_prepare_fault_leaves_old_claim_authoritative_and_retry_completes(takeover_repo):
+    """At `takeover-after-prepare` (immediately after the journal finishes
+    writing, before activation), the old claim is still `active` and
+    authoritative; the journal is readable; and retrying the exact same
+    `takeover` call completes it, reusing the ALREADY-prepared replacement
+    claim ID rather than generating a second one (Task 7 brief, Step 3)."""
+    faulted = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "takeover-after-prepare"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "takeover-after-prepare" not in faulted.stdout
+    assert "takeover-after-prepare" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative old claim"
+    assert recovery["authoritative_owner"] == "predecessor"
+    assert recovery["claim_id"] == takeover_repo.predecessor_claim_id
+    assert takeover_repo.predecessor_claim_id in recovery["retry_command"]
+
+    assert takeover_repo.journal_path.exists()
+    journal = json.loads(takeover_repo.journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "prepared"
+    prepared_replacement_id = journal["new_claim"]["claim_id"]
+
+    claim = _current_claim(takeover_repo.repo_dir)
+    assert claim["claim_id"] == takeover_repo.predecessor_claim_id
+    assert claim["state"] == "active"
+
+    retry = _takeover(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == prepared_replacement_id
+    assert not takeover_repo.journal_path.exists()
+
+
+def test_takeover_resume_warns_on_identity_mismatch_with_journal(takeover_repo):
+    """A resumed `takeover` retry that resupplies a DIFFERENT `-Agent`/
+    `-SessionId` than the journal's already-recorded replacement identity
+    still completes using the RECORDED identity (no behavior change) but now
+    surfaces the mismatch as a warning, mirroring accept's
+    `accept-identity-mismatch` warning (Task 6 review Fix 2)."""
+    faulted = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "takeover-after-prepare"},
+    )
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+
+    journal = json.loads(takeover_repo.journal_path.read_text(encoding="utf-8"))
+    recorded_agent = journal["new_claim"]["agent"]
+    recorded_session_id = journal["new_claim"]["session_id"]
+    assert recorded_agent == "claude"
+    assert recorded_session_id == "claude-session-1"
+
+    retry = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        Agent="codex", SessionId="codex-session-9",
+    )
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["agent"] == recorded_agent
+    assert retry_parsed["claims"][0]["session_id"] == recorded_session_id
+    warning_codes = {warning["code"] for warning in retry_parsed["warnings"]}
+    assert "takeover-identity-mismatch" in warning_codes
+
+
+def test_takeover_after_activate_fault_leaves_replacement_authoritative_and_retry_completes(takeover_repo):
+    """At `takeover-after-activate` (immediately after the replacement claim
+    replaces the active claim file), the replacement IS already `active` and
+    authoritative: it blocks a `start` from the predecessor's own identity,
+    and retrying the exact same `takeover` call completes it without
+    creating a second replacement (Task 7 brief, Step 3)."""
+    faulted = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "takeover-after-activate"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "takeover-after-activate" not in faulted.stdout
+    assert "takeover-after-activate" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative replacement"
+    assert recovery["authoritative_owner"] == "successor"
+    replacement_claim_id = recovery["claim_id"]
+    assert replacement_claim_id != takeover_repo.predecessor_claim_id
+
+    claim = _current_claim(takeover_repo.repo_dir)
+    assert claim["claim_id"] == replacement_claim_id
+    assert claim["state"] == "active"
+    assert takeover_repo.journal_path.exists()
+
+    blocked_start = _start(takeover_repo.repo_dir, Scope=takeover_repo.scope)
+    assert blocked_start.returncode == 2, f"stdout={blocked_start.stdout!r} stderr={blocked_start.stderr!r}"
+
+    retry = _takeover(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == replacement_claim_id
+    assert not takeover_repo.journal_path.exists()
+
+
+def test_takeover_after_archive_fault_leaves_replacement_authoritative_and_retry_completes(takeover_repo):
+    """At `takeover-after-archive` (immediately after the old claim's history
+    record finishes writing, before the journal is deleted), the old claim
+    IS already archived with `final_state: replaced`, the replacement is
+    active and authoritative, and retrying only needs to validate the
+    cross-references and delete the journal -- never creating a second
+    replacement or a second history record (Task 7 brief, Step 3)."""
+    faulted = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "takeover-after-archive"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "takeover-after-archive" not in faulted.stdout
+    assert "takeover-after-archive" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative replacement"
+    assert recovery["authoritative_owner"] == "successor"
+    replacement_claim_id = recovery["claim_id"]
+
+    claim = _current_claim(takeover_repo.repo_dir)
+    assert claim["claim_id"] == replacement_claim_id
+    assert takeover_repo.journal_path.exists()
+
+    history_path = _history_path_for(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id)
+    assert history_path.exists()
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["final_state"] == "replaced"
+    assert history["successor_claim_id"] == replacement_claim_id
+
+    retry = _takeover(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == replacement_claim_id
+    assert not takeover_repo.journal_path.exists()
+
+
+def test_takeover_after_archive_retry_does_not_rewrite_history_record(takeover_repo):
+    """The old claim's history record must be write-once. A resumed retry
+    AFTER the `takeover-after-archive` fault (the history record already
+    finished writing before the fault interrupted the journal delete) must
+    NEVER recompute `ended_utc` or rewrite any other field of the
+    already-archived, immutable record (mirrors accept's Task 6 review
+    Fix 1)."""
+    faulted = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "takeover-after-archive"},
+    )
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+
+    history_path = _history_path_for(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id)
+    assert history_path.exists()
+    first_write = json.loads(history_path.read_text(encoding="utf-8"))
+    assert first_write.get("ended_utc")
+
+    # A fresh, distinguishable timestamp between the first write and the
+    # retry makes an accidental overwrite observable rather than relying on
+    # sub-second timer luck (the recorded format has one-second resolution).
+    time.sleep(1.1)
+
+    retry = _takeover(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    assert history_path.exists()
+    second_write = json.loads(history_path.read_text(encoding="utf-8"))
+
+    assert second_write == first_write
+    assert second_write["ended_utc"] == first_write["ended_utc"]

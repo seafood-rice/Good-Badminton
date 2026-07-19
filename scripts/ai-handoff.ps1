@@ -8,23 +8,27 @@
     docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md and
     docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md.
 
-    `status`, `start`, `update`, `handoff`, and `accept` are implemented,
-    along with the internal boundaries they and later tasks extend:
-    Invoke-Git, Get-RepositoryContext, Normalize-Id, Normalize-ScopePath,
+    `status`, `start`, `update`, `handoff`, `accept`, and `takeover` are all
+    implemented, along with the internal boundaries they extend: Invoke-Git,
+    Get-RepositoryContext, Normalize-Id, Normalize-ScopePath,
     Read-ContinuityState, New-OperationResult, Write-Result, Invoke-Status,
     Use-ContinuityLock, Write-JsonAtomic, Get-DirtyFingerprint, Invoke-Start,
     Read-WorkstreamDocument, Write-WorkstreamDocument, Invoke-Update,
     Get-CommittedNameStatus, Test-PreexistingDirtyUnchanged,
     Read-CommittedWorkstream, Test-HandoffCoverage, Invoke-Handoff,
-    Test-AcceptPreActivationInvariants, Invoke-AcceptPauseFault, and
-    Invoke-Accept. `accept` uses an explicit transaction journal under
+    Test-AcceptPreActivationInvariants, Invoke-AcceptPauseFault,
+    Invoke-Accept, Test-TakeoverPreActivationInvariants, and Invoke-Takeover.
+    `accept` uses an explicit transaction journal under
     `<git-common-dir>/ai-continuity/transactions/accept-<old-claim-id>.json`
     to atomically activate a successor claim and archive its predecessor to
-    `<git-common-dir>/ai-continuity/history/<claim-id>.json` (design spec,
-    "Handoff write ordering and recovery"). `takeover` is declared in the
-    parameter surface per the approved helper contract but is not yet
-    implemented; invoking it returns a validation error (exit 2) until a
-    later task adds it.
+    `<git-common-dir>/ai-continuity/history/<claim-id>.json` with
+    `final_state: handed-off` (design spec, "Handoff write ordering and
+    recovery"). `takeover` mirrors the same prepare/activate/archive journal
+    state machine under
+    `<git-common-dir>/ai-continuity/transactions/takeover-<old-claim-id>.json`
+    to explicitly replace an EXPIRED `active` or `handoff-ready` claim and
+    archive it to history with `final_state: replaced`; a live claim cannot
+    be taken over.
 
     `status` never acquires the common continuity lock and never creates
     `<git-common-dir>/ai-continuity`. Missing continuity directories mean
@@ -229,7 +233,10 @@ $Script:KnownTestFaultNames = @(
     'accept-after-activate',
     'accept-pause-after-activate',
     'accept-after-revalidate',
-    'accept-after-archive'
+    'accept-after-archive',
+    'takeover-after-prepare',
+    'takeover-after-activate',
+    'takeover-after-archive'
 )
 
 # Case sensitivity for scope/path comparisons is derived from the
@@ -923,10 +930,24 @@ function ConvertFrom-ContinuityTimestamp {
         An unparseable value is malformed durable state (exit 3), so this
         raises ContinuityStateException rather than letting a raw .NET
         FormatException leak out as an unexpected error.
+    .DESCRIPTION
+        `-Value` is deliberately left untyped rather than declared
+        `[string]`: `ConvertFrom-Json` silently auto-detects ISO-8601-shaped
+        JSON string values (a documented Newtonsoft.Json quirk every claim
+        timestamp field triggers) and deserializes them as `[DateTime]`
+        instead of `[string]`. A `[string]`-typed parameter would force
+        PowerShell to implicitly re-stringify that `[DateTime]` with the
+        CURRENT CULTURE's default format before this function ever saw it --
+        silently discarding the UTC "Z" marker and corrupting any downstream
+        comparison against `[DateTimeOffset]::UtcNow` on any machine whose
+        local time zone is not UTC+0. Every timestamp this helper persists is
+        always UTC by construction, so a `[DateTime]` input is interpreted as
+        UTC directly regardless of its deserialized `Kind`.
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Value,
+        [AllowNull()]
+        $Value,
         [Parameter(Mandatory = $true)]
         [string] $FieldName,
         [Parameter(Mandatory = $true)]
@@ -934,7 +955,10 @@ function ConvertFrom-ContinuityTimestamp {
     )
 
     try {
-        return [DateTimeOffset]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($Value -is [DateTime]) {
+            return [DateTimeOffset]::new([DateTime]::SpecifyKind($Value, [DateTimeKind]::Utc))
+        }
+        return [DateTimeOffset]::Parse([string] $Value, [System.Globalization.CultureInfo]::InvariantCulture)
     }
     catch {
         throw [ContinuityStateException]::new(
@@ -3839,6 +3863,540 @@ function Invoke-Accept {
     }
 }
 
+function Test-TakeoverPreActivationInvariants {
+    <#
+    .SYNOPSIS
+        Revalidates every recorded Git invariant an expired claim must still
+        satisfy immediately before `takeover` may activate its replacement
+        (design spec, Helper Contract: "takeover"; Task 7 brief: "same
+        protected branch and clean claimed-scope checks as start, requires
+        unchanged pre-existing dirty fingerprints from the prior claim"): the
+        same canonical worktree and branch the claim was recorded on (Task 6
+        review Fix 3's own-branch-comparison nuance applies here too, since
+        Assert-WorkstreamBranchAllowed alone accepts either the `codex/` or
+        `claude/` prefix for this exact workstream id), a still-expired
+        lease, and unchanged pre-existing dirty fingerprints. Throws
+        ContinuityValidationException (exit 2) on any mismatch, so the
+        claim being taken over remains authoritative and blocking.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [Parameter(Mandatory = $true)]
+        $OldClaim
+    )
+
+    $worktreePath = ConvertTo-ForwardSlashPath -Path $Context.WorktreePath
+    if ($OldClaim.worktree_path -cne $worktreePath -or $OldClaim.branch -cne $Context.Branch) {
+        throw [ContinuityValidationException]::new(
+            "Claim '$($OldClaim.claim_id)' was recorded in a different canonical worktree or branch than the current one."
+        )
+    }
+
+    $leaseUntil = ConvertFrom-ContinuityTimestamp -Value $OldClaim.lease_until_utc -FieldName 'lease_until_utc' `
+        -ClaimId $OldClaim.claim_id
+    if ($leaseUntil -gt [DateTimeOffset]::UtcNow) {
+        throw [ContinuityValidationException]::new(
+            "Claim '$($OldClaim.claim_id)' has not expired; a live claim cannot be taken over."
+        )
+    }
+
+    Test-PreexistingDirtyUnchanged -RepoRoot $Context.RepoRoot -PreexistingDirty @($OldClaim.preexisting_dirty) `
+        -CurrentStatusEntries @(Get-GitStatusEntries -RepoRoot $Context.RepoRoot)
+}
+
+function Invoke-Takeover {
+    <#
+    .SYNOPSIS
+        Explicitly replaces an EXPIRED `active` or `handoff-ready` claim
+        (design spec, Helper Contract: "takeover"; Local Claim Model: "It may
+        ... be explicitly replaced through takeover using its exact claim ID
+        and a reason; it is never silently deleted or downgraded to
+        active"). A live claim -- one whose lease has not yet expired --
+        cannot be taken over regardless of how exact the supplied
+        `-PreviousClaimId` and `-Reason` are. Uses an explicit transaction
+        journal at
+        `<git-common-dir>/ai-continuity/transactions/takeover-<old-claim-id>.json`,
+        mirroring `accept`'s prepare/activate/archive state machine, so a
+        crash or injected fault at any boundary leaves exactly one
+        authoritative owner -- the old claim before activation, the
+        replacement after -- and an idempotent retry of this exact call
+        always resumes the same transaction rather than creating a second
+        replacement.
+    .DESCRIPTION
+        Under the single common lock:
+          1. If a `prepared` journal already exists for `-PreviousClaimId`,
+             resume it: use its recorded old/new claim snapshots instead of
+             re-deriving them. Otherwise, locate the live claim for
+             `-Workstream` by the exact `-PreviousClaimId`, require it to be
+             expired, revalidate every recorded Git invariant
+             (Test-TakeoverPreActivationInvariants), reject a supplied scope
+             that overlaps any OTHER live claim or is currently dirty, and
+             capture a fresh out-of-scope dirty baseline for the replacement
+             relative to the SUPPLIED scope (never the old claim's own
+             scope), then atomically write the `prepared` journal (fault
+             `takeover-after-prepare`).
+          2. Unless the live claim for this workstream already IS the
+             replacement (a resumed retry after activation completed),
+             atomically replace the active claim file with the replacement
+             (fault `takeover-after-activate`). Before this point the old
+             claim remains authoritative; after it, the replacement does.
+          3. Archive the old claim to
+             `<git-common-dir>/ai-continuity/history/<old-claim-id>.json`
+             with `final_state: replaced`, its OWN (old) scope and dirty
+             evidence, and cross-references to the replacement (fault
+             `takeover-after-archive`).
+          4. Re-read the replacement claim and history record and validate
+             they cross-reference each other in both directions, then delete
+             the journal.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [string] $Agent,
+        [string] $SessionId,
+        [string] $Workstream,
+        [string[]] $Scope,
+        [string] $PreviousClaimId,
+        [string] $Reason,
+        [int] $LeaseHours,
+        [Parameter(Mandatory = $true)]
+        [bool] $LeaseHoursSupplied
+    )
+
+    # --- Validation before any filesystem mutation -------------------------
+    Assert-RequiredParameter -Value $Agent -Name 'Agent'
+    Assert-RequiredParameter -Value $SessionId -Name 'SessionId'
+    Assert-RequiredParameter -Value $Workstream -Name 'Workstream'
+    Assert-RequiredParameter -Value $PreviousClaimId -Name 'PreviousClaimId'
+    Assert-RequiredParameter -Value $Reason -Name 'Reason'
+    if (-not $Scope -or @($Scope).Count -eq 0) {
+        throw [ContinuityValidationException]::new('-Scope must include at least one path.')
+    }
+
+    $agent = Assert-ValidAgent -Value $Agent
+    $sessionId = Normalize-Id -Value $SessionId -Kind 'Session'
+    $workstreamId = Normalize-Id -Value $Workstream -Kind 'Workstream'
+
+    # Every claim ID this helper ever generates is a standard hyphenated GUID
+    # ([Guid]::NewGuid().ToString()); takeover, like accept, splices
+    # `-PreviousClaimId` directly into a filesystem path (the transaction
+    # journal name), so this format check also closes off path injection
+    # from unsafe input before any lock or mutation.
+    if ($PreviousClaimId -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        throw [ContinuityValidationException]::new("-PreviousClaimId '$PreviousClaimId' must be a GUID.")
+    }
+
+    $normalizedScope = @()
+    foreach ($rawScopePath in $Scope) {
+        $normalizedPath = Normalize-ScopePath -Path $rawScopePath
+        Resolve-ScopeContainment -RepoRoot $Context.RepoRoot -NormalizedScope $normalizedPath | Out-Null
+        $normalizedScope += $normalizedPath
+    }
+    $normalizedScope = @($normalizedScope | Select-Object -Unique)
+
+    $leaseHours = if ($LeaseHoursSupplied) { $LeaseHours } else { $Script:DefaultLeaseHours }
+
+    Assert-WorkstreamBranchAllowed -Context $Context -WorkstreamId $workstreamId
+
+    # --- Under the common lock ---------------------------------------------
+    $continuityDir = Join-Path $Context.GitCommonDir $Script:ContinuityDirName
+    $lockPath = Join-Path $continuityDir $Script:LockFileName
+    $claimsDir = Join-Path $continuityDir 'claims'
+    $transactionsDir = Join-Path $continuityDir 'transactions'
+    $historyDir = Join-Path $continuityDir 'history'
+    $journalPath = Join-Path $transactionsDir "takeover-$PreviousClaimId.json"
+
+    # The exact idempotent retry command (mirrors accept's design: "An
+    # exit-recovery retry runs the same command"). A literal single quote in
+    # -Reason or a scope segment must have its embedded quotes escaped as ''
+    # before splicing into this single-quoted PowerShell literal, otherwise
+    # the emitted retry_command is not valid, copy-pasteable PowerShell
+    # source (mirrors Invoke-Start's identical rationale).
+    $escapedReason = $Reason.Replace("'", "''")
+    $escapedScopeForRetry = @($normalizedScope | ForEach-Object { $_.Replace("'", "''") })
+    $retryCommand = "takeover -Agent $agent -SessionId $sessionId -Workstream $workstreamId " +
+        "-PreviousClaimId $PreviousClaimId -Reason '$escapedReason' " +
+        "-Scope @('$($escapedScopeForRetry -join "', '")')"
+
+    return Use-ContinuityLock -LockPath $lockPath -ScriptBlock {
+        $warnings = [System.Collections.Generic.List[object]]::new()
+        $claimPath = Join-Path $claimsDir "$workstreamId.json"
+
+        # --- Resume an existing prepared transaction, or read live claims ---
+        $journal = $null
+        if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
+            $rawJournalText = [System.IO.File]::ReadAllText($journalPath, [System.Text.UTF8Encoding]::new($false))
+            try {
+                $journal = $rawJournalText | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw [ContinuityStateException]::new("Malformed takeover transaction JSON at '$journalPath': $($_.Exception.Message)")
+            }
+            if ($null -eq $journal -or $journal.transaction -cne 'takeover' -or $journal.state -cne 'prepared' -or
+                $null -eq $journal.old_claim -or $null -eq $journal.new_claim -or
+                $journal.previous_claim_id -cne $PreviousClaimId -or
+                $journal.old_claim.claim_id -cne $PreviousClaimId -or
+                $journal.workstream_id -cne $workstreamId) {
+                throw [ContinuityStateException]::new("Takeover transaction '$journalPath' is malformed.")
+            }
+        }
+
+        $continuityState = Read-ContinuityState -GitCommonDir $Context.GitCommonDir
+        $claims = @($continuityState.Claims)
+        $liveClaimForWorkstream = @($claims | Where-Object { $_.workstream_id -ceq $workstreamId })
+        $liveClaim = if ($liveClaimForWorkstream.Count -gt 0) { $liveClaimForWorkstream[0] } else { $null }
+
+        if ($null -ne $journal) {
+            $oldClaimSnapshot = $journal.old_claim
+            $newClaim = $journal.new_claim
+
+            # A resupplied -Agent/-SessionId that differs from the identity
+            # already recorded when this transaction began is surfaced as a
+            # warning -- never a new failure mode for an already-in-flight,
+            # idempotent retry -- mirroring accept's `accept-identity-
+            # mismatch` warning (Task 6 review Fix 2).
+            if ($newClaim.agent -cne $agent -or $newClaim.session_id -cne $sessionId) {
+                $warnings.Add(@{
+                    code    = 'takeover-identity-mismatch'
+                    message = "Resupplied -Agent/-SessionId do not match the replacement identity recorded when claim '$PreviousClaimId' began being taken over; proceeding with the recorded replacement identity."
+                })
+            }
+
+            # --- Resume: determine whether activation already happened -----
+            $activated = ($null -ne $liveClaim -and $liveClaim.claim_id -ceq $newClaim.claim_id -and
+                $liveClaim.state -ceq 'active')
+
+            if (-not $activated) {
+                if ($null -eq $liveClaim -or $liveClaim.claim_id -cne $oldClaimSnapshot.claim_id -or
+                    ($liveClaim.state -cne 'active' -and $liveClaim.state -cne 'handoff-ready')) {
+                    throw [ContinuityValidationException]::new(
+                        "Claim '$PreviousClaimId' is no longer the recorded claim being taken over; takeover cannot proceed."
+                    )
+                }
+
+                # Git or the working tree may have drifted since the journal
+                # was prepared (a crash, or a retry after the prepare-only
+                # fault); re-revalidate before activating.
+                Test-TakeoverPreActivationInvariants -Context $Context -OldClaim $liveClaim
+
+                $newScope = @($newClaim.scope_paths)
+                foreach ($entry in @(Get-GitStatusEntries -RepoRoot $Context.RepoRoot)) {
+                    $touchedPaths = @($entry.Path)
+                    if ($entry.OriginalPath) { $touchedPaths += $entry.OriginalPath }
+                    foreach ($touchedPath in $touchedPaths) {
+                        if (Test-PathWithinScope -Path $touchedPath -ScopePrefixes $newScope) {
+                            throw [ContinuityValidationException]::new(
+                                "Path '$($entry.Path)' (status '$($entry.Status)') is dirty inside the requested scope; takeover cannot proceed."
+                            )
+                        }
+                    }
+                }
+
+                try {
+                    Write-JsonAtomic -Path $claimPath -Object $newClaim `
+                        -FaultAfterReplace 'takeover-after-activate'
+                }
+                catch [ContinuityTestFaultException] {
+                    $stateException = [ContinuityStateException]::new(
+                        'Atomic claim write did not complete after replacing the target file; the replacement claim is authoritative.'
+                    )
+                    $stateException.ClaimId = $newClaim.claim_id
+                    $stateException.Recovery = [PSCustomObject][ordered]@{
+                        claim_id            = $newClaim.claim_id
+                        authoritative_owner = 'successor'
+                        transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                        transaction_state   = 'activated'
+                        retry_command       = $retryCommand
+                    }
+                    throw $stateException
+                }
+            }
+        }
+        else {
+            # --- Fresh takeover: full validation before any mutation -------
+            if ($null -eq $liveClaim -or $liveClaim.claim_id -cne $PreviousClaimId) {
+                throw [ContinuityValidationException]::new(
+                    "No live claim found matching claim id '$PreviousClaimId' for workstream '$workstreamId'."
+                )
+            }
+            if ($liveClaim.state -cne 'active' -and $liveClaim.state -cne 'handoff-ready') {
+                throw [ContinuityValidationException]::new(
+                    "Claim '$PreviousClaimId' is not in a takeover-eligible state (state '$($liveClaim.state)')."
+                )
+            }
+
+            # Worktree/branch match, still-expired lease, and unchanged
+            # pre-existing dirty fingerprints -- in that order -- BEFORE any
+            # scope-specific check (Task 7 brief: "FIRST require every
+            # predecessor dirty fingerprint unchanged").
+            Test-TakeoverPreActivationInvariants -Context $Context -OldClaim $liveClaim
+
+            $othersLive = @($claims | Where-Object {
+                    $_.workstream_id -cne $workstreamId -and ($_.state -eq 'active' -or $_.state -eq 'handoff-ready')
+                })
+            foreach ($other in $othersLive) {
+                if (Test-ScopeOverlap -Left $normalizedScope -Right @($other.scope_paths)) {
+                    throw [ContinuityValidationException]::new(
+                        "Requested scope overlaps live claim '$($other.claim_id)' for workstream '$($other.workstream_id)'."
+                    )
+                }
+            }
+
+            # --- THEN: reject dirt newly inside the supplied scope, and ----
+            # capture a fresh out-of-scope dirty baseline for the
+            # replacement, relative to the SUPPLIED scope (never the old
+            # claim's own scope).
+            $statusEntries = Get-GitStatusEntries -RepoRoot $Context.RepoRoot
+            $inScopeMessages = @()
+            $preexistingDirty = @()
+
+            foreach ($entry in $statusEntries) {
+                $touchedPaths = @($entry.Path)
+                if ($entry.OriginalPath) { $touchedPaths += $entry.OriginalPath }
+
+                $entryInScope = $false
+                foreach ($touchedPath in $touchedPaths) {
+                    if (Test-PathWithinScope -Path $touchedPath -ScopePrefixes $normalizedScope) {
+                        $entryInScope = $true
+                        break
+                    }
+                }
+
+                if ($entryInScope) {
+                    $inScopeMessages += "Path '$($entry.Path)' (status '$($entry.Status)') is dirty inside the requested scope."
+                    continue
+                }
+
+                $fingerprint = Get-DirtyFingerprint -RepoRoot $Context.RepoRoot -RepoRelativePath $entry.Path
+                $indexEntries = @(Get-IndexEntries -RepoRoot $Context.RepoRoot -Path $entry.Path)
+
+                $preexistingDirty += [PSCustomObject][ordered]@{
+                    path            = $entry.Path
+                    original_path   = $entry.OriginalPath
+                    status          = $entry.Status
+                    kind            = $fingerprint.Kind
+                    worktree_sha256 = $fingerprint.WorktreeSha256
+                    index_entries   = $indexEntries
+                }
+            }
+
+            if ($inScopeMessages.Count -gt 0) {
+                throw [ContinuityValidationException]::new(($inScopeMessages -join ' '))
+            }
+
+            $preexistingDirtySorted = @(
+                [System.Linq.Enumerable]::OrderBy(
+                    [object[]] $preexistingDirty,
+                    [Func[object, string]] { param($item) $item.path },
+                    [System.StringComparer]::InvariantCulture
+                )
+            )
+
+            $nowUtc = [DateTimeOffset]::UtcNow
+            $nowText = $nowUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+            $leaseUntilText = $nowUtc.AddHours($leaseHours).ToString(
+                "yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture
+            )
+
+            $oldClaimSnapshot = $liveClaim
+
+            $newClaim = [PSCustomObject][ordered]@{
+                schema_version          = 1
+                claim_id                = [Guid]::NewGuid().ToString()
+                workstream_id           = $workstreamId
+                agent                   = $agent
+                session_id              = $sessionId
+                worktree_path           = (ConvertTo-ForwardSlashPath -Path $Context.WorktreePath)
+                branch                  = $Context.Branch
+                base_commit             = $Context.Head
+                scope_paths             = $normalizedScope
+                started_utc             = $nowText
+                heartbeat_utc           = $nowText
+                lease_until_utc         = $leaseUntilText
+                state                   = 'active'
+                preexisting_dirty       = $preexistingDirtySorted
+                predecessor_claim_id    = $null
+                replaces_claim_id       = $oldClaimSnapshot.claim_id
+                replacement_reason      = $Reason
+                durable_status_path     = $null
+                durable_status_sha256   = $null
+                durable_status_blob_oid = $null
+                handoff_commit          = $null
+            }
+
+            $journalObject = [PSCustomObject][ordered]@{
+                schema_version    = 1
+                transaction       = 'takeover'
+                state             = 'prepared'
+                previous_claim_id = $oldClaimSnapshot.claim_id
+                workstream_id     = $workstreamId
+                reason            = $Reason
+                created_utc       = $nowText
+                old_claim         = $oldClaimSnapshot
+                new_claim         = $newClaim
+            }
+
+            try {
+                Write-JsonAtomic -Path $journalPath -Object $journalObject `
+                    -FaultAfterReplace 'takeover-after-prepare'
+            }
+            catch [ContinuityTestFaultException] {
+                $stateException = [ContinuityStateException]::new(
+                    'Takeover transaction journal did not finish writing; the prior claim remains authoritative.'
+                )
+                $stateException.ClaimId = $oldClaimSnapshot.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $oldClaimSnapshot.claim_id
+                    authoritative_owner = 'predecessor'
+                    transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                    transaction_state   = 'prepared'
+                    retry_command       = $retryCommand
+                }
+                throw $stateException
+            }
+
+            try {
+                Write-JsonAtomic -Path $claimPath -Object $newClaim `
+                    -FaultAfterReplace 'takeover-after-activate'
+            }
+            catch [ContinuityTestFaultException] {
+                $stateException = [ContinuityStateException]::new(
+                    'Atomic claim write did not complete after replacing the target file; the replacement claim is authoritative.'
+                )
+                $stateException.ClaimId = $newClaim.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $newClaim.claim_id
+                    authoritative_owner = 'successor'
+                    transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                    transaction_state   = 'activated'
+                    retry_command       = $retryCommand
+                }
+                throw $stateException
+            }
+        }
+
+        # --- Archive the old claim to immutable history ---------------------
+        # Write-once: a resumed retry after the `takeover-after-archive`
+        # fault (the write completed but the journal delete never ran) must
+        # reuse the record already on disk verbatim rather than recomputing
+        # `ended_utc` and rewriting it -- history is immutable once recorded
+        # (mirrors accept's Task 6 review Fix 1). Only build and write a
+        # fresh record when no matching, already-archived record exists.
+        $historyPath = Join-Path $historyDir "$($oldClaimSnapshot.claim_id).json"
+        $existingHistoryRecord = $null
+        if (Test-Path -LiteralPath $historyPath -PathType Leaf) {
+            $existingHistoryText = [System.IO.File]::ReadAllText($historyPath, [System.Text.UTF8Encoding]::new($false))
+            try {
+                $existingHistoryRecord = $existingHistoryText | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw [ContinuityStateException]::new("Malformed history record JSON at '$historyPath': $($_.Exception.Message)")
+            }
+        }
+
+        if ($null -ne $existingHistoryRecord -and $existingHistoryRecord.final_state -ceq 'replaced' -and
+            $existingHistoryRecord.claim_id -ceq $oldClaimSnapshot.claim_id -and
+            $existingHistoryRecord.successor_claim_id -ceq $newClaim.claim_id) {
+            $historyRecord = $existingHistoryRecord
+        }
+        else {
+            $endedUtc = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+            $historyRecord = [PSCustomObject][ordered]@{
+                schema_version          = 1
+                claim_id                = $oldClaimSnapshot.claim_id
+                workstream_id           = $oldClaimSnapshot.workstream_id
+                agent                   = $oldClaimSnapshot.agent
+                session_id              = $oldClaimSnapshot.session_id
+                worktree_path           = $oldClaimSnapshot.worktree_path
+                branch                  = $oldClaimSnapshot.branch
+                base_commit             = $oldClaimSnapshot.base_commit
+                scope_paths             = @($oldClaimSnapshot.scope_paths)
+                started_utc             = $oldClaimSnapshot.started_utc
+                heartbeat_utc           = $oldClaimSnapshot.heartbeat_utc
+                lease_until_utc         = $oldClaimSnapshot.lease_until_utc
+                state                   = $oldClaimSnapshot.state
+                preexisting_dirty       = @($oldClaimSnapshot.preexisting_dirty)
+                predecessor_claim_id    = $oldClaimSnapshot.predecessor_claim_id
+                replaces_claim_id       = $oldClaimSnapshot.replaces_claim_id
+                replacement_reason      = $oldClaimSnapshot.replacement_reason
+                durable_status_path     = $oldClaimSnapshot.durable_status_path
+                durable_status_sha256   = $oldClaimSnapshot.durable_status_sha256
+                durable_status_blob_oid = $oldClaimSnapshot.durable_status_blob_oid
+                handoff_commit          = $oldClaimSnapshot.handoff_commit
+                final_state             = 'replaced'
+                ended_utc                = $endedUtc
+                successor_claim_id       = $newClaim.claim_id
+                successor_agent          = $newClaim.agent
+                successor_session_id     = $newClaim.session_id
+                takeover_reason          = $Reason
+            }
+
+            try {
+                Write-JsonAtomic -Path $historyPath -Object $historyRecord `
+                    -FaultAfterReplace 'takeover-after-archive'
+            }
+            catch [ContinuityTestFaultException] {
+                $stateException = [ContinuityStateException]::new(
+                    'A fault interrupted takeover after archiving the prior claim; the replacement claim remains authoritative.'
+                )
+                $stateException.ClaimId = $newClaim.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $newClaim.claim_id
+                    authoritative_owner = 'successor'
+                    transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                    transaction_state   = 'activated'
+                    retry_command       = $retryCommand
+                }
+                throw $stateException
+            }
+        }
+
+        # --- Cross-reference validation, then delete the journal ------------
+        $rereadClaimText = [System.IO.File]::ReadAllText($claimPath, [System.Text.UTF8Encoding]::new($false))
+        $rereadClaim = $rereadClaimText | ConvertFrom-Json -ErrorAction Stop
+        $rereadHistoryText = [System.IO.File]::ReadAllText($historyPath, [System.Text.UTF8Encoding]::new($false))
+        $rereadHistory = $rereadHistoryText | ConvertFrom-Json -ErrorAction Stop
+
+        if ($rereadClaim.claim_id -cne $newClaim.claim_id -or
+            $rereadClaim.replaces_claim_id -cne $oldClaimSnapshot.claim_id) {
+            throw [ContinuityStateException]::new(
+                'The active replacement claim does not cross-reference the claim it replaced as expected.'
+            )
+        }
+        if ($rereadHistory.final_state -cne 'replaced' -or
+            $rereadHistory.claim_id -cne $oldClaimSnapshot.claim_id -or
+            $rereadHistory.successor_claim_id -cne $newClaim.claim_id) {
+            throw [ContinuityStateException]::new(
+                'The replaced claim history record does not cross-reference its replacement as expected.'
+            )
+        }
+
+        if (Test-Path -LiteralPath $journalPath) {
+            Remove-Item -LiteralPath $journalPath -Force
+        }
+
+        $gitInfo = [ordered]@{
+            worktree_path    = ConvertTo-ForwardSlashPath -Path $Context.WorktreePath
+            branch           = $Context.Branch
+            detached         = $Context.Detached
+            head             = $Context.Head
+            upstream         = $Context.Upstream
+            protected_branch = $Context.ProtectedBranch
+        }
+
+        return New-OperationResult -Operation 'takeover' `
+            -RepoRoot (ConvertTo-ForwardSlashPath -Path $Context.RepoRoot) `
+            -GitCommonDir (ConvertTo-ForwardSlashPath -Path $Context.GitCommonDir) `
+            -WorkstreamId $workstreamId `
+            -ClaimId $newClaim.claim_id `
+            -Git ([PSCustomObject] $gitInfo) `
+            -Claims @($newClaim) `
+            -Warnings @($warnings) `
+            -Errors @()
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Single top-level try/catch/finally: maps validation, malformed-state,
 # Git-context, and accept-drift-recovery exceptions to the stable exit codes
@@ -3891,9 +4449,14 @@ try {
             Invoke-Accept -Context $repositoryContext -PreviousClaimId $PreviousClaimId -Agent $Agent `
                 -SessionId $SessionId
         }
+        'takeover' {
+            Invoke-Takeover -Context $repositoryContext -Agent $Agent -SessionId $SessionId `
+                -Workstream $Workstream -Scope $Scope -PreviousClaimId $PreviousClaimId -Reason $Reason `
+                -LeaseHours $LeaseHours -LeaseHoursSupplied $PSBoundParameters.ContainsKey('LeaseHours')
+        }
         default {
             throw [ContinuityValidationException]::new(
-                "Operation '$Operation' is not implemented yet; only 'status', 'start', 'update', 'handoff', and 'accept' are available."
+                "Operation '$Operation' is not recognized; expected one of: $($Script:ValidOperations -join ', ')."
             )
         }
     }
