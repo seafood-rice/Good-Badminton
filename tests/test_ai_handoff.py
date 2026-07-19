@@ -2783,3 +2783,797 @@ def test_update_claim_rewrite_failure_leaves_old_claim_authoritative_and_retry_v
     retry_parsed = parse_json_stdout(retry)
     assert retry_parsed["claim_id"] == update_repo.claim_id
     assert len(retry_parsed["claims"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 5: committed handoffs and exact Git reconciliation
+# ---------------------------------------------------------------------------
+
+
+class HandoffFixture(NamedTuple):
+    repo_dir: Path
+    claim_id: str
+    workstream_path: Path
+    scope: list
+    next_action: str
+
+
+def _start_handoff_claim(repo_dir: Path, scope) -> str:
+    result = _start(repo_dir, Scope=list(scope))
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    return parse_json_stdout(result)["claim_id"]
+
+
+def _make_handoff_fixture(repo_dir: Path) -> HandoffFixture:
+    """Commit a fully-shaped owned workstream document, then start one
+    active `continuity-pilot` claim scoped to both the workstream file
+    itself (design spec: "every write claim includes its own
+    `.ai/workstreams/<workstream-id>.md` path in scope") and a `shared/`
+    working directory (Task 5 brief, Steps 1-2)."""
+    workstream_path = repo_dir / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(
+        _full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8"
+    )
+    add_result = _run_git(["add", "."], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(
+        ["commit", "-m", "Expand workstream document for handoff tests"], cwd=repo_dir
+    )
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    scope = [".ai/workstreams/continuity-pilot.md", "shared"]
+    claim_id = _start_handoff_claim(repo_dir, scope)
+
+    return HandoffFixture(
+        repo_dir=repo_dir,
+        claim_id=claim_id,
+        workstream_path=workstream_path,
+        scope=scope,
+        next_action="Hand off to the other agent.",
+    )
+
+
+@pytest.fixture()
+def handoff_repo(continuity_repo: Path) -> HandoffFixture:
+    return _make_handoff_fixture(continuity_repo)
+
+
+def _handoff(repo_dir: Path, claim_id: str, next_action: str, **overrides) -> HelperResult:
+    """Call `handoff` with reasonable defaults for the fields under test to
+    override individually."""
+    parameters = {
+        "ClaimId": claim_id,
+        "Agent": "codex",
+        "SessionId": "session-1",
+        "NextAction": next_action,
+        "Json": True,
+    }
+    parameters.update(overrides)
+    return run_helper(repo_dir, "handoff", **parameters)
+
+
+def _commit_handoff_update(
+    fixture: HandoffFixture,
+    *,
+    changed_paths: Sequence[str],
+    add_paths: Optional[Sequence[str]] = None,
+    summary: str = "Ready to hand off.",
+) -> None:
+    """Run the handoff-triggering `update -State handoff` call listing
+    `changed_paths`, then stage and commit `add_paths` (defaulting to
+    `changed_paths`) together with that milestone -- the exact committed-
+    handoff workflow the design's Agent Workflow section describes."""
+    result = _update(
+        fixture.repo_dir,
+        fixture.claim_id,
+        Summary=summary,
+        ChangedPath=list(changed_paths),
+        State="handoff",
+        NextAction=fixture.next_action,
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+    paths_to_add = list(add_paths) if add_paths is not None else list(changed_paths)
+    add_result = _run_git(["add", "--", *paths_to_add], cwd=fixture.repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", summary], cwd=fixture.repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+
+def _current_claim(repo_dir: Path, workstream_id: str = "continuity-pilot") -> dict:
+    return json.loads(_claim_file_for(repo_dir, workstream_id).read_text(encoding="utf-8"))
+
+
+def _snapshot_repo_tree(repo_dir: Path) -> dict:
+    """Snapshot every worktree file's bytes (excluding `.git`, which is
+    where a non-linked-worktree repository's own Git-common claim file
+    lives), plus `HEAD`, all refs, and the complete index, so a caller can
+    assert the repository is byte-identical before/after an operation that
+    must never mutate a tracked file (Task 5 brief, Step 8: "Except for the
+    Git-common claim file, the worktree, index, refs, and tracked files must
+    be byte-identical")."""
+    files = {}
+    for path in repo_dir.rglob("*"):
+        if ".git" in path.relative_to(repo_dir).parts:
+            continue
+        if path.is_file():
+            files[str(path.relative_to(repo_dir))] = path.read_bytes()
+    head = _run_git(["rev-parse", "HEAD"], cwd=repo_dir).stdout.strip()
+    show_ref = _run_git(["show-ref"], cwd=repo_dir).stdout
+    index = _run_git(["ls-files", "--stage"], cwd=repo_dir).stdout
+    return {"files": files, "head": head, "show_ref": show_ref, "index": index}
+
+
+# ---------------------------------------------------------------------------
+# Step 1: committed-state validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("missing", ["ClaimId", "Agent", "SessionId", "NextAction"])
+def test_handoff_rejects_missing_required_parameter(continuity_repo, missing):
+    """Each required `handoff` parameter is validated before any lock or
+    mutation; omitting one returns the stable exit `2`."""
+    parameters = {
+        "ClaimId": "00000000-0000-4000-8000-000000000000",
+        "Agent": "codex",
+        "SessionId": "session-1",
+        "NextAction": "Do the next thing.",
+    }
+    parameters[missing] = ""
+    result = run_helper(continuity_repo, "handoff", Json=True, **parameters)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+
+
+def test_handoff_rejects_unknown_claim_id(continuity_repo):
+    result = _handoff(continuity_repo, "00000000-0000-4000-8000-000000000000", "Do the next thing.")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_handoff_rejects_wrong_agent(handoff_repo):
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action, Agent="claude")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_wrong_session(handoff_repo):
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    result = _handoff(
+        handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action, SessionId="session-2"
+    )
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_wrong_branch(handoff_repo):
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    _checkout_new_branch(handoff_repo.repo_dir, "codex/other-workstream")
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_handoff_rejects_protected_main_branch(handoff_repo):
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    checkout = _run_git(["checkout", "main"], cwd=handoff_repo.repo_dir)
+    assert checkout.returncode == 0, checkout.stderr
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_handoff_rejects_dirty_claimed_scope(handoff_repo):
+    """An uncommitted edit inside the claim's own scope -- including to the
+    workstream file itself -- blocks handoff with exit `2`; the claim stays
+    active (design spec: "Any dirty in-scope path... makes handoff fail
+    with exit 2; the claim stays active")."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    handoff_repo.workstream_path.write_text(
+        handoff_repo.workstream_path.read_text(encoding="utf-8") + "\nuncommitted edit\n",
+        encoding="utf-8",
+    )
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_committed_state_not_handoff(handoff_repo):
+    """The committed workstream file at `HEAD` must record state `handoff`;
+    a well-formed but still-`active` committed document is rejected."""
+    result = _update(
+        handoff_repo.repo_dir,
+        handoff_repo.claim_id,
+        Summary="Still working.",
+        ChangedPath=[".ai/workstreams/continuity-pilot.md"],
+        State="active",
+        VerificationResult="not-run",
+        NotRunReason="still going",
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    add_result = _run_git(["add", "--", ".ai"], cwd=handoff_repo.repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Still active"], cwd=handoff_repo.repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_next_action_mismatch(handoff_repo):
+    """The exact `-NextAction` supplied to `handoff` must match the
+    committed workstream's recorded next action byte-for-byte (after
+    trimming incidental surrounding whitespace)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, "A completely different next action.")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_head_commit_field_is_not_self_referential(handoff_repo):
+    """The committed workstream document's own `Head commit` field records
+    Git state BEFORE the status-file mutation that wrote it, and is
+    deliberately "not self-referential" (design spec, "Workstream status"):
+    it can never equal the hash of the very commit that carries it, since a
+    commit cannot know its own hash in advance. A further, unrelated empty
+    commit that advances `HEAD` past that recorded value -- without
+    touching any tracked path -- is therefore harmless and does not block
+    handoff."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    empty_commit = _run_git(
+        ["commit", "--allow-empty", "-m", "advance HEAD without touching any tracked path"],
+        cwd=handoff_repo.repo_dir,
+    )
+    assert empty_commit.returncode == 0, empty_commit.stderr
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["claims"][0]["state"] == "handoff-ready"
+
+
+def test_handoff_rejects_committed_in_scope_path_omitted_from_changed_paths(handoff_repo):
+    """A path committed inside the claim's own scope alongside the
+    handoff-triggering `update` call, but omitted from that call's own
+    `-ChangedPath` evidence, blocks handoff (design spec: "omitted committed
+    in-scope change... makes handoff fail with exit 2")."""
+    (handoff_repo.repo_dir / "shared").mkdir(parents=True, exist_ok=True)
+    (handoff_repo.repo_dir / "shared" / "extra.txt").write_text("more\n", encoding="utf-8")
+
+    result = _update(
+        handoff_repo.repo_dir,
+        handoff_repo.claim_id,
+        Summary="Omit a changed path.",
+        ChangedPath=[".ai/workstreams/continuity-pilot.md"],
+        State="handoff",
+        NextAction=handoff_repo.next_action,
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    add_result = _run_git(["add", "--", ".ai", "shared"], cwd=handoff_repo.repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Omit a changed path"], cwd=handoff_repo.repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_happy_path_marks_claim_handoff_ready(handoff_repo):
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["operation"] == "handoff"
+    assert len(parsed["claims"]) == 1
+    claim = parsed["claims"][0]
+    assert claim["state"] == "handoff-ready"
+    assert claim["durable_status_path"] == ".ai/workstreams/continuity-pilot.md"
+    assert re.fullmatch(r"[0-9a-f]{64}", claim["durable_status_sha256"])
+    assert claim["durable_status_blob_oid"]
+    head = _run_git(["rev-parse", "HEAD"], cwd=handoff_repo.repo_dir).stdout.strip()
+    assert claim["handoff_commit"] == head
+    assert claim["claim_id"] == handoff_repo.claim_id
+
+    assert _current_claim(handoff_repo.repo_dir) == claim
+
+
+def test_handoff_never_edits_a_tracked_file_or_git_state(handoff_repo):
+    """Except for the Git-common claim file, the worktree, index, refs, and
+    tracked files are byte-identical before and after a successful
+    `handoff` (Task 5 brief, Step 8)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    before = _snapshot_repo_tree(handoff_repo.repo_dir)
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+    after = _snapshot_repo_tree(handoff_repo.repo_dir)
+    assert after == before
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Git reconciliation -- committed and fresh dirty-state paths
+# ---------------------------------------------------------------------------
+
+
+def _setup_copied(repo_dir: Path, prefix: str) -> dict:
+    src_rel = f"{prefix}/copy-src.txt"
+    dst_rel = f"{prefix}/copy-dst.txt"
+    (repo_dir / prefix).mkdir(parents=True, exist_ok=True)
+    (repo_dir / src_rel).write_text(
+        "copy me\nwith enough content\nto be detected as a copy\n", encoding="utf-8"
+    )
+    _run_git(["add", "--", src_rel], cwd=repo_dir)
+    _run_git(["commit", "-m", f"add {src_rel}"], cwd=repo_dir)
+    shutil.copyfile(repo_dir / src_rel, repo_dir / dst_rel)
+    _run_git(["add", "--", dst_rel], cwd=repo_dir)
+    return {"path": dst_rel, "original_path": src_rel}
+
+
+def _setup_committed_modified(repo_dir: Path, prefix: str) -> dict:
+    setup = _setup_modified(repo_dir, prefix)
+    return {"paths": [setup["path"]]}
+
+
+def _setup_committed_added(repo_dir: Path, prefix: str) -> dict:
+    setup = _setup_added(repo_dir, prefix)
+    return {"paths": [setup["path"]]}
+
+
+def _setup_committed_deleted(repo_dir: Path, prefix: str) -> dict:
+    setup = _setup_deleted(repo_dir, prefix)
+    return {"paths": [setup["path"]]}
+
+
+def _setup_committed_renamed(repo_dir: Path, prefix: str) -> dict:
+    setup = _setup_renamed(repo_dir, prefix)
+    return {"paths": [setup["original_path"], setup["path"]]}
+
+
+def _setup_committed_copied(repo_dir: Path, prefix: str) -> dict:
+    setup = _setup_copied(repo_dir, prefix)
+    return {"paths": [setup["original_path"], setup["path"]]}
+
+
+COMMITTED_KIND_SETUPS = {
+    "modified": _setup_committed_modified,
+    "added": _setup_committed_added,
+    "deleted": _setup_committed_deleted,
+    "renamed": _setup_committed_renamed,
+    "copied": _setup_committed_copied,
+}
+
+
+@pytest.mark.parametrize("kind", sorted(COMMITTED_KIND_SETUPS))
+def test_handoff_accepts_committed_in_scope_change_of_every_kind(handoff_repo, kind):
+    """Every committed-diff kind the design's reconciliation rule names --
+    modified, added, deleted, renamed, and copied -- succeeds when properly
+    covered by the handoff-triggering `update` call's `-ChangedPath`
+    evidence, with both sides of a rename/copy listed and in scope (test
+    list item 16)."""
+    setup = COMMITTED_KIND_SETUPS[kind](handoff_repo.repo_dir, "shared")
+    changed_paths = [".ai/workstreams/continuity-pilot.md", *setup["paths"]]
+
+    _commit_handoff_update(handoff_repo, changed_paths=changed_paths, add_paths=[".ai", "shared"])
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 0, f"kind={kind!r} stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["claims"][0]["state"] == "handoff-ready"
+
+
+def test_handoff_rejects_committed_out_of_scope_change(handoff_repo):
+    """A change committed OUTSIDE the claim's own scope -- even when listed
+    in `-ChangedPath` -- is a violation: a claim may only commit within its
+    claimed scope (design spec: "every committed path must be in scope")."""
+    outside_dir = handoff_repo.repo_dir / "outside"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    (outside_dir / "extra.txt").write_text("should not be touched\n", encoding="utf-8")
+
+    result = _update(
+        handoff_repo.repo_dir,
+        handoff_repo.claim_id,
+        Summary="Accidentally touch something outside scope.",
+        ChangedPath=[".ai/workstreams/continuity-pilot.md", "outside/extra.txt"],
+        State="handoff",
+        NextAction=handoff_repo.next_action,
+        VerificationResult="not-run",
+        NotRunReason="not run for this test",
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    add_result = _run_git(["add", "--", ".ai", "outside"], cwd=handoff_repo.repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Touch outside scope"], cwd=handoff_repo.repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_new_out_of_scope_untracked_path(handoff_repo):
+    """Untracked dirt discovered at handoff time, outside the claim's own
+    scope, that was never captured as pre-existing at `start` is a new
+    out-of-scope change and blocks handoff without being altered (design
+    spec: "A new out-of-scope path discovered at handoff is a conflict and
+    fails with exit 2"; test list item 21)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    (handoff_repo.repo_dir / "outside.txt").write_text("new dirt not captured at start\n", encoding="utf-8")
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+    assert (handoff_repo.repo_dir / "outside.txt").exists()
+
+
+def test_handoff_allows_unchanged_preexisting_out_of_scope_dirt(tmp_path):
+    """Pre-existing out-of-scope dirt captured at `start` remains untouched
+    and does not block a later committed `handoff` (test list item 21)."""
+    repo_dir = _make_repo_on_branch(tmp_path, "codex/continuity-pilot")
+    workstream_path = repo_dir / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(_full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8")
+    _run_git(["add", "."], cwd=repo_dir)
+    commit_result = _run_git(["commit", "-m", "Expand workstream document"], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    (repo_dir / "keep").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "keep" / "untouched.txt").write_text("leave me alone\n", encoding="utf-8")
+
+    scope = [".ai/workstreams/continuity-pilot.md", "shared"]
+    claim_id = _start_handoff_claim(repo_dir, scope)
+    fixture = HandoffFixture(
+        repo_dir=repo_dir, claim_id=claim_id, workstream_path=workstream_path,
+        scope=scope, next_action="Hand off to the other agent.",
+    )
+    _commit_handoff_update(fixture, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert (repo_dir / "keep" / "untouched.txt").read_text(encoding="utf-8") == "leave me alone\n"
+
+
+@pytest.mark.parametrize("kind", ["modified", "untracked", "deleted"])
+def test_handoff_rejects_dirty_path_inside_claimed_scope_of_every_kind(handoff_repo, kind):
+    """A dirty path inside the claim's own scope blocks handoff regardless
+    of which kind of dirt it is, mirroring `start`'s equivalent rule (test
+    list item 7)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    DIRTY_KIND_SETUPS[kind](handoff_repo.repo_dir, "shared")
+
+    result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+
+    assert result.returncode == 2, f"kind={kind!r} stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# Step 3: pre-existing dirty fingerprint drift
+# ---------------------------------------------------------------------------
+
+
+def _build_repo_with_preexisting(tmp_path: Path, setup_fn) -> tuple:
+    """Build a disposable repository with a committed workstream document,
+    run `setup_fn(repo_dir, "keep")` to produce one out-of-scope dirty path
+    BEFORE `start` captures it as pre-existing, start the claim, then run
+    and commit the handoff-triggering `update` call. Returns
+    `(repo_dir, claim_id, fixture, setup)`."""
+    repo_dir = _make_repo_on_branch(tmp_path, "codex/continuity-pilot")
+    workstream_path = repo_dir / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(_full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8")
+    _run_git(["add", "."], cwd=repo_dir)
+    commit_result = _run_git(["commit", "-m", "Expand workstream document"], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    setup = setup_fn(repo_dir, "keep")
+
+    scope = [".ai/workstreams/continuity-pilot.md", "shared"]
+    claim_id = _start_handoff_claim(repo_dir, scope)
+    fixture = HandoffFixture(
+        repo_dir=repo_dir, claim_id=claim_id, workstream_path=workstream_path,
+        scope=scope, next_action="Hand off to the other agent.",
+    )
+    _commit_handoff_update(fixture, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    return repo_dir, claim_id, fixture, setup
+
+
+def test_handoff_rejects_preexisting_dirty_status_drift(tmp_path):
+    """A pre-existing untracked path that gets STAGED after `start` --
+    content, kind, and its own path unchanged -- has its status drift from
+    `??` to `A ` and blocks handoff (Task 5 brief, Step 3: "status")."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_untracked)
+
+    add_result = _run_git(["add", "--", setup["path"]], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_preexisting_dirty_kind_drift(tmp_path):
+    """A pre-existing untracked regular file replaced by a symbolic link at
+    the SAME path -- status stays `??` throughout -- has its kind drift from
+    `regular-file` to `symlink` and blocks handoff (Task 5 brief, Step 3:
+    "kind")."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_untracked)
+
+    (repo_dir / setup["path"]).unlink()
+    target = repo_dir.parent / "kind-drift-target.txt"
+    target.write_text("target\n", encoding="utf-8")
+    _create_symlink_or_skip(repo_dir / setup["path"], target, target_is_directory=False)
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_preexisting_dirty_content_drift(tmp_path):
+    """A pre-existing modified-but-unstaged path edited AGAIN after `start`
+    -- status, kind, and index entries unchanged -- has its content hash
+    drift and blocks handoff (Task 5 brief, Step 3: "content")."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_modified)
+
+    (repo_dir / setup["path"]).write_text("drifted content, never committed\n", encoding="utf-8")
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_preexisting_dirty_index_object_id_drift(tmp_path):
+    """A pre-existing staged-added path whose index entry is repointed at a
+    different, already-existing blob object via `git update-index
+    --cacheinfo` -- without touching the working-tree bytes
+    Get-DirtyFingerprint hashes -- has its index object ID drift and blocks
+    handoff (Task 5 brief, Step 3: "index... object ID")."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_added)
+
+    hash_result = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo_dir,
+        input="a completely different blob\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    new_blob_id = hash_result.stdout.strip()
+    cacheinfo = f"100644,{new_blob_id},{setup['path']}"
+    update_result = _run_git(["update-index", "--cacheinfo", cacheinfo], cwd=repo_dir)
+    assert update_result.returncode == 0, update_result.stderr
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "active"
+
+
+def test_handoff_rejects_preexisting_dirty_index_mode_drift(tmp_path):
+    """A pre-existing staged-added path whose index MODE flips from
+    `100644` to `100755` while its object ID is left exactly as recorded --
+    via `git update-index --cacheinfo` reusing the same blob -- blocks
+    handoff (Task 5 brief, Step 3: "index mode")."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_added)
+
+    ls_result = _run_git(["ls-files", "--stage", "--", setup["path"]], cwd=repo_dir)
+    assert ls_result.returncode == 0, ls_result.stderr
+    existing_object_id = ls_result.stdout.split()[1]
+    cacheinfo = f"100755,{existing_object_id},{setup['path']}"
+    update_result = _run_git(["update-index", "--cacheinfo", cacheinfo], cwd=repo_dir)
+    assert update_result.returncode == 0, update_result.stderr
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "active"
+
+
+# NOTE: an "index stage count" drift test analogous to the object-ID/mode
+# drift tests above -- a pre-existing unmerged conflict (three index
+# stages) that collapses to one ordinary stage-0 entry after `start` -- is
+# deliberately NOT included as a full committed-handoff scenario. Git
+# itself refuses `git commit`, with or without a limiting pathspec, while
+# ANY path in the index is unmerged ("cannot do a partial commit during a
+# merge" / "Committing is not possible because you have unmerged files"),
+# so the handoff-triggering `update`+commit step this fixture's flow
+# requires can never succeed while the captured conflict remains
+# unresolved -- and once it is resolved, it is no longer the same
+# multi-stage entry `start` captured. The general index-entry-count and
+# per-stage mode/object-ID comparison in Test-PreexistingDirtyUnchanged is
+# still exercised directly by the object-ID and mode drift tests above.
+
+
+def _setup_rename_source_pair(repo_dir: Path, prefix: str) -> dict:
+    """Two committed files with identical content, so a later rename can be
+    detected from either one, letting a test swap which committed path is
+    reported as `original_path` for the SAME destination path (Task 5
+    brief, Step 3: "rename source")."""
+    (repo_dir / prefix).mkdir(parents=True, exist_ok=True)
+    content = "identical content for rename-source ambiguity\nline two\nline three\n"
+    src_a = f"{prefix}/rename-src-a.txt"
+    src_b = f"{prefix}/rename-src-b.txt"
+    (repo_dir / src_a).write_text(content, encoding="utf-8")
+    (repo_dir / src_b).write_text(content, encoding="utf-8")
+    _run_git(["add", "--", src_a, src_b], cwd=repo_dir)
+    _run_git(["commit", "-m", "add rename source pair"], cwd=repo_dir)
+    return {"src_a": src_a, "src_b": src_b, "content": content}
+
+
+def test_handoff_rejects_preexisting_dirty_rename_source_drift(tmp_path):
+    repo_dir = _make_repo_on_branch(tmp_path, "codex/continuity-pilot")
+    workstream_path = repo_dir / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(_full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8")
+    _run_git(["add", "."], cwd=repo_dir)
+    commit_result = _run_git(["commit", "-m", "Expand workstream document"], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    pair = _setup_rename_source_pair(repo_dir, "keep")
+    dst = "keep/rename-dst.txt"
+    rm_result = _run_git(["rm", "--", pair["src_a"]], cwd=repo_dir)
+    assert rm_result.returncode == 0, rm_result.stderr
+    (repo_dir / dst).write_text(pair["content"], encoding="utf-8")
+    add_result = _run_git(["add", "--", dst], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+
+    scope = [".ai/workstreams/continuity-pilot.md", "shared"]
+    claim_id = _start_handoff_claim(repo_dir, scope)
+    started_claim = _current_claim(repo_dir)
+    captured = [e for e in started_claim["preexisting_dirty"] if e["path"] == dst]
+    assert len(captured) == 1, started_claim["preexisting_dirty"]
+    assert captured[0]["original_path"] == pair["src_a"], captured[0]
+
+    fixture = HandoffFixture(
+        repo_dir=repo_dir, claim_id=claim_id, workstream_path=workstream_path,
+        scope=scope, next_action="Hand off to the other agent.",
+    )
+    _commit_handoff_update(fixture, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    # Drift: restore src_a (making it clean again) and instead delete
+    # src_b, so the SAME destination path is now detected as renamed from a
+    # DIFFERENT committed source -- changing only `original_path`.
+    (repo_dir / pair["src_a"]).write_text(pair["content"], encoding="utf-8")
+    restore_result = _run_git(["add", "--", pair["src_a"]], cwd=repo_dir)
+    assert restore_result.returncode == 0, restore_result.stderr
+    rm_b_result = _run_git(["rm", "--", pair["src_b"]], cwd=repo_dir)
+    assert rm_b_result.returncode == 0, rm_b_result.stderr
+
+    result = _handoff(repo_dir, claim_id, fixture.next_action)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# Step 4: fault-boundary and idempotent-retry behavior
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_after_validate_fault_preserves_active_claim_and_retry_succeeds(handoff_repo):
+    """At `handoff-after-validate` (immediately before the atomic claim
+    replace), no mutation has occurred: the claim stays `active`, and an
+    idempotent retry of the exact same call succeeds (Task 5 brief, Step
+    4)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    faulted = _handoff(
+        handoff_repo.repo_dir,
+        handoff_repo.claim_id,
+        handoff_repo.next_action,
+        env={"AI_CONTINUITY_TEST_FAULT": "handoff-after-validate"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "handoff-after-validate" not in faulted.stdout
+    assert "handoff-after-validate" not in faulted.stderr
+
+    claim = _current_claim(handoff_repo.repo_dir)
+    assert claim["state"] == "active"
+    assert claim["durable_status_path"] is None
+    assert claim["handoff_commit"] is None
+
+    retry = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["state"] == "handoff-ready"
+
+
+def test_handoff_after_claim_rewrite_fault_leaves_handoff_ready_authoritative_and_retry_reports_it(
+    handoff_repo,
+):
+    """At `handoff-after-claim-rewrite` (immediately after the atomic claim
+    replace completes), the claim IS already `handoff-ready` and
+    authoritative: it blocks a new `start`, and retrying the exact same
+    `handoff` call reports it without creating another claim (Task 5 brief,
+    Step 4)."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+
+    faulted = _handoff(
+        handoff_repo.repo_dir,
+        handoff_repo.claim_id,
+        handoff_repo.next_action,
+        env={"AI_CONTINUITY_TEST_FAULT": "handoff-after-claim-rewrite"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "handoff-after-claim-rewrite" not in faulted.stdout
+    assert "handoff-after-claim-rewrite" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative handoff-ready claim"
+    assert recovery.get("claim_id") == handoff_repo.claim_id
+    assert recovery.get("authoritative_owner") == "handoff-ready-claim"
+
+    claim = _current_claim(handoff_repo.repo_dir)
+    assert claim["state"] == "handoff-ready"
+
+    blocked_start = _start(handoff_repo.repo_dir, Scope=handoff_repo.scope)
+    assert blocked_start.returncode == 2, f"stdout={blocked_start.stdout!r} stderr={blocked_start.stderr!r}"
+
+    retry = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert len(retry_parsed["claims"]) == 1
+    assert retry_parsed["claims"][0]["claim_id"] == handoff_repo.claim_id
+    assert retry_parsed["claims"][0]["state"] == "handoff-ready"

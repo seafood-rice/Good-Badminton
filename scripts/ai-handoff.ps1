@@ -8,13 +8,17 @@
     docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md and
     docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md.
 
-    Task 2 implements only the read-only `status` operation plus the internal
-    boundaries later tasks extend: Invoke-Git, Get-RepositoryContext,
-    Normalize-Id, Normalize-ScopePath, Read-ContinuityState,
-    New-OperationResult, Write-Result, and Invoke-Status. `start`, `update`,
-    `handoff`, `accept`, and `takeover` are declared in the parameter surface
-    per the approved helper contract but are not yet implemented; invoking
-    them returns a validation error (exit 2) until later tasks add them.
+    `status`, `start`, `update`, and `handoff` are implemented, along with
+    the internal boundaries they and later tasks extend: Invoke-Git,
+    Get-RepositoryContext, Normalize-Id, Normalize-ScopePath,
+    Read-ContinuityState, New-OperationResult, Write-Result, Invoke-Status,
+    Use-ContinuityLock, Write-JsonAtomic, Get-DirtyFingerprint, Invoke-Start,
+    Read-WorkstreamDocument, Write-WorkstreamDocument, Invoke-Update,
+    Get-CommittedNameStatus, Test-PreexistingDirtyUnchanged,
+    Read-CommittedWorkstream, Test-HandoffCoverage, and Invoke-Handoff.
+    `accept` and `takeover` are declared in the parameter surface per the
+    approved helper contract but are not yet implemented; invoking them
+    returns a validation error (exit 2) until later tasks add them.
 
     `status` never acquires the common continuity lock and never creates
     `<git-common-dir>/ai-continuity`. Missing continuity directories mean
@@ -147,6 +151,12 @@ $Script:DefaultLeaseHours = 8
 $Script:ValidVerificationResults = @('passed', 'failed', 'not-run')
 $Script:ValidUpdateStates = @('active', 'blocked', 'handoff')
 
+# Repository-relative directory holding owned workstream documents (design
+# spec, Repository Layout: "`.ai/workstreams/<workstream-id>.md`"). Used to
+# build the exact forward-slash path `handoff` reads through `git show`
+# without depending on the host filesystem's own path-separator character.
+$Script:WorkstreamsRelativeDirectory = '.ai/workstreams'
+
 # The exact managed milestone marker pair every workstream template contains
 # (design spec, Helper Contract: "Workstream templates contain a
 # helper-managed section bounded by..."). `update` may edit only the content
@@ -179,7 +189,9 @@ $Script:LockRetryIntervalMilliseconds = 50
 $Script:KnownTestFaultNames = @(
     'start-before-claim-replace',
     'start-after-claim-replace',
-    'update-after-workstream-write'
+    'update-after-workstream-write',
+    'handoff-after-validate',
+    'handoff-after-claim-rewrite'
 )
 
 # Case sensitivity for scope/path comparisons is derived from the
@@ -1946,60 +1958,50 @@ function Write-TextAtomic {
     }
 }
 
-function Read-WorkstreamDocument {
+function Get-WorkstreamDocumentShape {
     <#
     .SYNOPSIS
-        Parses one owned `.ai/workstreams/<workstream-id>.md` file into the
-        line-preserving structure `update` needs to change only the managed
-        milestone section plus the explicit `Last milestone`/`Head
-        commit`/`State`/`Next action` fields, leaving every other byte --
-        including the document's own newline style -- untouched (design
-        spec, Helper Contract: "update may edit only that bounded section
-        plus the template's explicit... fields"). Throws
-        ContinuityStateException (exit 3, no mutation) for a missing file, a
-        missing or duplicated managed marker, an out-of-order marker pair, a
-        missing/duplicated/malformed required field, or a `State`/`Head
-        commit`/`Last milestone` field that appears at or after the `Next
-        action` heading (Write-WorkstreamDocument assumes those fields
-        precede it).
+        Shared structural parser for one workstream document's already-split
+        line records: locates the milestone marker pair and the required
+        `workstream_id`/`State`/`Head commit`/`Last milestone`/`Next action`
+        fields using the exact rules the design's workstream template
+        requires. Both Read-WorkstreamDocument (an owned file's current
+        working-tree bytes, used by `update`) and Read-CommittedWorkstream
+        (the same file's committed bytes at HEAD, read through `git show`,
+        used by `handoff`) call this one parser, so a missing/duplicate
+        marker or a malformed/missing/misordered required field is rejected
+        identically by both operations (design spec, Operation outcomes:
+        "duplicate/missing managed markers, or malformed required durable
+        state" -> exit 3 for every operation, not only `update`). Throws
+        ContinuityStateException (exit 3, no mutation) for any structural
+        malformation.
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Path,
+        [System.Collections.Generic.List[object]] $Lines,
         [Parameter(Mandatory = $true)]
-        [string] $WorkstreamId
+        [string] $WorkstreamId,
+        [Parameter(Mandatory = $true)]
+        [string] $Label
     )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' does not exist.")
-    }
-
-    $rawText = [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
-    $lines = ConvertTo-DocumentLines -Text $rawText
 
     $markerStartIndices = @()
     $markerEndIndices = @()
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i].Content -ceq $Script:MilestoneMarkerStart) { $markerStartIndices += $i }
-        if ($lines[$i].Content -ceq $Script:MilestoneMarkerEnd) { $markerEndIndices += $i }
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i].Content -ceq $Script:MilestoneMarkerStart) { $markerStartIndices += $i }
+        if ($Lines[$i].Content -ceq $Script:MilestoneMarkerEnd) { $markerEndIndices += $i }
     }
 
     if ($markerStartIndices.Count -eq 0 -or $markerEndIndices.Count -eq 0) {
-        throw [ContinuityStateException]::new(
-            "Owned workstream file '$Path' is missing the managed milestone marker pair."
-        )
+        throw [ContinuityStateException]::new("$Label is missing the managed milestone marker pair.")
     }
     if ($markerStartIndices.Count -gt 1 -or $markerEndIndices.Count -gt 1) {
-        throw [ContinuityStateException]::new(
-            "Owned workstream file '$Path' has a duplicate managed milestone marker."
-        )
+        throw [ContinuityStateException]::new("$Label has a duplicate managed milestone marker.")
     }
     $markerStartIndex = $markerStartIndices[0]
     $markerEndIndex = $markerEndIndices[0]
     if ($markerStartIndex -ge $markerEndIndex) {
-        throw [ContinuityStateException]::new(
-            "Owned workstream file '$Path' has the milestone end marker before the start marker."
-        )
+        throw [ContinuityStateException]::new("$Label has the milestone end marker before the start marker.")
     }
 
     $workstreamIdLineIndex = $null
@@ -2007,87 +2009,89 @@ function Read-WorkstreamDocument {
     $stateLineIndex = $null
     $currentState = $null
     $headCommitLineIndex = $null
+    $headCommitValue = $null
     $lastMilestoneLineIndex = $null
     $nextActionHeadingIndex = $null
 
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $content = $lines[$i].Content
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $content = $Lines[$i].Content
 
         if ($content -cmatch '^- \*\*workstream_id:\*\* `([^`]*)`$') {
             if ($null -ne $workstreamIdLineIndex) {
-                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'workstream_id' field.")
+                throw [ContinuityStateException]::new("$Label has a duplicate 'workstream_id' field.")
             }
             $workstreamIdLineIndex = $i
             $parsedWorkstreamId = $Matches[1]
         }
         elseif ($content -cmatch '^- \*\*workstream_id:\*\* ') {
-            throw [ContinuityStateException]::new("Owned workstream file '$Path' has a malformed 'workstream_id' field.")
+            throw [ContinuityStateException]::new("$Label has a malformed 'workstream_id' field.")
         }
 
         if ($content -cmatch '^- \*\*State:\*\* (.+)$') {
             if ($null -ne $stateLineIndex) {
-                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'State' field.")
+                throw [ContinuityStateException]::new("$Label has a duplicate 'State' field.")
             }
             $stateLineIndex = $i
             $currentState = $Matches[1]
         }
         elseif ($content -cmatch '^- \*\*State:\*\* ') {
-            throw [ContinuityStateException]::new("Owned workstream file '$Path' has a malformed 'State' field.")
+            throw [ContinuityStateException]::new("$Label has a malformed 'State' field.")
         }
 
         if ($content -cmatch '^- \*\*Head commit:\*\* `([0-9a-fA-F]{40})`$') {
             if ($null -ne $headCommitLineIndex) {
-                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'Head commit' field.")
+                throw [ContinuityStateException]::new("$Label has a duplicate 'Head commit' field.")
             }
             $headCommitLineIndex = $i
+            $headCommitValue = $Matches[1]
         }
         elseif ($content -cmatch '^- \*\*Head commit:\*\* ') {
             throw [ContinuityStateException]::new(
-                "Owned workstream file '$Path' has a malformed 'Head commit' field; it must be a full 40-character commit SHA in backticks."
+                "$Label has a malformed 'Head commit' field; it must be a full 40-character commit SHA in backticks."
             )
         }
 
         if ($content -cmatch '^- \*\*Last milestone:\*\* (.+)$') {
             if ($null -ne $lastMilestoneLineIndex) {
-                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'Last milestone' field.")
+                throw [ContinuityStateException]::new("$Label has a duplicate 'Last milestone' field.")
             }
             $lastMilestoneLineIndex = $i
         }
         elseif ($content -cmatch '^- \*\*Last milestone:\*\* ') {
-            throw [ContinuityStateException]::new("Owned workstream file '$Path' has a malformed 'Last milestone' field.")
+            throw [ContinuityStateException]::new("$Label has a malformed 'Last milestone' field.")
         }
 
         if ($content -ceq '## Next action') {
             if ($null -ne $nextActionHeadingIndex) {
-                throw [ContinuityStateException]::new("Owned workstream file '$Path' has a duplicate 'Next action' section.")
+                throw [ContinuityStateException]::new("$Label has a duplicate 'Next action' section.")
             }
             $nextActionHeadingIndex = $i
         }
     }
 
     if ($null -eq $workstreamIdLineIndex) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'workstream_id' field.")
+        throw [ContinuityStateException]::new("$Label is missing the required 'workstream_id' field.")
     }
     if ($parsedWorkstreamId -cne $WorkstreamId) {
         throw [ContinuityStateException]::new(
-            "Owned workstream file '$Path' has workstream_id '$parsedWorkstreamId', expected '$WorkstreamId'."
+            "$Label has workstream_id '$parsedWorkstreamId', expected '$WorkstreamId'."
         )
     }
     if ($null -eq $stateLineIndex) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'State' field.")
+        throw [ContinuityStateException]::new("$Label is missing the required 'State' field.")
     }
     if ($null -eq $headCommitLineIndex) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'Head commit' field.")
+        throw [ContinuityStateException]::new("$Label is missing the required 'Head commit' field.")
     }
     if ($null -eq $lastMilestoneLineIndex) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'Last milestone' field.")
+        throw [ContinuityStateException]::new("$Label is missing the required 'Last milestone' field.")
     }
     if ($null -eq $nextActionHeadingIndex) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' is missing the required 'Next action' section.")
+        throw [ContinuityStateException]::new("$Label is missing the required 'Next action' section.")
     }
     if ($nextActionHeadingIndex -ge $markerStartIndex) {
         throw [ContinuityStateException]::new(
-            "Owned workstream file '$Path' must have the 'Next action' section before the milestone marker."
+            "$Label must have the 'Next action' section before the milestone marker."
         )
     }
     # Write-WorkstreamDocument's "Next action" body rewrite removes every
@@ -2103,30 +2107,75 @@ function Read-WorkstreamDocument {
         $headCommitLineIndex -ge $nextActionHeadingIndex -or
         $lastMilestoneLineIndex -ge $nextActionHeadingIndex) {
         throw [ContinuityStateException]::new(
-            "Owned workstream file '$Path' must have the 'State', 'Head commit', and 'Last milestone' fields before the 'Next action' section."
+            "$Label must have the 'State', 'Head commit', and 'Last milestone' fields before the 'Next action' section."
         )
     }
 
     $bodyLines = @()
     if ($markerStartIndex - 1 -ge $nextActionHeadingIndex + 1) {
-        $bodyLines = @($lines[($nextActionHeadingIndex + 1)..($markerStartIndex - 1)])
+        $bodyLines = @($Lines[($nextActionHeadingIndex + 1)..($markerStartIndex - 1)])
     }
     $nextActionBody = (($bodyLines | ForEach-Object { $_.Content }) -join "`n").Trim()
     if ([string]::IsNullOrWhiteSpace($nextActionBody)) {
-        throw [ContinuityStateException]::new("Owned workstream file '$Path' has an empty required 'Next action' section.")
+        throw [ContinuityStateException]::new("$Label has an empty required 'Next action' section.")
     }
 
     return [PSCustomObject]@{
-        Path                   = $Path
-        Lines                  = $lines
         MarkerStartIndex       = $markerStartIndex
         MarkerEndIndex         = $markerEndIndex
         StateLineIndex         = $stateLineIndex
         CurrentState           = $currentState
         HeadCommitLineIndex    = $headCommitLineIndex
+        HeadCommitValue        = $headCommitValue
         LastMilestoneLineIndex = $lastMilestoneLineIndex
         NextActionHeadingIndex = $nextActionHeadingIndex
         NextActionBody         = $nextActionBody
+    }
+}
+
+function Read-WorkstreamDocument {
+    <#
+    .SYNOPSIS
+        Parses one owned `.ai/workstreams/<workstream-id>.md` file's current
+        working-tree bytes into the line-preserving structure `update` needs
+        to change only the managed milestone section plus the explicit
+        `Last milestone`/`Head commit`/`State`/`Next action` fields, leaving
+        every other byte -- including the document's own newline style --
+        untouched (design spec, Helper Contract: "update may edit only that
+        bounded section plus the template's explicit... fields"). Structural
+        validation (marker pair, required fields, field ordering) is
+        delegated to the shared Get-WorkstreamDocumentShape parser that
+        Read-CommittedWorkstream also uses. Throws ContinuityStateException
+        (exit 3, no mutation) for a missing file or any structural
+        malformation Get-WorkstreamDocumentShape rejects.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+        [Parameter(Mandatory = $true)]
+        [string] $WorkstreamId
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw [ContinuityStateException]::new("Owned workstream file '$Path' does not exist.")
+    }
+
+    $rawText = [System.IO.File]::ReadAllText($Path, [System.Text.UTF8Encoding]::new($false))
+    $lines = ConvertTo-DocumentLines -Text $rawText
+    $shape = Get-WorkstreamDocumentShape -Lines $lines -WorkstreamId $WorkstreamId `
+        -Label "Owned workstream file '$Path'"
+
+    return [PSCustomObject]@{
+        Path                   = $Path
+        Lines                  = $lines
+        MarkerStartIndex       = $shape.MarkerStartIndex
+        MarkerEndIndex         = $shape.MarkerEndIndex
+        StateLineIndex         = $shape.StateLineIndex
+        CurrentState           = $shape.CurrentState
+        HeadCommitLineIndex    = $shape.HeadCommitLineIndex
+        LastMilestoneLineIndex = $shape.LastMilestoneLineIndex
+        NextActionHeadingIndex = $shape.NextActionHeadingIndex
+        NextActionBody         = $shape.NextActionBody
     }
 }
 
@@ -2562,6 +2611,584 @@ function Invoke-Update {
     }
 }
 
+function Get-LastMilestoneChangedPaths {
+    <#
+    .SYNOPSIS
+        Extracts the backtick-quoted paths from the `  - Changed paths: ...`
+        line of the LAST (most recently appended) top-level milestone bullet
+        in the managed marker section -- the one the handoff-triggering
+        `update -State handoff -ChangedPath ...` call itself produced
+        (design spec, Helper Contract: "listed in the committed workstream's
+        changed paths"). A top-level bullet line always starts with `- `
+        with no leading indentation (Invoke-Update's own milestone-line
+        shape); its indented `  - ` continuation lines never match that
+        pattern, so the last matching index unambiguously starts the final
+        entry. Returns an empty array when that entry has no such line
+        (Invoke-Update omits the line entirely when `-ChangedPath` was not
+        supplied), which Test-HandoffCoverage then correctly treats as
+        missing coverage rather than silently-complete.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[object]] $Lines,
+        [Parameter(Mandatory = $true)]
+        [int] $MarkerStartIndex,
+        [Parameter(Mandatory = $true)]
+        [int] $MarkerEndIndex
+    )
+
+    $lastBulletIndex = $null
+    for ($i = $MarkerStartIndex + 1; $i -lt $MarkerEndIndex; $i++) {
+        if ($Lines[$i].Content -cmatch '^- ') {
+            $lastBulletIndex = $i
+        }
+    }
+
+    if ($null -eq $lastBulletIndex) {
+        return @()
+    }
+
+    for ($i = $lastBulletIndex; $i -lt $MarkerEndIndex; $i++) {
+        if ($Lines[$i].Content -cmatch '^  - Changed paths: (.+)$') {
+            $rawList = $Matches[1]
+            $backtickMatches = [regex]::Matches($rawList, '`([^`]*)`')
+            return @($backtickMatches | ForEach-Object { $_.Groups[1].Value.Replace('\', '/') })
+        }
+    }
+
+    return @()
+}
+
+function Read-CommittedWorkstream {
+    <#
+    .SYNOPSIS
+        Reads one workstream's owned document from its committed bytes at
+        HEAD -- via `git show HEAD:<path>` for content and `git rev-parse
+        HEAD:<path>` for its blob object ID -- instead of the working tree,
+        so `handoff` validates only what is actually committed (design spec,
+        Helper Contract: "Confirm that the workstream file at HEAD is
+        committed with state handoff and the exact next action"). Structural
+        validation (marker pair, required fields, field ordering) reuses the
+        shared Get-WorkstreamDocumentShape parser Read-WorkstreamDocument
+        also uses, so it fails identically: ContinuityStateException (exit
+        3, no mutation) for a missing commit or any structural
+        malformation. The caller performs the CONTENT-level checks (state,
+        next action, head-commit-field staleness) as ContinuityValidationException
+        (exit 2), per the design's "Uncommitted status edits, stale status
+        blobs, omitted paths... return 2" rule -- those are validation
+        failures, not malformed durable state.
+    .OUTPUTS
+        PSCustomObject { CurrentState; NextActionBody; HeadCommitValue;
+        ChangedPaths; BlobOid; Sha256 }. `Sha256` is computed from the exact
+        UTF-8-no-BOM bytes `git show` returned for this pilot's committed
+        content (every workstream file this helper reads or writes is
+        guaranteed plain UTF-8 without a BOM), not a re-hash of some other
+        representation.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [Parameter(Mandatory = $true)]
+        [string] $RepoRelativePath,
+        [Parameter(Mandatory = $true)]
+        [string] $WorkstreamId
+    )
+
+    $showResult = Invoke-Git -Arguments @('show', "HEAD:$RepoRelativePath") -WorkingDirectory $Context.RepoRoot
+    if ($showResult.ExitCode -ne 0) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$RepoRelativePath' is not committed at HEAD."
+        )
+    }
+    $rawText = $showResult.StdOut
+
+    $blobOidResult = Invoke-Git -Arguments @('rev-parse', "HEAD:$RepoRelativePath") -WorkingDirectory $Context.RepoRoot
+    if ($blobOidResult.ExitCode -ne 0) {
+        throw [ContinuityStateException]::new(
+            "Unable to resolve the committed blob object ID for '$RepoRelativePath'."
+        )
+    }
+    $blobOid = $blobOidResult.StdOut.Trim()
+
+    $lines = ConvertTo-DocumentLines -Text $rawText
+    $label = "Committed workstream file '$RepoRelativePath' at HEAD"
+    $shape = Get-WorkstreamDocumentShape -Lines $lines -WorkstreamId $WorkstreamId -Label $label
+
+    $changedPaths = Get-LastMilestoneChangedPaths -Lines $lines `
+        -MarkerStartIndex $shape.MarkerStartIndex -MarkerEndIndex $shape.MarkerEndIndex
+
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    $sha256 = Get-Sha256HexOfBytes -Bytes $utf8NoBom.GetBytes($rawText)
+
+    return [PSCustomObject]@{
+        CurrentState    = $shape.CurrentState
+        NextActionBody  = $shape.NextActionBody
+        HeadCommitValue = $shape.HeadCommitValue
+        ChangedPaths    = $changedPaths
+        BlobOid         = $blobOid
+        Sha256          = $sha256
+    }
+}
+
+function Get-CommittedNameStatus {
+    <#
+    .SYNOPSIS
+        Parses `git diff --name-status -z <BaseCommit> <Head>` into
+        structured entries without losing rename/copy sources -- exactly
+        like Get-GitStatusEntries does for working-tree status, but for the
+        committed diff between a claim's recorded `base_commit` and the
+        current `HEAD` (design spec: "the committed base_commit..HEAD
+        name-status diff, including both sides of renames"). Passes `-M`
+        (rename detection) and `--find-copies-harder` (copy detection that
+        also scans files never otherwise touched in the diff, since a plain
+        `-C` only considers files already touched elsewhere in the same
+        diff) explicitly, rather than relying on repository-local
+        `diff.renames` configuration.
+    .OUTPUTS
+        Array of PSCustomObject { Status; Path; OriginalPath }, forward-
+        slash repository-relative paths. OriginalPath is $null except for a
+        rename/copy record, matching Get-GitStatusEntries' shape.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [string] $BaseCommit,
+        [Parameter(Mandatory = $true)]
+        [string] $Head
+    )
+
+    $result = Invoke-Git -Arguments @(
+        'diff', '--name-status', '-z', '-M', '--find-copies-harder', $BaseCommit, $Head
+    ) -WorkingDirectory $RepoRoot
+    if ($result.ExitCode -ne 0) {
+        throw [ContinuityGitContextException]::new('Unable to read the committed name-status diff.')
+    }
+
+    $entries = @()
+    if ([string]::IsNullOrEmpty($result.StdOut)) {
+        return $entries
+    }
+
+    $tokens = $result.StdOut -split "`0"
+    $i = 0
+    while ($i -lt $tokens.Count) {
+        $status = $tokens[$i]
+        if ([string]::IsNullOrEmpty($status)) {
+            $i++
+            continue
+        }
+
+        if ($status[0] -eq 'R' -or $status[0] -eq 'C') {
+            $originalPath = $null
+            $path = $null
+            if ($i + 2 -lt $tokens.Count) {
+                $originalPath = $tokens[$i + 1].Replace('\', '/')
+                $path = $tokens[$i + 2].Replace('\', '/')
+            }
+            $entries += [PSCustomObject]@{
+                Status       = $status
+                Path         = $path
+                OriginalPath = $originalPath
+            }
+            $i += 3
+        }
+        else {
+            $path = $null
+            if ($i + 1 -lt $tokens.Count) {
+                $path = $tokens[$i + 1].Replace('\', '/')
+            }
+            $entries += [PSCustomObject]@{
+                Status       = $status
+                Path         = $path
+                OriginalPath = $null
+            }
+            $i += 2
+        }
+    }
+
+    return $entries
+}
+
+function Test-PreexistingDirtyUnchanged {
+    <#
+    .SYNOPSIS
+        Re-fingerprints every entry in a claim's recorded `preexisting_dirty`
+        list against the CURRENT working tree and rejects any drift in
+        status, rename source, filesystem kind, content hash, or index
+        stage/mode/object-ID tuples -- including a recorded entry that is no
+        longer dirty at all (design spec: "handoff and accept require every
+        pre-existing out-of-scope entry to retain the same status, paths,
+        kind, worktree hash, and index tuples. Same-path working-tree or
+        staged content changes are conflicts, not proof that the agent
+        preserved the file"). Throws ContinuityValidationException (exit 2,
+        no ownership change) naming the first drifted path.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]] $PreexistingDirty,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]] $CurrentStatusEntries
+    )
+
+    $currentByPath = @{}
+    foreach ($entry in $CurrentStatusEntries) {
+        $currentByPath[$entry.Path] = $entry
+    }
+
+    foreach ($recorded in $PreexistingDirty) {
+        $current = $currentByPath[$recorded.path]
+        if ($null -eq $current) {
+            throw [ContinuityValidationException]::new(
+                "Pre-existing dirty path '$($recorded.path)' is no longer dirty; its recorded state has drifted."
+            )
+        }
+        if ($current.Status -cne $recorded.status -or $current.OriginalPath -cne $recorded.original_path) {
+            throw [ContinuityValidationException]::new(
+                "Pre-existing dirty path '$($recorded.path)' has a different Git status than when it was captured."
+            )
+        }
+
+        $fingerprint = Get-DirtyFingerprint -RepoRoot $RepoRoot -RepoRelativePath $recorded.path
+        if ($fingerprint.Kind -cne $recorded.kind -or $fingerprint.WorktreeSha256 -cne $recorded.worktree_sha256) {
+            throw [ContinuityValidationException]::new(
+                "Pre-existing dirty path '$($recorded.path)' has changed content or kind since it was captured."
+            )
+        }
+
+        $currentIndexEntries = @(Get-IndexEntries -RepoRoot $RepoRoot -Path $recorded.path)
+        $recordedIndexEntries = @($recorded.index_entries)
+        if ($currentIndexEntries.Count -ne $recordedIndexEntries.Count) {
+            throw [ContinuityValidationException]::new(
+                "Pre-existing dirty path '$($recorded.path)' has a different number of Git index entries than when it was captured."
+            )
+        }
+        for ($i = 0; $i -lt $currentIndexEntries.Count; $i++) {
+            if ($currentIndexEntries[$i].stage -ne $recordedIndexEntries[$i].stage -or
+                $currentIndexEntries[$i].mode -cne $recordedIndexEntries[$i].mode -or
+                $currentIndexEntries[$i].object_id -cne $recordedIndexEntries[$i].object_id) {
+                throw [ContinuityValidationException]::new(
+                    "Pre-existing dirty path '$($recorded.path)' has a different Git index entry than when it was captured."
+                )
+            }
+        }
+    }
+}
+
+function Test-HandoffCoverage {
+    <#
+    .SYNOPSIS
+        The single reconciliation gate a committed `handoff` must pass:
+        every observed path -- both a fresh working-tree dirty entry and a
+        path in the committed `base_commit..HEAD` diff -- must be either (a)
+        a path this claim already classified as pre-existing and out of
+        scope at `start`, or (b) a committed path inside the claim's own
+        scope that is also listed in the committed workstream's changed
+        paths (design spec: "Every observed path must be either... A path
+        captured as pre-existing outside the claim scope at start and still
+        classified as pre-existing; or... A committed path inside the live
+        claim scope and listed in the committed workstream's changed
+        paths"). Both sides of a rename/copy (source and destination) are
+        checked independently, so a claim may never commit even the
+        vacated source side of a rename/copy outside its own scope. Throws
+        ContinuityValidationException (exit 2, no mutation) distinguishing a
+        dirty in-scope path, a new out-of-scope path, a committed path
+        outside scope, and an omitted committed in-scope change.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]] $CurrentStatusEntries,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]] $CommittedEntries,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]] $ScopePrefixes,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]] $ChangedPaths,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]] $PreexistingDirtyPaths
+    )
+
+    # --- fresh working-tree dirt: must be either in-scope (blocks) or
+    #     exactly a recorded pre-existing out-of-scope path ------------------
+    foreach ($entry in $CurrentStatusEntries) {
+        $touchedPaths = @($entry.Path)
+        if ($entry.OriginalPath) { $touchedPaths += $entry.OriginalPath }
+
+        $entryInScope = $false
+        foreach ($touchedPath in $touchedPaths) {
+            if (Test-PathWithinScope -Path $touchedPath -ScopePrefixes $ScopePrefixes) {
+                $entryInScope = $true
+                break
+            }
+        }
+
+        if ($entryInScope) {
+            throw [ContinuityValidationException]::new(
+                "Path '$($entry.Path)' (status '$($entry.Status)') is dirty inside the claimed scope; commit it before handoff."
+            )
+        }
+
+        if ($PreexistingDirtyPaths -notcontains $entry.Path) {
+            throw [ContinuityValidationException]::new(
+                "Path '$($entry.Path)' (status '$($entry.Status)') is a new out-of-scope change discovered at handoff."
+            )
+        }
+    }
+
+    # --- committed base_commit..HEAD diff: every touched path must be in
+    #     scope, and every in-scope path must be listed as changed ----------
+    $outOfScope = [System.Collections.Generic.List[string]]::new()
+    $notListed = [System.Collections.Generic.List[string]]::new()
+    $seen = @{}
+    foreach ($entry in $CommittedEntries) {
+        $touchedPaths = @($entry.Path)
+        if ($entry.OriginalPath) { $touchedPaths += $entry.OriginalPath }
+
+        foreach ($touchedPath in $touchedPaths) {
+            if ($seen.ContainsKey($touchedPath)) { continue }
+            $seen[$touchedPath] = $true
+
+            if (-not (Test-PathWithinScope -Path $touchedPath -ScopePrefixes $ScopePrefixes)) {
+                $outOfScope.Add($touchedPath)
+                continue
+            }
+            if ($ChangedPaths -notcontains $touchedPath) {
+                $notListed.Add($touchedPath)
+            }
+        }
+    }
+
+    if ($outOfScope.Count -gt 0) {
+        throw [ContinuityValidationException]::new(
+            "Committed path(s) outside the claimed scope were found since base commit: $($outOfScope -join ', ')."
+        )
+    }
+    if ($notListed.Count -gt 0) {
+        throw [ContinuityValidationException]::new(
+            "Committed in-scope path(s) are not listed in the workstream's changed paths: $($notListed -join ', ')."
+        )
+    }
+}
+
+function Invoke-Handoff {
+    <#
+    .SYNOPSIS
+        Validates that the active claim's owned workstream file is
+        committed at HEAD with state `handoff`, the exact supplied next
+        action, complete changed-path coverage, an unchanged clean claimed
+        scope, and unchanged pre-existing dirty fingerprints, then
+        atomically marks the claim `handoff-ready` (design spec, Helper
+        Contract: "handoff"). `handoff` NEVER edits a tracked file: the
+        tracked workstream state is already committed before this operation
+        starts, so only the claim JSON under the Git common directory is
+        ever rewritten. Holds the single common lock across final
+        validation and the atomic claim rewrite, so no other operation can
+        observe an intermediate state. Once `handoff-ready`, a retry of this
+        exact call reports the existing claim (identity permitting) rather
+        than mutating again or creating another claim.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [string] $ClaimId,
+        [string] $Agent,
+        [string] $SessionId,
+        [string] $NextAction
+    )
+
+    # --- Validation before any lock/mutation --------------------------------
+    Assert-RequiredParameter -Value $ClaimId -Name 'ClaimId'
+    Assert-RequiredParameter -Value $Agent -Name 'Agent'
+    Assert-RequiredParameter -Value $SessionId -Name 'SessionId'
+    Assert-RequiredParameter -Value $NextAction -Name 'NextAction'
+
+    $agent = Assert-ValidAgent -Value $Agent
+    $sessionId = Normalize-Id -Value $SessionId -Kind 'Session'
+    $trimmedNextAction = $NextAction.Trim()
+
+    $continuityDir = Join-Path $Context.GitCommonDir $Script:ContinuityDirName
+    $lockPath = Join-Path $continuityDir $Script:LockFileName
+
+    return Use-ContinuityLock -LockPath $lockPath -ScriptBlock {
+        $continuityState = Read-ContinuityState -GitCommonDir $Context.GitCommonDir
+        $claims = @($continuityState.Claims)
+
+        $matching = @($claims | Where-Object { $_.claim_id -ceq $ClaimId })
+        if ($matching.Count -eq 0) {
+            throw [ContinuityValidationException]::new("No claim found matching claim id '$ClaimId'.")
+        }
+        $claim = $matching[0]
+
+        $workstreamId = $claim.workstream_id
+        Assert-WorkstreamBranchAllowed -Context $Context -WorkstreamId $workstreamId
+
+        $identityMatches = Test-ClaimIdentity -Claim $claim -Agent $agent -SessionId $sessionId `
+            -WorktreePath (ConvertTo-ForwardSlashPath -Path $Context.WorktreePath) -Branch $Context.Branch
+        if (-not $identityMatches) {
+            throw [ContinuityValidationException]::new(
+                "Claim '$ClaimId' does not match the current agent, session, worktree, or branch."
+            )
+        }
+
+        $gitInfo = [ordered]@{
+            worktree_path    = ConvertTo-ForwardSlashPath -Path $Context.WorktreePath
+            branch           = $Context.Branch
+            detached         = $Context.Detached
+            head             = $Context.Head
+            upstream         = $Context.Upstream
+            protected_branch = $Context.ProtectedBranch
+        }
+
+        # --- Idempotent report: an earlier handoff already completed its
+        #     atomic claim rewrite (a fault injected immediately afterward
+        #     still leaves that rewrite authoritative). Retrying the exact
+        #     same handoff call must report the existing handoff-ready claim,
+        #     never mutate again, and never create another claim. -----------
+        if ($claim.state -eq 'handoff-ready') {
+            return New-OperationResult -Operation 'handoff' `
+                -RepoRoot (ConvertTo-ForwardSlashPath -Path $Context.RepoRoot) `
+                -GitCommonDir (ConvertTo-ForwardSlashPath -Path $Context.GitCommonDir) `
+                -WorkstreamId $workstreamId `
+                -ClaimId $claim.claim_id `
+                -Git ([PSCustomObject] $gitInfo) `
+                -Claims @($claim) `
+                -Warnings @(
+                    @{
+                        code    = 'already-handoff-ready'
+                        message = "Claim '$($claim.claim_id)' is already handoff-ready; no new mutation was made."
+                    }
+                ) `
+                -Errors @()
+        }
+
+        if ($claim.state -ne 'active') {
+            throw [ContinuityValidationException]::new(
+                "Claim '$ClaimId' is not active (state '$($claim.state)'); handoff requires an active claim."
+            )
+        }
+
+        $claimScopePaths = @($claim.scope_paths)
+        $preexistingDirty = @($claim.preexisting_dirty)
+        $preexistingPaths = @($preexistingDirty | ForEach-Object { $_.path })
+
+        # --- committed workstream validation -----------------------------
+        $workstreamRelativePath = "$($Script:WorkstreamsRelativeDirectory)/$workstreamId.md"
+        $committedDoc = Read-CommittedWorkstream -Context $Context -RepoRelativePath $workstreamRelativePath `
+            -WorkstreamId $workstreamId
+
+        if ($committedDoc.CurrentState -cne 'handoff') {
+            throw [ContinuityValidationException]::new(
+                "Committed workstream file '$workstreamRelativePath' at HEAD has state '$($committedDoc.CurrentState)', expected 'handoff'."
+            )
+        }
+        if ($committedDoc.NextActionBody -cne $trimmedNextAction) {
+            throw [ContinuityValidationException]::new(
+                "Committed workstream file '$workstreamRelativePath' at HEAD does not record the exact supplied next action."
+            )
+        }
+        # The document's own "Head commit" field intentionally records Git
+        # state BEFORE the status-file mutation that wrote it and is "not
+        # self-referential" (design spec, "Workstream status"): the commit
+        # that carries this file's own bytes cannot know its own hash in
+        # advance. So it is never compared against the current `HEAD` here;
+        # any further committed drift since the handoff-triggering `update`
+        # call is instead caught by Test-HandoffCoverage below, which
+        # requires every committed in-scope path (including a later,
+        # separately-committed change to this same file) to be listed in
+        # the changed paths that call recorded.
+
+        $normalizedChangedPaths = @(
+            $committedDoc.ChangedPaths | ForEach-Object { Normalize-ScopePath -Path $_ } | Select-Object -Unique
+        )
+
+        # --- reconciliation: fresh working-tree dirt + committed diff -------
+        $currentStatusEntries = @(Get-GitStatusEntries -RepoRoot $Context.RepoRoot)
+        $committedEntries = @(
+            Get-CommittedNameStatus -RepoRoot $Context.RepoRoot -BaseCommit $claim.base_commit -Head $Context.Head
+        )
+
+        Test-HandoffCoverage -CurrentStatusEntries $currentStatusEntries -CommittedEntries $committedEntries `
+            -ScopePrefixes $claimScopePaths -ChangedPaths $normalizedChangedPaths `
+            -PreexistingDirtyPaths $preexistingPaths
+
+        # --- pre-existing dirty fingerprint drift ---------------------------
+        Test-PreexistingDirtyUnchanged -RepoRoot $Context.RepoRoot -PreexistingDirty $preexistingDirty `
+            -CurrentStatusEntries $currentStatusEntries
+
+        # --- atomic claim rewrite --------------------------------------------
+        $handoffReadyClaim = [PSCustomObject][ordered]@{
+            schema_version          = $claim.schema_version
+            claim_id                = $claim.claim_id
+            workstream_id           = $claim.workstream_id
+            agent                   = $claim.agent
+            session_id              = $claim.session_id
+            worktree_path           = $claim.worktree_path
+            branch                  = $claim.branch
+            base_commit             = $claim.base_commit
+            scope_paths             = $claimScopePaths
+            started_utc             = $claim.started_utc
+            heartbeat_utc           = $claim.heartbeat_utc
+            lease_until_utc         = $claim.lease_until_utc
+            state                   = 'handoff-ready'
+            preexisting_dirty       = $preexistingDirty
+            predecessor_claim_id    = $claim.predecessor_claim_id
+            replaces_claim_id       = $claim.replaces_claim_id
+            replacement_reason      = $claim.replacement_reason
+            durable_status_path     = $workstreamRelativePath
+            durable_status_sha256   = $committedDoc.Sha256
+            durable_status_blob_oid = $committedDoc.BlobOid
+            handoff_commit          = $Context.Head
+        }
+
+        $claimsDir = Join-Path $continuityDir 'claims'
+        $claimPath = Join-Path $claimsDir "$workstreamId.json"
+        try {
+            Write-JsonAtomic -Path $claimPath -Object $handoffReadyClaim `
+                -FaultBeforeReplace 'handoff-after-validate' `
+                -FaultAfterReplace 'handoff-after-claim-rewrite'
+        }
+        catch [ContinuityTestFaultException] {
+            if ($_.Exception.Phase -eq 'after') {
+                $escapedNextAction = $NextAction.Replace("'", "''")
+                $stateException = [ContinuityStateException]::new(
+                    'Atomic claim write did not complete after replacing the target file; the handoff-ready claim is authoritative.'
+                )
+                $stateException.ClaimId = $claim.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $claim.claim_id
+                    authoritative_owner = 'handoff-ready-claim'
+                    retry_command       = "handoff -ClaimId $($claim.claim_id) -Agent $agent -SessionId $sessionId -NextAction '$escapedNextAction'"
+                }
+                throw $stateException
+            }
+            else {
+                throw [ContinuityStateException]::new(
+                    'Atomic claim write did not complete before replacing the target file; the claim remains active.'
+                )
+            }
+        }
+
+        return New-OperationResult -Operation 'handoff' `
+            -RepoRoot (ConvertTo-ForwardSlashPath -Path $Context.RepoRoot) `
+            -GitCommonDir (ConvertTo-ForwardSlashPath -Path $Context.GitCommonDir) `
+            -WorkstreamId $workstreamId `
+            -ClaimId $handoffReadyClaim.claim_id `
+            -Git ([PSCustomObject] $gitInfo) `
+            -Claims @($handoffReadyClaim) `
+            -Warnings @() `
+            -Errors @()
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Single top-level try/catch/finally: maps validation, malformed-state, and
 # Git-context exceptions to the stable exit codes 2, 3, and 4. Every other
@@ -2605,9 +3232,13 @@ try {
                 -VerificationCommit $VerificationCommit -VerificationDirtyPath $VerificationDirtyPath `
                 -NotRunReason $NotRunReason
         }
+        'handoff' {
+            Invoke-Handoff -Context $repositoryContext -ClaimId $ClaimId -Agent $Agent -SessionId $SessionId `
+                -NextAction $NextAction
+        }
         default {
             throw [ContinuityValidationException]::new(
-                "Operation '$Operation' is not implemented yet; only 'status', 'start', and 'update' are available."
+                "Operation '$Operation' is not implemented yet; only 'status', 'start', 'update', and 'handoff' are available."
             )
         }
     }
