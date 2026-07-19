@@ -4932,6 +4932,56 @@ def test_takeover_resume_warns_on_identity_mismatch_with_journal(takeover_repo):
     assert "takeover-identity-mismatch" in warning_codes
 
 
+def test_takeover_resume_rechecks_scope_overlap_before_activation(takeover_repo):
+    """During the prepare-to-retry window an injected `takeover-after-
+    prepare` fault opens, another agent can legitimately `start` a DIFFERENT
+    workstream whose scope overlaps the one this pending, not-yet-activated
+    journal recorded -- that `start`'s own overlap check cannot see a
+    journal that never wrote a claim file. The FRESH path already checks the
+    supplied `-Scope` against every OTHER live claim before writing the
+    journal, but a resumed retry must re-run that SAME check immediately
+    before activating; otherwise it activates anyway, producing two live
+    claims with overlapping scope. The predecessor (still expired, but still
+    the recorded owner) must remain authoritative on conflict, and the
+    journal must be left intact for a later legitimate retry once the
+    conflict clears (Task 7 review Fix 1)."""
+    faulted = _takeover(
+        takeover_repo.repo_dir, takeover_repo.predecessor_claim_id,
+        Scope=["other"],
+        env={"AI_CONTINUITY_TEST_FAULT": "takeover-after-prepare"},
+    )
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    assert takeover_repo.journal_path.exists()
+
+    _checkout_new_branch(takeover_repo.repo_dir, "codex/other-workstream")
+    other_start = _start(
+        takeover_repo.repo_dir, Workstream="other-workstream", SessionId="session-2", Scope=["other"]
+    )
+    assert other_start.returncode == 0, f"stdout={other_start.stdout!r} stderr={other_start.stderr!r}"
+    other_claim_id = parse_json_stdout(other_start)["claim_id"]
+
+    checkout_back = _run_git(["checkout", "codex/continuity-pilot"], cwd=takeover_repo.repo_dir)
+    assert checkout_back.returncode == 0, checkout_back.stderr
+
+    retry = _takeover(takeover_repo.repo_dir, takeover_repo.predecessor_claim_id, Scope=["other"])
+
+    assert retry.returncode == 2, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is False
+
+    assert takeover_repo.journal_path.exists()
+    journal = json.loads(takeover_repo.journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "prepared"
+
+    predecessor_claim = _current_claim(takeover_repo.repo_dir, "continuity-pilot")
+    assert predecessor_claim["claim_id"] == takeover_repo.predecessor_claim_id
+    assert predecessor_claim["state"] == "active"
+
+    other_claim = _current_claim(takeover_repo.repo_dir, "other-workstream")
+    assert other_claim["claim_id"] == other_claim_id
+    assert other_claim["state"] == "active"
+
+
 def test_takeover_after_activate_fault_leaves_replacement_authoritative_and_retry_completes(takeover_repo):
     """At `takeover-after-activate` (immediately after the replacement claim
     replaces the active claim file), the replacement IS already `active` and
@@ -5043,3 +5093,158 @@ def test_takeover_after_archive_retry_does_not_rewrite_history_record(takeover_r
 
     assert second_write == first_write
     assert second_write["ended_utc"] == first_write["ended_utc"]
+
+
+# ---------------------------------------------------------------------------
+# Task 7 review Fix 2/Fix 3: direct internal-function coverage for
+# `ConvertFrom-ContinuityTimestamp`, the shared helper `status`/`accept`/
+# `takeover` all use to compare a claim's recorded timestamps against
+# `[DateTimeOffset]::UtcNow`.
+#
+# `scripts/ai-handoff.ps1` always runs its single top-level try/catch/
+# finally and ends with `exit $exitCode` the instant it is invoked (or
+# dot-sourced) at all -- there is no guard that skips this when the file is
+# loaded only to define functions -- so it cannot be dot-sourced as a whole
+# to call one internal function afterward without the process exiting first.
+# Instead, this extracts exactly the `ContinuityStateException` class and
+# the `ConvertFrom-ContinuityTimestamp` function definitions from the real
+# script by AST (never copying or re-implementing their logic), defines
+# only those two nodes in an isolated pwsh process, and calls the real
+# function directly -- the "internal-function hook" the review calls for.
+# ---------------------------------------------------------------------------
+
+
+_CONVERT_TIMESTAMP_WRAPPER_SCRIPT = textwrap.dedent(
+    """
+    $ErrorActionPreference = 'Stop'
+    $raw = [Console]::In.ReadToEnd()
+    # `-DateKind String` is required on THIS outer JSON deserialization: an
+    # RFC3339-shaped JSON string value is otherwise auto-detected and
+    # deserialized as `[DateTime]` here too (the exact same
+    # `ConvertFrom-Json` quirk `ConvertFrom-ContinuityTimestamp`'s own
+    # docstring documents), which would silently corrupt the raw test input
+    # string itself before this wrapper ever calls the real function under
+    # test.
+    $parameters = $raw | ConvertFrom-Json -AsHashtable -DateKind String
+    $scriptPath = $parameters['ScriptPath']
+    $valueKind = $parameters['ValueKind']
+    $rawValue = [string] $parameters['Value']
+
+    $source = [System.IO.File]::ReadAllText($scriptPath, [System.Text.UTF8Encoding]::new($false))
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref] $tokens, [ref] $parseErrors)
+
+    $classAst = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.TypeDefinitionAst] -and $node.Name -ceq 'ContinuityStateException'
+    }, $true)
+    $functionAst = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'ConvertFrom-ContinuityTimestamp'
+    }, $true)
+    if ($null -eq $classAst -or $null -eq $functionAst) {
+        throw "Could not locate ContinuityStateException/ConvertFrom-ContinuityTimestamp in '$scriptPath'."
+    }
+
+    # Defining ONLY these two extracted AST nodes -- never the rest of the
+    # script's top-level statements -- is what lets this call the real
+    # internal function without ever reaching the script's trailing
+    # `exit $exitCode`.
+    . ([scriptblock]::Create($classAst.Extent.Text + "`n" + $functionAst.Extent.Text))
+
+    $value = if ($valueKind -eq 'datetime-utc') {
+        # Mirrors exactly what `ConvertFrom-Json` itself produces for a
+        # claim's RFC3339 UTC string field: a `[DateTime]` with `Kind=Utc`
+        # (documented Newtonsoft.Json ISO-8601 auto-detection quirk the
+        # function's own docstring describes).
+        [DateTime]::Parse(
+            $rawValue, [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind
+        )
+    }
+    else {
+        # The documented `[string]` fallback branch: a raw RFC3339 string
+        # that never passed through JSON deserialization at all.
+        $rawValue
+    }
+
+    $resultOffset = ConvertFrom-ContinuityTimestamp -Value $value -FieldName 'lease_until_utc' `
+        -ClaimId 'internal-test-claim'
+
+    [PSCustomObject]@{
+        offset_iso = $resultOffset.ToString('yyyy-MM-ddTHH:mm:sszzz', [System.Globalization.CultureInfo]::InvariantCulture)
+    } | ConvertTo-Json -Compress
+    """
+).strip()
+
+
+def _convert_from_continuity_timestamp(value: str, value_kind: str) -> dict:
+    """Directly invoke the real `ConvertFrom-ContinuityTimestamp` function
+    extracted from `scripts/ai-handoff.ps1` by AST (see the module comment
+    above), passing `value` either as a `[DateTime]` with `Kind=Utc`
+    (``value_kind="datetime-utc"``, the shape every claim timestamp field
+    actually arrives as after `ConvertFrom-Json`) or as a raw `[string]`
+    (``value_kind="string"``, the documented fallback branch)."""
+    pwsh = _find_pwsh()
+    payload = {"ScriptPath": str(SCRIPT_PATH), "Value": value, "ValueKind": value_kind}
+    completed = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", _CONVERT_TIMESTAMP_WRAPPER_SCRIPT],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, (
+        f"internal ConvertFrom-ContinuityTimestamp call failed: "
+        f"stdout={completed.stdout!r} stderr={completed.stderr!r}"
+    )
+    return json.loads(completed.stdout)
+
+
+def test_convert_from_continuity_timestamp_pins_utc_offset_independent_of_runner_timezone():
+    """`ConvertFrom-ContinuityTimestamp`'s `[DateTime]` branch --
+    `[DateTimeOffset]::new([DateTime]::SpecifyKind($Value, [DateTimeKind]::Utc))`
+    -- forces the incoming value's `Kind` to `Utc` before constructing the
+    `[DateTimeOffset]`, which is a fixed .NET guarantee: the result's
+    `Offset` is always exactly `+00:00`, regardless of what local time zone
+    the calling process happens to be configured with. The bug this
+    replaced declared `$Value` as `[string]`, which forced PowerShell to
+    implicitly re-stringify the already-`ConvertFrom-Json`-parsed
+    `[DateTime]` using the current culture's default format BEFORE the
+    function ever ran -- silently discarding the "Z" UTC marker. The
+    downstream `[DateTimeOffset]::Parse` call then had no zone information
+    left to work from, so it fell back to interpreting the value as LOCAL
+    time and stamped it with whatever `+HH:mm` offset the CURRENT PROCESS's
+    system time zone happened to be.
+
+    The existing near-boundary expiry tests (for example
+    `test_accept_succeeds_after_lease_expiry_when_evidence_matches`, and
+    this module's own `_expire_claim`-based takeover tests) only exercise
+    that reverted bug observably when the test runner's own local UTC
+    offset happens to be nonzero -- on a UTC-zoned runner the buggy
+    re-stringify-then-local-parse path coincidentally reproduces the correct
+    instant too, so those tests would pass with or without the fix. This
+    test instead asserts the fixed behavior's invariant directly (offset
+    pinned at `+00:00`), which the fix guarantees unconditionally and does
+    not itself depend on this machine's configured time zone, even though a
+    hypothetical regression could still only be OBSERVED failing here on a
+    non-UTC-zoned host (Task 7 review Fix 2)."""
+    result = _convert_from_continuity_timestamp("2026-07-19T01:14:34Z", "datetime-utc")
+
+    assert result["offset_iso"] == "2026-07-19T01:14:34+00:00"
+
+
+def test_convert_from_continuity_timestamp_handles_string_input_directly():
+    """`ConvertFrom-ContinuityTimestamp`'s documented `[string]` fallback
+    branch (`[DateTimeOffset]::Parse([string] $Value, InvariantCulture)`) is
+    reachable and exercised directly here -- not dead code -- by calling the
+    real internal function (extracted by AST; see the module comment above)
+    with a raw RFC3339 string that never passed through `ConvertFrom-Json`
+    at all. It parses to the identical UTC instant and `+00:00` offset as
+    the `[DateTime]` branch a real claim read exercises (Task 7 review
+    Fix 3)."""
+    via_datetime = _convert_from_continuity_timestamp("2026-07-19T01:14:34Z", "datetime-utc")
+    via_string = _convert_from_continuity_timestamp("2026-07-19T01:14:34Z", "string")
+
+    assert via_string["offset_iso"] == via_datetime["offset_iso"] == "2026-07-19T01:14:34+00:00"

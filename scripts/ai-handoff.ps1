@@ -4093,6 +4093,29 @@ function Invoke-Takeover {
                     }
                 }
 
+                # Re-run the SAME scope-overlap check the fresh path performs
+                # before writing its journal, immediately before this resumed
+                # retry activates. During the prepare-to-retry window another
+                # agent's `start` for a DIFFERENT workstream could legitimately
+                # have claimed a scope overlapping this journal's recorded
+                # replacement scope -- that `start`'s own overlap check could
+                # not see a journal that never activated a claim file. On
+                # conflict this fails exit 2 with no activation: the
+                # predecessor (still expired, but still the recorded owner)
+                # remains authoritative, and the journal is left intact for a
+                # later legitimate retry once the conflict clears (Task 7
+                # review Fix 1).
+                $othersLive = @($claims | Where-Object {
+                        $_.workstream_id -cne $workstreamId -and ($_.state -eq 'active' -or $_.state -eq 'handoff-ready')
+                    })
+                foreach ($other in $othersLive) {
+                    if (Test-ScopeOverlap -Left $newScope -Right @($other.scope_paths)) {
+                        throw [ContinuityValidationException]::new(
+                            "Requested scope overlaps live claim '$($other.claim_id)' for workstream '$($other.workstream_id)'."
+                        )
+                    }
+                }
+
                 try {
                     Write-JsonAtomic -Path $claimPath -Object $newClaim `
                         -FaultAfterReplace 'takeover-after-activate'
