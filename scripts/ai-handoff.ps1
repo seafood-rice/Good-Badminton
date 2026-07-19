@@ -3490,6 +3490,8 @@ function Invoke-Accept {
     $retryCommand = "accept -PreviousClaimId $PreviousClaimId -Agent $agent -SessionId $sessionId"
 
     return Use-ContinuityLock -LockPath $lockPath -ScriptBlock {
+        $warnings = [System.Collections.Generic.List[object]]::new()
+
         # --- Resume an existing prepared transaction, or read live claims ---
         $journal = $null
         if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
@@ -3514,6 +3516,21 @@ function Invoke-Accept {
         if ($null -ne $journal) {
             $predecessorSnapshot = $journal.predecessor
             $successorClaim = $journal.successor
+
+            # This resumed call's -Agent/-SessionId are never used to
+            # override the already-recorded successor identity (design:
+            # resuming reuses the journal's snapshots verbatim). A
+            # resupplied identity that differs from what was recorded when
+            # this transaction began is surfaced as a warning -- never a
+            # new failure mode for an already-in-flight, idempotent retry --
+            # mirroring `handoff`'s `next-action-mismatch` warning (Task 6
+            # review Fix 2).
+            if ($successorClaim.agent -cne $agent -or $successorClaim.session_id -cne $sessionId) {
+                $warnings.Add(@{
+                    code    = 'accept-identity-mismatch'
+                    message = "Resupplied -Agent/-SessionId do not match the successor identity recorded when claim '$PreviousClaimId' began accepting; proceeding with the recorded successor identity."
+                })
+            }
         }
         else {
             $matching = @($claims | Where-Object { $_.claim_id -ceq $PreviousClaimId })
@@ -3703,54 +3720,78 @@ function Invoke-Accept {
         }
 
         # --- Archive the predecessor to immutable history -------------------
-        $endedUtc = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
-        $historyRecord = [PSCustomObject][ordered]@{
-            schema_version          = 1
-            claim_id                = $predecessorSnapshot.claim_id
-            workstream_id           = $predecessorSnapshot.workstream_id
-            agent                   = $predecessorSnapshot.agent
-            session_id              = $predecessorSnapshot.session_id
-            worktree_path           = $predecessorSnapshot.worktree_path
-            branch                  = $predecessorSnapshot.branch
-            base_commit             = $predecessorSnapshot.base_commit
-            scope_paths             = @($predecessorSnapshot.scope_paths)
-            started_utc             = $predecessorSnapshot.started_utc
-            heartbeat_utc           = $predecessorSnapshot.heartbeat_utc
-            lease_until_utc         = $predecessorSnapshot.lease_until_utc
-            state                   = $predecessorSnapshot.state
-            preexisting_dirty       = @($predecessorSnapshot.preexisting_dirty)
-            predecessor_claim_id    = $predecessorSnapshot.predecessor_claim_id
-            replaces_claim_id       = $predecessorSnapshot.replaces_claim_id
-            replacement_reason      = $predecessorSnapshot.replacement_reason
-            durable_status_path     = $predecessorSnapshot.durable_status_path
-            durable_status_sha256   = $predecessorSnapshot.durable_status_sha256
-            durable_status_blob_oid = $predecessorSnapshot.durable_status_blob_oid
-            handoff_commit          = $predecessorSnapshot.handoff_commit
-            final_state             = 'handed-off'
-            ended_utc                = $endedUtc
-            successor_claim_id       = $successorClaim.claim_id
-            successor_agent          = $successorClaim.agent
-            successor_session_id     = $successorClaim.session_id
+        # Write-once: a resumed retry after the `accept-after-archive` fault
+        # (the write completed but the journal delete never ran) must reuse
+        # the record already on disk verbatim rather than recomputing
+        # `ended_utc` and rewriting it -- history is immutable once recorded
+        # (Task 6 review Fix 1). Only build and write a fresh record when no
+        # matching, already-archived record exists.
+        $historyPath = Join-Path $historyDir "$($predecessorSnapshot.claim_id).json"
+        $existingHistoryRecord = $null
+        if (Test-Path -LiteralPath $historyPath -PathType Leaf) {
+            $existingHistoryText = [System.IO.File]::ReadAllText($historyPath, [System.Text.UTF8Encoding]::new($false))
+            try {
+                $existingHistoryRecord = $existingHistoryText | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw [ContinuityStateException]::new("Malformed history record JSON at '$historyPath': $($_.Exception.Message)")
+            }
         }
 
-        $historyPath = Join-Path $historyDir "$($predecessorSnapshot.claim_id).json"
-        try {
-            Write-JsonAtomic -Path $historyPath -Object $historyRecord `
-                -FaultAfterReplace 'accept-after-archive'
+        if ($null -ne $existingHistoryRecord -and $existingHistoryRecord.final_state -ceq 'handed-off' -and
+            $existingHistoryRecord.claim_id -ceq $predecessorSnapshot.claim_id -and
+            $existingHistoryRecord.successor_claim_id -ceq $successorClaim.claim_id) {
+            $historyRecord = $existingHistoryRecord
         }
-        catch [ContinuityTestFaultException] {
-            $stateException = [ContinuityStateException]::new(
-                'A fault interrupted acceptance after archiving the predecessor; the successor remains authoritative.'
-            )
-            $stateException.ClaimId = $successorClaim.claim_id
-            $stateException.Recovery = [PSCustomObject][ordered]@{
-                claim_id            = $successorClaim.claim_id
-                authoritative_owner = 'successor'
-                transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
-                transaction_state   = 'activated'
-                retry_command       = $retryCommand
+        else {
+            $endedUtc = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+            $historyRecord = [PSCustomObject][ordered]@{
+                schema_version          = 1
+                claim_id                = $predecessorSnapshot.claim_id
+                workstream_id           = $predecessorSnapshot.workstream_id
+                agent                   = $predecessorSnapshot.agent
+                session_id              = $predecessorSnapshot.session_id
+                worktree_path           = $predecessorSnapshot.worktree_path
+                branch                  = $predecessorSnapshot.branch
+                base_commit             = $predecessorSnapshot.base_commit
+                scope_paths             = @($predecessorSnapshot.scope_paths)
+                started_utc             = $predecessorSnapshot.started_utc
+                heartbeat_utc           = $predecessorSnapshot.heartbeat_utc
+                lease_until_utc         = $predecessorSnapshot.lease_until_utc
+                state                   = $predecessorSnapshot.state
+                preexisting_dirty       = @($predecessorSnapshot.preexisting_dirty)
+                predecessor_claim_id    = $predecessorSnapshot.predecessor_claim_id
+                replaces_claim_id       = $predecessorSnapshot.replaces_claim_id
+                replacement_reason      = $predecessorSnapshot.replacement_reason
+                durable_status_path     = $predecessorSnapshot.durable_status_path
+                durable_status_sha256   = $predecessorSnapshot.durable_status_sha256
+                durable_status_blob_oid = $predecessorSnapshot.durable_status_blob_oid
+                handoff_commit          = $predecessorSnapshot.handoff_commit
+                final_state             = 'handed-off'
+                ended_utc                = $endedUtc
+                successor_claim_id       = $successorClaim.claim_id
+                successor_agent          = $successorClaim.agent
+                successor_session_id     = $successorClaim.session_id
             }
-            throw $stateException
+
+            try {
+                Write-JsonAtomic -Path $historyPath -Object $historyRecord `
+                    -FaultAfterReplace 'accept-after-archive'
+            }
+            catch [ContinuityTestFaultException] {
+                $stateException = [ContinuityStateException]::new(
+                    'A fault interrupted acceptance after archiving the predecessor; the successor remains authoritative.'
+                )
+                $stateException.ClaimId = $successorClaim.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $successorClaim.claim_id
+                    authoritative_owner = 'successor'
+                    transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                    transaction_state   = 'activated'
+                    retry_command       = $retryCommand
+                }
+                throw $stateException
+            }
         }
 
         # --- Cross-reference validation, then delete the journal ------------
@@ -3793,7 +3834,7 @@ function Invoke-Accept {
             -ClaimId $successorClaim.claim_id `
             -Git ([PSCustomObject] $gitInfo) `
             -Claims @($successorClaim) `
-            -Warnings @() `
+            -Warnings @($warnings) `
             -Errors @()
     }
 }

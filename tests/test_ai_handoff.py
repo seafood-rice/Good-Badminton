@@ -3811,6 +3811,29 @@ def test_accept_rejects_different_branch(accept_repo):
     assert parse_json_stdout(result)["ok"] is False
 
 
+def test_accept_rejects_branch_differing_from_predecessor_recorded_branch(accept_repo):
+    """`Test-AcceptPreActivationInvariants`'s OWN branch comparison rejects
+    acceptance even when the coarser `Assert-WorkstreamBranchAllowed` naming
+    check would allow the current branch: the predecessor was recorded on
+    `codex/continuity-pilot`, and `accept` is invoked from
+    `claude/continuity-pilot` -- a DIFFERENT branch, but still a valid
+    `<codex|claude>/<workstream-id>` prefix for this exact workstream id, so
+    the naming check alone would pass it through (Task 6 review Fix 3)."""
+    predecessor = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert predecessor["branch"] == "codex/continuity-pilot"
+
+    _checkout_new_branch(accept_repo.repo_dir, "claude/continuity-pilot")
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+    claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert claim["claim_id"] == accept_repo.predecessor_claim_id
+    assert claim["state"] == "handoff-ready"
+
+
 def test_accept_rejects_head_drift_since_handoff(accept_repo):
     """Unlike `handoff` (whose committed `Head commit` field is deliberately
     "not self-referential"), `accept` requires the CURRENT `HEAD` to exactly
@@ -3961,6 +3984,29 @@ def test_accept_happy_path_creates_successor_and_archives_predecessor(accept_rep
     assert not accept_repo.journal_path.exists()
 
 
+def test_accept_happy_path_preserves_nonempty_preexisting_dirty(tmp_path):
+    """A predecessor claim's non-empty `preexisting_dirty` list survives the
+    prepared-journal round-trip into the newly activated successor claim --
+    verifying the array's exact CONTENT, not merely object identity (Task 6
+    review Fix 4)."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_modified)
+    handoff_result = _handoff(repo_dir, claim_id, fixture.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    predecessor = _current_claim(repo_dir)
+    assert len(predecessor["preexisting_dirty"]) == 1
+
+    result = _accept(repo_dir, claim_id)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    successor = parsed["claims"][0]
+    assert successor["preexisting_dirty"] == predecessor["preexisting_dirty"]
+
+    on_disk = _current_claim(repo_dir)
+    assert on_disk["preexisting_dirty"] == predecessor["preexisting_dirty"]
+
+
 # ---------------------------------------------------------------------------
 # Step 3: fault/retry at each fixed boundary
 # ---------------------------------------------------------------------------
@@ -4005,6 +4051,57 @@ def test_accept_after_prepare_fault_leaves_predecessor_authoritative_and_retry_c
     assert retry_parsed["ok"] is True
     assert retry_parsed["claims"][0]["claim_id"] == prepared_successor_id
     assert not accept_repo.journal_path.exists()
+
+
+def test_accept_resume_warns_on_identity_mismatch_with_journal(accept_repo):
+    """Task 6 review Fix 2: a resumed `accept` retry that resupplies a
+    DIFFERENT `-Agent`/`-SessionId` than the journal's already-recorded
+    successor identity still completes using the RECORDED identity (no
+    behavior change) but now surfaces the mismatch as a warning, mirroring
+    `handoff`'s `next-action-mismatch` warning."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-prepare"},
+    )
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+
+    journal = json.loads(accept_repo.journal_path.read_text(encoding="utf-8"))
+    recorded_agent = journal["successor"]["agent"]
+    recorded_session_id = journal["successor"]["session_id"]
+    assert recorded_agent == "claude"
+    assert recorded_session_id == "claude-session-1"
+
+    retry = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        Agent="codex", SessionId="codex-session-9",
+    )
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["agent"] == recorded_agent
+    assert retry_parsed["claims"][0]["session_id"] == recorded_session_id
+    warning_codes = {warning["code"] for warning in retry_parsed["warnings"]}
+    assert "accept-identity-mismatch" in warning_codes
+
+
+def test_accept_resume_no_warning_on_exact_identity_match(accept_repo):
+    """The same resumed retry with the EXACT SAME `-Agent`/`-SessionId` as
+    the journal's recorded successor identity reports no identity-mismatch
+    warning (Task 6 review Fix 2)."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-prepare"},
+    )
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+
+    retry = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    warning_codes = {warning["code"] for warning in retry_parsed["warnings"]}
+    assert "accept-identity-mismatch" not in warning_codes
 
 
 def test_accept_after_activate_fault_leaves_successor_authoritative_and_retry_completes(accept_repo):
@@ -4131,6 +4228,38 @@ def test_accept_after_archive_fault_leaves_successor_authoritative_and_retry_com
     assert retry_parsed["ok"] is True
     assert retry_parsed["claims"][0]["claim_id"] == successor_claim_id
     assert not accept_repo.journal_path.exists()
+
+
+def test_accept_after_archive_retry_does_not_rewrite_history_record(accept_repo):
+    """Task 6 review Fix 1: the predecessor's history record must be
+    write-once. A resumed retry AFTER the `accept-after-archive` fault (the
+    history record already finished writing before the fault interrupted the
+    journal delete) must NEVER recompute `ended_utc` or rewrite any other
+    field of the already-archived, immutable record."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-archive"},
+    )
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+
+    history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+    assert history_path.exists()
+    first_write = json.loads(history_path.read_text(encoding="utf-8"))
+    assert first_write.get("ended_utc")
+
+    # A fresh, distinguishable timestamp between the first write and the
+    # retry makes an accidental overwrite observable rather than relying on
+    # sub-second timer luck (the recorded format has one-second resolution).
+    time.sleep(1.1)
+
+    retry = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    assert history_path.exists()
+    second_write = json.loads(history_path.read_text(encoding="utf-8"))
+
+    assert second_write == first_write
+    assert second_write["ended_utc"] == first_write["ended_utc"]
 
 
 # ---------------------------------------------------------------------------
