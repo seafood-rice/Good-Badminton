@@ -1957,8 +1957,11 @@ function Read-WorkstreamDocument {
         spec, Helper Contract: "update may edit only that bounded section
         plus the template's explicit... fields"). Throws
         ContinuityStateException (exit 3, no mutation) for a missing file, a
-        missing or duplicated managed marker, an out-of-order marker pair,
-        or a missing/duplicated/malformed required field.
+        missing or duplicated managed marker, an out-of-order marker pair, a
+        missing/duplicated/malformed required field, or a `State`/`Head
+        commit`/`Last milestone` field that appears at or after the `Next
+        action` heading (Write-WorkstreamDocument assumes those fields
+        precede it).
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -2085,6 +2088,22 @@ function Read-WorkstreamDocument {
     if ($nextActionHeadingIndex -ge $markerStartIndex) {
         throw [ContinuityStateException]::new(
             "Owned workstream file '$Path' must have the 'Next action' section before the milestone marker."
+        )
+    }
+    # Write-WorkstreamDocument's "Next action" body rewrite removes every
+    # line between $nextActionHeadingIndex and $markerStartIndex, then
+    # single-line-replaces the State/Head commit/Last milestone fields
+    # in-place at their originally recorded indices. That is only safe when
+    # those three fields all precede the "Next action" heading -- otherwise
+    # a relocated field would fall inside the removed span (silently
+    # deleted) while its recorded index still pointed at stale content.
+    # Reject that ordering explicitly here, before any mutation, instead of
+    # relying on it silently.
+    if ($stateLineIndex -ge $nextActionHeadingIndex -or
+        $headCommitLineIndex -ge $nextActionHeadingIndex -or
+        $lastMilestoneLineIndex -ge $nextActionHeadingIndex) {
+        throw [ContinuityStateException]::new(
+            "Owned workstream file '$Path' must have the 'State', 'Head commit', and 'Last milestone' fields before the 'Next action' section."
         )
     }
 
