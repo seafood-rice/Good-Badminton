@@ -8,17 +8,23 @@
     docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md and
     docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md.
 
-    `status`, `start`, `update`, and `handoff` are implemented, along with
-    the internal boundaries they and later tasks extend: Invoke-Git,
-    Get-RepositoryContext, Normalize-Id, Normalize-ScopePath,
+    `status`, `start`, `update`, `handoff`, and `accept` are implemented,
+    along with the internal boundaries they and later tasks extend:
+    Invoke-Git, Get-RepositoryContext, Normalize-Id, Normalize-ScopePath,
     Read-ContinuityState, New-OperationResult, Write-Result, Invoke-Status,
     Use-ContinuityLock, Write-JsonAtomic, Get-DirtyFingerprint, Invoke-Start,
     Read-WorkstreamDocument, Write-WorkstreamDocument, Invoke-Update,
     Get-CommittedNameStatus, Test-PreexistingDirtyUnchanged,
-    Read-CommittedWorkstream, Test-HandoffCoverage, and Invoke-Handoff.
-    `accept` and `takeover` are declared in the parameter surface per the
-    approved helper contract but are not yet implemented; invoking them
-    returns a validation error (exit 2) until later tasks add them.
+    Read-CommittedWorkstream, Test-HandoffCoverage, Invoke-Handoff,
+    Test-AcceptPreActivationInvariants, Invoke-AcceptPauseFault, and
+    Invoke-Accept. `accept` uses an explicit transaction journal under
+    `<git-common-dir>/ai-continuity/transactions/accept-<old-claim-id>.json`
+    to atomically activate a successor claim and archive its predecessor to
+    `<git-common-dir>/ai-continuity/history/<claim-id>.json` (design spec,
+    "Handoff write ordering and recovery"). `takeover` is declared in the
+    parameter surface per the approved helper contract but is not yet
+    implemented; invoking it returns a validation error (exit 2) until a
+    later task adds it.
 
     `status` never acquires the common continuity lock and never creates
     `<git-common-dir>/ai-continuity`. Missing continuity directories mean
@@ -78,6 +84,8 @@ $ErrorActionPreference = 'Stop'
 #   2 = validation error / protected-branch use / claim conflict
 #   3 = malformed continuity state / lock timeout / atomic-write failure
 #   4 = not a Git worktree or Git common directory unavailable
+#   5 = `accept` activated the successor but post-activation Git drift
+#       requires recovery
 # ---------------------------------------------------------------------------
 class ContinuityValidationException : System.Exception {
     ContinuityValidationException([string] $Message) : base($Message) {}
@@ -98,6 +106,21 @@ class ContinuityStateException : System.Exception {
 
 class ContinuityGitContextException : System.Exception {
     ContinuityGitContextException([string] $Message) : base($Message) {}
+}
+
+class ContinuityRecoveryException : System.Exception {
+    # Mirrors ContinuityStateException's structured ClaimId/Recovery extras,
+    # but maps to the distinct stable exit `5` -- "`accept` activated the
+    # successor but post-activation Git drift requires recovery" (design
+    # spec, exit codes) -- rather than exit `3`. Drift detected by `accept`
+    # AFTER it atomically activates a successor claim is the only condition
+    # that throws this exception; every other post-activation failure is an
+    # "ordinary... atomic failure" that still returns exit `3` with the same
+    # authoritative-owner recovery facts (design spec / Task 6 brief).
+    [string] $ClaimId
+    [object] $Recovery
+
+    ContinuityRecoveryException([string] $Message) : base($Message) {}
 }
 
 class ContinuityTestFaultException : System.Exception {
@@ -176,6 +199,16 @@ $Script:LockFileName = 'lock'
 $Script:LockTimeoutMilliseconds = 5000
 $Script:LockRetryIntervalMilliseconds = 50
 
+# Bounded wait for the `accept-pause-after-activate` test-only coordination
+# point (Task 6 brief: "it times out safely and removes test controls").
+# This is strictly a deterministic test hook for the concurrent-drift
+# scenario -- it never activates unless a test explicitly sets
+# `AI_CONTINUITY_TEST_FAULT` to this exact name -- and it must never hang: a
+# missing `<journal>.continue` file after this timeout elapses is treated as
+# "stop waiting and continue", not a failure, so a broken test can never wedge
+# a real invocation.
+$Script:AcceptPauseTimeoutMilliseconds = 20000
+
 # The complete set of fixed fault names honored by the single test hook
 # `AI_CONTINUITY_TEST_FAULT` (design spec / plan Global Constraints: "the
 # fixed boundary names listed in Tasks 3 and 5-7"). Task 3's two names exist
@@ -191,7 +224,12 @@ $Script:KnownTestFaultNames = @(
     'start-after-claim-replace',
     'update-after-workstream-write',
     'handoff-after-validate',
-    'handoff-after-claim-rewrite'
+    'handoff-after-claim-rewrite',
+    'accept-after-prepare',
+    'accept-after-activate',
+    'accept-pause-after-activate',
+    'accept-after-revalidate',
+    'accept-after-archive'
 )
 
 # Case sensitivity for scope/path comparisons is derived from the
@@ -1474,6 +1512,64 @@ function Invoke-TestFault {
         throw [ContinuityTestFaultException]::new(
             'A test-injected fault interrupted the operation.', $Phase
         )
+    }
+}
+
+function Invoke-AcceptPauseFault {
+    <#
+    .SYNOPSIS
+        The `accept-pause-after-activate` test-only coordination point (Task
+        6 brief, fixed fault names). Unlike every other fault name, this one
+        never throws: it is a deterministic rendezvous the concurrent-drift
+        test uses to make an external Git mutation land at an exact point in
+        `accept`'s execution -- immediately after the successor claim is
+        activated, before `accept` revalidates Git -- without any timing-
+        dependent sleep on either side.
+    .DESCRIPTION
+        A no-op unless `AI_CONTINUITY_TEST_FAULT` is exactly
+        `accept-pause-after-activate`. When active: writes `<JournalPath>.ready`
+        so the waiting test knows activation has completed, then polls for
+        `<JournalPath>.continue` up to the fixed bounded timeout. The test
+        performs its own Git mutation and commit in this same window -- the
+        helper itself never runs a Git mutation. Both control files are
+        always removed before returning, whether the continue signal arrived
+        or the bounded wait simply timed out, so a broken or crashed test can
+        never leave stray control files behind or wedge a real invocation
+        (design spec / plan Global Constraints: "the fixed boundary names...
+        it times out safely and removes test controls").
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $JournalPath
+    )
+
+    $name = 'accept-pause-after-activate'
+    $active = $env:AI_CONTINUITY_TEST_FAULT
+    if ([string]::IsNullOrEmpty($active) -or $active -cne $name) {
+        return
+    }
+
+    $readyPath = "$JournalPath.ready"
+    $continuePath = "$JournalPath.continue"
+
+    try {
+        [System.IO.File]::WriteAllText($readyPath, 'ready', [System.Text.UTF8Encoding]::new($false))
+
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path -LiteralPath $continuePath -PathType Leaf)) {
+            if ($stopwatch.ElapsedMilliseconds -ge $Script:AcceptPauseTimeoutMilliseconds) {
+                break
+            }
+            Start-Sleep -Milliseconds $Script:LockRetryIntervalMilliseconds
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $readyPath) {
+            Remove-Item -LiteralPath $readyPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $continuePath) {
+            Remove-Item -LiteralPath $continuePath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -3236,13 +3332,480 @@ function Invoke-Handoff {
     }
 }
 
+function Test-AcceptPreActivationInvariants {
+    <#
+    .SYNOPSIS
+        Revalidates every recorded Git invariant a handoff-ready predecessor
+        claim must still satisfy before `accept` may activate its successor
+        (design spec, Helper Contract: "accept": "Revalidate the recorded
+        full commit, clean claimed scope, committed status hash, and
+        pre-existing dirty fingerprints under the common lock"): the same
+        canonical worktree and branch, the exact recorded `handoff_commit`
+        against a freshly read `HEAD`, the committed workstream blob and its
+        SHA-256, a clean claimed scope, and unchanged pre-existing dirty
+        fingerprints. Throws ContinuityValidationException (exit 2) on any
+        mismatch, so the predecessor `handoff-ready` claim remains
+        authoritative and blocking (design spec: "If Git changes before step
+        3, acceptance fails and the handoff-ready predecessor remains
+        blocking").
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [Parameter(Mandatory = $true)]
+        $Predecessor
+    )
+
+    $worktreePath = ConvertTo-ForwardSlashPath -Path $Context.WorktreePath
+    if ($Predecessor.worktree_path -cne $worktreePath -or $Predecessor.branch -cne $Context.Branch) {
+        throw [ContinuityValidationException]::new(
+            "Claim '$($Predecessor.claim_id)' was recorded in a different canonical worktree or branch than the current one."
+        )
+    }
+
+    $headResult = Invoke-Git -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $Context.RepoRoot
+    if ($headResult.ExitCode -ne 0) {
+        throw [ContinuityGitContextException]::new('Unable to resolve the current HEAD commit.')
+    }
+    $currentHead = $headResult.StdOut.Trim()
+    if ($currentHead -cne $Predecessor.handoff_commit) {
+        throw [ContinuityValidationException]::new(
+            "HEAD has changed since claim '$($Predecessor.claim_id)' became handoff-ready; acceptance cannot proceed."
+        )
+    }
+
+    $workstreamRelativePath = $Predecessor.durable_status_path
+    if ([string]::IsNullOrEmpty($workstreamRelativePath)) {
+        throw [ContinuityStateException]::new(
+            "Claim '$($Predecessor.claim_id)' is handoff-ready but has no recorded durable status path."
+        )
+    }
+    $committedDoc = Read-CommittedWorkstream -Context $Context -RepoRelativePath $workstreamRelativePath `
+        -WorkstreamId $Predecessor.workstream_id
+    if ($committedDoc.BlobOid -cne $Predecessor.durable_status_blob_oid -or
+        $committedDoc.Sha256 -cne $Predecessor.durable_status_sha256) {
+        throw [ContinuityValidationException]::new(
+            "The committed workstream file '$workstreamRelativePath' no longer matches the blob or hash recorded when claim '$($Predecessor.claim_id)' became handoff-ready."
+        )
+    }
+
+    $claimScopePaths = @($Predecessor.scope_paths)
+    $currentStatusEntries = @(Get-GitStatusEntries -RepoRoot $Context.RepoRoot)
+    foreach ($entry in $currentStatusEntries) {
+        $touchedPaths = @($entry.Path)
+        if ($entry.OriginalPath) { $touchedPaths += $entry.OriginalPath }
+        foreach ($touchedPath in $touchedPaths) {
+            if (Test-PathWithinScope -Path $touchedPath -ScopePrefixes $claimScopePaths) {
+                throw [ContinuityValidationException]::new(
+                    "Path '$($entry.Path)' (status '$($entry.Status)') is dirty inside the claimed scope; acceptance cannot proceed."
+                )
+            }
+        }
+    }
+
+    Test-PreexistingDirtyUnchanged -RepoRoot $Context.RepoRoot -PreexistingDirty @($Predecessor.preexisting_dirty) `
+        -CurrentStatusEntries $currentStatusEntries
+}
+
+function Invoke-Accept {
+    <#
+    .SYNOPSIS
+        Accepts a `handoff-ready` predecessor claim: atomically activates a
+        new successor claim owned by the accepting agent/session, revalidates
+        Git after activation, archives the predecessor to immutable history,
+        and only then deletes the transaction journal (design spec, Helper
+        Contract: "accept"; "Handoff write ordering and recovery"). Uses an
+        explicit transaction journal at
+        `<git-common-dir>/ai-continuity/transactions/accept-<old-claim-id>.json`
+        so a crash or injected fault at any boundary leaves exactly one
+        authoritative owner -- the predecessor before activation, the
+        successor after -- and an idempotent retry of this exact call always
+        resumes the same transaction rather than creating a second successor.
+    .DESCRIPTION
+        Under the single common lock:
+          1. If a `prepared` journal already exists for `-PreviousClaimId`,
+             resume it: use its recorded predecessor/successor snapshots
+             instead of re-deriving them. Otherwise, locate the live
+             `handoff-ready` claim by the exact `-PreviousClaimId`, revalidate
+             every recorded Git invariant (Test-AcceptPreActivationInvariants),
+             build the proposed successor claim, and atomically write the
+             `prepared` journal (fault `accept-after-prepare`).
+          2. Unless the live claim for this workstream already IS the
+             successor (a resumed retry after activation completed), atomically
+             replace the active claim file with the successor (fault
+             `accept-after-activate`). Before this point the predecessor
+             remains authoritative; after it, the successor does.
+          3. Run the test-only `accept-pause-after-activate` rendezvous, then
+             revalidate Git: a fresh `HEAD` that no longer equals the
+             successor's `base_commit` is genuine concurrent drift, throwing
+             ContinuityRecoveryException (exit 5) with the successor
+             authoritative and the transaction retained. Fault
+             `accept-after-revalidate` after that check simulates an ordinary
+             atomic failure (exit 3) with the same authoritative-owner facts.
+          4. Archive the predecessor to
+             `<git-common-dir>/ai-continuity/history/<predecessor-claim-id>.json`
+             with `final_state: handed-off` and exact successor
+             cross-references (fault `accept-after-archive`).
+          5. Re-read the successor claim and history record and validate they
+             cross-reference each other in both directions, then delete the
+             journal.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        $Context,
+        [string] $PreviousClaimId,
+        [string] $Agent,
+        [string] $SessionId
+    )
+
+    # --- Validation before any lock/mutation --------------------------------
+    Assert-RequiredParameter -Value $PreviousClaimId -Name 'PreviousClaimId'
+    Assert-RequiredParameter -Value $Agent -Name 'Agent'
+    Assert-RequiredParameter -Value $SessionId -Name 'SessionId'
+
+    $agent = Assert-ValidAgent -Value $Agent
+    $sessionId = Normalize-Id -Value $SessionId -Kind 'Session'
+
+    # Every claim ID this helper ever generates is a standard hyphenated GUID
+    # ([Guid]::NewGuid().ToString()); accept is the only operation that
+    # splices `-PreviousClaimId` directly into a filesystem path (the
+    # transaction journal name), so this format check also closes off path
+    # injection from unsafe input before any lock or mutation (design spec
+    # exit table: "unsafe input... return 2").
+    if ($PreviousClaimId -cnotmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+        throw [ContinuityValidationException]::new("-PreviousClaimId '$PreviousClaimId' must be a GUID.")
+    }
+
+    $continuityDir = Join-Path $Context.GitCommonDir $Script:ContinuityDirName
+    $lockPath = Join-Path $continuityDir $Script:LockFileName
+    $claimsDir = Join-Path $continuityDir 'claims'
+    $transactionsDir = Join-Path $continuityDir 'transactions'
+    $historyDir = Join-Path $continuityDir 'history'
+    $journalPath = Join-Path $transactionsDir "accept-$PreviousClaimId.json"
+
+    # The exact idempotent retry command (design spec: "An exit-5 retry runs
+    # the same accept -PreviousClaimId <id> -Agent <agent> -SessionId <id>
+    # command"). Identical regardless of which boundary a fault or drift
+    # interrupts, because every boundary resumes the same journal.
+    $retryCommand = "accept -PreviousClaimId $PreviousClaimId -Agent $agent -SessionId $sessionId"
+
+    return Use-ContinuityLock -LockPath $lockPath -ScriptBlock {
+        # --- Resume an existing prepared transaction, or read live claims ---
+        $journal = $null
+        if (Test-Path -LiteralPath $journalPath -PathType Leaf) {
+            $rawJournalText = [System.IO.File]::ReadAllText($journalPath, [System.Text.UTF8Encoding]::new($false))
+            try {
+                $journal = $rawJournalText | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                throw [ContinuityStateException]::new("Malformed accept transaction JSON at '$journalPath': $($_.Exception.Message)")
+            }
+            if ($null -eq $journal -or $journal.transaction -cne 'accept' -or $journal.state -cne 'prepared' -or
+                $null -eq $journal.predecessor -or $null -eq $journal.successor -or
+                $journal.previous_claim_id -cne $PreviousClaimId -or
+                $journal.predecessor.claim_id -cne $PreviousClaimId) {
+                throw [ContinuityStateException]::new("Accept transaction '$journalPath' is malformed.")
+            }
+        }
+
+        $continuityState = Read-ContinuityState -GitCommonDir $Context.GitCommonDir
+        $claims = @($continuityState.Claims)
+
+        if ($null -ne $journal) {
+            $predecessorSnapshot = $journal.predecessor
+            $successorClaim = $journal.successor
+        }
+        else {
+            $matching = @($claims | Where-Object { $_.claim_id -ceq $PreviousClaimId })
+            if ($matching.Count -eq 0) {
+                throw [ContinuityValidationException]::new("No claim found matching claim id '$PreviousClaimId'.")
+            }
+            $predecessorSnapshot = $matching[0]
+        }
+
+        $workstreamId = $predecessorSnapshot.workstream_id
+        Assert-WorkstreamBranchAllowed -Context $Context -WorkstreamId $workstreamId
+
+        $claimPath = Join-Path $claimsDir "$workstreamId.json"
+        $liveClaimForWorkstream = @($claims | Where-Object { $_.workstream_id -ceq $workstreamId })
+        $liveClaim = if ($liveClaimForWorkstream.Count -gt 0) { $liveClaimForWorkstream[0] } else { $null }
+
+        if ($null -ne $journal) {
+            # --- Resume: determine whether activation already happened -----
+            $activated = ($null -ne $liveClaim -and $liveClaim.claim_id -ceq $successorClaim.claim_id -and
+                $liveClaim.state -ceq 'active')
+
+            if (-not $activated) {
+                if ($null -eq $liveClaim -or $liveClaim.claim_id -cne $predecessorSnapshot.claim_id -or
+                    $liveClaim.state -cne 'handoff-ready') {
+                    throw [ContinuityValidationException]::new(
+                        "Claim '$PreviousClaimId' is no longer the recorded handoff-ready predecessor; acceptance cannot proceed."
+                    )
+                }
+
+                # Git or the working tree may have drifted since the journal
+                # was prepared (a crash, or a retry after the prepare-only
+                # fault); re-revalidate before activating (design spec: "If
+                # Git changes before step 3, acceptance fails and the
+                # handoff-ready predecessor remains blocking").
+                Test-AcceptPreActivationInvariants -Context $Context -Predecessor $liveClaim
+
+                try {
+                    Write-JsonAtomic -Path $claimPath -Object $successorClaim `
+                        -FaultAfterReplace 'accept-after-activate'
+                }
+                catch [ContinuityTestFaultException] {
+                    $stateException = [ContinuityStateException]::new(
+                        'Atomic claim write did not complete after replacing the target file; the successor claim is authoritative.'
+                    )
+                    $stateException.ClaimId = $successorClaim.claim_id
+                    $stateException.Recovery = [PSCustomObject][ordered]@{
+                        claim_id            = $successorClaim.claim_id
+                        authoritative_owner = 'successor'
+                        transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                        transaction_state   = 'activated'
+                        retry_command       = $retryCommand
+                    }
+                    throw $stateException
+                }
+            }
+        }
+        else {
+            # --- Fresh acceptance: full validation before any mutation -----
+            if ($predecessorSnapshot.state -cne 'handoff-ready') {
+                throw [ContinuityValidationException]::new(
+                    "Claim '$PreviousClaimId' is not handoff-ready (state '$($predecessorSnapshot.state)'); accept requires a handoff-ready claim."
+                )
+            }
+
+            Test-AcceptPreActivationInvariants -Context $Context -Predecessor $predecessorSnapshot
+
+            $nowUtc = [DateTimeOffset]::UtcNow
+            $nowText = $nowUtc.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+            $leaseUntilText = $nowUtc.AddHours($Script:DefaultLeaseHours).ToString(
+                "yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture
+            )
+
+            $successorClaim = [PSCustomObject][ordered]@{
+                schema_version          = 1
+                claim_id                = [Guid]::NewGuid().ToString()
+                workstream_id           = $workstreamId
+                agent                   = $agent
+                session_id              = $sessionId
+                worktree_path           = $predecessorSnapshot.worktree_path
+                branch                  = $predecessorSnapshot.branch
+                base_commit             = $predecessorSnapshot.handoff_commit
+                scope_paths             = @($predecessorSnapshot.scope_paths)
+                started_utc             = $nowText
+                heartbeat_utc           = $nowText
+                lease_until_utc         = $leaseUntilText
+                state                   = 'active'
+                preexisting_dirty       = @($predecessorSnapshot.preexisting_dirty)
+                predecessor_claim_id    = $predecessorSnapshot.claim_id
+                replaces_claim_id       = $null
+                replacement_reason      = $null
+                durable_status_path     = $null
+                durable_status_sha256   = $null
+                durable_status_blob_oid = $null
+                handoff_commit          = $null
+            }
+
+            $journalObject = [PSCustomObject][ordered]@{
+                schema_version    = 1
+                transaction       = 'accept'
+                state             = 'prepared'
+                previous_claim_id = $predecessorSnapshot.claim_id
+                created_utc       = $nowText
+                predecessor       = $predecessorSnapshot
+                successor         = $successorClaim
+            }
+
+            try {
+                Write-JsonAtomic -Path $journalPath -Object $journalObject `
+                    -FaultAfterReplace 'accept-after-prepare'
+            }
+            catch [ContinuityTestFaultException] {
+                $stateException = [ContinuityStateException]::new(
+                    'Accept transaction journal did not finish writing; the handoff-ready predecessor remains authoritative.'
+                )
+                $stateException.ClaimId = $predecessorSnapshot.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $predecessorSnapshot.claim_id
+                    authoritative_owner = 'predecessor'
+                    transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                    transaction_state   = 'prepared'
+                    retry_command       = $retryCommand
+                }
+                throw $stateException
+            }
+
+            try {
+                Write-JsonAtomic -Path $claimPath -Object $successorClaim `
+                    -FaultAfterReplace 'accept-after-activate'
+            }
+            catch [ContinuityTestFaultException] {
+                $stateException = [ContinuityStateException]::new(
+                    'Atomic claim write did not complete after replacing the target file; the successor claim is authoritative.'
+                )
+                $stateException.ClaimId = $successorClaim.claim_id
+                $stateException.Recovery = [PSCustomObject][ordered]@{
+                    claim_id            = $successorClaim.claim_id
+                    authoritative_owner = 'successor'
+                    transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                    transaction_state   = 'activated'
+                    retry_command       = $retryCommand
+                }
+                throw $stateException
+            }
+        }
+
+        # --- Test-only rendezvous point (never a no-op fault) ---------------
+        Invoke-AcceptPauseFault -JournalPath $journalPath
+
+        # --- Post-activation Git revalidation -------------------------------
+        $freshHeadResult = Invoke-Git -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $Context.RepoRoot
+        if ($freshHeadResult.ExitCode -ne 0) {
+            throw [ContinuityGitContextException]::new('Unable to resolve the current HEAD commit after activation.')
+        }
+        $freshHead = $freshHeadResult.StdOut.Trim()
+
+        if ($freshHead -cne $successorClaim.base_commit) {
+            $recoveryException = [ContinuityRecoveryException]::new(
+                'Git drift was detected after the successor claim was activated; the successor remains authoritative and the transaction is retained.'
+            )
+            $recoveryException.ClaimId = $successorClaim.claim_id
+            $recoveryException.Recovery = [PSCustomObject][ordered]@{
+                claim_id            = $successorClaim.claim_id
+                authoritative_owner = 'successor'
+                transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                transaction_state   = 'activated'
+                retry_command       = $retryCommand
+            }
+            throw $recoveryException
+        }
+
+        try {
+            Invoke-TestFault -Name 'accept-after-revalidate' -Phase 'post-activation'
+        }
+        catch [ContinuityTestFaultException] {
+            $stateException = [ContinuityStateException]::new(
+                'A fault interrupted acceptance after Git revalidation; the successor remains authoritative.'
+            )
+            $stateException.ClaimId = $successorClaim.claim_id
+            $stateException.Recovery = [PSCustomObject][ordered]@{
+                claim_id            = $successorClaim.claim_id
+                authoritative_owner = 'successor'
+                transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                transaction_state   = 'activated'
+                retry_command       = $retryCommand
+            }
+            throw $stateException
+        }
+
+        # --- Archive the predecessor to immutable history -------------------
+        $endedUtc = [DateTimeOffset]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [System.Globalization.CultureInfo]::InvariantCulture)
+        $historyRecord = [PSCustomObject][ordered]@{
+            schema_version          = 1
+            claim_id                = $predecessorSnapshot.claim_id
+            workstream_id           = $predecessorSnapshot.workstream_id
+            agent                   = $predecessorSnapshot.agent
+            session_id              = $predecessorSnapshot.session_id
+            worktree_path           = $predecessorSnapshot.worktree_path
+            branch                  = $predecessorSnapshot.branch
+            base_commit             = $predecessorSnapshot.base_commit
+            scope_paths             = @($predecessorSnapshot.scope_paths)
+            started_utc             = $predecessorSnapshot.started_utc
+            heartbeat_utc           = $predecessorSnapshot.heartbeat_utc
+            lease_until_utc         = $predecessorSnapshot.lease_until_utc
+            state                   = $predecessorSnapshot.state
+            preexisting_dirty       = @($predecessorSnapshot.preexisting_dirty)
+            predecessor_claim_id    = $predecessorSnapshot.predecessor_claim_id
+            replaces_claim_id       = $predecessorSnapshot.replaces_claim_id
+            replacement_reason      = $predecessorSnapshot.replacement_reason
+            durable_status_path     = $predecessorSnapshot.durable_status_path
+            durable_status_sha256   = $predecessorSnapshot.durable_status_sha256
+            durable_status_blob_oid = $predecessorSnapshot.durable_status_blob_oid
+            handoff_commit          = $predecessorSnapshot.handoff_commit
+            final_state             = 'handed-off'
+            ended_utc                = $endedUtc
+            successor_claim_id       = $successorClaim.claim_id
+            successor_agent          = $successorClaim.agent
+            successor_session_id     = $successorClaim.session_id
+        }
+
+        $historyPath = Join-Path $historyDir "$($predecessorSnapshot.claim_id).json"
+        try {
+            Write-JsonAtomic -Path $historyPath -Object $historyRecord `
+                -FaultAfterReplace 'accept-after-archive'
+        }
+        catch [ContinuityTestFaultException] {
+            $stateException = [ContinuityStateException]::new(
+                'A fault interrupted acceptance after archiving the predecessor; the successor remains authoritative.'
+            )
+            $stateException.ClaimId = $successorClaim.claim_id
+            $stateException.Recovery = [PSCustomObject][ordered]@{
+                claim_id            = $successorClaim.claim_id
+                authoritative_owner = 'successor'
+                transaction_path    = (ConvertTo-ForwardSlashPath -Path $journalPath)
+                transaction_state   = 'activated'
+                retry_command       = $retryCommand
+            }
+            throw $stateException
+        }
+
+        # --- Cross-reference validation, then delete the journal ------------
+        $rereadClaimText = [System.IO.File]::ReadAllText($claimPath, [System.Text.UTF8Encoding]::new($false))
+        $rereadClaim = $rereadClaimText | ConvertFrom-Json -ErrorAction Stop
+        $rereadHistoryText = [System.IO.File]::ReadAllText($historyPath, [System.Text.UTF8Encoding]::new($false))
+        $rereadHistory = $rereadHistoryText | ConvertFrom-Json -ErrorAction Stop
+
+        if ($rereadClaim.claim_id -cne $successorClaim.claim_id -or
+            $rereadClaim.predecessor_claim_id -cne $predecessorSnapshot.claim_id) {
+            throw [ContinuityStateException]::new(
+                'The active successor claim does not cross-reference its predecessor as expected.'
+            )
+        }
+        if ($rereadHistory.final_state -cne 'handed-off' -or
+            $rereadHistory.claim_id -cne $predecessorSnapshot.claim_id -or
+            $rereadHistory.successor_claim_id -cne $successorClaim.claim_id) {
+            throw [ContinuityStateException]::new(
+                'The predecessor history record does not cross-reference its successor as expected.'
+            )
+        }
+
+        if (Test-Path -LiteralPath $journalPath) {
+            Remove-Item -LiteralPath $journalPath -Force
+        }
+
+        $gitInfo = [ordered]@{
+            worktree_path    = ConvertTo-ForwardSlashPath -Path $Context.WorktreePath
+            branch           = $Context.Branch
+            detached         = $Context.Detached
+            head             = $freshHead
+            upstream         = $Context.Upstream
+            protected_branch = $Context.ProtectedBranch
+        }
+
+        return New-OperationResult -Operation 'accept' `
+            -RepoRoot (ConvertTo-ForwardSlashPath -Path $Context.RepoRoot) `
+            -GitCommonDir (ConvertTo-ForwardSlashPath -Path $Context.GitCommonDir) `
+            -WorkstreamId $workstreamId `
+            -ClaimId $successorClaim.claim_id `
+            -Git ([PSCustomObject] $gitInfo) `
+            -Claims @($successorClaim) `
+            -Warnings @() `
+            -Errors @()
+    }
+}
+
 # ---------------------------------------------------------------------------
-# Single top-level try/catch/finally: maps validation, malformed-state, and
-# Git-context exceptions to the stable exit codes 2, 3, and 4. Every other
-# unexpected failure is treated conservatively as malformed state (exit 3)
-# rather than leaking a raw PowerShell error onto stdout. Repository context
-# is resolved once up front so even error responses report the already-known
-# canonical repo_root/git_common_dir instead of leaving them null.
+# Single top-level try/catch/finally: maps validation, malformed-state,
+# Git-context, and accept-drift-recovery exceptions to the stable exit codes
+# 2, 3, 4, and 5. Every other unexpected failure is treated conservatively as
+# malformed state (exit 3) rather than leaking a raw PowerShell error onto
+# stdout. Repository context is resolved once up front so even error
+# responses report the already-known canonical repo_root/git_common_dir
+# instead of leaving them null.
 # ---------------------------------------------------------------------------
 $exitCode = 0
 $result = $null
@@ -3283,9 +3846,13 @@ try {
             Invoke-Handoff -Context $repositoryContext -ClaimId $ClaimId -Agent $Agent -SessionId $SessionId `
                 -NextAction $NextAction
         }
+        'accept' {
+            Invoke-Accept -Context $repositoryContext -PreviousClaimId $PreviousClaimId -Agent $Agent `
+                -SessionId $SessionId
+        }
         default {
             throw [ContinuityValidationException]::new(
-                "Operation '$Operation' is not implemented yet; only 'status', 'start', 'update', and 'handoff' are available."
+                "Operation '$Operation' is not implemented yet; only 'status', 'start', 'update', 'handoff', and 'accept' are available."
             )
         }
     }
@@ -3299,6 +3866,15 @@ catch [ContinuityGitContextException] {
     $result = New-OperationResult -Operation $Operation -Errors @(
         @{ code = 'git-context'; message = $_.Exception.Message }
     )
+}
+catch [ContinuityRecoveryException] {
+    $exitCode = 5
+    $result = New-OperationResult -Operation $Operation `
+        -RepoRoot (Get-KnownRepoRootForResult) `
+        -GitCommonDir (Get-KnownGitCommonDirForResult) `
+        -ClaimId $_.Exception.ClaimId `
+        -Recovery $_.Exception.Recovery `
+        -Errors @(@{ code = 'accept-drift'; message = $_.Exception.Message })
 }
 catch [ContinuityStateException] {
     $exitCode = 3

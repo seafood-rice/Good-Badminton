@@ -3688,3 +3688,581 @@ def test_handoff_ready_retry_no_warning_on_exact_next_action_match(handoff_repo)
     warning_codes = {warning["code"] for warning in retry_parsed["warnings"]}
     assert "already-handoff-ready" in warning_codes
     assert "next-action-mismatch" not in warning_codes
+
+
+# ---------------------------------------------------------------------------
+# Task 6: acceptance transactions and successor-owned recovery
+# ---------------------------------------------------------------------------
+
+
+class AcceptFixture(NamedTuple):
+    repo_dir: Path
+    workstream_id: str
+    predecessor_claim_id: str
+    scope: list
+    journal_path: Path
+
+
+def _journal_path_for(repo_dir: Path, previous_claim_id: str) -> Path:
+    return (
+        _git_common_dir_for(repo_dir)
+        / "ai-continuity"
+        / "transactions"
+        / f"accept-{previous_claim_id}.json"
+    )
+
+
+def _history_path_for(repo_dir: Path, claim_id: str) -> Path:
+    return _git_common_dir_for(repo_dir) / "ai-continuity" / "history" / f"{claim_id}.json"
+
+
+def _make_accept_fixture(fixture: HandoffFixture) -> AcceptFixture:
+    """Drive a `HandoffFixture` all the way to `handoff-ready` -- committing
+    the handoff-triggering milestone and calling `handoff` -- so `accept`
+    tests start from a genuinely accept-eligible predecessor claim."""
+    _commit_handoff_update(fixture, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    handoff_result = _handoff(fixture.repo_dir, fixture.claim_id, fixture.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    return AcceptFixture(
+        repo_dir=fixture.repo_dir,
+        workstream_id="continuity-pilot",
+        predecessor_claim_id=fixture.claim_id,
+        scope=fixture.scope,
+        journal_path=_journal_path_for(fixture.repo_dir, fixture.claim_id),
+    )
+
+
+@pytest.fixture()
+def accept_repo(handoff_repo: HandoffFixture) -> AcceptFixture:
+    return _make_accept_fixture(handoff_repo)
+
+
+def _accept(repo_dir: Path, previous_claim_id: str, **overrides) -> HelperResult:
+    """Call `accept` with reasonable defaults for the fields under test to
+    override individually. Defaults to a DIFFERENT agent/session than the
+    predecessor's own `codex`/`session-1` (handoff_repo's defaults), matching
+    a genuine alternating handoff."""
+    parameters = {
+        "PreviousClaimId": previous_claim_id,
+        "Agent": "claude",
+        "SessionId": "claude-session-1",
+        "Json": True,
+    }
+    parameters.update(overrides)
+    return run_helper(repo_dir, "accept", **parameters)
+
+
+# ---------------------------------------------------------------------------
+# Step 1: acceptance validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("missing", ["PreviousClaimId", "Agent", "SessionId"])
+def test_accept_rejects_missing_required_parameter(accept_repo, missing):
+    parameters = {
+        "PreviousClaimId": accept_repo.predecessor_claim_id,
+        "Agent": "claude",
+        "SessionId": "claude-session-1",
+    }
+    parameters[missing] = ""
+    result = run_helper(accept_repo.repo_dir, "accept", Json=True, **parameters)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_accept_rejects_unknown_claim_id(continuity_repo):
+    result = _accept(continuity_repo, "00000000-0000-4000-8000-000000000000")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_accept_rejects_malformed_previous_claim_id(continuity_repo):
+    """`-PreviousClaimId` is spliced directly into the transaction journal's
+    filename, so it is validated as a GUID before any lock or mutation,
+    closing off path-injection-shaped input (Task 6 brief, Step 1: "exact
+    predecessor ID")."""
+    result = _accept(continuity_repo, "../../etc/passwd")
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_accept_rejects_predecessor_not_handoff_ready(handoff_repo):
+    """A still-`active` claim (never handed off) is rejected; accept requires
+    the exact `handoff-ready` state."""
+    result = _accept(handoff_repo.repo_dir, handoff_repo.claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(handoff_repo.repo_dir)["state"] == "active"
+
+
+def test_accept_rejects_different_branch(accept_repo):
+    """`accept` requires the same canonical worktree and branch recorded on
+    the handoff-ready predecessor claim."""
+    _checkout_new_branch(accept_repo.repo_dir, "codex/other-workstream")
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_accept_rejects_head_drift_since_handoff(accept_repo):
+    """Unlike `handoff` (whose committed `Head commit` field is deliberately
+    "not self-referential"), `accept` requires the CURRENT `HEAD` to exactly
+    equal the recorded `handoff_commit`: an unrelated empty commit that
+    advances `HEAD` after handoff-ready blocks acceptance, and the
+    predecessor stays handoff-ready and authoritative (Task 6 brief, Step 1:
+    "unchanged HEAD")."""
+    empty_commit = _run_git(
+        ["commit", "--allow-empty", "-m", "advance head after handoff-ready"],
+        cwd=accept_repo.repo_dir,
+    )
+    assert empty_commit.returncode == 0, empty_commit.stderr
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    claim = _current_claim(accept_repo.repo_dir)
+    assert claim["claim_id"] == accept_repo.predecessor_claim_id
+    assert claim["state"] == "handoff-ready"
+
+
+def test_accept_rejects_tampered_durable_status_hash(accept_repo):
+    """The committed workstream blob object ID and SHA-256 recorded at
+    handoff must still match; a claim file tampered to record a different
+    hash is rejected even though `HEAD` itself has not moved (Task 6 brief,
+    Step 1: "committed blob and SHA-256")."""
+    claim_path = _claim_file_for(accept_repo.repo_dir, accept_repo.workstream_id)
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim["durable_status_sha256"] = "0" * 64
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_accept_rejects_dirty_claimed_scope(accept_repo):
+    workstream_path = (
+        accept_repo.repo_dir / ".ai" / "workstreams" / f"{accept_repo.workstream_id}.md"
+    )
+    workstream_path.write_text(
+        workstream_path.read_text(encoding="utf-8") + "\nuncommitted edit\n", encoding="utf-8"
+    )
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(accept_repo.repo_dir)["state"] == "handoff-ready"
+
+
+def test_accept_rejects_preexisting_dirty_content_drift(tmp_path):
+    """A pre-existing modified-but-unstaged out-of-scope path edited AGAIN
+    after `handoff` blocks `accept` (Task 6 brief, Step 1: "unchanged
+    pre-existing dirt"), reusing the exact same
+    `Test-PreexistingDirtyUnchanged` gate `handoff` already exercises
+    exhaustively."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_modified)
+    handoff_result = _handoff(repo_dir, claim_id, fixture.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    (repo_dir / setup["path"]).write_text("drifted after handoff-ready\n", encoding="utf-8")
+
+    result = _accept(repo_dir, claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(repo_dir)["state"] == "handoff-ready"
+
+
+def test_accept_succeeds_after_lease_expiry_when_evidence_matches(accept_repo):
+    """Acceptance after lease expiry is allowed precisely because every
+    recorded Git invariant is revalidated (design spec, Helper Contract:
+    "accept"; Task 6 brief, Step 1)."""
+    claim_path = _claim_file_for(accept_repo.repo_dir, accept_repo.workstream_id)
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    claim["lease_until_utc"] = "2000-01-01T00:00:00Z"
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["claims"][0]["state"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# Step 2: successor shape and immutable-history cross-references
+# ---------------------------------------------------------------------------
+
+
+def test_accept_happy_path_creates_successor_and_archives_predecessor(accept_repo):
+    predecessor = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert predecessor["state"] == "handoff-ready"
+
+    result = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id, Agent="claude", SessionId="claude-session-1"
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["operation"] == "accept"
+    assert len(parsed["claims"]) == 1
+    successor = parsed["claims"][0]
+
+    assert re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", successor["claim_id"]
+    )
+    assert successor["claim_id"] != predecessor["claim_id"]
+    assert successor["workstream_id"] == predecessor["workstream_id"]
+    assert successor["worktree_path"] == predecessor["worktree_path"]
+    assert successor["branch"] == predecessor["branch"]
+    assert sorted(successor["scope_paths"]) == sorted(predecessor["scope_paths"])
+    assert successor["preexisting_dirty"] == predecessor["preexisting_dirty"]
+    assert successor["predecessor_claim_id"] == predecessor["claim_id"]
+    assert successor["agent"] == "claude"
+    assert successor["session_id"] == "claude-session-1"
+    assert successor["base_commit"] == predecessor["handoff_commit"]
+    assert successor["state"] == "active"
+    assert successor["durable_status_path"] is None
+    assert successor["durable_status_sha256"] is None
+    assert successor["durable_status_blob_oid"] is None
+    assert successor["handoff_commit"] is None
+    assert successor["replaces_claim_id"] is None
+    assert successor["replacement_reason"] is None
+    assert successor["started_utc"] != predecessor["started_utc"]
+    assert successor["lease_until_utc"] != predecessor["lease_until_utc"]
+
+    on_disk = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert on_disk == successor
+
+    history_path = _history_path_for(accept_repo.repo_dir, predecessor["claim_id"])
+    assert history_path.exists()
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["claim_id"] == predecessor["claim_id"]
+    assert history["final_state"] == "handed-off"
+    assert history["successor_claim_id"] == successor["claim_id"]
+    assert history["successor_agent"] == "claude"
+    assert history["successor_session_id"] == "claude-session-1"
+    assert history["durable_status_path"] == predecessor["durable_status_path"]
+    assert history["durable_status_sha256"] == predecessor["durable_status_sha256"]
+    assert history.get("ended_utc")
+
+    assert not accept_repo.journal_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Step 3: fault/retry at each fixed boundary
+# ---------------------------------------------------------------------------
+
+
+def test_accept_after_prepare_fault_leaves_predecessor_authoritative_and_retry_completes(accept_repo):
+    """At `accept-after-prepare` (immediately after the journal finishes
+    writing, before activation), the predecessor is still `handoff-ready` and
+    authoritative; the journal is readable; and retrying the exact same
+    `accept` call completes acceptance, reusing the ALREADY-prepared
+    successor claim ID rather than generating a second one (Task 6 brief,
+    Step 3)."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-prepare"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "accept-after-prepare" not in faulted.stdout
+    assert "accept-after-prepare" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative predecessor"
+    assert recovery["authoritative_owner"] == "predecessor"
+    assert recovery["claim_id"] == accept_repo.predecessor_claim_id
+    assert accept_repo.predecessor_claim_id in recovery["retry_command"]
+
+    assert accept_repo.journal_path.exists()
+    journal = json.loads(accept_repo.journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "prepared"
+    prepared_successor_id = journal["successor"]["claim_id"]
+
+    claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert claim["claim_id"] == accept_repo.predecessor_claim_id
+    assert claim["state"] == "handoff-ready"
+
+    retry = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == prepared_successor_id
+    assert not accept_repo.journal_path.exists()
+
+
+def test_accept_after_activate_fault_leaves_successor_authoritative_and_retry_completes(accept_repo):
+    """At `accept-after-activate` (immediately after the successor claim
+    replaces the active claim file), the successor IS already `active` and
+    authoritative: it blocks a `start` from the predecessor's own identity,
+    and retrying the exact same `accept` call completes acceptance without
+    creating a second successor (Task 6 brief, Step 3)."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-activate"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "accept-after-activate" not in faulted.stdout
+    assert "accept-after-activate" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative successor"
+    assert recovery["authoritative_owner"] == "successor"
+    successor_claim_id = recovery["claim_id"]
+    assert successor_claim_id != accept_repo.predecessor_claim_id
+
+    claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert claim["claim_id"] == successor_claim_id
+    assert claim["state"] == "active"
+    assert accept_repo.journal_path.exists()
+
+    # The predecessor's own identity (codex/session-1, `handoff_repo`'s
+    # defaults) can no longer `start` this workstream: the successor -- owned
+    # by a different agent/session -- already blocks it, proving the
+    # predecessor never becomes active again.
+    blocked_start = _start(accept_repo.repo_dir, Scope=accept_repo.scope)
+    assert blocked_start.returncode == 2, f"stdout={blocked_start.stdout!r} stderr={blocked_start.stderr!r}"
+
+    retry = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == successor_claim_id
+    assert not accept_repo.journal_path.exists()
+
+
+def test_accept_after_revalidate_fault_leaves_successor_authoritative_and_retry_completes(accept_repo):
+    """At `accept-after-revalidate` (immediately after post-activation Git
+    revalidation passes, before the predecessor is archived), the successor
+    is already active and authoritative, the predecessor is NOT yet archived
+    to history, and retrying completes acceptance without creating a second
+    successor (Task 6 brief, Step 3)."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-revalidate"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "accept-after-revalidate" not in faulted.stdout
+    assert "accept-after-revalidate" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative successor"
+    assert recovery["authoritative_owner"] == "successor"
+    successor_claim_id = recovery["claim_id"]
+
+    claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert claim["claim_id"] == successor_claim_id
+    assert claim["state"] == "active"
+    assert accept_repo.journal_path.exists()
+
+    history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+    assert not history_path.exists()
+
+    retry = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == successor_claim_id
+    assert not accept_repo.journal_path.exists()
+    assert history_path.exists()
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["final_state"] == "handed-off"
+    assert history["successor_claim_id"] == successor_claim_id
+
+
+def test_accept_after_archive_fault_leaves_successor_authoritative_and_retry_completes(accept_repo):
+    """At `accept-after-archive` (immediately after the predecessor's history
+    record finishes writing, before the journal is deleted), the predecessor
+    IS already archived with `final_state: handed-off`, the successor is
+    active and authoritative, and retrying only needs to validate the
+    cross-references and delete the journal -- never creating a second
+    successor or a second history record (Task 6 brief, Step 3)."""
+    faulted = _accept(
+        accept_repo.repo_dir, accept_repo.predecessor_claim_id,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-after-archive"},
+    )
+
+    assert faulted.returncode == 3, f"stdout={faulted.stdout!r} stderr={faulted.stderr!r}"
+    parsed = parse_json_stdout(faulted)
+    assert parsed["ok"] is False
+    assert "accept-after-archive" not in faulted.stdout
+    assert "accept-after-archive" not in faulted.stderr
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields naming the authoritative successor"
+    assert recovery["authoritative_owner"] == "successor"
+    successor_claim_id = recovery["claim_id"]
+
+    claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert claim["claim_id"] == successor_claim_id
+    assert accept_repo.journal_path.exists()
+
+    history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+    assert history_path.exists()
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["final_state"] == "handed-off"
+    assert history["successor_claim_id"] == successor_claim_id
+
+    retry = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert retry.returncode == 0, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is True
+    assert retry_parsed["claims"][0]["claim_id"] == successor_claim_id
+    assert not accept_repo.journal_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Step 4: deterministic concurrent-drift recovery
+# ---------------------------------------------------------------------------
+
+
+def _spawn_accept(cwd: Path, env: Optional[dict] = None, **parameters) -> subprocess.Popen:
+    """Launch `accept` as a background process through the same fixed pwsh
+    wrapper `run_helper` uses, WITHOUT blocking for it to exit -- the
+    concurrent-drift test needs to perform a Git mutation while this process
+    is deliberately paused mid-transaction. The caller is responsible for
+    eventually draining/closing this process (`communicate`)."""
+    pwsh = _find_pwsh()
+    payload = {"ScriptPath": str(SCRIPT_PATH), "Operation": "accept", **parameters}
+    run_env = {**os.environ, **(env or {})}
+    process = subprocess.Popen(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", _HELPER_WRAPPER_SCRIPT],
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=run_env,
+    )
+    process.stdin.write(json.dumps(payload))
+    process.stdin.close()
+    return process
+
+
+def _wait_for_path(path: Path, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for '{path}' to appear")
+
+
+def test_accept_recovers_from_post_activation_git_drift(accept_repo):
+    """The deterministic concurrent-drift scenario (Task 6 brief, Step 4):
+    `accept` is paused at `accept-pause-after-activate` -- exactly after the
+    successor claim is activated, before Git is revalidated -- while the
+    TEST (never the helper) commits an unrelated empty commit in the same
+    disposable worktree. `accept` resumes, detects the drift, and returns
+    exit `5` with full recovery evidence; the predecessor never becomes
+    active again, and the exact retry command is idempotent."""
+    journal_path = accept_repo.journal_path
+    ready_path = journal_path.with_name(journal_path.name + ".ready")
+    continue_path = journal_path.with_name(journal_path.name + ".continue")
+
+    process = _spawn_accept(
+        accept_repo.repo_dir,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-pause-after-activate"},
+        PreviousClaimId=accept_repo.predecessor_claim_id,
+        Agent="claude",
+        SessionId="claude-session-1",
+        Json=True,
+    )
+    try:
+        _wait_for_path(ready_path, timeout=15)
+
+        # The TEST performs the concurrent Git mutation; the helper itself
+        # never runs a Git mutation.
+        commit_result = _run_git(
+            ["commit", "--allow-empty", "-m", "concurrent drift during accept"],
+            cwd=accept_repo.repo_dir,
+        )
+        assert commit_result.returncode == 0, commit_result.stderr
+
+        continue_path.write_text("go", encoding="utf-8")
+
+        stdout, stderr = process.communicate(timeout=20)
+        returncode = process.returncode
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
+
+    assert returncode == 5, f"stdout={stdout!r} stderr={stderr!r}"
+    parsed = parse_json_stdout(HelperResult(returncode, stdout, stderr))
+    assert parsed["ok"] is False
+
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields for the exit-5 drift"
+    assert recovery["authoritative_owner"] == "successor"
+    successor_claim_id = recovery["claim_id"]
+    assert successor_claim_id != accept_repo.predecessor_claim_id
+    assert recovery["transaction_path"].endswith(
+        f"transactions/accept-{accept_repo.predecessor_claim_id}.json"
+    )
+    assert recovery["transaction_state"] == "activated"
+    assert "accept" in recovery["retry_command"]
+    assert accept_repo.predecessor_claim_id in recovery["retry_command"]
+    assert "claude" in recovery["retry_command"]
+
+    # The predecessor never becomes active again: the live claim is the
+    # successor, active, and the journal is still retained.
+    live_claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert live_claim["claim_id"] == successor_claim_id
+    assert live_claim["state"] == "active"
+    assert journal_path.exists()
+
+    # The test-only control files are always cleaned up, whether the
+    # continue signal arrived or the bounded wait timed out.
+    assert not ready_path.exists()
+    assert not continue_path.exists()
+
+    # The concurrent drift committed above is permanent (a real commit now
+    # sits ahead of the successor's recorded `base_commit`), so the exact
+    # retry command is idempotent in the sense the design promises -- it
+    # never creates a second successor or corrupts the transaction -- but it
+    # keeps reporting the SAME exit-5 recovery rather than silently
+    # completing over unresolved drift (design spec: "requires the recipient
+    # to resolve or renew the handoff; it never restores an old owner over
+    # the successor").
+    retry = run_helper(
+        accept_repo.repo_dir, "accept",
+        PreviousClaimId=accept_repo.predecessor_claim_id, Agent="claude", SessionId="claude-session-1",
+        Json=True,
+    )
+    assert retry.returncode == 5, f"stdout={retry.stdout!r} stderr={retry.stderr!r}"
+    retry_parsed = parse_json_stdout(retry)
+    assert retry_parsed["ok"] is False
+    retry_recovery = retry_parsed["recovery"]
+    assert retry_recovery["authoritative_owner"] == "successor"
+    assert retry_recovery["claim_id"] == successor_claim_id
+    assert journal_path.exists()
+
+    live_claim_after_retry = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert live_claim_after_retry["claim_id"] == successor_claim_id
+    assert live_claim_after_retry["state"] == "active"
+
+    history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+    assert not history_path.exists()
