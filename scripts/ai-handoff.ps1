@@ -999,6 +999,18 @@ function Read-ContinuityState {
             'started_utc', 'heartbeat_utc', 'lease_until_utc', 'state'
         )
 
+        # Claims live one file per workstream, named `<workstream-id>.json`
+        # (design spec, Helper Contract: "Active claim files live at
+        # <git-common-dir>/ai-continuity/claims/<workstream-id>.json"). Two
+        # files that both declare the SAME internal `workstream_id` -- for
+        # example a stray copy left under a different filename -- are a
+        # "duplicate active workstream file" (implementation plan, Task 2
+        # Step 6), a malformed-state condition distinct from the scope-based
+        # "overlapping live claims" conflict `Invoke-Status` reports at exit
+        # 2: this can arise even when the two files' scopes are disjoint, so
+        # the scope-overlap check alone would never catch it.
+        $claimFileNameByWorkstreamId = @{}
+
         $claimFiles = @(Get-ChildItem -LiteralPath $claimsDir -Filter '*.json' -File | Sort-Object Name)
         foreach ($file in $claimFiles) {
             $rawText = [System.IO.File]::ReadAllText($file.FullName, [System.Text.UTF8Encoding]::new($false))
@@ -1023,6 +1035,16 @@ function Read-ContinuityState {
                     )
                 }
             }
+
+            $claimWorkstreamId = [string] $parsed.workstream_id
+            if ($claimFileNameByWorkstreamId.ContainsKey($claimWorkstreamId)) {
+                throw [ContinuityStateException]::new(
+                    "Duplicate active workstream file: claim files " +
+                    "'$($claimFileNameByWorkstreamId[$claimWorkstreamId])' and '$($file.Name)' " +
+                    "both declare workstream_id '$claimWorkstreamId'."
+                )
+            }
+            $claimFileNameByWorkstreamId[$claimWorkstreamId] = $file.Name
 
             $claims += $parsed
         }

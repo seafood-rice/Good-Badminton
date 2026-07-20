@@ -1845,10 +1845,42 @@ def test_helper_never_invokes_prohibited_git_mutation_commands():
     subcommands. The continuity design forbids the helper from ever running
     a Git command that stages, commits, moves branches/worktrees, or
     otherwise mutates repository state (design spec, Design Principles: "No
-    hidden mutation"; test list item 12)."""
+    hidden mutation"; test list item 12). `PROHIBITED_GIT_TOKENS` above is
+    the COMPLETE set the design and implementation plan name: `add`,
+    `commit`, `checkout`, `switch`, `branch`, `worktree` (covering both
+    `worktree add` and `worktree remove`), `stash`, `reset`, `clean`,
+    `merge`, `rebase`, and `push` (Task 8 brief, Step 2: "all prohibited Git
+    mutation commands")."""
     source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+    # A literal `'git'` command name may appear ONLY once in the whole file:
+    # the one place `Invoke-Git` itself sets the child process's file name.
+    # If a second literal `'git'` (or `"git"`) ever appeared anywhere else,
+    # it would be a second, unfiltered way to invoke Git that entirely
+    # bypasses the `Invoke-Git` argument scan below, silently defeating this
+    # whole test.
+    literal_git_command_occurrences = len(re.findall(r"""(['"])git\1""", source))
+    assert literal_git_command_occurrences == 1, (
+        f"expected the literal 'git'/\"git\" command name to appear exactly once "
+        f"(Invoke-Git's own FileName assignment), found "
+        f"{literal_git_command_occurrences} occurrence(s); a second occurrence "
+        f"could invoke Git outside Invoke-Git's argument filtering"
+    )
+
     calls = INVOKE_GIT_CALL_PATTERN.findall(source)
     assert calls, "expected at least one Invoke-Git call site to scan"
+
+    # The call-site regex stops at the FIRST unmatched `)`, so a call site
+    # whose arguments happen to contain a nested parenthesized expression
+    # would be silently truncated (and could hide a prohibited token past
+    # the truncation point) without this independently-counted cross-check.
+    plain_call_site_count = source.count("Invoke-Git -Arguments")
+    assert len(calls) == plain_call_site_count, (
+        f"the call-site pattern extracted {len(calls)} call site(s) but a plain "
+        f"substring count found {plain_call_site_count}; a call site with nested "
+        f"parentheses in its arguments could be evading this check"
+    )
+
     for call_arguments in calls:
         tokens = QUOTED_TOKEN_PATTERN.findall(call_arguments)
         prohibited_hits = PROHIBITED_GIT_TOKENS.intersection(tokens)
@@ -5248,3 +5280,719 @@ def test_convert_from_continuity_timestamp_handles_string_input_directly():
     via_string = _convert_from_continuity_timestamp("2026-07-19T01:14:34Z", "string")
 
     assert via_string["offset_iso"] == via_datetime["offset_iso"] == "2026-07-19T01:14:34+00:00"
+
+
+# ---------------------------------------------------------------------------
+# Task 8: complete contract and failure matrix
+#
+# Design-test traceability table (docs/superpowers/specs/2026-07-16-claude-
+# codex-continuity-design.md, "Testing", numbered items 1-27). Every row
+# names pytest test(s) that actually invoke the helper (or, for item 19, the
+# staging audit) and assert the durable filesystem/Git result -- never a
+# test that merely exercises unrelated code incidentally.
+#
+#  1. Root instruction files resolve shared documents.
+#     -> test_root_instruction_references_resolve_once
+#  2. A linked worktree sees claims through the Git common directory.
+#     -> test_start_shares_claims_through_linked_worktree,
+#        test_status_reports_shared_git_common_directory,
+#        test_start_concurrent_disjoint_claims_in_linked_worktrees_both_persist,
+#        test_start_concurrent_overlapping_claims_in_linked_worktrees_exactly_one_succeeds
+#  3. `start` is idempotent for the same claim/worktree.
+#     -> test_start_is_idempotent_for_same_identity_and_scope
+#  4. Overlapping scopes fail and preserve the original claim.
+#     -> test_start_rejects_overlapping_scope_with_other_workstreams_claim,
+#        test_start_concurrent_overlapping_claims_in_linked_worktrees_exactly_one_succeeds
+#  5. Disjoint scopes can be claimed concurrently.
+#     -> test_start_allows_disjoint_scope_concurrent_claims,
+#        test_start_concurrent_disjoint_claims_in_linked_worktrees_both_persist
+#  6. Pre-existing out-of-scope dirty files are captured and never changed.
+#     -> test_start_captures_out_of_scope_dirty_entry_with_full_fingerprint,
+#        test_handoff_allows_unchanged_preexisting_out_of_scope_dirt
+#  7. `start`/`takeover`/`handoff` reject dirty claimed scope; active
+#     `update` may record explicitly dirty in-progress verification.
+#     -> test_start_rejects_dirty_path_inside_requested_scope,
+#        test_takeover_rejects_dirty_path_inside_requested_scope,
+#        test_handoff_rejects_dirty_path_inside_claimed_scope_of_every_kind,
+#        test_update_verification_passed_with_dirty_path_succeeds
+#  8. Lease expiry does not delete a claim; takeover records replacement.
+#     -> test_status_warns_on_expired_lease,
+#        test_takeover_happy_path_replaces_expired_active_claim
+#  9. Malformed JSON and lock contention fail closed without corrupting
+#     prior state.
+#     -> test_status_reports_malformed_claim_as_exit_3,
+#        test_status_reports_duplicate_active_workstream_file_as_exit_3,
+#        test_start_times_out_on_lock_contention_without_mutation
+# 10. `update` changes only the owned workstream status.
+#     -> test_update_preserves_bytes_outside_managed_section_and_explicit_fields,
+#        test_update_preserves_bytes_outside_next_action_span_and_managed_section
+# 11. `handoff` requires committed state/next action/full commit/unchanged
+#     dirty fingerprints/clean scope; never edits tracked files.
+#     -> test_handoff_rejects_committed_state_not_handoff,
+#        test_handoff_rejects_next_action_mismatch,
+#        test_handoff_head_commit_field_is_not_self_referential,
+#        test_handoff_rejects_dirty_claimed_scope,
+#        test_handoff_rejects_preexisting_dirty_status_drift,
+#        test_handoff_never_edits_a_tracked_file_or_git_state,
+#        test_handoff_happy_path_marks_claim_handoff_ready
+# 12. The helper never invokes prohibited Git mutation commands.
+#     -> test_helper_never_invokes_prohibited_git_mutation_commands
+# 13. Every operation/condition returns the specified exit code and JSON
+#     warning/error shape.
+#     -> test_status_json_has_stable_top_level_shape (0),
+#        test_status_reports_overlapping_live_claims_as_exit_2 (2),
+#        test_status_reports_malformed_claim_as_exit_3 (3),
+#        test_status_returns_exit_4_outside_git (4),
+#        test_start_returns_exit_4_outside_git (4),
+#        test_accept_recovers_from_post_activation_git_drift (5)
+# 14. Wrong agent/session/worktree/branch cannot update/hand off/accept.
+#     -> test_update_rejects_wrong_agent, test_update_rejects_wrong_session,
+#        test_update_rejects_wrong_branch, test_update_rejects_wrong_canonical_worktree,
+#        test_handoff_rejects_wrong_agent, test_handoff_rejects_wrong_session,
+#        test_handoff_rejects_wrong_branch, test_accept_rejects_different_branch,
+#        test_accept_rejects_wrong_canonical_worktree
+# 15. Unsafe IDs/paths (traversal, rooted/UNC, `.git`, reparse escapes) fail
+#     before filesystem mutation.
+#     -> test_start_rejects_invalid_workstream_id_forms,
+#        test_start_rejects_invalid_session_id_forms,
+#        test_start_rejects_invalid_scope_forms,
+#        test_start_rejects_scope_through_directory_junction,
+#        test_start_rejects_scope_through_symbolic_link
+# 16. Handoff reconciles modified/renamed/deleted/untracked/committed/
+#     pre-existing/out-of-scope paths against durable workstream state.
+#     -> test_handoff_accepts_committed_in_scope_change_of_every_kind,
+#        test_handoff_rejects_committed_out_of_scope_change,
+#        test_handoff_rejects_new_out_of_scope_untracked_path,
+#        test_handoff_rejects_committed_in_scope_path_omitted_from_changed_paths,
+#        test_handoff_allows_unchanged_preexisting_out_of_scope_dirt
+# 17. Verification parameter combinations follow the result-dependent matrix
+#     and include complete dirty-path evidence.
+#     -> test_update_verification_passed_requires_command_and_commit,
+#        test_update_verification_not_run_requires_reason,
+#        test_update_verification_dirty_path_must_be_currently_dirty,
+#        test_update_verification_dirty_path_must_be_in_scope,
+#        test_update_verification_dirty_path_must_be_in_changed_path,
+#        test_update_verification_passed_with_dirty_path_succeeds,
+#        test_update_verification_failed_requires_command_and_commit
+# 18. Failure injection after each handoff/accept/takeover write boundary
+#     produces the documented recoverable state and an idempotent retry.
+#     -> test_handoff_after_validate_fault_preserves_active_claim_and_retry_succeeds,
+#        test_handoff_after_claim_rewrite_fault_leaves_handoff_ready_authoritative_and_retry_reports_it,
+#        test_accept_after_prepare_fault_leaves_predecessor_authoritative_and_retry_completes,
+#        test_accept_after_activate_fault_leaves_successor_authoritative_and_retry_completes,
+#        test_accept_after_revalidate_fault_leaves_successor_authoritative_and_retry_completes,
+#        test_accept_after_archive_fault_leaves_successor_authoritative_and_retry_completes,
+#        test_takeover_after_prepare_fault_leaves_old_claim_authoritative_and_retry_completes,
+#        test_takeover_after_activate_fault_leaves_replacement_authoritative_and_retry_completes,
+#        test_takeover_after_archive_fault_leaves_replacement_authoritative_and_retry_completes
+# 19. Candidate staged paths outside the exact portable allowlist fail the
+#     audit.
+#     -> test_candidate_staged_path_outside_allowlist_fails_audit,
+#        test_candidate_missing_allowlisted_path_fails_audit
+# 20. Reserved Windows device-name workstream IDs are rejected
+#     case-insensitively.
+#     -> test_start_rejects_reserved_device_name_workstream_case_insensitively
+# 21. Pre-existing out-of-scope dirt remains allowed; new out-of-scope dirt
+#     blocks handoff and preserves the active claim.
+#     -> test_handoff_allows_unchanged_preexisting_out_of_scope_dirt,
+#        test_handoff_rejects_new_out_of_scope_untracked_path
+# 22. Every mutating operation rejects protected `main`; read-only `status`
+#     remains available.
+#     -> test_start_rejects_protected_main_branch,
+#        test_update_rejects_protected_main_branch,
+#        test_handoff_rejects_protected_main_branch,
+#        test_accept_rejects_protected_main_branch,
+#        test_takeover_rejects_protected_main_branch,
+#        test_status_is_available_on_protected_main
+# 23. Alternating agents can hand off one non-protected branch only after
+#     all in-scope paths and the workstream status are committed.
+#     -> test_handoff_rejects_dirty_claimed_scope,
+#        test_handoff_workstream_never_committed_at_head,
+#        test_handoff_happy_path_marks_claim_handoff_ready
+# 24. Same-path status/kind/content/index mode/stage/object-ID/rename-source
+#     changes to pre-existing dirt block handoff and accept.
+#     -> test_handoff_rejects_preexisting_dirty_status_drift,
+#        test_handoff_rejects_preexisting_dirty_kind_drift,
+#        test_handoff_rejects_preexisting_dirty_content_drift,
+#        test_handoff_rejects_preexisting_dirty_index_object_id_drift,
+#        test_handoff_rejects_preexisting_dirty_index_mode_drift,
+#        test_handoff_rejects_preexisting_dirty_rename_source_drift,
+#        test_accept_rejects_preexisting_dirty_content_drift
+# 25. Mutating operations enforce the branch-prefix/workstream-ID rule and
+#     the documented backfill-branch exception; either agent can accept the
+#     other tool's prefix.
+#     -> test_start_rejects_wrong_branch_prefix, test_start_rejects_wrong_branch_suffix,
+#        test_start_accepts_both_valid_branch_prefixes,
+#        test_start_either_agent_can_operate_the_other_prefixs_branch,
+#        test_start_bootstrap_exception_allows_documented_branch_and_workstream,
+#        test_start_bootstrap_branch_rejects_other_workstream,
+#        test_accept_happy_path_creates_successor_and_archives_predecessor
+#        (claude accepts a codex-prefixed branch),
+#        test_accept_codex_can_accept_predecessor_claim_on_claude_prefixed_branch
+#        (the reverse direction)
+# 26. Concurrent Git mutation before/after recipient activation never
+#     creates an unowned scope; produces the documented recovery state.
+#     -> test_accept_rejects_head_drift_since_handoff (before activation),
+#        test_accept_recovers_from_post_activation_git_drift (after activation)
+# 27. An expired `handoff-ready` claim remains blocking, can be accepted
+#     when evidence matches, and can be taken over only with its exact ID,
+#     a reason, and normal safety validation.
+#     -> test_start_rejects_expired_handoff_ready_claim_remains_blocking,
+#        test_accept_succeeds_after_lease_expiry_when_evidence_matches,
+#        test_takeover_happy_path_replaces_expired_handoff_ready_claim
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Task 8 carry-in gap 1: "duplicate active workstream file" (implementation
+# plan, Task 2 Step 6) is a malformed-state condition distinct from the
+# scope-based `overlapping-claims` conflict `status` already reports at exit
+# 2. Claims live one file per workstream, named `<workstream-id>.json`
+# (design spec, Helper Contract); two files that both declare the SAME
+# internal `workstream_id` -- for example a stray copy left under a
+# different filename -- violate that invariant even when their scope
+# prefixes are disjoint, which the existing scope-overlap check alone would
+# never catch.
+# ---------------------------------------------------------------------------
+
+
+def test_status_reports_duplicate_active_workstream_file_as_exit_3(continuity_repo):
+    """Two claim files declaring the SAME `workstream_id` with DISJOINT
+    scope prefixes make `status` fail closed with the stable exit `3`,
+    `ok: false`, and a `malformed-state` error -- proving this is caught
+    independently of (and distinctly from) the `overlapping-claims` exit-2
+    conflict, which a same-scope duplicate would also trigger but a
+    disjoint-scope one never would."""
+    claims_dir = _claims_dir_for(continuity_repo)
+    head = _run_git(["rev-parse", "HEAD"], cwd=continuity_repo).stdout.strip()
+
+    _write_claim(
+        claims_dir,
+        "continuity-pilot.json",
+        claim_id="55555555-5555-4555-8555-555555555555",
+        workstream_id="continuity-pilot",
+        scope_paths=["area-a"],
+        base_commit=head,
+        state="active",
+    )
+    _write_claim(
+        claims_dir,
+        "continuity-pilot-stray-copy.json",
+        claim_id="66666666-6666-4666-8666-666666666666",
+        workstream_id="continuity-pilot",
+        scope_paths=["area-b"],
+        base_commit=head,
+        state="active",
+    )
+
+    result = run_helper(continuity_repo, "status", Json=True)
+
+    assert result.returncode == 3, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected a malformed-state error"
+    assert any(error["code"] == "malformed-state" for error in parsed["errors"])
+    assert not any(error["code"] == "overlapping-claims" for error in parsed["errors"])
+
+
+# ---------------------------------------------------------------------------
+# Task 8 carry-in gap 2: a dedicated `git-drift` test. The warning itself has
+# existed since Task 2 (`test_status_warns_on_expired_lease` incidentally
+# exercises it too, since `_write_claim`'s default `base_commit` never
+# matches a real repository's HEAD), but no test names and isolates it.
+# ---------------------------------------------------------------------------
+
+
+def test_status_warns_on_git_drift(continuity_repo):
+    """A live claim's recorded `base_commit` no longer matching the current
+    `HEAD` makes `status` report a `git-drift` warning at the stable exit
+    `0` -- never an error, never a non-zero exit -- isolated here from
+    `expired-lease` by keeping the claim's lease far in the future (design
+    spec, Local Claim Model: "Status/Git drift is reported, not silently
+    corrected")."""
+    claims_dir = _claims_dir_for(continuity_repo)
+    stale_commit = "1" * 40
+
+    _write_claim(
+        claims_dir,
+        "continuity-pilot.json",
+        claim_id="44444444-4444-4444-8444-444444444444",
+        workstream_id="continuity-pilot",
+        scope_paths=[".ai"],
+        base_commit=stale_commit,
+        lease_until_utc="2999-01-01T00:00:00Z",
+        state="active",
+    )
+
+    result = run_helper(continuity_repo, "status", Workstream="continuity-pilot", Json=True)
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is True
+    assert parsed["errors"] == []
+    assert parsed["claim_id"] == "44444444-4444-4444-8444-444444444444"
+    assert parsed["warnings"], "expected a git-drift warning"
+    assert any(warning["code"] == "git-drift" for warning in parsed["warnings"])
+    assert not any(warning["code"] == "expired-lease" for warning in parsed["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Step 2: remaining uncovered matrix cells
+# ---------------------------------------------------------------------------
+
+
+def test_start_returns_exit_4_outside_git(tmp_path):
+    """The shared repository-context resolution (`Get-RepositoryContext`) is
+    called exactly once, before the operation dispatch `switch`, for EVERY
+    operation -- so a mutating operation like `start` returns the identical
+    stable exit `4` outside any Git working tree that read-only `status`
+    already does, never a stray parameter-validation exit `2` and never
+    exit `0` (Task 8 brief, Step 2: "non-worktree at exit 4")."""
+    outside_dir = tmp_path / "not-a-repo"
+    outside_dir.mkdir()
+
+    result = run_helper(outside_dir, "start", Json=True)
+
+    assert result.returncode == 4, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["operation"] == "start"
+    assert parsed["repo_root"] is None
+    assert parsed["git_common_dir"] is None
+    assert parsed["errors"], "expected at least one error describing the missing Git context"
+
+
+def test_start_rejects_expired_handoff_ready_claim_remains_blocking(handoff_repo):
+    """Design test 27's "remains blocking" facet, distinct from the already-
+    covered accept/takeover-when-expired happy paths: EVEN AFTER its lease
+    has expired, a `handoff-ready` claim is never simply available to a
+    plain `start` retry -- only `accept` or `takeover` may act on it (design
+    spec, Local Claim Model: "An expired handoff-ready claim remains
+    blocking... it is never silently deleted or downgraded to active")."""
+    _commit_handoff_update(handoff_repo, changed_paths=[".ai/workstreams/continuity-pilot.md"])
+    handoff_result = _handoff(handoff_repo.repo_dir, handoff_repo.claim_id, handoff_repo.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    _expire_claim(handoff_repo.repo_dir)
+
+    blocked = _start(handoff_repo.repo_dir, Scope=handoff_repo.scope)
+
+    assert blocked.returncode == 2, f"stdout={blocked.stdout!r} stderr={blocked.stderr!r}"
+    assert parse_json_stdout(blocked)["ok"] is False
+    claim = _current_claim(handoff_repo.repo_dir)
+    assert claim["claim_id"] == handoff_repo.claim_id
+    assert claim["state"] == "handoff-ready"
+
+
+def test_update_rejects_protected_main_branch(update_repo):
+    """`update` enforces the same protected-`main` rejection every mutating
+    operation shares through `Assert-WorkstreamBranchAllowed` (design test
+    22), closing the one operation the existing per-operation
+    protected-main tests (`start`/`handoff`/`takeover`) had not yet named
+    directly."""
+    checkout = _run_git(["checkout", "main"], cwd=update_repo.repo_dir)
+    assert checkout.returncode == 0, checkout.stderr
+
+    result = _update(update_repo.repo_dir, update_repo.claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+
+
+def test_accept_rejects_protected_main_branch(accept_repo):
+    """`accept` enforces the same protected-`main` rejection every mutating
+    operation shares (design test 22); the predecessor stays `handoff-ready`
+    and no successor is created."""
+    checkout = _run_git(["checkout", "main"], cwd=accept_repo.repo_dir)
+    assert checkout.returncode == 0, checkout.stderr
+
+    result = _accept(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert not _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id).exists()
+
+
+def test_accept_rejects_wrong_canonical_worktree(accept_repo):
+    """Accepting a `handoff-ready` claim from a DIFFERENT, linked worktree --
+    rather than the exact canonical worktree recorded on the claim -- is an
+    identity mismatch: exit `2`, the predecessor remains `handoff-ready`,
+    and no successor or history record is created (design test 14: "Wrong
+    agent, session, worktree, or branch cannot ... accept a valid claim";
+    mirrors `test_update_rejects_wrong_canonical_worktree`)."""
+    linked_worktree = accept_repo.repo_dir.parent / "accept-linked-worktree"
+    worktree_result = _run_git(
+        ["worktree", "add", "-b", "claude/continuity-pilot", str(linked_worktree)],
+        cwd=accept_repo.repo_dir,
+    )
+    assert worktree_result.returncode == 0, worktree_result.stderr
+
+    result = _accept(linked_worktree, accept_repo.predecessor_claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert _current_claim(accept_repo.repo_dir)["state"] == "handoff-ready"
+    assert not _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id).exists()
+
+
+def test_accept_codex_can_accept_predecessor_claim_on_claude_prefixed_branch(tmp_path):
+    """Design test 25 ("either agent can accept the other tool's prefix")
+    requires BOTH directions. The existing happy-path accept tests already
+    exercise a CLAUDE agent accepting a claim recorded on `continuity_repo`'s
+    default `codex/`-prefixed branch; this is the missing REVERSE direction:
+    a CODEX agent accepting a claim started, updated, and handed off
+    entirely by CLAUDE on a `claude/<workstream-id>` branch. The
+    branch-prefix rule is never tied to the ACCEPTING agent's own identity
+    (design spec, "Branch validation": "The prefix identifies the branch's
+    creator, not its current owner")."""
+    repo_dir = _make_repo_on_branch(tmp_path, "claude/continuity-pilot", dir_name="claude-branch-repo")
+    workstream_path = repo_dir / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(_full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8")
+    add_result = _run_git(["add", "."], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Expand workstream document"], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    started = _start(
+        repo_dir, Agent="claude", SessionId="claude-session-1",
+        Scope=[".ai/workstreams/continuity-pilot.md", "shared"],
+    )
+    assert started.returncode == 0, f"stdout={started.stdout!r} stderr={started.stderr!r}"
+    claim_id = parse_json_stdout(started)["claim_id"]
+    next_action = "Hand off to Codex."
+
+    update_result = _update(
+        repo_dir, claim_id,
+        Agent="claude", SessionId="claude-session-1",
+        Summary="Ready to hand off.",
+        ChangedPath=[".ai/workstreams/continuity-pilot.md"],
+        State="handoff", NextAction=next_action,
+        VerificationResult="not-run", NotRunReason="not run for this test",
+    )
+    assert update_result.returncode == 0, f"stdout={update_result.stdout!r} stderr={update_result.stderr!r}"
+    add_result = _run_git(["add", "--", ".ai/workstreams/continuity-pilot.md"], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Ready to hand off."], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    handoff_result = _handoff(repo_dir, claim_id, next_action, Agent="claude", SessionId="claude-session-1")
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    accept_result = _accept(repo_dir, claim_id, Agent="codex", SessionId="codex-session-1")
+
+    assert accept_result.returncode == 0, f"stdout={accept_result.stdout!r} stderr={accept_result.stderr!r}"
+    parsed = parse_json_stdout(accept_result)
+    assert parsed["ok"] is True
+    successor = parsed["claims"][0]
+    assert successor["agent"] == "codex"
+    assert successor["session_id"] == "codex-session-1"
+    assert successor["branch"] == "claude/continuity-pilot"
+    assert successor["state"] == "active"
+
+    history_path = _history_path_for(repo_dir, claim_id)
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    assert history["final_state"] == "handed-off"
+    assert history["successor_agent"] == "codex"
+
+
+# ---------------------------------------------------------------------------
+# Step 3: deterministic linked-worktree concurrency.
+#
+# Both tests force GENUINE contention rather than merely launching two
+# processes back-to-back and hoping the OS interleaves them usefully: an
+# external holder acquires the SAME common lock `Use-ContinuityLock` uses
+# (reusing `_spawn_lock_holder`, already established for the Task 3 lock-
+# contention tests) for a FIXED, bounded duration comfortably inside the
+# helper's own fixed lock-acquisition retry budget (`LockTimeoutMilliseconds
+# = 5000`; see `test_start_times_out_on_lock_contention_without_mutation`),
+# THEN both `start` processes are launched while the external holder still
+# holds the lock, and only THEN is the holder released. This guarantees both
+# processes are genuinely blocked on the identical OS-level exclusive lock
+# at the same instant it releases -- a bounded rendezvous, never a sleep the
+# assertions themselves depend on resolving a particular way. For BOTH
+# outcomes below (disjoint persistence, exactly-one-overlap-conflict) the
+# assertion holds regardless of which of the two processes the OS happens
+# to let acquire the released lock first.
+# ---------------------------------------------------------------------------
+
+
+def _spawn_start(cwd: Path, env: Optional[dict] = None, **parameters) -> subprocess.Popen:
+    """Launch `start` as a background process through the same fixed pwsh
+    wrapper `run_helper` uses, WITHOUT blocking for it to exit (mirrors
+    `_spawn_accept`)."""
+    pwsh = _find_pwsh()
+    payload = {
+        "ScriptPath": str(SCRIPT_PATH), "Operation": "start",
+        "Agent": "codex", "SessionId": "session-1", "Json": True,
+        **parameters,
+    }
+    run_env = {**os.environ, **(env or {})}
+    process = subprocess.Popen(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", _HELPER_WRAPPER_SCRIPT],
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=run_env,
+    )
+    process.stdin.write(json.dumps(payload))
+    process.stdin.close()
+    return process
+
+
+@pytest.fixture()
+def linked_worktree_pair(continuity_repo: Path):
+    """Two linked worktrees of the SAME disposable repository sharing one
+    Git common directory (design test 2), used to drive genuinely
+    concurrent `start` invocations that must contend for the identical
+    common lock from two different worktrees."""
+    linked_worktree = continuity_repo.parent / "concurrency-linked-worktree"
+    result = _run_git(
+        ["worktree", "add", "-b", "codex/concurrency-bootstrap", str(linked_worktree), "main"],
+        cwd=continuity_repo,
+    )
+    assert result.returncode == 0, result.stderr
+    return continuity_repo, linked_worktree
+
+
+def _run_concurrent_start_round(
+    worktree_a: Path, worktree_b: Path, params_a: dict, params_b: dict
+) -> tuple:
+    """Run one round of genuinely concurrent `start` calls (see the module
+    comment above for the external-lock-holder rendezvous technique) and
+    return both results."""
+    lock_path = _lock_path_for(worktree_a)
+    holder = _spawn_lock_holder(lock_path, hold_seconds=3)
+    process_a = None
+    process_b = None
+    try:
+        process_a = _spawn_start(worktree_a, **params_a)
+        process_b = _spawn_start(worktree_b, **params_b)
+        holder.wait(timeout=15)
+        stdout_a, stderr_a = process_a.communicate(timeout=20)
+        stdout_b, stderr_b = process_b.communicate(timeout=20)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=10)
+        for process in (process_a, process_b):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.communicate(timeout=10)
+    return (
+        HelperResult(process_a.returncode, stdout_a, stderr_a),
+        HelperResult(process_b.returncode, stdout_b, stderr_b),
+    )
+
+
+@pytest.mark.parametrize("round_index", range(3))
+def test_start_concurrent_disjoint_claims_in_linked_worktrees_both_persist(
+    linked_worktree_pair, round_index
+):
+    """Two DIFFERENT workstreams with non-overlapping scope, started
+    GENUINELY concurrently from two linked worktrees sharing one Git common
+    directory, both persist as live claims (design tests 2 and 5; Task 8
+    brief, Step 3). Parametrized across multiple rounds with fresh
+    workstream IDs each time to exercise the common lock's contention path
+    more than once."""
+    worktree_a, worktree_b = linked_worktree_pair
+    workstream_a = f"disjoint-a-{round_index}"
+    workstream_b = f"disjoint-b-{round_index}"
+    _checkout_new_branch(worktree_a, f"codex/{workstream_a}")
+    _checkout_new_branch(worktree_b, f"codex/{workstream_b}")
+
+    result_a, result_b = _run_concurrent_start_round(
+        worktree_a, worktree_b,
+        params_a={"Workstream": workstream_a, "SessionId": "session-a", "Scope": [f"area-a-{round_index}"]},
+        params_b={"Workstream": workstream_b, "SessionId": "session-b", "Scope": [f"area-b-{round_index}"]},
+    )
+
+    assert result_a.returncode == 0, f"stdout={result_a.stdout!r} stderr={result_a.stderr!r}"
+    assert result_b.returncode == 0, f"stdout={result_b.stdout!r} stderr={result_b.stderr!r}"
+    assert parse_json_stdout(result_a)["ok"] is True
+    assert parse_json_stdout(result_b)["ok"] is True
+
+    status = run_helper(worktree_a, "status", Json=True)
+    assert status.returncode == 0, status.stderr
+    workstream_ids = {claim["workstream_id"] for claim in parse_json_stdout(status)["claims"]}
+    assert workstream_ids == {workstream_a, workstream_b}
+
+
+@pytest.mark.parametrize("round_index", range(3))
+def test_start_concurrent_overlapping_claims_in_linked_worktrees_exactly_one_succeeds(
+    linked_worktree_pair, round_index
+):
+    """Two DIFFERENT workstreams whose scope prefixes overlap, started
+    GENUINELY concurrently from two linked worktrees sharing one Git common
+    directory: regardless of which process the OS lets acquire the shared
+    lock first, EXACTLY ONE succeeds and the other returns the stable exit
+    `2`, and the single surviving claim is whichever workstream actually won
+    (design test 4; Task 8 brief, Step 3)."""
+    worktree_a, worktree_b = linked_worktree_pair
+    workstream_a = f"overlap-a-{round_index}"
+    workstream_b = f"overlap-b-{round_index}"
+    _checkout_new_branch(worktree_a, f"codex/{workstream_a}")
+    _checkout_new_branch(worktree_b, f"codex/{workstream_b}")
+
+    result_a, result_b = _run_concurrent_start_round(
+        worktree_a, worktree_b,
+        params_a={"Workstream": workstream_a, "SessionId": "session-a", "Scope": ["shared"]},
+        params_b={"Workstream": workstream_b, "SessionId": "session-b", "Scope": ["shared/nested"]},
+    )
+
+    outcomes = {result_a.returncode, result_b.returncode}
+    assert outcomes == {0, 2}, (
+        f"expected exactly one success and one exit-2 conflict; got "
+        f"a={result_a.returncode} stdout={result_a.stdout!r} stderr={result_a.stderr!r}; "
+        f"b={result_b.returncode} stdout={result_b.stdout!r} stderr={result_b.stderr!r}"
+    )
+
+    status = run_helper(worktree_a, "status", Json=True)
+    assert status.returncode == 0, status.stderr
+    claims = parse_json_stdout(status)["claims"]
+    assert len(claims) == 1
+    winner_workstream = claims[0]["workstream_id"]
+    assert winner_workstream in {workstream_a, workstream_b}
+
+    winning_result = result_a if result_a.returncode == 0 else result_b
+    winning_parsed = parse_json_stdout(winning_result)
+    assert winning_parsed["claims"][0]["workstream_id"] == winner_workstream
+
+
+# ---------------------------------------------------------------------------
+# Step 4: serialization and security assertions
+# ---------------------------------------------------------------------------
+
+
+def test_start_claim_json_never_contains_injected_environment_value(continuity_repo):
+    """Claims must never contain environment values (design spec, Local
+    Claim Model: "Claims must not contain credentials, environment values,
+    file contents..., or arbitrary command output"). Injecting a
+    distinctive marker into the CHILD PROCESS's actual environment and
+    asserting it is absent from both the returned JSON and the on-disk
+    claim file proves the helper never serializes ambient environment
+    state, not merely that it doesn't happen to today by coincidence."""
+    marker = "SUPER-SECRET-ENV-MARKER-3f9c1e7b"
+    result = _start(continuity_repo, env={"AI_CONTINUITY_TEST_SECRET_PROBE": marker})
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert marker not in result.stdout
+    assert marker not in result.stderr
+
+    claim_path = _claim_file_for(continuity_repo, "continuity-pilot")
+    assert marker not in claim_path.read_text(encoding="utf-8")
+
+
+def test_start_captures_preexisting_dirty_content_as_hash_only_never_raw_bytes(tmp_path):
+    """Pre-existing out-of-scope dirty files are fingerprinted by SHA-256
+    only (design spec, Local Claim Model: "No file contents are stored").
+    Writing a distinctive marker string into an untracked out-of-scope file
+    and asserting it never appears anywhere in the returned JSON or the
+    on-disk claim proves content is never captured, not merely that the
+    schema happens to lack a content field today."""
+    repo_dir = tmp_path / "content-leak-repo"
+    _init_repo(repo_dir)
+    _write_minimal_ai_records(repo_dir)
+    add_result = _run_git(["add", "."], cwd=repo_dir)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(["commit", "-m", "Initial commit"], cwd=repo_dir)
+    assert commit_result.returncode == 0, commit_result.stderr
+    checkout_result = _run_git(["checkout", "-b", "codex/continuity-pilot"], cwd=repo_dir)
+    assert checkout_result.returncode == 0, checkout_result.stderr
+
+    marker = "TOP-SECRET-FILE-CONTENT-MARKER-8b2e"
+    (repo_dir / "out-of-scope.txt").write_text(marker, encoding="utf-8")
+
+    result = _start(repo_dir, Scope=["shared"])
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert marker not in result.stdout
+    assert marker not in result.stderr
+
+    claim_path = _claim_file_for(repo_dir, "continuity-pilot")
+    assert marker not in claim_path.read_text(encoding="utf-8")
+
+    parsed = parse_json_stdout(result)
+    preexisting = parsed["claims"][0]["preexisting_dirty"]
+    assert any(entry["path"] == "out-of-scope.txt" for entry in preexisting)
+
+
+def test_error_message_control_characters_are_json_escaped_not_raw(continuity_repo):
+    """A validation error's message may legitimately quote invalid input
+    verbatim for diagnostics, but the JSON transport itself must never leak
+    a literal, UNESCAPED control character onto stdout/stderr --
+    `ConvertTo-Json` escapes it as `\\u00XX`, so terminal/log injection
+    through a crafted workstream ID is impossible even though the message
+    text quotes the offending value (Task 8 brief, Step 4: "Error output
+    never echoes unsafe raw input containing control characters")."""
+    unsafe_workstream = "bad\x07id\x1bmore"
+    result = _start(continuity_repo, Workstream=unsafe_workstream, Json=True)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "\x07" not in result.stdout
+    assert "\x1b" not in result.stdout
+    assert "\x07" not in result.stderr
+    assert "\x1b" not in result.stderr
+    # The escaped forms ARE present -- the value is not silently dropped,
+    # only safely transported.
+    assert "\\u0007" in result.stdout
+    assert "\\u001b" in result.stdout
+
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    assert parsed["errors"], "expected a validation error"
+
+
+def test_claim_json_key_order_is_deterministic_across_independent_claims(continuity_repo):
+    """Claim JSON's top-level key order must be deterministic run-to-run --
+    two INDEPENDENTLY constructed claims (different workstreams, same
+    repository) have the IDENTICAL key order, proving it never depends on
+    unstable hashtable/property enumeration (Task 8 brief, Step 4:
+    "Claim/history/journal JSON is deterministic")."""
+    first = _start(continuity_repo, Workstream="continuity-pilot", Scope=["area-a"])
+    assert first.returncode == 0, f"stdout={first.stdout!r} stderr={first.stderr!r}"
+
+    _checkout_new_branch(continuity_repo, "codex/other-workstream")
+    second = _start(continuity_repo, Workstream="other-workstream", SessionId="session-2", Scope=["area-b"])
+    assert second.returncode == 0, f"stdout={second.stdout!r} stderr={second.stderr!r}"
+
+    first_keys = list(json.loads(
+        _claim_file_for(continuity_repo, "continuity-pilot").read_text(encoding="utf-8")
+    ).keys())
+    second_keys = list(json.loads(
+        _claim_file_for(continuity_repo, "other-workstream").read_text(encoding="utf-8")
+    ).keys())
+
+    assert first_keys == second_keys
+    assert set(first_keys) == START_CLAIM_KEYS
+
+
+def test_accept_history_json_key_order_is_deterministic_across_independent_transactions(tmp_path):
+    """Two INDEPENDENT `accept` transactions, each built from its own fresh
+    disposable repository, produce history records with the IDENTICAL
+    top-level key order -- proving the serialization is deterministic
+    rather than dependent on unstable hashtable/property enumeration order.
+    A same-repository idempotent-retry comparison (already covered by
+    `test_accept_after_archive_retry_does_not_rewrite_history_record`)
+    could not show this on its own, since plain dict `==` in Python ignores
+    key order entirely (Task 8 brief, Step 4)."""
+    first_repo = _make_repo_on_branch(tmp_path, "codex/continuity-pilot", dir_name="history-order-repo-1")
+    second_repo = _make_repo_on_branch(tmp_path, "codex/continuity-pilot", dir_name="history-order-repo-2")
+
+    first_fixture = _make_accept_fixture(_make_handoff_fixture(first_repo))
+    second_fixture = _make_accept_fixture(_make_handoff_fixture(second_repo))
+
+    first_accept = _accept(first_fixture.repo_dir, first_fixture.predecessor_claim_id)
+    assert first_accept.returncode == 0, f"stdout={first_accept.stdout!r} stderr={first_accept.stderr!r}"
+    second_accept = _accept(second_fixture.repo_dir, second_fixture.predecessor_claim_id)
+    assert second_accept.returncode == 0, f"stdout={second_accept.stdout!r} stderr={second_accept.stderr!r}"
+
+    first_history_keys = list(json.loads(
+        _history_path_for(first_fixture.repo_dir, first_fixture.predecessor_claim_id).read_text(encoding="utf-8")
+    ).keys())
+    second_history_keys = list(json.loads(
+        _history_path_for(second_fixture.repo_dir, second_fixture.predecessor_claim_id).read_text(encoding="utf-8")
+    ).keys())
+
+    assert first_history_keys == second_history_keys
