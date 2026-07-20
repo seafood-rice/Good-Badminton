@@ -203,6 +203,18 @@ $Script:LockFileName = 'lock'
 $Script:LockTimeoutMilliseconds = 5000
 $Script:LockRetryIntervalMilliseconds = 50
 
+# The test-only pre-lock rendezvous hook `AI_CONTINUITY_TEST_LOCK_BARRIER`
+# (Task 8 review Fix 2). Inactive unless a test sets it to a marker file
+# path: `Use-ContinuityLock` then writes that exact path IMMEDIATELY BEFORE
+# its first exclusive-open attempt, before blocking on acquisition as
+# normal. This lets a concurrency test prove BOTH of two concurrent
+# processes have genuinely reached and are now blocking on the identical OS
+# lock -- by waiting for both marker files to exist -- before releasing an
+# external lock holder, instead of merely hoping a fixed sleep window was
+# long enough. Like every other test hook, the variable and marker path are
+# never serialized, logged, or printed, and this is a no-op unless the
+# variable is explicitly set.
+
 # Bounded wait for the `accept-pause-after-activate` test-only coordination
 # point (Task 6 brief: "it times out safely and removes test controls").
 # This is strictly a deterministic test hook for the concurrent-drift
@@ -1629,7 +1641,14 @@ function Use-ContinuityLock {
         that dies while holding the lock releases the handle immediately and
         a waiting caller reacquires it without ever deleting a stale marker
         (design spec, "Failure and conflict handling": "Claim writes use an
-        atomic common-directory lock").
+        atomic common-directory lock"). If the test-only
+        `AI_CONTINUITY_TEST_LOCK_BARRIER` variable is set to a marker file
+        path, that exact marker is written IMMEDIATELY BEFORE the first
+        exclusive-open attempt below, then acquisition proceeds exactly as
+        normal; the marker's existence is the caller's proof that this
+        specific invocation has reached the lock and is now contending for
+        it, not merely that a fixed sleep window has elapsed (Task 8 review
+        Fix 2). This is inert unless a test explicitly sets the variable.
     .OUTPUTS
         Whatever `$ScriptBlock` returns. Throws ContinuityStateException
         (exit 3) on timeout.
@@ -1643,6 +1662,13 @@ function Use-ContinuityLock {
 
     $lockDir = Split-Path -Parent $LockPath
     New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+
+    $testLockBarrierPath = $env:AI_CONTINUITY_TEST_LOCK_BARRIER
+    if (-not [string]::IsNullOrEmpty($testLockBarrierPath)) {
+        [System.IO.File]::WriteAllText(
+            $testLockBarrierPath, 'waiting', [System.Text.UTF8Encoding]::new($false)
+        )
+    }
 
     $stream = $null
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()

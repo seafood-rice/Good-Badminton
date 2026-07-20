@@ -5289,7 +5289,16 @@ def test_convert_from_continuity_timestamp_handles_string_input_directly():
 # codex-continuity-design.md, "Testing", numbered items 1-27). Every row
 # names pytest test(s) that actually invoke the helper (or, for item 19, the
 # staging audit) and assert the durable filesystem/Git result -- never a
-# test that merely exercises unrelated code incidentally.
+# test that merely exercises unrelated code incidentally -- with two
+# intentional exceptions for requirements that are inherently STATIC and
+# have no helper behavior to invoke: item 1 (instruction-reference
+# resolution -- AGENTS.md/CLAUDE.md load order and file existence) and item
+# 12 (a source-layout scan proving the complete absence of prohibited Git
+# mutation commands). Those two rows are covered by direct static
+# file/source assertions instead of a helper invocation, which is the
+# correct and complete way to test these two requirement types; every
+# other row still names a test that invokes the helper (or the staging
+# audit).
 #
 #  1. Root instruction files resolve shared documents.
 #     -> test_root_instruction_references_resolve_once
@@ -5698,21 +5707,33 @@ def test_accept_codex_can_accept_predecessor_claim_on_claude_prefixed_branch(tmp
 # ---------------------------------------------------------------------------
 # Step 3: deterministic linked-worktree concurrency.
 #
-# Both tests force GENUINE contention rather than merely launching two
-# processes back-to-back and hoping the OS interleaves them usefully: an
-# external holder acquires the SAME common lock `Use-ContinuityLock` uses
-# (reusing `_spawn_lock_holder`, already established for the Task 3 lock-
-# contention tests) for a FIXED, bounded duration comfortably inside the
-# helper's own fixed lock-acquisition retry budget (`LockTimeoutMilliseconds
-# = 5000`; see `test_start_times_out_on_lock_contention_without_mutation`),
-# THEN both `start` processes are launched while the external holder still
-# holds the lock, and only THEN is the holder released. This guarantees both
-# processes are genuinely blocked on the identical OS-level exclusive lock
-# at the same instant it releases -- a bounded rendezvous, never a sleep the
-# assertions themselves depend on resolving a particular way. For BOTH
-# outcomes below (disjoint persistence, exactly-one-overlap-conflict) the
-# assertion holds regardless of which of the two processes the OS happens
-# to let acquire the released lock first.
+# Both tests force GENUINE, PROVEN contention rather than merely launching
+# two processes back-to-back and hoping the OS interleaves them usefully:
+# an external holder acquires the SAME common lock `Use-ContinuityLock`
+# uses (reusing `_spawn_lock_holder`, already established for the Task 3
+# lock-contention tests), THEN both `start` processes are launched -- each
+# with its OWN distinct `AI_CONTINUITY_TEST_LOCK_BARRIER` marker path (Task
+# 8 review Fix 2) -- while the external holder still holds the lock.
+# `Use-ContinuityLock` writes that exact marker file IMMEDIATELY BEFORE its
+# first exclusive-open attempt, so `_run_concurrent_start_round` waits
+# (bounded, generous timeout) until BOTH marker files exist -- proving both
+# `start` processes have actually reached `Use-ContinuityLock` and are now
+# genuinely BLOCKED retrying against the identical OS-level lock the
+# external holder still owns, never merely that both processes happened to
+# be launched within some fixed window and got lucky with scheduling. Only
+# after both markers are confirmed present (and asserted so) is the
+# external holder released, by killing it -- which drops the OS handle
+# immediately, exactly like
+# `test_start_reacquires_lock_promptly_after_owner_process_is_killed`
+# demonstrates -- guaranteeing both processes were genuinely contending for
+# the lock at the instant it releases. For BOTH outcomes below (disjoint
+# persistence, exactly-one-overlap-conflict) the assertion holds regardless
+# of which of the two processes the OS happens to let acquire the released
+# lock first. If the barrier hook were bypassed, disabled, or the helper
+# stopped genuinely blocking on the shared lock, the marker files would
+# never both appear and `_run_concurrent_start_round`'s own assertion below
+# fails BEFORE either process's result is even inspected, instead of the
+# test silently passing on a sequential (non-concurrent) execution.
 # ---------------------------------------------------------------------------
 
 
@@ -5756,19 +5777,64 @@ def linked_worktree_pair(continuity_repo: Path):
     return continuity_repo, linked_worktree
 
 
+def _await_both_lock_barrier_markers(
+    marker_a: Path, marker_b: Path, timeout_seconds: float = 15.0
+) -> bool:
+    """Poll (bounded, generous) until BOTH lock-barrier marker files exist,
+    proving both concurrent `start` processes have reached
+    `Use-ContinuityLock` and are now genuinely blocking on the still-held
+    external lock (Task 8 review Fix 2). Returns whether both appeared
+    before the timeout; never raises itself, so the caller can assert with
+    a clear, test-specific failure message instead of a bare poll timeout."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if marker_a.exists() and marker_b.exists():
+            return True
+        time.sleep(0.05)
+    return marker_a.exists() and marker_b.exists()
+
+
 def _run_concurrent_start_round(
-    worktree_a: Path, worktree_b: Path, params_a: dict, params_b: dict
+    worktree_a: Path, worktree_b: Path, params_a: dict, params_b: dict, tmp_path: Path
 ) -> tuple:
     """Run one round of genuinely concurrent `start` calls (see the module
-    comment above for the external-lock-holder rendezvous technique) and
-    return both results."""
+    comment above for the external-lock-holder-plus-barrier rendezvous
+    technique) and return both results. Each child process is given its own
+    distinct `AI_CONTINUITY_TEST_LOCK_BARRIER` marker path so the caller can
+    prove -- rather than assume -- that both children were genuinely
+    contending for the shared lock before it releases."""
     lock_path = _lock_path_for(worktree_a)
-    holder = _spawn_lock_holder(lock_path, hold_seconds=3)
+    holder = _spawn_lock_holder(lock_path, hold_seconds=20)
+    marker_a = tmp_path / "lock-barrier-a.marker"
+    marker_b = tmp_path / "lock-barrier-b.marker"
     process_a = None
     process_b = None
     try:
-        process_a = _spawn_start(worktree_a, **params_a)
-        process_b = _spawn_start(worktree_b, **params_b)
+        process_a = _spawn_start(
+            worktree_a, env={"AI_CONTINUITY_TEST_LOCK_BARRIER": str(marker_a)}, **params_a
+        )
+        process_b = _spawn_start(
+            worktree_b, env={"AI_CONTINUITY_TEST_LOCK_BARRIER": str(marker_b)}, **params_b
+        )
+
+        both_contending = _await_both_lock_barrier_markers(marker_a, marker_b)
+        assert both_contending, (
+            "expected both `start` processes to write their lock-barrier "
+            "marker file -- proving they reached and are genuinely blocking "
+            "on the still-held common lock -- before this bounded wait "
+            f"elapsed (marker_a exists={marker_a.exists()}, "
+            f"marker_b exists={marker_b.exists()}); without this proof the "
+            "concurrency assertions below would be vacuous"
+        )
+
+        # Both children are now proven to be genuinely contending for the
+        # identical lock the external holder still owns. Release it now, by
+        # killing the holder process rather than waiting for its own fixed
+        # sleep to elapse: killing drops the OS file handle immediately
+        # (see `test_start_reacquires_lock_promptly_after_owner_process_is_killed`),
+        # so this round's correctness never depends on any fixed sleep
+        # window resolving a particular way.
+        holder.kill()
         holder.wait(timeout=15)
         stdout_a, stderr_a = process_a.communicate(timeout=20)
         stdout_b, stderr_b = process_b.communicate(timeout=20)
@@ -5788,14 +5854,16 @@ def _run_concurrent_start_round(
 
 @pytest.mark.parametrize("round_index", range(3))
 def test_start_concurrent_disjoint_claims_in_linked_worktrees_both_persist(
-    linked_worktree_pair, round_index
+    linked_worktree_pair, round_index, tmp_path
 ):
     """Two DIFFERENT workstreams with non-overlapping scope, started
     GENUINELY concurrently from two linked worktrees sharing one Git common
     directory, both persist as live claims (design tests 2 and 5; Task 8
     brief, Step 3). Parametrized across multiple rounds with fresh
     workstream IDs each time to exercise the common lock's contention path
-    more than once."""
+    more than once. `_run_concurrent_start_round` proves both processes
+    were genuinely blocking on the shared lock before releasing it (Task 8
+    review Fix 2)."""
     worktree_a, worktree_b = linked_worktree_pair
     workstream_a = f"disjoint-a-{round_index}"
     workstream_b = f"disjoint-b-{round_index}"
@@ -5806,6 +5874,7 @@ def test_start_concurrent_disjoint_claims_in_linked_worktrees_both_persist(
         worktree_a, worktree_b,
         params_a={"Workstream": workstream_a, "SessionId": "session-a", "Scope": [f"area-a-{round_index}"]},
         params_b={"Workstream": workstream_b, "SessionId": "session-b", "Scope": [f"area-b-{round_index}"]},
+        tmp_path=tmp_path,
     )
 
     assert result_a.returncode == 0, f"stdout={result_a.stdout!r} stderr={result_a.stderr!r}"
@@ -5821,14 +5890,16 @@ def test_start_concurrent_disjoint_claims_in_linked_worktrees_both_persist(
 
 @pytest.mark.parametrize("round_index", range(3))
 def test_start_concurrent_overlapping_claims_in_linked_worktrees_exactly_one_succeeds(
-    linked_worktree_pair, round_index
+    linked_worktree_pair, round_index, tmp_path
 ):
     """Two DIFFERENT workstreams whose scope prefixes overlap, started
     GENUINELY concurrently from two linked worktrees sharing one Git common
     directory: regardless of which process the OS lets acquire the shared
     lock first, EXACTLY ONE succeeds and the other returns the stable exit
     `2`, and the single surviving claim is whichever workstream actually won
-    (design test 4; Task 8 brief, Step 3)."""
+    (design test 4; Task 8 brief, Step 3). `_run_concurrent_start_round`
+    proves both processes were genuinely blocking on the shared lock before
+    releasing it (Task 8 review Fix 2)."""
     worktree_a, worktree_b = linked_worktree_pair
     workstream_a = f"overlap-a-{round_index}"
     workstream_b = f"overlap-b-{round_index}"
@@ -5839,6 +5910,7 @@ def test_start_concurrent_overlapping_claims_in_linked_worktrees_exactly_one_suc
         worktree_a, worktree_b,
         params_a={"Workstream": workstream_a, "SessionId": "session-a", "Scope": ["shared"]},
         params_b={"Workstream": workstream_b, "SessionId": "session-b", "Scope": ["shared/nested"]},
+        tmp_path=tmp_path,
     )
 
     outcomes = {result_a.returncode, result_b.returncode}
