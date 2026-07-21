@@ -82,12 +82,36 @@ PORTABLE_TEAM_FILES = (
     ".codex/agents/shipper.toml",
 )
 
-# Any drive-letter, UNC, POSIX-home, or tilde-relative absolute path. Portable
-# team files must describe role behavior only; they must never bake in one
-# contributor's machine-specific checkout location.
+# Whole-branch review Fix I1: every portable tracked record the pilot ships
+# -- not just the Claude/Codex team files -- must never bake in one
+# contributor's machine-specific checkout location. This is the union of
+# `PORTABLE_TEAM_FILES` above plus the shared entry points and every durable
+# `.ai` record (`WORKFLOW.md`, `PROJECT_STATUS.md`, and both workstream
+# files).
+PORTABLE_NO_ABSOLUTE_PATH_FILES = PORTABLE_TEAM_FILES + (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "RTK.md",
+    ".ai/WORKFLOW.md",
+    ".ai/PROJECT_STATUS.md",
+    ".ai/workstreams/continuity-pilot.md",
+    ".ai/workstreams/match-stroke-recognition-b.md",
+)
+
+# Any drive-letter, msys (`/x/...`), UNC, POSIX-home, or tilde-relative
+# absolute LOCAL path. Portable tracked records must describe role behavior,
+# project state, and REMOTE references (`https://...` URLs) only; they must
+# never bake in one contributor's machine-specific checkout location. The
+# `(?<![A-Za-z0-9])` guard before a bare drive/msys letter is required so
+# this never misfires on a URL SCHEME -- for example the "s:" immediately
+# before "//" in "https://..." or the "p:" in "http://..." -- which is a
+# single letter followed by ':' and '/' just like a real drive-letter path,
+# but is always preceded by another letter, never by a path/quote/whitespace
+# boundary.
 ABSOLUTE_PATH_PATTERN = re.compile(
-    r"[A-Za-z]:[\\/]"        # C:\... or D:/...
-    r"|\\\\[A-Za-z0-9._-]+"  # \\server\share UNC paths
+    r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]"             # C:\... or D:/... (not a URL scheme)
+    r"|\\\\[A-Za-z0-9._-]+"                        # \\server\share UNC paths
+    r"|(?<![A-Za-z0-9])/[A-Za-z]/[A-Za-z0-9._-]"   # msys/Git-Bash drive paths such as /d/Dev/...
     r"|/home/\S+"
     r"|/Users/\S+"
     r"|~[\\/]"
@@ -339,10 +363,14 @@ def test_workstream_files_have_one_managed_marker_pair(workstream_path: Path):
     assert text.index(MARKER_START) < text.index(MARKER_END)
 
 
-@pytest.mark.parametrize("relative_path", PORTABLE_TEAM_FILES)
+@pytest.mark.parametrize("relative_path", PORTABLE_NO_ABSOLUTE_PATH_FILES)
 def test_portable_team_files_contain_no_absolute_project_path(relative_path: str):
-    """Portable Claude/Codex team files describe role behavior only and must
-    never bake in a contributor's local machine-specific checkout path."""
+    """Every portable tracked record -- Claude/Codex team files, the shared
+    entry points, and the durable `.ai` records -- describes role behavior
+    and project state only and must never bake in a contributor's local
+    machine-specific checkout path. A `https://...` remote URL is not an
+    absolute local path and must never be flagged (whole-branch review Fix
+    I1)."""
     path = PROJECT_ROOT / relative_path
     assert path.is_file(), f"{relative_path} must exist for the portable pilot"
     text = path.read_text(encoding="utf-8")
@@ -1174,6 +1202,44 @@ def test_start_rejects_wrong_identity_for_active_claim(continuity_repo):
     on_disk = json.loads(_claim_file_for(continuity_repo, "continuity-pilot").read_text(encoding="utf-8"))
     assert on_disk["claim_id"] == first_claim_id
     assert on_disk["session_id"] == "session-1"
+
+
+def test_start_renewal_rejects_drift_in_preexisting_dirty(continuity_repo):
+    """Whole-branch review Fix C1: a same-identity/same-scope renewal must
+    PRESERVE the existing claim's `preexisting_dirty` baseline as
+    authoritative and VALIDATE the current working tree against it, rather
+    than silently recapturing current out-of-scope dirt and re-baselining
+    it. A captured fingerprint that has since drifted blocks renewal with
+    exit `2`, and the stored baseline on disk is left completely
+    unchanged."""
+    setup = _setup_modified(continuity_repo, "keep")
+
+    first = _start(continuity_repo, Scope=["claim"])
+    assert first.returncode == 0, f"stdout={first.stdout!r} stderr={first.stderr!r}"
+    first_parsed = parse_json_stdout(first)
+    first_claim_id = first_parsed["claim_id"]
+    captured = [
+        entry for entry in first_parsed["claims"][0]["preexisting_dirty"] if entry["path"] == setup["path"]
+    ]
+    assert len(captured) == 1, first_parsed["claims"][0]["preexisting_dirty"]
+
+    # Drift the captured pre-existing dirty path's content AFTER `start`
+    # captured its fingerprint, then attempt an identical-identity/
+    # identical-scope renewal.
+    (continuity_repo / setup["path"]).write_text("drifted after start captured it\n", encoding="utf-8")
+
+    second = _start(continuity_repo, Scope=["claim"])
+
+    assert second.returncode == 2, f"stdout={second.stdout!r} stderr={second.stderr!r}"
+    assert parse_json_stdout(second)["ok"] is False
+
+    on_disk = json.loads(_claim_file_for(continuity_repo, "continuity-pilot").read_text(encoding="utf-8"))
+    assert on_disk["claim_id"] == first_claim_id
+    on_disk_captured = [entry for entry in on_disk["preexisting_dirty"] if entry["path"] == setup["path"]]
+    assert on_disk_captured == captured, (
+        "the existing claim's preexisting_dirty baseline must be left completely "
+        f"unchanged by a rejected renewal, got {on_disk_captured!r} vs {captured!r}"
+    )
 
 
 def test_start_rejects_overlapping_scope_with_other_workstreams_claim(continuity_repo):
@@ -2090,6 +2156,44 @@ def test_update_rejects_wrong_canonical_worktree(update_repo):
     assert update_repo.workstream_path.read_text(encoding="utf-8") == before_doc
     after_claim = json.loads(
         _claim_file_for(update_repo.repo_dir, "continuity-pilot").read_text(encoding="utf-8")
+    )
+    assert after_claim == before_claim
+
+
+def test_update_rejects_when_claim_scope_excludes_workstream_doc(continuity_repo):
+    """Whole-branch review Fix I2: `WORKFLOW.md` requires every write claim
+    to include its own `.ai/workstreams/<workstream-id>.md` path in scope,
+    but `update` always writes that file. A claim scoped to a disjoint
+    prefix that does NOT cover the owned workstream document must be
+    rejected at the `update` boundary before any mutation: exit `2`, no
+    Markdown change, no lease renewal."""
+    workstream_path = continuity_repo / ".ai" / "workstreams" / "continuity-pilot.md"
+    workstream_path.write_text(
+        _full_workstream_document("continuity-pilot", "0" * 40), encoding="utf-8"
+    )
+    add_result = _run_git(["add", "."], cwd=continuity_repo)
+    assert add_result.returncode == 0, add_result.stderr
+    commit_result = _run_git(
+        ["commit", "-m", "Expand workstream document for scope-exclusion test"], cwd=continuity_repo
+    )
+    assert commit_result.returncode == 0, commit_result.stderr
+
+    started = _start(continuity_repo, Scope=["shared"])
+    assert started.returncode == 0, f"stdout={started.stdout!r} stderr={started.stderr!r}"
+    claim_id = parse_json_stdout(started)["claim_id"]
+
+    before_doc = workstream_path.read_text(encoding="utf-8")
+    before_claim = json.loads(
+        _claim_file_for(continuity_repo, "continuity-pilot").read_text(encoding="utf-8")
+    )
+
+    result = _update(continuity_repo, claim_id)
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert parse_json_stdout(result)["ok"] is False
+    assert workstream_path.read_text(encoding="utf-8") == before_doc
+    after_claim = json.loads(
+        _claim_file_for(continuity_repo, "continuity-pilot").read_text(encoding="utf-8")
     )
     assert after_claim == before_claim
 
@@ -4426,6 +4530,128 @@ def test_accept_recovers_from_post_activation_git_drift(accept_repo):
     assert live_claim_after_retry["state"] == "active"
 
     history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+    assert not history_path.exists()
+
+
+def test_accept_post_activation_dirty_claimed_scope_triggers_exit5(accept_repo):
+    """Whole-branch review Fix C2: `accept`'s post-activation revalidation
+    must re-check the claimed scope is still clean, not just that `HEAD`
+    has not moved. An UNCOMMITTED in-scope edit that appears during the
+    `accept-pause-after-activate` window -- the SAME claimed scope the
+    successor now owns -- is genuine drift: exit `5`, the successor stays
+    the live claim, and the predecessor is never archived."""
+    journal_path = accept_repo.journal_path
+    ready_path = journal_path.with_name(journal_path.name + ".ready")
+    continue_path = journal_path.with_name(journal_path.name + ".continue")
+    workstream_path = (
+        accept_repo.repo_dir / ".ai" / "workstreams" / f"{accept_repo.workstream_id}.md"
+    )
+
+    process = _spawn_accept(
+        accept_repo.repo_dir,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-pause-after-activate"},
+        PreviousClaimId=accept_repo.predecessor_claim_id,
+        Agent="claude",
+        SessionId="claude-session-1",
+        Json=True,
+    )
+    try:
+        _wait_for_path(ready_path, timeout=15)
+
+        # An UNCOMMITTED in-scope edit -- never a commit -- appears during
+        # the pause window, directly in the file the successor's own
+        # inherited scope covers.
+        workstream_path.write_text(
+            workstream_path.read_text(encoding="utf-8") + "\nuncommitted in-scope edit during pause\n",
+            encoding="utf-8",
+        )
+
+        continue_path.write_text("go", encoding="utf-8")
+
+        stdout, stderr = process.communicate(timeout=20)
+        returncode = process.returncode
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
+
+    assert returncode == 5, f"stdout={stdout!r} stderr={stderr!r}"
+    parsed = parse_json_stdout(HelperResult(returncode, stdout, stderr))
+    assert parsed["ok"] is False
+
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields for the exit-5 drift"
+    assert recovery["authoritative_owner"] == "successor"
+    successor_claim_id = recovery["claim_id"]
+    assert successor_claim_id != accept_repo.predecessor_claim_id
+
+    # The predecessor never becomes active again: the live claim is the
+    # successor, active, and the journal is still retained -- the
+    # predecessor was NEVER archived.
+    live_claim = _current_claim(accept_repo.repo_dir, accept_repo.workstream_id)
+    assert live_claim["claim_id"] == successor_claim_id
+    assert live_claim["state"] == "active"
+    assert journal_path.exists()
+
+    history_path = _history_path_for(accept_repo.repo_dir, accept_repo.predecessor_claim_id)
+    assert not history_path.exists()
+
+
+def test_accept_post_activation_preexisting_dirty_drift_triggers_exit5(tmp_path):
+    """Whole-branch review Fix C2: post-activation revalidation must also
+    re-check unchanged pre-existing dirty fingerprints, not just `HEAD`. A
+    captured out-of-scope dirty path that drifts DURING the
+    `accept-pause-after-activate` window is genuine concurrent drift: exit
+    `5`, the successor stays the live claim, and the predecessor is never
+    archived."""
+    repo_dir, claim_id, fixture, setup = _build_repo_with_preexisting(tmp_path, _setup_modified)
+    handoff_result = _handoff(repo_dir, claim_id, fixture.next_action)
+    assert handoff_result.returncode == 0, f"stdout={handoff_result.stdout!r} stderr={handoff_result.stderr!r}"
+
+    journal_path = _journal_path_for(repo_dir, claim_id)
+    ready_path = journal_path.with_name(journal_path.name + ".ready")
+    continue_path = journal_path.with_name(journal_path.name + ".continue")
+
+    process = _spawn_accept(
+        repo_dir,
+        env={"AI_CONTINUITY_TEST_FAULT": "accept-pause-after-activate"},
+        PreviousClaimId=claim_id,
+        Agent="claude",
+        SessionId="claude-session-1",
+        Json=True,
+    )
+    try:
+        _wait_for_path(ready_path, timeout=15)
+
+        # The captured pre-existing dirty path drifts DURING the pause --
+        # uncommitted content only, never a commit.
+        (repo_dir / setup["path"]).write_text("drifted during accept pause\n", encoding="utf-8")
+
+        continue_path.write_text("go", encoding="utf-8")
+
+        stdout, stderr = process.communicate(timeout=20)
+        returncode = process.returncode
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
+
+    assert returncode == 5, f"stdout={stdout!r} stderr={stderr!r}"
+    parsed = parse_json_stdout(HelperResult(returncode, stdout, stderr))
+    assert parsed["ok"] is False
+
+    recovery = parsed.get("recovery")
+    assert recovery, "expected recovery fields for the exit-5 drift"
+    assert recovery["authoritative_owner"] == "successor"
+    successor_claim_id = recovery["claim_id"]
+    assert successor_claim_id != claim_id
+
+    live_claim = _current_claim(repo_dir, "continuity-pilot")
+    assert live_claim["claim_id"] == successor_claim_id
+    assert live_claim["state"] == "active"
+    assert journal_path.exists()
+
+    history_path = _history_path_for(repo_dir, claim_id)
     assert not history_path.exists()
 
 

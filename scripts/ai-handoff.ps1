@@ -1919,6 +1919,36 @@ function Invoke-Start {
             )
         )
 
+        # --- Idempotent renewal: preserve the existing baseline, validate
+        #     current drift against it (Fix C1) -----------------------------
+        # A same-identity/same-scope renewal must never silently recapture
+        # current out-of-scope dirt and re-baseline `preexisting_dirty` to
+        # it -- that would absorb any drift a caller introduced since the
+        # claim was first started. Instead, the existing claim's own
+        # recorded baseline stays authoritative: every previously captured
+        # fingerprint must still match exactly (the same gate handoff/accept
+        # already use), and no new out-of-scope dirty path may have appeared
+        # since. Either kind of drift fails the renewal with exit 2, leaving
+        # the existing claim's stored baseline completely unchanged.
+        if ($isRenewal) {
+            $existingPreexistingDirty = @($existingClaim.preexisting_dirty)
+            Test-PreexistingDirtyUnchanged -RepoRoot $Context.RepoRoot -PreexistingDirty $existingPreexistingDirty `
+                -CurrentStatusEntries @($statusEntries)
+
+            $existingPreexistingPaths = @($existingPreexistingDirty | ForEach-Object { $_.path })
+            $newOutOfScopeMessages = @()
+            foreach ($dirty in $preexistingDirtySorted) {
+                if ($existingPreexistingPaths -notcontains $dirty.path) {
+                    $newOutOfScopeMessages += "Path '$($dirty.path)' (status '$($dirty.status)') is a new out-of-scope dirty path that appeared since this claim's active baseline was captured; renewal cannot proceed."
+                }
+            }
+            if ($newOutOfScopeMessages.Count -gt 0) {
+                throw [ContinuityValidationException]::new(($newOutOfScopeMessages -join ' '))
+            }
+
+            $preexistingDirtySorted = $existingPreexistingDirty
+        }
+
         # --- Build (new or renewed) claim ------------------------------------
         # InvariantCulture is mandatory here: "yyyy-MM-ddTHH:mm:ssZ" treats ':'
         # as the current culture's time-separator PLACEHOLDER, not a literal
@@ -2665,6 +2695,20 @@ function Invoke-Update {
         }
 
         $claimScopePaths = @($claim.scope_paths)
+
+        # --- Fix I2: `update` always writes this claim's own owned
+        #     workstream document, so the claim's scope must actually cover
+        #     it (design spec / WORKFLOW.md: "Every write claim includes its
+        #     own `.ai/workstreams/<workstream-id>.md` path in scope"). A
+        #     claim scoped to a disjoint prefix must never be allowed to
+        #     write outside its own declared scope; reject before any
+        #     mutation rather than silently writing anyway. -----------------
+        $ownedWorkstreamRelativePath = "$($Script:WorkstreamsRelativeDirectory)/$workstreamId.md"
+        if (-not (Test-PathWithinScope -Path $ownedWorkstreamRelativePath -ScopePrefixes $claimScopePaths)) {
+            throw [ContinuityValidationException]::new(
+                "Claim '$ClaimId' scope does not include its own owned workstream file '$ownedWorkstreamRelativePath'; update cannot proceed."
+            )
+        }
 
         if ($dirtyPaths.Count -gt 0) {
             Test-DirtyVerificationPaths -Context $Context -DirtyPath $dirtyPaths `
@@ -3751,16 +3795,27 @@ function Invoke-Accept {
         # --- Test-only rendezvous point (never a no-op fault) ---------------
         Invoke-AcceptPauseFault -JournalPath $journalPath
 
-        # --- Post-activation Git revalidation -------------------------------
-        $freshHeadResult = Invoke-Git -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $Context.RepoRoot
-        if ($freshHeadResult.ExitCode -ne 0) {
-            throw [ContinuityGitContextException]::new('Unable to resolve the current HEAD commit after activation.')
+        # --- Post-activation Git revalidation (Fix C2) ----------------------
+        # Re-run EXACTLY the same recorded-invariant checks accept already
+        # validated BEFORE activation -- the same canonical worktree/branch,
+        # HEAD against the predecessor's recorded `handoff_commit` (identical
+        # to the successor's own `base_commit`), the committed workstream
+        # blob and its SHA-256, a clean claimed scope, AND unchanged
+        # pre-existing dirty fingerprints -- never just the HEAD commit
+        # alone. Activating the successor claim is purely a local JSON write
+        # under the Git common directory and changes none of these
+        # Git-repository facts, so reusing the identical pre-activation gate
+        # is correct, not merely convenient. Any drift caught here is
+        # genuine concurrent drift discovered AFTER activation: the
+        # successor claim already exists and remains authoritative, and the
+        # transaction stays retained (never archiving the predecessor or
+        # deleting the journal) for a diagnosable recovery.
+        try {
+            Test-AcceptPreActivationInvariants -Context $Context -Predecessor $predecessorSnapshot
         }
-        $freshHead = $freshHeadResult.StdOut.Trim()
-
-        if ($freshHead -cne $successorClaim.base_commit) {
+        catch [ContinuityValidationException] {
             $recoveryException = [ContinuityRecoveryException]::new(
-                'Git drift was detected after the successor claim was activated; the successor remains authoritative and the transaction is retained.'
+                "Git drift was detected after the successor claim was activated ($($_.Exception.Message)); the successor remains authoritative and the transaction is retained."
             )
             $recoveryException.ClaimId = $successorClaim.claim_id
             $recoveryException.Recovery = [PSCustomObject][ordered]@{
@@ -3772,6 +3827,16 @@ function Invoke-Accept {
             }
             throw $recoveryException
         }
+
+        # Resolved again (rather than reused from Test-AcceptPreActivationInvariants,
+        # which does not return it) only to populate the result's own `git.head`
+        # field; the invariant check above is what the drift decision actually
+        # depends on.
+        $freshHeadResult = Invoke-Git -Arguments @('rev-parse', 'HEAD') -WorkingDirectory $Context.RepoRoot
+        if ($freshHeadResult.ExitCode -ne 0) {
+            throw [ContinuityGitContextException]::new('Unable to resolve the current HEAD commit after activation.')
+        }
+        $freshHead = $freshHeadResult.StdOut.Trim()
 
         try {
             Invoke-TestFault -Name 'accept-after-revalidate' -Phase 'post-activation'

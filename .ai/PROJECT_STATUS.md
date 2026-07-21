@@ -56,9 +56,9 @@ the complete historical ledger.
   `docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md`.
 - The implementation plan is approved:
   `docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md`.
-- The pilot applies only to Good Badminton; adapting it for the other 12
-  `D:/Dev/Claude/Projects` repositories that contain `CLAUDE.md` is deferred until this
-  pilot is proven through Sub-project B (design spec, "Rollout Scope").
+- The pilot applies only to Good Badminton; adapting it for the other 12 local `Projects`
+  repositories that contain `CLAUDE.md` is deferred until this pilot is proven through
+  Sub-project B (design spec, "Rollout Scope").
 - Sub-project B (full-match stroke recognition) is next after the pilot, but its product
   completion bar is a separate, unresolved decision that does not block installing the
   pilot (design spec, "Current State").

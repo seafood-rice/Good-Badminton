@@ -7,8 +7,7 @@
 - **Scope paths:** `.ai/`, `scripts/ai-handoff.ps1`, `tests/test_ai_handoff.py`
 - **State:** active
 - **Branch:** `codex/good-badminton-development`
-- **Worktree:** `D:/Dev/Claude/Projects/good-badminton/Good-badminton` (primary checkout;
-  no linked worktree yet)
+- **Worktree:** the primary local checkout (no linked worktree yet)
 - **Base commit:** `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`
 - **Head commit:** `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`
 - **Last milestone:** 2026-07-18T08:06:51Z - installed the shared entry points,
