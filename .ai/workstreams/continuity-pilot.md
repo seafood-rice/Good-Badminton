@@ -5,12 +5,12 @@
   `docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md` and
   `docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md`.
 - **Scope paths:** `.ai/`, `scripts/ai-handoff.ps1`, `tests/test_ai_handoff.py`
-- **State:** active
+- **State:** handoff
 - **Branch:** `codex/good-badminton-development`
 - **Worktree:** the primary local checkout (no linked worktree yet)
 - **Base commit:** `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`
-- **Head commit:** `c5547bcd2e960931331c2644642696ea4aab07a9`
-- **Last milestone:** 2026-07-21T04:34:48Z - completed and reviewed Tasks 1-8 (the full
+- **Head commit:** `d9ea0ec00e65a7bc67c2e4ad4ceec633e60bd5bf`
+- **Last milestone:** 2026-07-21T13:18:38Z - Continuity pilot implemented, reviewed (incl. Codex whole-branch), and verified (290 focused / 646 whole-repo).
   status/start/update/handoff/accept/takeover helper and failure matrix) and resolved the
   Codex whole-branch review's Critical and Important findings.
 
@@ -64,8 +64,11 @@ None.
 
 ## Next action
 
-Run the committed Codex-Claude alternating handoff/accept cycle to activate the pilot, then
-prepare the reviewed branch for publication.
+Accept the continuity pilot, verify shared status, then hand it back to Codex
 
 <!-- ai-continuity:milestones:start -->
+- 2026-07-21T13:18:38Z - state: handoff - Continuity pilot implemented, reviewed (incl. Codex whole-branch), and verified (290 focused / 646 whole-repo).
+  - Changed paths: `.ai/workstreams/continuity-pilot.md`
+  - Verification: passed - command `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` - commit `d9ea0ec00e65a7bc67c2e4ad4ceec633e60bd5bf`
+  - Next action: Accept the continuity pilot, verify shared status, then hand it back to Codex
 <!-- ai-continuity:milestones:end -->
