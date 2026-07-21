@@ -9,9 +9,10 @@
 - **Branch:** `codex/good-badminton-development`
 - **Worktree:** the primary local checkout (no linked worktree yet)
 - **Base commit:** `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`
-- **Head commit:** `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`
-- **Last milestone:** 2026-07-18T08:06:51Z - installed the shared entry points,
-  `.ai/WORKFLOW.md`, this record, and the Task 1 portability tests.
+- **Head commit:** `c5547bcd2e960931331c2644642696ea4aab07a9`
+- **Last milestone:** 2026-07-21T04:34:48Z - completed and reviewed Tasks 1-8 (the full
+  status/start/update/handoff/accept/takeover helper and failure matrix) and resolved the
+  Codex whole-branch review's Critical and Important findings.
 
 ## Acceptance criteria
 
@@ -53,6 +54,9 @@ implementation plan's per-task checklists in
     passed.
 - `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>`
   (existing full suite plus this file): 373 passed, same dirty tree/commit, 2026-07-18T08:12:05Z.
+- Task 9 gate, tested commit `c5547bcd2e960931331c2644642696ea4aab07a9`, 2026-07-21T04:34:48Z:
+  - `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>`: 290 passed.
+  - `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` (whole repo): 646 passed.
 
 ## Blockers
 
@@ -60,7 +64,8 @@ None.
 
 ## Next action
 
-Implement the read-only helper core from Task 2.
+Run the committed Codex-Claude alternating handoff/accept cycle to activate the pilot, then
+prepare the reviewed branch for publication.
 
 <!-- ai-continuity:milestones:start -->
 <!-- ai-continuity:milestones:end -->
