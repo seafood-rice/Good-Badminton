@@ -25,3 +25,16 @@ videos/
 # SDD scratch (progress ledger lives here)
 .superpowers/
 .gstack/
+
+# Machine-local agent/tool state and volatile files. Never committed, and kept out of the
+# AI-continuity dirty-fingerprint baseline (some are active/locked, e.g. the TokenSave DB).
+# The tracked portable team files (.claude/active-team.md, .claude/agents/*, .codex/active-team.md,
+# .codex/agents/*) are deliberately NOT ignored.
+.tokensave/
+.claude/.ccteams-manifest.json
+.claude/.headroom_wrap_marker.json
+.claude/settings.local.json
+.codex/config.toml
+server*.log
+*.err.log
+*.pt
