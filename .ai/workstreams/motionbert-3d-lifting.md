@@ -11,10 +11,9 @@
 - **Branch:** `claude/motionbert-3d-lifting`
 - **Worktree:** the primary local checkout (no linked worktree)
 - **Base commit:** `793a61e2aec257129adbbbbf0896e006aa2aee08`
-- **Head commit:** pending the design commit on this branch
+- **Head commit:** `73873c737f708f3885cfdf0e9f66223a30140a23`
 - **Claim id:** `1f5555cd-eb3c-4e66-8443-be517dfab644`
-- **Last milestone:** 2026-07-26 — design brainstormed and approved; spec written; claim
-  active on the design scope only.
+- **Last milestone:** 2026-07-25T21:55:57Z - Design approved and spec committed (2df7dbc); 10-task TDD implementation plan written and committed (73873c7).
 
 ## Acceptance criteria
 
@@ -58,8 +57,11 @@ scope here and does not block this stage.)
 
 ## Next action
 
-User reviews the written spec; on approval, invoke the writing-plans skill to produce the
-implementation plan.
+User selects execution mode (subagent-driven vs inline); then implement Task 1 of the plan.
 
 <!-- ai-continuity:milestones:start -->
+- 2026-07-25T21:55:57Z - state: active - Design approved and spec committed (2df7dbc); 10-task TDD implementation plan written and committed (73873c7).
+  - Changed paths: `docs/superpowers/specs/2026-07-26-motionbert-3d-pose-lifting-design.md`, `docs/superpowers/plans/2026-07-26-motionbert-3d-pose-lifting.md`, `.ai/workstreams/motionbert-3d-lifting.md`
+  - Verification: not-run - reason: Design/plan phase only; no code changed yet.
+  - Next action: User selects execution mode (subagent-driven vs inline); then implement Task 1 of the plan.
 <!-- ai-continuity:milestones:end -->
