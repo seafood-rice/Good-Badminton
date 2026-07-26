@@ -3,7 +3,7 @@
 import argparse
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="Badminton posture/technique drill analysis")
     parser.add_argument("--video-path", required=True, help="Input drill video path")
     parser.add_argument("--stroke-type", required=True,
@@ -30,7 +30,15 @@ def main():
                         help="Trained racket detector weights (optional)")
     parser.add_argument("--quality-model", default=None,
                         help="Trained AI form-score weights (optional)")
-    args = parser.parse_args()
+    parser.add_argument("--lift-model", default=None,
+                        help="MotionBERT 3D pose-lift weights (optional; enables 3D angles)")
+    parser.add_argument("--lift-device", default="auto", choices=["auto", "cpu", "cuda"],
+                        help="Device for 3D pose lifting (default auto)")
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     from badminton_analysis.posture.system import PostureAnalysisSystem
     system = PostureAnalysisSystem(
@@ -47,6 +55,8 @@ def main():
         report_llm=args.report_llm,
         racket_model_path=args.racket_model,
         quality_model_path=args.quality_model,
+        lift_model_path=args.lift_model,
+        lift_device=args.lift_device,
     )
     system.process_video()
 

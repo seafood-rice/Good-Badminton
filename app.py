@@ -1044,6 +1044,13 @@ def api_posture_analyze():
     if quality_weights:
         cmd += ['--quality-model', quality_weights]
 
+    lift_weights = data.get('lift_model')
+    if lift_weights:
+        cmd += ['--lift-model', lift_weights]
+        lift_device = data.get('lift_device', 'auto')
+        if lift_device in ('auto', 'cpu', 'cuda'):
+            cmd += ['--lift-device', lift_device]
+
     job_id = 'posture_' + video_path.stem
     jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',
                     'video_name': video_path.stem, 'save_dir': str(save_dir)}
