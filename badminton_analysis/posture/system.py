@@ -155,13 +155,16 @@ class PostureRunner:
     """Post-loop orchestration: reps -> per-rep StrokeEvent -> biomechanical reports."""
 
     def __init__(self, analyzer, stroke_type, dominant="right",
-                 window_pre=20, window_post=15, quality_scorer=None):
+                 window_pre=20, window_post=15, quality_scorer=None,
+                 pose_lifter=None, image_size=None):
         self.analyzer = analyzer
         self.stroke_type = stroke_type
         self.dominant = dominant
         self.window_pre = window_pre
         self.window_post = window_post
         self.quality_scorer = quality_scorer
+        self.pose_lifter = pose_lifter
+        self.image_size = image_size
 
     def _window_frames(self, window_start, window_end, frame_lookup):
         frames = []
@@ -207,6 +210,8 @@ class PostureRunner:
         from ..stroke.events import StrokeEvent
         reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post)
         reports = []
+        reps_3d = []
+        scored_3d = 0
         gated = self.stroke_type in OVERHEAD_GATED_STROKES
         filtered_non_overhead = 0
         for i, rep in enumerate(reps):
@@ -219,8 +224,22 @@ class PostureRunner:
                 confidence=rep.prominence,
             )
             window_frames = self._window_frames(rep.window_start, rep.window_end, frame_lookup)
+
+            if self.pose_lifter is not None and getattr(self.pose_lifter, "available", False):
+                lifted = self.pose_lifter.lift(window_frames, self.image_size)
+                if lifted is not None:
+                    kp3d, frames3d = lifted
+                    by_frame = {fn: kp3d[j] for j, fn in enumerate(frames3d)}
+                    for w in window_frames:
+                        if w["frame"] in by_frame:
+                            w["keypoints_3d"] = by_frame[w["frame"]]
+                    reps_3d.append({"rep_id": rep.rep_id, "frames": list(frames3d),
+                                    "keypoints_3d": kp3d})
+
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
+            if report.get("feature_space") == "3d":
+                scored_3d += 1
 
             apex_frames = self._apex_window_frames(rep.peak_frame, fps, frame_lookup)
             elev = apex_overhead_elevation(apex_frames, self.dominant)
@@ -247,7 +266,7 @@ class PostureRunner:
                     report["ai_score"] = ai
             reports.append(report)
         gate_info = {"counted": len(reports), "filtered_non_overhead": filtered_non_overhead,
-                     "gated": gated}
+                     "gated": gated, "scored_3d": scored_3d, "reps_3d": reps_3d}
         # Renumber survivors 1..N so downstream consumers (write_rep_reports,
         # build_drill_summary, the coach report table) never show gapped ids
         # left behind by reps the overhead gate dropped above. The `reps`
@@ -265,7 +284,8 @@ class PostureAnalysisSystem:
                  show_overlay=True, pose_model="weights/yolo11n-pose.pt",
                  pose_family="yolo-pose", pose_mode="balanced",
                  yolo_pose_model="weights/yolo11n-pose.pt",
-                 report_llm="off", racket_model_path=None, quality_model_path=None):
+                 report_llm="off", racket_model_path=None, quality_model_path=None,
+                 lift_model_path=None, lift_device="auto"):
         if not os.path.exists(video_path):
             raise FileNotFoundError("Input video not found: " + video_path)
         self.video_path = video_path
@@ -284,6 +304,9 @@ class PostureAnalysisSystem:
         self._racket_stats = {"detected": 0, "inferred": 0}
         self.quality_model_path = quality_model_path
         self._quality_scorer = None
+        self.lift_model_path = lift_model_path
+        self.lift_device = lift_device
+        self._pose_lifter = None
 
         self.video_name = os.path.basename(video_path).rsplit(".", 1)[0]
         self.save_dir = output_dir or os.path.join("outputs", self.video_name, "posture")
@@ -307,7 +330,9 @@ class PostureAnalysisSystem:
         from ..data.writer import write_json
         date = date or _today()
         meta = {"date": date, "stroke_type": self.stroke_type,
-                "dominant_hand": self.dominant_hand, "pose_family": getattr(self, "pose_family", "yolo-pose")}
+                "dominant_hand": self.dominant_hand,
+                "pose_family": getattr(self, "pose_family", "yolo-pose"),
+                "feature_space": ("3d" if any(r.get("feature_space") == "3d" for r in reports) else "2d")}
         by_lang = build_coach_report(reports, summary, meta)
         if getattr(self, "report_llm", "off") not in (None, "off"):
             from .report_llm import polish
@@ -351,6 +376,7 @@ class PostureAnalysisSystem:
         pose = self._build_pose_processor()
         self._build_racket_detector()
         self._build_quality_scorer()
+        self._build_pose_lifter()
         print(format_progress(5, "loading"), flush=True)
         ball_model = None
         if self.ball_model_path and os.path.exists(self.ball_model_path):
@@ -387,12 +413,22 @@ class PostureAnalysisSystem:
         print(format_progress(88, "scoring"), flush=True)
         runner = PostureRunner(BiomechanicalAnalyzer(dominant=self.dominant_hand),
                                stroke_type=self.stroke_type, dominant=self.dominant_hand,
-                               quality_scorer=self._quality_scorer)
+                               quality_scorer=self._quality_scorer,
+                               pose_lifter=self._pose_lifter, image_size=(width, height))
         reports, reps, gate_info = runner.run(self._track, self._frames.get, fps)
 
         write_rep_reports(os.path.join(self.save_dir, "drill_reps.jsonl"), reports)
         summary = build_drill_summary(reports, self.stroke_type)
         write_json(os.path.join(self.save_dir, "drill_summary.json"), summary)
+        if gate_info.get("reps_3d"):
+            from ..analysis.pose3d_io import write_reps_3d
+            write_reps_3d(
+                os.path.join(self.save_dir, "drill_reps_3d.npz"),
+                gate_info["reps_3d"],
+                {"model": self.lift_model_path, "joint_format": "h36m-17",
+                 "normalization": "screen", "stroke_type": self.stroke_type,
+                 "dominant_hand": self.dominant_hand},
+            )
         write_json(os.path.join(self.save_dir, "metadata.json"), {
             "video": {"path": self.video_path, "name": self.video_name,
                       "fps": float(fps), "width": width, "height": height},
@@ -404,9 +440,12 @@ class PostureAnalysisSystem:
                        "model": self.racket_model_path},
             "quality": {"model": self.quality_model_path if self._quality_scorer else None,
                         "scored_reps": sum(1 for r in reports if "ai_score" in r)},
+            "lift": {"model": self.lift_model_path if self._pose_lifter else None,
+                     "scored_3d": gate_info.get("scored_3d", 0)},
             "reps": {"counted": gate_info["counted"],
                      "filtered_non_overhead": gate_info["filtered_non_overhead"],
-                     "gated": gate_info["gated"]},
+                     "gated": gate_info["gated"],
+                     "scored_3d": gate_info.get("scored_3d", 0)},
         })
         print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
@@ -441,6 +480,18 @@ class PostureAnalysisSystem:
         except Exception as e:
             print("Quality scorer unavailable (" + str(e) + "); rule-based only.")
             self._quality_scorer = None
+
+    def _build_pose_lifter(self):
+        """Optional MotionBERT 3D lifter; analysis proceeds on failure."""
+        if not self.lift_model_path:
+            return
+        try:
+            from ..detection.pose_lift import PoseLifter
+            lifter = PoseLifter(model_path=self.lift_model_path, device=self.lift_device)
+            self._pose_lifter = lifter if lifter.available else None
+        except Exception as e:
+            print("Pose lifter unavailable (" + str(e) + "); 2D angles only.")
+            self._pose_lifter = None
 
     def _resolve_racket_head(self, frame, kp, ja):
         # No pose this frame: there is no person bbox to anchor the ROI to (and no

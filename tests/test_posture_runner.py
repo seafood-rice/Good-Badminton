@@ -57,7 +57,8 @@ def test_runner_one_report_per_rep_with_rep_id():
     # Inferred (not detected) racket head -> wrist_flexion is unmeasurable (None),
     # not scored as 0 for the ~180 deg collinear fallback angle.
     assert reports[0]["per_metric"]["wrist_flexion"]["measured"] is None
-    assert gate_info == {"counted": 2, "filtered_non_overhead": 0, "gated": True}
+    assert gate_info == {"counted": 2, "filtered_non_overhead": 0, "gated": True,
+                         "scored_3d": 0, "reps_3d": []}
 
 
 def test_runner_wrist_flexion_measured_when_racket_head_detected():
@@ -110,7 +111,8 @@ def test_runner_empty_track_no_reports():
     runner = PostureRunner(BiomechanicalAnalyzer(), stroke_type="smash")
     reports, reps, gate_info = runner.run([], lambda i: None, fps=30)
     assert reports == [] and reps == []
-    assert gate_info == {"counted": 0, "filtered_non_overhead": 0, "gated": False}
+    assert gate_info == {"counted": 0, "filtered_non_overhead": 0, "gated": False,
+                         "scored_3d": 0, "reps_3d": []}
 
 
 # ── apex_overhead_elevation: max (shoulder_y - wrist_y)/torso for the dominant side ──
@@ -212,7 +214,8 @@ def test_gate_drops_non_overhead_rep_and_keeps_overhead_rep():
     assert [r.rep_id for r in reps] == [1, 2]  # RepWindow list is left as-is (not renumbered)
     assert len(reports) == 1
     assert [r["rep_id"] for r in reports] == [1]
-    assert gate_info == {"counted": 1, "filtered_non_overhead": 1, "gated": True}
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 1, "gated": True,
+                         "scored_3d": 0, "reps_3d": []}
     assert reports[0]["overhead_elevation"] is not None
     assert reports[0]["overhead_elevation"] >= OVERHEAD_MIN_ELEVATION
 
@@ -240,7 +243,8 @@ def test_gate_does_not_apply_to_non_gated_stroke_type():
 
     assert len(reps) == 1
     assert len(reports) == 1
-    assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": False}
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": False,
+                         "scored_3d": 0, "reps_3d": []}
 
 
 def test_gate_keeps_rep_when_elevation_cannot_be_judged():
@@ -255,7 +259,8 @@ def test_gate_keeps_rep_when_elevation_cannot_be_judged():
     assert len(reps) == 1
     assert len(reports) == 1
     assert reports[0]["overhead_elevation"] is None
-    assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": True}
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": True,
+                         "scored_3d": 0, "reps_3d": []}
 
 
 # ── Contiguous rep numbering after the overhead gate drops a middle rep ─────
@@ -298,4 +303,5 @@ def test_gate_drop_of_middle_rep_renumbers_survivors_contiguously():
     assert [r.rep_id for r in reps] == [1, 2, 3]  # RepWindow list is left as-is (not renumbered)
     assert len(reports) == 2  # middle rep gated out
     assert [r["rep_id"] for r in reports] == [1, 2]  # contiguous, no gap left at the old id 3
-    assert gate_info == {"counted": 2, "filtered_non_overhead": 1, "gated": True}
+    assert gate_info == {"counted": 2, "filtered_non_overhead": 1, "gated": True,
+                         "scored_3d": 0, "reps_3d": []}
