@@ -35,8 +35,10 @@ def render_html(report):
     parts.append("<!doctype html><html lang='" + _esc(report.get("lang", "en")) + "'><head>"
                  "<meta charset='utf-8'><style>" + _CSS + "</style></head><body>")
     parts.append("<h1>" + _esc(h.get("stroke_label")) + "</h1>")
+    angle_space = "3D" if h.get("feature_space") == "3d" else "2D"
     parts.append("<div class='meta'>" + _esc(h.get("date")) + " · " + _esc(h.get("rep_count"))
-                 + " reps · " + _esc(h.get("dominant_hand")) + " · " + _esc(h.get("pose_family")) + "</div>")
+                 + " reps · " + _esc(h.get("dominant_hand")) + " · " + _esc(h.get("pose_family"))
+                 + " · " + angle_space + " angles</div>")
 
     # Primary score = the final score (biomechanical heuristic). Falls back to
     # mean_score for older reports built before mean_final_score existed.
@@ -61,9 +63,11 @@ def render_html(report):
             _ideal = list(w.get("ideal_range") or [])
             ideal_lo = _ideal[0] if len(_ideal) > 0 else ""
             ideal_hi = _ideal[1] if len(_ideal) > 1 else ""
+            _shadow = w.get("measured_shadow_2d")
+            _shadow_txt = (" (2D: " + _esc(_shadow) + ")") if _shadow is not None else ""
             parts.append("<div class='finding'><b>" + _esc(w.get("metric_label"))
                          + "</b> <span class='impact'>" + _esc(w.get("impact_label")) + "</span><br>"
-                         + "measured " + _esc(w.get("measured")) + " (ideal "
+                         + "measured " + _esc(w.get("measured")) + _shadow_txt + " (ideal "
                          + _esc(ideal_lo) + "–" + _esc(ideal_hi) + ")<br>"
                          + _esc(w.get("mechanism_text")) + "<br><i>" + _esc(w.get("drill_text")) + "</i></div>")
 

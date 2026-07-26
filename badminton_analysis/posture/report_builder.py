@@ -43,6 +43,7 @@ def _one_language(lang, reports, summary, meta):
         "dominant_hand": meta.get("dominant_hand", "right"),
         "date": meta.get("date"),
         "pose_family": meta.get("pose_family"),
+        "feature_space": meta.get("feature_space", "2d"),
     }
 
     verdict_key = _verdict_key(mean_score, consistency, rep_count)
@@ -70,6 +71,7 @@ def _one_language(lang, reports, summary, meta):
             "ideal_range": ideal,
             "direction": direction,
             "severity": (finding or {}).get("severity"),
+            "measured_shadow_2d": (finding or {}).get("measured_shadow_2d"),
             "impact_label": kb.t(lang, "impact_" + entry["impact"]),
             "mechanism_text": kb.t(lang, entry["mechanism_key"]),
             "drill_text": kb.t(lang, entry["drill_key"]),
