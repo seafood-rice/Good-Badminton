@@ -123,3 +123,60 @@ def weight_transfer_ratio(centroid_start, centroid_contact, shoulder_width_px):
         return None
     dx = abs(float(centroid_contact[0]) - float(centroid_start[0]))
     return float(dx / float(shoulder_width_px))
+
+
+# ---- 3D (MotionBERT H36M-17) angle support -------------------------------
+# H36M-17 joint indices (MotionBERT output order).
+H36M_PELVIS = 0
+H36M_R_HIP, H36M_R_KNEE, H36M_R_ANKLE = 1, 2, 3
+H36M_L_HIP, H36M_L_KNEE, H36M_L_ANKLE = 4, 5, 6
+H36M_SPINE, H36M_THORAX = 7, 8
+H36M_NOSE, H36M_HEAD = 9, 10
+H36M_L_SHOULDER, H36M_L_ELBOW, H36M_L_WRIST = 11, 12, 13
+H36M_R_SHOULDER, H36M_R_ELBOW, H36M_R_WRIST = 14, 15, 16
+
+# Vertical axis of MotionBERT's root-relative output (Y-up, H36M convention).
+# Only trunk_rotation's horizontal-plane projection depends on this; confirm it
+# against the vendored model's output orientation in Task 10 and flip if needed.
+VERTICAL_AXIS_3D = 1
+
+_DOMINANT_H36M = {
+    "right": (H36M_R_SHOULDER, H36M_R_ELBOW, H36M_R_WRIST, H36M_R_HIP, H36M_R_KNEE, H36M_R_ANKLE),
+    "left": (H36M_L_SHOULDER, H36M_L_ELBOW, H36M_L_WRIST, H36M_L_HIP, H36M_L_KNEE, H36M_L_ANKLE),
+}
+
+METRICS_3D_CAPABLE = ("elbow_extension", "knee_flexion", "trunk_rotation", "hip_shoulder_separation")
+
+
+def vector_angle(u, v):
+    """Angle (degrees, [0,180]) between vectors u and v. None if either is ~0."""
+    u = np.asarray(u, dtype=float)
+    v = np.asarray(v, dtype=float)
+    nu = np.linalg.norm(u)
+    nv = np.linalg.norm(v)
+    if nu < 1e-6 or nv < 1e-6:
+        return None
+    cos_ang = float(np.dot(u, v) / (nu * nv))
+    cos_ang = max(-1.0, min(1.0, cos_ang))
+    return float(np.degrees(np.arccos(cos_ang)))
+
+
+def compute_joint_angles_3d(keypoints_3d, dominant="right"):
+    """View-invariant anatomical angles from a (17,3) H36M-17 pose.
+
+    Returns the four 3D-capable metrics (elbow/knee/trunk/hip-shoulder). The
+    racket-relative wrist_flexion and global-translation weight_transfer are not
+    computable from root-relative body-only 3D and are handled 2D elsewhere.
+    """
+    kp = np.asarray(keypoints_3d, dtype=float)
+    sh, el, wr, hip, kn, an = _DOMINANT_H36M.get(dominant, _DOMINANT_H36M["right"])
+    angles = {"elbow_extension": None, "knee_flexion": None,
+              "trunk_rotation": None, "hip_shoulder_separation": None}
+    angles["elbow_extension"] = angle_at(kp[sh], kp[el], kp[wr])
+    angles["knee_flexion"] = angle_at(kp[hip], kp[kn], kp[an])
+    sho_vec = kp[H36M_R_SHOULDER] - kp[H36M_L_SHOULDER]
+    hip_vec = kp[H36M_R_HIP] - kp[H36M_L_HIP]
+    angles["hip_shoulder_separation"] = vector_angle(sho_vec, hip_vec)
+    horiz = [i for i in range(3) if i != VERTICAL_AXIS_3D]
+    angles["trunk_rotation"] = vector_angle(sho_vec[horiz], hip_vec[horiz])
+    return angles
