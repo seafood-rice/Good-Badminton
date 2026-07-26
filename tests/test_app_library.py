@@ -103,7 +103,7 @@ def test_models_false_when_weights_absent(client, tmp_path, monkeypatch):
     c, videos, outputs = client
     monkeypatch.setattr(webapp, "PROJECT_ROOT", tmp_path)
     assert c.get("/api/models").get_json() == {"racket": False, "quality": False, "bst": False,
-                                                "tracknet": False}
+                                                "tracknet": False, "lift": False}
 
 
 def test_models_true_when_weights_installed(client, tmp_path, monkeypatch):
@@ -114,5 +114,6 @@ def test_models_true_when_weights_installed(client, tmp_path, monkeypatch):
     (weights / "yolo11n-racket.pt").write_bytes(b"n")
     (weights / "quality-high_clear.pt").write_bytes(b"q")
     (weights / "bst-shuttleset.pt").write_bytes(b"b")
+    (weights / "motionbert.pt").write_bytes(b"m")
     assert c.get("/api/models").get_json() == {"racket": True, "quality": True, "bst": True,
-                                                "tracknet": False}
+                                                "tracknet": False, "lift": True}

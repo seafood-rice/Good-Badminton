@@ -36,4 +36,18 @@ def test_compute_joint_angles_3d_known_angles():
     assert abs(a["knee_flexion"] - 90.0) < 1e-6       # right-angle leg
     # Shoulder line (x-axis) vs hip line (30 deg in x,z plane): separation ~30 deg
     assert abs(a["hip_shoulder_separation"] - 30.0) < 1e-6
-    assert abs(a["trunk_rotation"] - 30.0) < 1e-6
+
+
+def test_metrics_3d_capable_excludes_trunk_rotation():
+    """trunk_rotation is a 2D-only metric: in 2D it is the shoulder line's tilt
+    from the image horizontal, which no 3D quantity reproduces, and the 3D
+    candidate duplicated hip_shoulder_separation."""
+    assert ja.METRICS_3D_CAPABLE == ("elbow_extension", "knee_flexion",
+                                     "hip_shoulder_separation")
+    assert "trunk_rotation" not in ja.METRICS_3D_CAPABLE
+
+
+def test_compute_joint_angles_3d_returns_only_capable_metrics():
+    a = ja.compute_joint_angles_3d(_straight_arm_pose(), dominant="right")
+    assert set(a) == set(ja.METRICS_3D_CAPABLE)
+    assert "trunk_rotation" not in a

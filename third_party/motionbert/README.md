@@ -117,11 +117,19 @@ imports only `torch`, `numpy` and the stdlib — verified: neither `einops` nor
    `weights_only=True` default.
 5. `prepare_clip()` is transcribed from `lib/data/dataset_wild.read_input`'s
    default (non-`--pixel`) branch: append a confidence channel, then
-   `crop_scale(motion, scale_range=[1, 1])`. Two deliberate differences from
+   `crop_scale(motion, scale_range=[1, 1])`. Three deliberate differences from
    upstream: the numpy RNG state is saved/restored around `crop_scale` (which
    calls `np.random.uniform(1, 1)` — deterministic, but it would otherwise
-   advance the global RNG), and a degenerate all-zero `crop_scale` result
-   raises `ValueError` instead of being fed to the model.
+   advance the global RNG); a degenerate all-zero `crop_scale` result
+   raises `ValueError` instead of being fed to the model; and the confidence
+   channel is a caller-supplied `conf` argument rather than unconditionally
+   all-ones. The last one is load-bearing, not cosmetic: `crop_scale` measures
+   its clip bounding box only over joints with non-zero confidence, so all-ones
+   confidence disables that exclusion and lets an undetected sentinel keypoint
+   (our pose stack writes those near the image origin) stretch the box. The
+   real caller, `PoseLifter.lift`, passes true per-joint validity
+   (`detection/pose_lift.joint_validity` → `coco2h36m_valid`). `conf=None`
+   keeps upstream's fallback for detectors that supply no confidence.
 6. No CUDA is hardcoded and there is no `nn.DataParallel` wrapper (upstream's
    `infer_wild.py` applies both unconditionally when CUDA is present); the
    caller passes `device`.

@@ -58,11 +58,20 @@ python main_posture.py --video-path <drill.mp4> --stroke-type high_clear \
   --lift-model weights/motionbert.pt --lift-device auto
 ```
 
-The web UI passes the same flag through: `app.py` forwards its `lift_model`
-form field as `--lift-model`.
-
 - `--lift-model` — path to the checkpoint. Omit it and no lifting happens.
 - `--lift-device` — `auto` (default: CUDA if available, else CPU), `cuda`, or `cpu`.
+
+The web UI **auto-discovers** the checkpoint instead of taking a path from the
+request: `app.py`'s `_lift_weights()` resolves `weights/motionbert.pt`
+server-side (exactly like `_racket_weights()` / `_quality_weights()` /
+`_bst_weights()`) and appends `--lift-model <that path>` only when the file
+exists. A browser request can therefore neither name the file nor point the
+loader elsewhere — which matters because the checkpoint is read by a
+`torch.load(..., weights_only=False)` that has to unpickle, so a
+caller-supplied path would be arbitrary code execution. `/api/models` reports
+whether the file is installed (`{"lift": true|false}`). A request may still
+choose `lift_device`; it is validated against `auto`/`cpu`/`cuda` and dropped
+otherwise.
 
 If the path does not exist, or the file is not a MotionBERT 3D-pose checkpoint,
 the lifter prints one `MotionBERT load failed (...); 2D angles only.` line,
@@ -96,8 +105,10 @@ own evaluation cannot score the raw output without first denormalizing it and
 multiplying by a per-sample `2.5d_factor` that comes from dataset metadata, not
 from the model.
 
-Consequences for the four 3D metrics (`elbow_extension`, `knee_flexion`,
-`trunk_rotation`, `hip_shoulder_separation`):
+Consequences for the three 3D-scored metrics (`elbow_extension`,
+`knee_flexion`, `hip_shoulder_separation` — the contents of
+`joint_angles.METRICS_3D_CAPABLE`; `trunk_rotation`, `wrist_flexion` and
+`weight_transfer` are always scored in 2D):
 
 - The missing `2.5d_factor` is a uniform scale, and angles are scale-invariant,
   so **that** gap does not bias them.
@@ -129,12 +140,14 @@ Consequences for the four 3D metrics (`elbow_extension`, `knee_flexion`,
    (e.g. shoulder→elbow) should be roughly constant. Large swings mean the lift
    is unstable on your footage — usually a 2D-detection or framing problem.
 3. **2D/3D agreement on a near-frontal clip.** For a rep shot roughly
-   perpendicular to the player, each 3D metric should land close to its 2D
-   shadow (the report prints both). Big disagreement on a clip where 2D *should*
-   be nearly correct is a red flag.
-4. **Quantitative validation before trusting absolute scores.** Compare the four
-   3D metrics against either published joint-angle ranges for the stroke or a
-   small set of hand-labelled clips, across at least two shooting distances and
+   perpendicular to the player, each of the three 3D-scored metrics
+   (`elbow_extension`, `knee_flexion`, `hip_shoulder_separation`) should land
+   close to its 2D shadow (the report prints both). Big disagreement on a clip
+   where 2D *should* be nearly correct is a red flag. `trunk_rotation` has no
+   3D shadow to compare — it is scored in 2D either way.
+4. **Quantitative validation before trusting absolute scores.** Compare those
+   three 3D metrics against either published joint-angle ranges for the stroke or
+   a small set of hand-labelled clips, across at least two shooting distances and
    two positions in the frame. If a consistent offset shows up, recalibrate
    `reference_ranges_3d` (or keep scoring 2D) rather than shipping the bias.
 5. **Camera-geometry note.** Prefer a consistent camera position between the

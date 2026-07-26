@@ -155,13 +155,22 @@ def model_dim_in(net):
         return 3
 
 
-def prepare_clip(kps2d, dim_in=3):
+def prepare_clip(kps2d, dim_in=3, conf=None):
     """``(T, J, 2)`` 2D keypoints -> ``(T, J, dim_in)`` float32 model input.
 
     Transcribed from upstream ``lib/data/dataset_wild.read_input``'s default
     (non-``--pixel``) branch: append a confidence channel, then normalize with
     ``crop_scale(motion, scale_range=[1, 1])`` -- the person's bounding box over
     the whole clip mapped into ``[-1, 1]`` with aspect ratio preserved.
+
+    ``conf`` is an optional per-joint confidence/validity array broadcastable to
+    ``(T, J)``; ``None`` reproduces upstream's fallback for detectors that supply
+    none ("No conf provided, fill with 1." in ``read_2d``). Passing the real
+    values matters: ``crop_scale`` measures the clip bounding box only over joints
+    whose confidence is non-zero, so a caller that knows some keypoints were never
+    detected (see ``detection/pose_lift.joint_validity``) must say so with a 0.0,
+    or a sentinel point near the image origin silently stretches the box and
+    shrinks the actual pose towards a corner of the model's input range.
 
     ``crop_scale`` is invariant under any uniform scale + translation of its
     input, so it is safe to apply on top of the caller's own screen
@@ -173,8 +182,11 @@ def prepare_clip(kps2d, dim_in=3):
     keep this a side-effect-free call.
     """
     arr = np.asarray(kps2d, dtype=np.float32)
-    conf = np.ones(arr.shape[:-1] + (1,), dtype=np.float32)
-    motion = np.concatenate([arr, conf], axis=-1)      # (T, J, 3): x, y, conf
+    if conf is None:
+        conf_ch = np.ones(arr.shape[:-1] + (1,), dtype=np.float32)
+    else:
+        conf_ch = np.asarray(conf, dtype=np.float32).reshape(arr.shape[:-1] + (1,))
+    motion = np.concatenate([arr, conf_ch], axis=-1)   # (T, J, 3): x, y, conf
     rng_state = np.random.get_state()
     try:
         motion = crop_scale(motion, scale_range=[1, 1])

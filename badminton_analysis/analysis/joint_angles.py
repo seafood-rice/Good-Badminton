@@ -138,9 +138,16 @@ H36M_R_SHOULDER, H36M_R_ELBOW, H36M_R_WRIST = 14, 15, 16
 # Vertical axis of MotionBERT's root-relative output: index 1, pointing DOWN
 # (image-space y, so head y < pelvis y -- not Y-up). Confirmed in Task 10 against
 # the vendored model; see badminton_analysis/detection/pose_lift.py's module
-# docstring for the evidence. No flip is needed: the sole consumer is
-# trunk_rotation's horizontal-plane projection, which only *excludes* this axis
-# and is therefore sign-independent.
+# docstring for the evidence.
+#
+# This constant has no runtime consumer. Its only consumer used to be a 3D
+# trunk_rotation that projected the shoulder/hip vectors onto the horizontal
+# plane; that metric was dropped in the final-review pass (it silently redefined
+# the 2D trunk_rotation and duplicated hip_shoulder_separation -- see
+# METRICS_3D_CAPABLE below). The constant is kept because it records the
+# confirmed output orientation of the vendored checkpoint and is the value the
+# orientation sanity check in docs/motionbert-weights.md ("Validating the 3D
+# output", step 1) tells an operator to re-check.
 VERTICAL_AXIS_3D = 1
 
 _DOMINANT_H36M = {
@@ -148,7 +155,17 @@ _DOMINANT_H36M = {
     "left": (H36M_L_SHOULDER, H36M_L_ELBOW, H36M_L_WRIST, H36M_L_HIP, H36M_L_KNEE, H36M_L_ANKLE),
 }
 
-METRICS_3D_CAPABLE = ("elbow_extension", "knee_flexion", "trunk_rotation", "hip_shoulder_separation")
+# Metrics that are computed in 3D and scored against reference_ranges_3d when a
+# lifter is configured. Everything else (including trunk_rotation) stays 2D.
+#
+# trunk_rotation is deliberately NOT here. The 2D metric is the shoulder line's
+# absolute tilt from the image horizontal (hips are not involved); the only
+# quantity 3D could offer under the same name is the horizontal-plane projection
+# of the shoulder-vs-hip vectors, which (a) is a different physical quantity from
+# the 2D metric, so scores would stop being comparable across lifter on/off, and
+# (b) is a near-duplicate of hip_shoulder_separation, so scoring both would
+# double-count one geometric fact against two different range tables.
+METRICS_3D_CAPABLE = ("elbow_extension", "knee_flexion", "hip_shoulder_separation")
 
 
 def vector_angle(u, v):
@@ -165,21 +182,27 @@ def vector_angle(u, v):
 
 
 def compute_joint_angles_3d(keypoints_3d, dominant="right"):
-    """View-invariant anatomical angles from a (17,3) H36M-17 pose.
+    """Anatomical angles from a (17,3) H36M-17 pose (MotionBERT 2.5D output).
 
-    Returns the four 3D-capable metrics (elbow/knee/trunk/hip-shoulder). The
+    The input is MotionBERT's perspective-projected 2.5D image-space pose (x, y
+    in image space plus a root-relative depth), NOT true rotation-invariant
+    camera-space 3D: these angles have *reduced* view dependence compared with
+    the 2D image-plane ones, but they are not fully view-invariant. See the
+    module docstring of badminton_analysis/detection/pose_lift.py for the
+    confirmed contract and the magnitude of what is left unmodelled.
+
+    Returns the metrics in METRICS_3D_CAPABLE (elbow / knee / hip-shoulder). The
     racket-relative wrist_flexion and global-translation weight_transfer are not
-    computable from root-relative body-only 3D and are handled 2D elsewhere.
+    computable from root-relative body-only 3D, and trunk_rotation is a distinct
+    2D-only quantity (see METRICS_3D_CAPABLE); all three are handled 2D elsewhere.
     """
     kp = np.asarray(keypoints_3d, dtype=float)
     sh, el, wr, hip, kn, an = _DOMINANT_H36M.get(dominant, _DOMINANT_H36M["right"])
     angles = {"elbow_extension": None, "knee_flexion": None,
-              "trunk_rotation": None, "hip_shoulder_separation": None}
+              "hip_shoulder_separation": None}
     angles["elbow_extension"] = angle_at(kp[sh], kp[el], kp[wr])
     angles["knee_flexion"] = angle_at(kp[hip], kp[kn], kp[an])
     sho_vec = kp[H36M_R_SHOULDER] - kp[H36M_L_SHOULDER]
     hip_vec = kp[H36M_R_HIP] - kp[H36M_L_HIP]
     angles["hip_shoulder_separation"] = vector_angle(sho_vec, hip_vec)
-    horiz = [i for i in range(3) if i != VERTICAL_AXIS_3D]
-    angles["trunk_rotation"] = vector_angle(sho_vec[horiz], hip_vec[horiz])
     return angles

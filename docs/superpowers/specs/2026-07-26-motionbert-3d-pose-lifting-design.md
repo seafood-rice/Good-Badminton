@@ -25,15 +25,31 @@ thresholds. This ceiling limits every downstream score.
 ## Goal
 
 Add an **optional 3D pose-lifting stage** (MotionBERT) that turns the existing 2D keypoints
-into view-invariant 3D joints, and use those 3D joints to compute view-independent
-anatomical angles for the **rule-based path**. Persist the 3D features so a later Action
+into lifted 3D joints, and use those 3D joints to compute anatomical angles with **reduced
+view dependence** for the **rule-based path**. Persist the 3D features so a later Action
 Quality Assessment (AQA) sub-project can consume them without re-doing the wiring.
+
+> **Amended after implementation (Task 10 + final review).** This section originally said
+> "view-invariant 3D joints" / "view-independent anatomical angles". That overstates what
+> MotionBERT delivers: its 3D-pose head outputs perspective-projected **2.5D image space**
+> (x, y in image space plus a commensurately-scaled root-relative depth), not
+> rotation-invariant camera-space 3D. The lifted angles are measurably less view-dependent
+> than 2D image-plane angles, but they are not view-invariant, and their residual bias
+> varies with subject distance and position in frame. See
+> `badminton_analysis/detection/pose_lift.py`'s module docstring for the confirmed contract
+> and `docs/motionbert-weights.md` for the validation checklist.
+>
+> The same review also dropped `trunk_rotation` from the 3D-scored set (below): the 2D
+> metric measures the shoulder line's tilt from the image horizontal, so no 3D quantity
+> reproduces it, and the 3D candidate duplicated `hip_shoulder_separation`. The 3D-scored
+> metrics are `elbow_extension`, `knee_flexion`, `hip_shoulder_separation`.
 
 ### In scope
 
 - 2D→3D lifting of per-rep windows via MotionBERT.
-- 3D-aware anatomical angles for `elbow_extension`, `knee_flexion`, `trunk_rotation`,
-  `hip_shoulder_separation`.
+- 3D-aware anatomical angles for `elbow_extension`, `knee_flexion`,
+  `hip_shoulder_separation` (`trunk_rotation` was in this list as designed but was dropped
+  from 3D scoring in the final review — see the amendment note under Goal).
 - A parallel, literature-grounded `reference_ranges_3d` table.
 - Persisting per-rep 3D features to disk for the future AQA scorer.
 - Rendering 3D angles on the overlay/report for the coach-eyeball validation gate.
@@ -171,8 +187,9 @@ constructor injection like `QualityScorer(model=...)`:
   labeled, not blended.
 - **Persistence:** `drill_reps_3d.npz` schema round-trips.
 - **Integration:** a small end-to-end posture run with a stubbed lifter yields a 3D report
-  plus the sidecar; and with the lifter absent, output is byte-identical to today's 2D
-  result.
+  plus the sidecar; and with the lifter absent, every score and measured value is identical
+  to today's 2D result (the serialized artifacts gain additive fields — see acceptance
+  criterion 2).
 
 ## Future work (explicitly deferred)
 
@@ -188,11 +205,14 @@ constructor injection like `QualityScorer(model=...)`:
 ## Acceptance criteria
 
 1. With a lifter configured, capable metrics (`elbow_extension`, `knee_flexion`,
-   `trunk_rotation`, `hip_shoulder_separation`) are computed in 3D and scored against
-   `reference_ranges_3d`; `wrist_flexion` and `weight_transfer` remain 2D and are labeled
-   as such.
+   `hip_shoulder_separation`) are computed in 3D and scored against
+   `reference_ranges_3d`; `wrist_flexion`, `weight_transfer` and `trunk_rotation` remain 2D
+   and are labeled as such.
 2. With no lifter (no weights / no torch / CPU-only + not configured), posture output is
-   byte-identical to the current 2D pipeline.
+   **score-identical and schema-additive** relative to the current 2D pipeline: every score
+   and measured value matches, and the only differences in serialized output are new
+   additive fields (`feature_space`, `measured_shadow_2d`, the `lift` block, the HTML
+   angle-space badge). Nothing existing is removed, renamed or renumbered.
 3. Per-rep 3D features are written to `drill_reps_3d.npz` with documented schema/metadata.
 4. Shadow-compare mode renders 2D and 3D angles side-by-side for coach review.
 5. All new logic is covered by tests that run without a GPU or real weights (stubbed

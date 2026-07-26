@@ -122,6 +122,68 @@ def test_adapter_resamples_windows_longer_than_maxlen(tmp_path):
     assert np.isfinite(kp3d).all()
 
 
+@pytest.mark.parametrize("maxlen, expect_t", [(32, 16), (8, 8)])
+def test_adapter_feeds_real_joint_validity_to_prepare_clip(tmp_path, monkeypatch,
+                                                           maxlen, expect_t):
+    """The confidence channel reaching the model must reflect undetected joints.
+
+    crop_scale excludes joints whose confidence is 0 from the clip bounding box;
+    with the old hardcoded all-ones confidence a sentinel keypoint at the image
+    origin silently skewed that box. Parametrized over the direct path and the
+    M > maxlen resample path, where validity must survive resampling.
+    """
+    real_prepare = mb_infer.prepare_clip
+    seen = {}
+
+    def _spy(kps2d, dim_in=3, conf=None):
+        seen["conf"] = None if conf is None else np.array(conf, dtype=float)
+        return real_prepare(kps2d, dim_in=dim_in, conf=conf)
+
+    monkeypatch.setattr(mb_infer, "prepare_clip", _spy)
+
+    frames = _frames(16)
+    for f in frames:
+        f["keypoints"][9] = (0.0, 0.0)     # COCO L wrist: undetected sentinel
+    path, _ = _tiny_checkpoint(tmp_path, maxlen=maxlen)
+    lifter = PoseLifter(model_path=path, device="cpu")
+    assert lifter.lift(frames, image_size=(320, 240)) is not None
+
+    conf = seen["conf"]
+    assert conf is not None
+    assert conf.shape == (expect_t, 17)
+    assert np.all(conf[:, 13] == 0.0)      # H36M L wrist <- COCO 9
+    others = [j for j in range(17) if j != 13]
+    assert np.all(conf[:, others] == 1.0)
+
+
+def test_sentinel_joint_does_not_skew_the_normalized_pose(tmp_path):
+    """The point of the validity plumbing: adding an origin sentinel to an
+    otherwise-identical clip must not move the real joints in model input space."""
+    clean = _frames(16)
+    dirty = _frames(16)
+    for f in dirty:
+        f["keypoints"][9] = (0.0, 0.0)
+
+    real = [np.array(f["keypoints"], dtype=float) for f in clean]
+    valid = np.ones((16, 17), dtype=bool)
+    dirty_valid = valid.copy()
+    dirty_valid[:, 9] = False
+
+    from badminton_analysis.detection.pose_lift import coco2h36m, coco2h36m_valid
+    h_clean = coco2h36m(np.stack(real))
+    h_dirty = coco2h36m(np.stack([np.array(f["keypoints"], dtype=float) for f in dirty]))
+
+    prepared_clean = mb_infer.prepare_clip(h_clean.astype(np.float32),
+                                           conf=coco2h36m_valid(valid))
+    prepared_dirty = mb_infer.prepare_clip(h_dirty.astype(np.float32),
+                                           conf=coco2h36m_valid(dirty_valid))
+    kept = [j for j in range(17) if j != 13]
+    assert np.allclose(prepared_clean[:, kept, :2], prepared_dirty[:, kept, :2], atol=1e-5)
+    # ...whereas all-ones confidence (the old behavior) does move them.
+    all_ones = mb_infer.prepare_clip(h_dirty.astype(np.float32), conf=None)
+    assert not np.allclose(prepared_clean[:, kept, :2], all_ones[:, kept, :2], atol=1e-3)
+
+
 def test_prepare_clip_appends_confidence_and_is_similarity_invariant():
     rng = np.random.default_rng(0)
     clip = rng.uniform(20.0, 400.0, size=(12, 17, 2)).astype(np.float32)

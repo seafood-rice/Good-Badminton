@@ -41,9 +41,11 @@ directory's ``README.md`` for provenance):
    which only makes sense if channels 0/1 already live in the input's 2D image
    space; and ``lib/utils/vismo.motion2video_3d`` plots ``-ys`` as its up axis.
    So ``joint_angles.VERTICAL_AXIS_3D = 1`` (set in Tasks 2/3/5) is CORRECT and
-   was left unchanged. Vertical points down (head y < pelvis y), which does not
-   matter to the one consumer: ``trunk_rotation`` merely *excludes* the vertical
-   axis to project onto the horizontal plane.
+   was left unchanged. Vertical points down (head y < pelvis y). Nothing consumes
+   that axis any more: its only consumer was a 3D ``trunk_rotation`` that
+   projected onto the horizontal plane, dropped in the final-review pass (see
+   ``joint_angles.METRICS_3D_CAPABLE``). The constant is kept as the recorded
+   contract for the orientation check in ``docs/motionbert-weights.md``.
 
 5. **Root-relative output.** Upstream's checkpoints differ (``rootrel: True``
    for ``MB_ft_h36m``, ``False`` for the ``_global`` variants), so the adapter
@@ -68,7 +70,8 @@ directory's ``README.md`` for provenance):
    ``2.5d_factor`` read from dataset metadata (which the model does not predict)
    before computing MPJPE against ``joints_2.5d_image``.
 
-   What this does and does not mean for the four 3D metrics:
+   What this does and does not mean for the three 3D-scored metrics
+   (``joint_angles.METRICS_3D_CAPABLE``):
 
    - The missing ``2.5d_factor`` is itself a **uniform scalar** multiply, and
      angles are scale-invariant, so that particular gap does *not* bias angles.
@@ -81,7 +84,7 @@ directory's ``README.md`` for provenance):
      bias of **unquantified magnitude**, and badminton camera geometry (wide
      lens, player far off-axis, deep court) differs substantially from the H36M
      training rigs.
-   - Practical consequence: treat the four 3D metrics as a better-than-2D
+   - Practical consequence: treat the 3D metrics as a better-than-2D
      approximation, not as ground truth. ``reference_ranges_3d`` was calibrated
      assuming true 3D angles, so absolute 3D scores need validating against
      literature or labelled clips before being read quantitatively. See
@@ -124,6 +127,36 @@ def coco2h36m(seq):
     return y
 
 
+def coco2h36m_valid(valid):
+    """Propagate a (T,17) COCO-17 per-joint validity mask into H36M-17 order.
+
+    Mirrors ``coco2h36m`` exactly: a *derived* H36M joint (pelvis, spine, thorax,
+    head) is valid only when every COCO joint it is synthesized from is valid; a
+    *direct* joint inherits its single source joint's validity. Returns a (T,17)
+    bool array.
+    """
+    v = np.asarray(valid, dtype=bool)
+    out = np.zeros(v.shape, dtype=bool)
+    out[:, 0] = v[:, 11] & v[:, 12]           # 0 pelvis = mid-hip
+    out[:, 1] = v[:, 12]                      # 1 R hip
+    out[:, 2] = v[:, 14]                      # 2 R knee
+    out[:, 3] = v[:, 16]                      # 3 R ankle
+    out[:, 4] = v[:, 11]                      # 4 L hip
+    out[:, 5] = v[:, 13]                      # 5 L knee
+    out[:, 6] = v[:, 15]                      # 6 L ankle
+    out[:, 8] = v[:, 5] & v[:, 6]             # 8 thorax = mid-shoulder
+    out[:, 7] = out[:, 0] & out[:, 8]         # 7 spine = mid(pelvis, thorax)
+    out[:, 9] = v[:, 0]                       # 9 nose
+    out[:, 10] = v[:, 1] & v[:, 2]            # 10 head = mid-eye
+    out[:, 11] = v[:, 5]                      # 11 L shoulder
+    out[:, 12] = v[:, 7]                      # 12 L elbow
+    out[:, 13] = v[:, 9]                      # 13 L wrist
+    out[:, 14] = v[:, 6]                      # 14 R shoulder
+    out[:, 15] = v[:, 8]                      # 15 R elbow
+    out[:, 16] = v[:, 10]                     # 16 R wrist
+    return out
+
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -138,9 +171,28 @@ _COCO_L_HIP, _COCO_R_HIP = 11, 12
 POSE_LIFT_MIN_POSED = 8
 
 
+def joint_validity(kps):
+    """Per-joint "was actually detected" mask for COCO keypoints (..., 17, 2).
+
+    Undetected joints carry the project's sentinel value, so a keypoint counts as
+    detected only when both axes exceed 1 pixel -- the same predicate
+    ``quality/normalize.py`` uses (``(seq[...,0] > 1.0) & (seq[...,1] > 1.0)``)
+    and the same one the two-hip gate below applies. Returns a bool array shaped
+    like the input minus its last axis.
+    """
+    arr = np.asarray(kps, dtype=float)
+    return (arr[..., 0] > 1.0) & (arr[..., 1] > 1.0)
+
+
 def _posed_with_frames(window_frames):
-    """Return (kps, frames): (M,17,2) float array of frames with two valid hips
-    (x>1 and y>1), and the list of their source frame numbers. Empty -> ([], [])."""
+    """Return (kps, frames, valid) for the frames with two valid hips.
+
+    ``kps`` is a (M,17,2) float array, ``frames`` the list of their M source
+    frame numbers, and ``valid`` a (M,17) bool per-joint detected mask (see
+    ``joint_validity``). The other 15 joints of a posed frame may still be
+    undetected sentinels, which is exactly what ``valid`` records so the lifter
+    can tell the model about them. Empty -> zero-length arrays and [].
+    """
     kps = []
     frames = []
     for f in window_frames:
@@ -148,13 +200,15 @@ def _posed_with_frames(window_frames):
         if kp is None:
             continue
         kp = np.asarray(kp, dtype=float)
-        if (kp[_COCO_L_HIP][0] > 1.0 and kp[_COCO_L_HIP][1] > 1.0
-                and kp[_COCO_R_HIP][0] > 1.0 and kp[_COCO_R_HIP][1] > 1.0):
+        detected = joint_validity(kp)
+        if detected[_COCO_L_HIP] and detected[_COCO_R_HIP]:
             kps.append(kp)
             frames.append(int(f["frame"]))
     if not kps:
-        return np.zeros((0, 17, 2), dtype=float), []
-    return np.stack(kps), frames
+        return (np.zeros((0, 17, 2), dtype=float), [],
+                np.zeros((0, 17), dtype=bool))
+    stacked = np.stack(kps)
+    return stacked, frames, joint_validity(stacked)
 
 
 def _normalize_screen(kps, image_size):
@@ -175,6 +229,14 @@ class PoseLifter:
     `model` (or the adapter `_load()` builds from `model_path`) is a callable
     taking a (1, M, 17, 2) float32 array of normalized H36M-17 2D keypoints and
     returning a (1, M, 17, 3) array of root-relative 3D joints.
+
+    A model may additionally opt in to receiving per-joint validity by carrying a
+    truthy ``accepts_conf`` attribute; it is then called as
+    ``model(batch, conf)`` with ``conf`` a (M, 17) float array of 1.0/0.0 in
+    H36M-17 order. The real adapter opts in (MotionBERT has a confidence input
+    channel, and `crop_scale` needs it to exclude undetected sentinel joints from
+    the clip bounding box); the 2-argument call is never made to a plain callable,
+    so the injected stub contract is unchanged.
     """
 
     def __init__(self, model_path=None, device="auto", model=None):
@@ -222,10 +284,13 @@ class PoseLifter:
             maxlen = model_maxlen(net)     # longest clip temp_embed supports (243)
             dim_in = model_dim_in(net)     # 3 -> (x, y, confidence)
 
-            def _adapter(batch_2d):
+            def _adapter(batch_2d, conf=None):
                 arr = np.asarray(batch_2d, dtype=np.float32)
                 clip = arr[0]                                     # (M,17,2)
                 m = clip.shape[0]
+                clip_conf = None
+                if conf is not None:
+                    clip_conf = np.asarray(conf, dtype=np.float32).reshape(clip.shape[:-1])
                 if m > maxlen:
                     # Only long windows need resampling; see contract note 1.
                     src = np.linspace(0.0, m - 1.0, maxlen)
@@ -233,7 +298,17 @@ class PoseLifter:
                     hi = np.minimum(lo + 1, m - 1)
                     frac = (src - lo)[:, None, None]
                     clip = clip[lo] * (1.0 - frac) + clip[hi] * frac
-                model_in = prepare_clip(clip, dim_in=dim_in)      # (T,17,dim_in)
+                    if clip_conf is not None:
+                        # An interpolated frame is only trustworthy where BOTH
+                        # source frames are: take the conservative minimum rather
+                        # than blending validity into a meaningless fraction.
+                        clip_conf = np.minimum(clip_conf[lo], clip_conf[hi])
+                # Real per-joint validity, not all-ones: crop_scale builds the
+                # clip bounding box from joints whose confidence is non-zero, so
+                # this is what keeps an undetected sentinel keypoint near the
+                # image origin from skewing the normalization.
+                model_in = prepare_clip(clip, dim_in=dim_in,
+                                        conf=clip_conf)           # (T,17,dim_in)
                 with torch.no_grad():
                     out = net(torch.from_numpy(model_in[None, ...]).to(device))
                 out = np.asarray(out.detach().cpu().numpy(), dtype=float)
@@ -247,6 +322,7 @@ class PoseLifter:
                     out = out[:, lo2] * (1.0 - frac2) + out[:, hi2] * frac2
                 return out                                        # (1,M,17,3)
 
+            _adapter.accepts_conf = True   # see PoseLifter's class docstring
             self._model = _adapter
             return self._model
         except Exception as e:
@@ -260,14 +336,18 @@ class PoseLifter:
         model = self._load()
         if model is None:
             return None
-        kps2d, frames = _posed_with_frames(window_frames)
+        kps2d, frames, valid2d = _posed_with_frames(window_frames)
         if kps2d.shape[0] < POSE_LIFT_MIN_POSED:
             return None
         try:
             h36m = coco2h36m(kps2d)                      # (M,17,2)
             norm = _normalize_screen(h36m, image_size)   # (M,17,2)
             batch = norm[None, ...].astype(np.float32)   # (1,M,17,2)
-            out = np.asarray(model(batch), dtype=float)  # (1,M,17,3)
+            if getattr(model, "accepts_conf", False):
+                conf = coco2h36m_valid(valid2d).astype(np.float32)   # (M,17)
+                out = np.asarray(model(batch, conf), dtype=float)
+            else:
+                out = np.asarray(model(batch), dtype=float)   # (1,M,17,3)
             kp3d = out[0]
             if kp3d.shape != (kps2d.shape[0], 17, 3):
                 return None

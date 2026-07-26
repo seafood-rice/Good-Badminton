@@ -2,9 +2,39 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an optional MotionBERT 3D pose-lifting stage so the rule-based posture path scores view-invariant anatomical angles, with per-rep 3D features persisted for a later AQA scorer.
+**Goal:** Add an optional MotionBERT 3D pose-lifting stage so the rule-based posture path scores anatomical angles with reduced view dependence, with per-rep 3D features persisted for a later AQA scorer.
 
-**Architecture:** A new `PoseLifter` lifts each rep's 2D COCO-17 window to 3D H36M-17 (root-relative) post-loop inside `PostureRunner`. `BiomechanicalAnalyzer` computes 3D angles for the four capable metrics (elbow, knee, trunk rotation, hip-shoulder separation) against a new `reference_ranges_3d` table; `wrist_flexion` and `weight_transfer` stay 2D and are labeled. The stage is fully optional and degrades to today's exact 2D behavior.
+**Architecture:** A new `PoseLifter` lifts each rep's 2D COCO-17 window to 3D H36M-17 (root-relative) post-loop inside `PostureRunner`. `BiomechanicalAnalyzer` computes 3D angles for the capable metrics (elbow, knee, hip-shoulder separation) against a new `reference_ranges_3d` table; `wrist_flexion`, `weight_transfer` and `trunk_rotation` stay 2D and are labeled. The stage is fully optional and degrades to today's 2D scores.
+
+## Post-implementation amendments (final whole-branch review)
+
+Three claims in this plan were corrected after Task 10, once the vendored model's
+real contract was confirmed and the whole branch was reviewed end to end. The
+task bodies below are left as they were executed; where they conflict with these
+amendments, the amendments win.
+
+1. **`trunk_rotation` is NOT 3D-capable.** Tasks 2/3 shipped it as the fourth 3D
+   metric, but the 2D metric is the shoulder line's absolute tilt from the image
+   horizontal (hips are not involved), while the 3D version was the
+   horizontal-plane projection of the same two vectors `hip_shoulder_separation`
+   already measures in full. Scoring both silently redefined the metric across
+   lifter on/off and double-counted one geometric fact against two range tables.
+   `METRICS_3D_CAPABLE` is now the three metrics `elbow_extension`,
+   `knee_flexion`, `hip_shoulder_separation`; `trunk_rotation` reuses the 2D
+   range table verbatim like `wrist_flexion` / `weight_transfer`.
+2. **Not "view-invariant".** MotionBERT's 3D-pose head outputs
+   perspective-projected 2.5D image space (x, y in image space plus a
+   commensurately-scaled root-relative depth), not rotation-invariant camera-space
+   3D. The 3D angles are *less* view-dependent than the 2D ones, not view-
+   invariant. See `badminton_analysis/detection/pose_lift.py`'s module docstring
+   and `docs/motionbert-weights.md` ("Validating the 3D output").
+3. **"Byte-identical" with no lifter is really "score-identical,
+   schema-additive".** Every score and measured value is unchanged when no lifter
+   is configured, but the serialized artifacts gained additive fields
+   (`feature_space`, `measured_shadow_2d`, a `lift` block in `metadata.json`, a
+   `· 2D angles` badge in the rendered HTML) that did not exist before this
+   branch. Nothing was removed or renumbered, but a literal byte-for-byte
+   golden-file diff against a pre-branch run will differ.
 
 **Tech Stack:** Python, NumPy, PyTorch (already a dependency, used by the TCN quality scorer), vendored MotionBERT under `third_party/motionbert/`.
 
@@ -13,7 +43,7 @@
 - Python; match existing code style (module docstrings, minimal type annotations, ASCII-only source). Copy the surrounding files' idioms.
 - No new pip dependencies. MotionBERT is **vendored** under `third_party/motionbert/` (like `third_party/bst`, `third_party/tracknet`). Weights live under `weights/` and are **never committed** (gitignored); datasets/weights/large binaries are never committed.
 - Undetected-joint sentinel convention: a 2D keypoint with `x <= 1` and `y <= 1` is "not detected" (same as `analysis/joint_angles.py` `is_valid` and `quality/normalize.py` `posed_frames`).
-- Every new stage is optional and construct-if-configured, mirroring `_build_racket_detector` / `_build_quality_scorer`. With no lifter, posture output is byte-identical to today.
+- Every new stage is optional and construct-if-configured, mirroring `_build_racket_detector` / `_build_quality_scorer`. With no lifter, posture output is **score-identical and schema-additive** relative to today: every score and measured value is unchanged, but serialized artifacts gain new additive fields (`feature_space`, `measured_shadow_2d`, a `lift` block, a 2D-angles badge in the HTML). Nothing existing is removed or renamed, so this is not a regression — but it is not literally byte-identical either, and a golden-file diff test must compare scores, not whole files.
 - Tests run on Windows via the project venv: `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest <path> -q -p no:cacheprovider`. Tests must pass without a GPU or real weights (inject a stub model; use synthetic poses).
 - Commit after each task with the trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
@@ -1412,7 +1442,7 @@ git commit -m "feat(pose-lift): vendor MotionBERT and wire real lifting adapter"
 - `wrist_flexion` / `weight_transfer` stay 2D and labeled → Task 5 (`feature_space`).
 - 3D features persisted for AQA → Tasks 6, 7 (`drill_reps_3d.npz`).
 - Coach-eyeball validation (shadow-compare) → Tasks 5 (`measured_shadow_2d`) + 8 (badge + `(2D: Y)`).
-- Graceful degradation to byte-identical 2D → Tasks 4/5/7 (no-lifter paths) + tests `test_no_3d_is_unchanged_2d`, `test_runner_without_lifter_is_2d`.
+- Graceful degradation to score-identical, schema-additive 2D → Tasks 4/5/7 (no-lifter paths) + tests `test_no_3d_is_unchanged_2d`, `test_runner_without_lifter_is_2d`, `test_scores_identical_with_and_without_lifter`.
 - CLI/config → Task 9; vendoring + weights, no committed binaries → Task 10.
 - Acceptance criteria 1-6 → Tasks 2/3/5 (1), 4/5/7 (2), 6/7 (3), 5/8 (4), all test steps (5), Task 10 (6).
 

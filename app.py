@@ -163,6 +163,18 @@ def _quality_weights(base=None):
     return str(p) if p.is_file() else None
 
 
+def _lift_weights(base=None):
+    """Path to the MotionBERT 3D pose-lift checkpoint when installed, else None.
+
+    Server-resolved on purpose: the path is fed to a ``torch.load`` that must
+    unpickle (official checkpoints bundle non-tensor training state), so it must
+    never come from request data. See docs/motionbert-weights.md.
+    """
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'motionbert.pt'
+    return str(p) if p.is_file() else None
+
+
 def _bst_weights(base=None):
     """Path to trained BST stroke-recognition weights when installed, else None."""
     base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
@@ -340,11 +352,12 @@ def api_stats():
 
 @app.route('/api/models')
 def api_models():
-    """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer) are installed."""
+    """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer, 3D pose lifter) are installed."""
     return jsonify({'racket': _racket_weights() is not None,
                     'quality': _quality_weights() is not None,
                     'bst': _bst_weights() is not None,
-                    'tracknet': _tracknet_weights() is not None})
+                    'tracknet': _tracknet_weights() is not None,
+                    'lift': _lift_weights() is not None})
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -1044,7 +1057,9 @@ def api_posture_analyze():
     if quality_weights:
         cmd += ['--quality-model', quality_weights]
 
-    lift_weights = data.get('lift_model')
+    # Resolved server-side like every other model path: the checkpoint is
+    # unpickled by torch.load, so a request must never be able to name the file.
+    lift_weights = _lift_weights()
     if lift_weights:
         cmd += ['--lift-model', lift_weights]
         lift_device = data.get('lift_device', 'auto')

@@ -1,5 +1,6 @@
 import numpy as np
 from badminton_analysis.analysis.biomechanics import BiomechanicalAnalyzer
+from badminton_analysis.analysis.reference_ranges import REFERENCE_RANGES
 from badminton_analysis.stroke.events import StrokeEvent
 
 
@@ -36,6 +37,31 @@ def test_3d_branch_labels_feature_space_and_shadow():
     assert "measured_shadow_2d" in pm["elbow_extension"]
     assert pm["wrist_flexion"]["feature_space"] == "2d"
     assert pm["weight_transfer"]["feature_space"] == "2d"
+
+
+def test_trunk_rotation_stays_2d_and_keeps_the_2d_range_table():
+    """trunk_rotation is not 3D-capable, so with a lifter configured it must keep
+    the 2D measurement AND the 2D range table -- otherwise its scores would stop
+    being comparable across lifter on/off and it would double-count
+    hip_shoulder_separation."""
+    contact = {"frame": 10, "keypoints": _coco_pose_2d(), "conf": None,
+               "keypoints_3d": _straight_pose_3d(), "centroid": (50.0, 50.0),
+               "racket_head": None, "racket_head_detected": False}
+    window = [{"frame": 5, "centroid": (40.0, 50.0)}, contact]
+    report_3d = BiomechanicalAnalyzer(dominant="right").analyze(_event(), window)
+
+    contact_2d = dict(contact)
+    contact_2d.pop("keypoints_3d")
+    report_2d = BiomechanicalAnalyzer(dominant="right").analyze(
+        _event(), [{"frame": 5, "centroid": (40.0, 50.0)}, contact_2d])
+
+    tr_3d = report_3d["per_metric"]["trunk_rotation"]
+    spec = REFERENCE_RANGES["high_clear"]["trunk_rotation"]
+    assert tr_3d["feature_space"] == "2d"
+    assert "measured_shadow_2d" not in tr_3d
+    assert tr_3d["ideal_range"] == [spec["min"], spec["max"]]
+    # ...and it is byte-for-byte the same entry the no-lifter run produces.
+    assert tr_3d == report_2d["per_metric"]["trunk_rotation"]
 
 
 def test_no_3d_is_unchanged_2d():

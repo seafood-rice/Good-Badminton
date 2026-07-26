@@ -1,38 +1,49 @@
-"""3D anatomical reference ranges per stroke (view-invariant angles, degrees).
+"""3D anatomical reference ranges per stroke (degrees).
 
 Indicative first-release starting points for MotionBERT-lifted H36M-17 angles,
 expected to be tuned against biomechanics literature and labeled clips (same
-posture as reference_ranges.py). wrist_flexion and weight_transfer stay in the
-2D image-plane space and reuse the 2D table verbatim; only the four 3D-capable
-metrics are overridden. Per-metric weights are preserved so each stroke's
-weights still sum to the same total as the 2D table.
+posture as reference_ranges.py).
+
+The lifted pose is MotionBERT's perspective-projected 2.5D image-space output,
+so these angles are *less* view-dependent than the 2D image-plane ones but are
+not fully view-invariant; see badminton_analysis/detection/pose_lift.py's module
+docstring for the confirmed contract and docs/motionbert-weights.md for the
+validation checklist before reading any absolute 3D score quantitatively.
+
+wrist_flexion, weight_transfer and trunk_rotation stay in the 2D image-plane
+space and reuse the 2D table verbatim; only the three metrics in
+joint_angles.METRICS_3D_CAPABLE are overridden. Per-metric weights are preserved
+so each stroke's weights still sum to the same total as the 2D table.
 """
 from .reference_ranges import REFERENCE_RANGES
 
-# 3D min/max/ideal for the four capable metrics; weights are copied from the 2D
-# table by _merge below, so they are intentionally omitted here.
+# 3D min/max/ideal for the three 3D-capable metrics; weights are copied from the
+# 2D table by _merge below, so they are intentionally omitted here.
+#
+# trunk_rotation is intentionally absent: it is not 3D-capable (the 2D metric is
+# the shoulder line's tilt from the image horizontal, a different quantity from
+# anything 3D offers under that name, and the 3D candidate duplicated
+# hip_shoulder_separation). It therefore falls through to the 2D range table
+# verbatim, exactly like wrist_flexion and weight_transfer. See
+# joint_angles.METRICS_3D_CAPABLE.
 _3D_OVERRIDES = {
     "high_clear": {
         "elbow_extension":         {"min": 150, "max": 175, "ideal": 165},
-        "trunk_rotation":          {"min": 25,  "max": 60,  "ideal": 40},
         "knee_flexion":            {"min": 145, "max": 175, "ideal": 162},
         "hip_shoulder_separation": {"min": 20,  "max": 50,  "ideal": 35},
     },
     "smash": {
         "elbow_extension":         {"min": 155, "max": 178, "ideal": 170},
-        "trunk_rotation":          {"min": 35,  "max": 70,  "ideal": 50},
         "knee_flexion":            {"min": 140, "max": 172, "ideal": 158},
         "hip_shoulder_separation": {"min": 25,  "max": 55,  "ideal": 40},
     },
     "drop_shot": {
         "elbow_extension":         {"min": 135, "max": 165, "ideal": 150},
-        "trunk_rotation":          {"min": 20,  "max": 50,  "ideal": 32},
         "knee_flexion":            {"min": 148, "max": 176, "ideal": 163},
         "hip_shoulder_separation": {"min": 15,  "max": 45,  "ideal": 28},
     },
     "serve": {
         "elbow_extension":         {"min": 140, "max": 168, "ideal": 155},
-        "trunk_rotation":          {"min": 10,  "max": 40,  "ideal": 22},
         "knee_flexion":            {"min": 150, "max": 178, "ideal": 166},
         "hip_shoulder_separation": {"min": 10,  "max": 35,  "ideal": 20},
     },
