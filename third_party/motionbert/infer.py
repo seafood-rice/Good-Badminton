@@ -23,7 +23,10 @@ from .utils_data import crop_scale
 
 # ``num_heads`` is the one DSTformer hyperparameter that leaves no trace in the
 # checkpoint's tensor shapes (it only controls how ``dim_feat`` is split inside
-# attention). All four upstream ``configs/pose3d/*.yaml`` use 8.
+# attention). All four upstream ``configs/pose3d/*.yaml`` use 8. Because it
+# changes no tensor shape, a wrong value would load cleanly under
+# ``strict=True`` and silently produce wrong output -- unlike every other
+# hyperparameter here, which is read from the weights themselves.
 DEFAULT_NUM_HEADS = 8
 
 # Upstream default clip length / positional-embedding capacity

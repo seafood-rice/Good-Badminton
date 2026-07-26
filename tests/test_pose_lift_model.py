@@ -69,13 +69,23 @@ def _frames(count):
     return frames
 
 
-def test_infer_arch_recovers_config_from_checkpoint(tmp_path):
-    path, kwargs = _tiny_checkpoint(tmp_path)
+@pytest.mark.parametrize("dim_feat, mlp_ratio", [
+    (32, 2),      # tiny stand-in
+    (512, 2),     # configs/pose3d/MB_ft_h36m.yaml (and MB_train_h36m.yaml)
+    (256, 4),     # configs/pose3d/MB_ft_h36m_global_lite.yaml
+])
+def test_infer_arch_recovers_config_from_checkpoint(tmp_path, dim_feat, mlp_ratio):
+    """Covers both official pose3d shapes, including lite's mlp_ratio=4 (which
+    exercises infer_arch's mlp_hidden // dim_feat integer division)."""
+    path, kwargs = _tiny_checkpoint(tmp_path, dim_feat=dim_feat, mlp_ratio=mlp_ratio)
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     state = mb_infer.extract_state_dict(ckpt)
     assert not any(k.startswith("module.") for k in state)
     derived = mb_infer.infer_arch(state, num_heads=kwargs["num_heads"])
     assert derived == kwargs
+    # ...and the derived kwargs really do reconstruct a strict-loadable model.
+    net = mb_infer.load_model(path, device="cpu", num_heads=kwargs["num_heads"])
+    assert mb_infer.model_dim_in(net) == 3
 
 
 def test_load_model_strict_and_eval(tmp_path):
@@ -119,10 +129,36 @@ def test_prepare_clip_appends_confidence_and_is_similarity_invariant():
     assert out.shape == (12, 17, 3)
     assert np.allclose(out[..., 2], 1.0)
     assert out[..., :2].min() >= -1.0 and out[..., :2].max() <= 1.0
-    # crop_scale is invariant to uniform scale + translation, which is what
-    # makes it safe to stack on top of _normalize_screen.
-    shifted = mb_infer.prepare_clip(clip * 3.0 + 17.0, dim_in=3)
-    assert np.allclose(out, shifted, atol=1e-5)
+    # crop_scale is invariant to one shared scale plus PER-AXIS translation --
+    # exactly the transform _normalize_screen applies (shared 2/w scale, but
+    # offsets -1 on x and -h/w on y). Mirror that shape here, not an equal
+    # offset on both axes.
+    moved = clip * 3.0 + np.array([17.0, -4.5], dtype=np.float32)
+    assert np.allclose(out, mb_infer.prepare_clip(moved, dim_in=3), atol=1e-5)
+
+
+def test_prepare_clip_is_unchanged_by_normalize_screen():
+    """The concrete claim the adapter relies on: running _normalize_screen first
+    (as PoseLifter.lift does) does not change what the model receives."""
+    rng = np.random.default_rng(1)
+    px = rng.uniform(20.0, 400.0, size=(12, 17, 2))
+    from badminton_analysis.detection.pose_lift import _normalize_screen
+    direct = mb_infer.prepare_clip(px.astype(np.float32), dim_in=3)
+    screened = mb_infer.prepare_clip(
+        _normalize_screen(px, (640, 480)).astype(np.float32), dim_in=3)
+    assert np.allclose(direct, screened, atol=1e-5)
+
+
+def test_prepare_clip_does_not_disturb_global_numpy_rng():
+    """crop_scale calls np.random.uniform internally; prepare_clip must not leak
+    that into the process-wide RNG stream."""
+    rng = np.random.default_rng(2)
+    clip = rng.uniform(20.0, 400.0, size=(10, 17, 2)).astype(np.float32)
+    np.random.seed(1234)
+    expected = np.random.rand(3)
+    np.random.seed(1234)
+    mb_infer.prepare_clip(clip, dim_in=3)
+    assert np.allclose(np.random.rand(3), expected)
 
 
 def test_prepare_clip_rejects_degenerate_clip():

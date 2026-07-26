@@ -135,9 +135,12 @@ H36M_NOSE, H36M_HEAD = 9, 10
 H36M_L_SHOULDER, H36M_L_ELBOW, H36M_L_WRIST = 11, 12, 13
 H36M_R_SHOULDER, H36M_R_ELBOW, H36M_R_WRIST = 14, 15, 16
 
-# Vertical axis of MotionBERT's root-relative output (Y-up, H36M convention).
-# Only trunk_rotation's horizontal-plane projection depends on this; confirm it
-# against the vendored model's output orientation in Task 10 and flip if needed.
+# Vertical axis of MotionBERT's root-relative output: index 1, pointing DOWN
+# (image-space y, so head y < pelvis y -- not Y-up). Confirmed in Task 10 against
+# the vendored model; see badminton_analysis/detection/pose_lift.py's module
+# docstring for the evidence. No flip is needed: the sole consumer is
+# trunk_rotation's horizontal-plane projection, which only *excludes* this axis
+# and is therefore sign-independent.
 VERTICAL_AXIS_3D = 1
 
 _DOMINANT_H36M = {

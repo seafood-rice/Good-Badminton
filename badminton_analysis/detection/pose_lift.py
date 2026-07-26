@@ -49,6 +49,46 @@ directory's ``README.md`` for provenance):
    for ``MB_ft_h36m``, ``False`` for the ``_global`` variants), so the adapter
    subtracts the pelvis (H36M joint 0) itself. That makes the output
    root-relative for either checkpoint and is a no-op on angles anyway.
+
+6. **IMPORTANT CAVEAT -- the output is 2.5D image space, not true camera-space
+   3D.** This falls straight out of finding 4 and limits how far the 3D angle
+   scores can be trusted quantitatively. The supervision target
+   (``lib/data/datareader_h36m.DataReaderH36M.read_3d``) is H36M's
+   ``joint3d_image`` / ``joints_2.5d_image`` representation:
+
+       ``labels[..., :2] = labels[..., :2] / res_w * 2 - [1, res_h / res_w]``
+       ``labels[..., 2:] = labels[..., 2:] / res_w * 2``
+
+   so channels 0/1 are the **perspective projection** of the joints onto the
+   image plane and channel 2 is a commensurately-scaled depth. That is only
+   equal to the true metric 3D pose under a *scaled-orthographic* approximation
+   of the camera. Corroboration: upstream's own evaluation (``train.py``'s
+   ``evaluate``) cannot score the raw output directly -- it calls
+   ``datareader.denormalize(...)``, then multiplies by a per-sample
+   ``2.5d_factor`` read from dataset metadata (which the model does not predict)
+   before computing MPJPE against ``joints_2.5d_image``.
+
+   What this does and does not mean for the four 3D metrics:
+
+   - The missing ``2.5d_factor`` is itself a **uniform scalar** multiply, and
+     angles are scale-invariant, so that particular gap does *not* bias angles.
+   - The projective representation *does*. A perspective projection is not a
+     similarity transform, so angles measured in this space are not the true
+     anatomical angles and are not fully view-invariant. The error grows with
+     the subject's depth extent relative to camera distance and with the
+     subject's offset from the principal point, and depends on focal length --
+     i.e. it is a systematic, subject-distance- and frame-position-dependent
+     bias of **unquantified magnitude**, and badminton camera geometry (wide
+     lens, player far off-axis, deep court) differs substantially from the H36M
+     training rigs.
+   - Practical consequence: treat the four 3D metrics as a better-than-2D
+     approximation, not as ground truth. ``reference_ranges_3d`` was calibrated
+     assuming true 3D angles, so absolute 3D scores need validating against
+     literature or labelled clips before being read quantitatively. See
+     ``docs/motionbert-weights.md`` ("Validating the 3D output") for the
+     checklist. Fixing the representation (camera intrinsics + a proper
+     perspective back-projection, or a metric-output lifter) is out of scope
+     here and is not attempted.
 """
 import os
 import sys

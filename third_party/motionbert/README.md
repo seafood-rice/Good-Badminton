@@ -88,11 +88,25 @@ imports only `torch`, `numpy` and the stdlib — verified: neither `einops` nor
    `configs/pose3d/*.yaml` files on disk. `infer_arch()` instead recovers every
    DSTformer constructor argument from the checkpoint's own tensor shapes, so no
    config file and no new dependency are required, and both the full and the
-   lite checkpoints load from the same code path. Verified round-trip for both
-   official `pose3d` configs in `tests/test_pose_lift_model.py`.
+   lite checkpoints load from the same code path.
+   `tests/test_pose_lift_model.py::test_infer_arch_recovers_config_from_checkpoint`
+   covers the `(dim_feat, mlp_ratio)` pairs of both official `pose3d` configs —
+   512/2 (`MB_ft_h36m`, `MB_train_h36m`) and 256/4
+   (`MB_ft_h36m_global_lite`, which is the case exercising the
+   `mlp_hidden // dim_feat` integer division) — using **reduced-depth synthetic
+   checkpoints** saved in the official on-disk layout. It does not construct a
+   full-size 5-block model, which would be needlessly heavy for a unit test, and
+   it involves no real weights.
 2. `num_heads` is the one hyperparameter with no trace in the tensor shapes (it
    only controls how `dim_feat` is split inside attention). All four upstream
-   `configs/pose3d/*.yaml` use `8`, which is `DEFAULT_NUM_HEADS`.
+   `configs/pose3d/*.yaml` use `8`, which is `DEFAULT_NUM_HEADS`. **Note the
+   asymmetry:** a wrong `dim_feat`/`depth`/`maxlen` etc. cannot happen (they are
+   read from the weights) and a wrong-variant checkpoint (action/mesh/pretrain
+   heads) fails loudly at `load_state_dict(..., strict=True)` — but a wrong
+   `num_heads` would change no tensor shape and so would load silently and
+   produce wrong output. That is why it is a named constant justified by all
+   four upstream configs rather than a guess, and why it is overridable per
+   call.
 3. `extract_state_dict()` reproduces upstream's checkpoint layout handling —
    `infer_wild.py` reads `checkpoint['model_pos']`, and
    `learning.load_pretrained_weights` strips the `module.` prefix that
@@ -142,6 +156,25 @@ num_heads  = 8        # not derivable from weights; all configs/pose3d/*.yaml us
   `lib/utils/vismo.motion2video_3d` plots `-ys` as its up axis. Hence
   `badminton_analysis/analysis/joint_angles.VERTICAL_AXIS_3D = 1` is correct as
   set in Tasks 2/3/5 and was left unchanged.
+- **The output is 2.5D image space, not true camera-space 3D — read this before
+  trusting any 3D angle quantitatively.** The same `read_3d` lines above are the
+  supervision definition: channels 0/1 are the *perspective projection* of each
+  joint onto the image plane and channel 2 is a commensurately-scaled depth
+  (H36M's `joint3d_image` / `joints_2.5d_image` representation), which equals the
+  true metric 3D pose only under a scaled-orthographic approximation of the
+  camera. Corroboration: upstream's own `train.py::evaluate` cannot score the
+  raw output — it calls `datareader.denormalize(...)` and then multiplies by a
+  per-sample `2.5d_factor` taken from dataset metadata (not predicted by the
+  model) before computing MPJPE against `joints_2.5d_image`. Consequences: the
+  missing `2.5d_factor` is a uniform scale and so is *angle-neutral*, but the
+  perspective projection is not a similarity transform, so angles measured in
+  this space are neither the true anatomical angles nor fully view-invariant.
+  The bias is systematic and varies with subject distance, off-axis position and
+  focal length, of unquantified magnitude, and badminton framing differs
+  markedly from the H36M rigs. `docs/motionbert-weights.md` ("Validating the 3D
+  output") carries the validation checklist. Not fixed here — correcting it
+  needs camera intrinsics and a real perspective back-projection, or a
+  metric-output lifter.
 - **Root-relativity varies by checkpoint** (`rootrel: True` in
   `configs/pose3d/MB_ft_h36m.yaml`, `False` in the `_global` variants), so the
   adapter in `pose_lift.PoseLifter._load` subtracts H36M joint 0 (pelvis)
