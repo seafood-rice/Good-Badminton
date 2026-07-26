@@ -3,6 +3,8 @@ import numpy as np
 
 from . import joint_angles as ja
 from .scoring import score_stroke
+from .reference_ranges import REFERENCE_RANGES
+from .reference_ranges_3d import REFERENCE_RANGES_3D
 
 _METRIC_LABEL = {
     "elbow_extension": "Elbow extension",
@@ -65,14 +67,27 @@ class BiomechanicalAnalyzer:
         racket_head = contact.get("racket_head") if contact else None
         racket_detected = contact.get("racket_head_detected") if contact else False
 
+        # Base 2D metrics (always computed; source of wrist_flexion/weight_transfer
+        # and of the shadow comparison for the 3D-capable metrics).
         if kp is not None:
-            metrics = ja.compute_joint_angles(
+            metrics2d = ja.compute_joint_angles(
                 kp, racket_head=(racket_head if racket_detected else None),
                 dominant=self.dominant, conf=conf)
         else:
-            metrics = {k: None for k in
-                       ("elbow_extension", "shoulder_abduction", "trunk_rotation",
-                        "knee_flexion", "hip_shoulder_separation", "wrist_flexion")}
+            metrics2d = {k: None for k in
+                         ("elbow_extension", "shoulder_abduction", "trunk_rotation",
+                          "knee_flexion", "hip_shoulder_separation", "wrist_flexion")}
+
+        kp3d = contact.get("keypoints_3d") if contact else None
+        used_3d = kp3d is not None
+        metrics = dict(metrics2d)
+        if used_3d:
+            m3d = ja.compute_joint_angles_3d(kp3d, dominant=self.dominant)
+            for name in ja.METRICS_3D_CAPABLE:
+                metrics[name] = m3d.get(name)
+            ranges = REFERENCE_RANGES_3D
+        else:
+            ranges = REFERENCE_RANGES
 
         # weight transfer: window-start centroid -> contact centroid, normalized by shoulder width
         start_centroid = next((w["centroid"] for w in window_frames if w.get("centroid") is not None), None)
@@ -83,7 +98,15 @@ class BiomechanicalAnalyzer:
             wt = ja.weight_transfer_ratio(start_centroid, contact_centroid, shoulder_w)
         metrics["weight_transfer"] = wt
 
-        scored = score_stroke(metrics, stroke_event.stroke_type)
+        scored = score_stroke(metrics, stroke_event.stroke_type, ranges=ranges)
+
+        # Per-metric feature-space labels + 2D shadow for the 3D-capable metrics.
+        for name, entry in scored["per_metric"].items():
+            if used_3d and name in ja.METRICS_3D_CAPABLE:
+                entry["feature_space"] = "3d"
+                entry["measured_shadow_2d"] = metrics2d.get(name)
+            else:
+                entry["feature_space"] = "2d"
 
         weaknesses = []
         for metric in scored["weaknesses"]:
@@ -95,6 +118,8 @@ class BiomechanicalAnalyzer:
                 "direction": entry["direction"],
                 "severity": entry["severity"],
                 "description": _describe(metric, entry),
+                "feature_space": entry.get("feature_space"),
+                "measured_shadow_2d": entry.get("measured_shadow_2d"),
             })
 
         return {
@@ -106,4 +131,5 @@ class BiomechanicalAnalyzer:
             "per_metric": scored["per_metric"],
             "weaknesses": weaknesses,
             "strengths": scored["strengths"],
+            "feature_space": "3d" if used_3d else "2d",
         }
