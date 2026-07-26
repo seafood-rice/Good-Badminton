@@ -211,6 +211,7 @@ class PostureRunner:
         reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post)
         reports = []
         reps_3d = []
+        survivor_rep_ids = []
         scored_3d = 0
         gated = self.stroke_type in OVERHEAD_GATED_STROKES
         filtered_non_overhead = 0
@@ -225,6 +226,16 @@ class PostureRunner:
             )
             window_frames = self._window_frames(rep.window_start, rep.window_end, frame_lookup)
 
+            # Overhead-swing gate runs BEFORE the (potentially expensive) 3D lift
+            # and the biomechanical analysis: a rep the gate drops must neither be
+            # lifted/counted in reps_3d/scored_3d nor analyzed, so those figures
+            # never exceed gate_info["counted"] (the reports that actually survive).
+            apex_frames = self._apex_window_frames(rep.peak_frame, fps, frame_lookup)
+            elev = apex_overhead_elevation(apex_frames, self.dominant)
+            if gated and elev is not None and elev < OVERHEAD_MIN_ELEVATION:
+                filtered_non_overhead += 1
+                continue
+
             if self.pose_lifter is not None and getattr(self.pose_lifter, "available", False):
                 lifted = self.pose_lifter.lift(window_frames, self.image_size)
                 if lifted is not None:
@@ -233,20 +244,16 @@ class PostureRunner:
                     for w in window_frames:
                         if w["frame"] in by_frame:
                             w["keypoints_3d"] = by_frame[w["frame"]]
+                    # Keyed on this rep's PRE-renumbering id for now; rewritten
+                    # below to the final 1..N id once survivors are known.
                     reps_3d.append({"rep_id": rep.rep_id, "frames": list(frames3d),
                                     "keypoints_3d": kp3d})
 
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
+            report["overhead_elevation"] = None if elev is None else round(elev, 3)
             if report.get("feature_space") == "3d":
                 scored_3d += 1
-
-            apex_frames = self._apex_window_frames(rep.peak_frame, fps, frame_lookup)
-            elev = apex_overhead_elevation(apex_frames, self.dominant)
-            report["overhead_elevation"] = None if elev is None else round(elev, 3)
-            if gated and elev is not None and elev < OVERHEAD_MIN_ELEVATION:
-                filtered_non_overhead += 1
-                continue
 
             if self.quality_scorer is not None:
                 # Bound the AI window to this rep's own stroke: clamp at the
@@ -265,6 +272,7 @@ class PostureRunner:
                 if ai is not None:
                     report["ai_score"] = ai
             reports.append(report)
+            survivor_rep_ids.append(rep.rep_id)
         gate_info = {"counted": len(reports), "filtered_non_overhead": filtered_non_overhead,
                      "gated": gated, "scored_3d": scored_3d, "reps_3d": reps_3d}
         # Renumber survivors 1..N so downstream consumers (write_rep_reports,
@@ -273,6 +281,13 @@ class PostureRunner:
         # RepWindow list is not renumbered: it isn't consumed downstream.
         for new_id, report in enumerate(reports, start=1):
             report["rep_id"] = new_id
+        # reps_3d only ever holds entries for survivors (the gate now runs
+        # before the lift), so every entry's original id is in this map;
+        # rewrite it to match the renumbered `reports`/drill_reps.jsonl ids so
+        # a future consumer can join drill_reps_3d.npz to them by rep_id.
+        id_map = {old_id: new_id for new_id, old_id in enumerate(survivor_rep_ids, start=1)}
+        for r3d in reps_3d:
+            r3d["rep_id"] = id_map[r3d["rep_id"]]
         return reports, reps, gate_info
 
 
