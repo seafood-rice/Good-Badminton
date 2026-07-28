@@ -339,15 +339,41 @@ class PostureAnalysisSystem:
         from ..detection.rtmpose import RTMPoseProcessor
         return RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
 
+    def _write_reps_3d_sidecar(self, gate_info):
+        """Write the per-rep 3D feature sidecar when this run produced lifts,
+        else remove a stale one left over from an earlier run in this
+        save_dir (e.g. weights were available then, absent or unproductive
+        now) so a 2D-only run never leaves an out-of-date 3D file -- with
+        rep IDs/frames that no longer match this run's reports -- behind."""
+        reps_3d_path = os.path.join(self.save_dir, "drill_reps_3d.npz")
+        if gate_info.get("reps_3d"):
+            from ..analysis.pose3d_io import write_reps_3d
+            write_reps_3d(
+                reps_3d_path,
+                gate_info["reps_3d"],
+                {"model": self.lift_model_path, "joint_format": "h36m-17",
+                 "normalization": "screen", "stroke_type": self.stroke_type,
+                 "dominant_hand": self.dominant_hand},
+            )
+        elif os.path.exists(reps_3d_path):
+            os.remove(reps_3d_path)
+
     def _write_reports(self, reports, summary, date=None):
         from .report_builder import build_coach_report
         from .report_render import render_html, render_pdf
         from ..data.writer import write_json
         date = date or _today()
+        lifted_count = sum(1 for r in reports if r.get("feature_space") == "3d")
+        if lifted_count == 0:
+            overall_feature_space = "2d"
+        elif lifted_count == len(reports):
+            overall_feature_space = "3d"
+        else:
+            overall_feature_space = "mixed"
         meta = {"date": date, "stroke_type": self.stroke_type,
                 "dominant_hand": self.dominant_hand,
                 "pose_family": getattr(self, "pose_family", "yolo-pose"),
-                "feature_space": ("3d" if any(r.get("feature_space") == "3d" for r in reports) else "2d")}
+                "feature_space": overall_feature_space}
         by_lang = build_coach_report(reports, summary, meta)
         if getattr(self, "report_llm", "off") not in (None, "off"):
             from .report_llm import polish
@@ -435,15 +461,7 @@ class PostureAnalysisSystem:
         write_rep_reports(os.path.join(self.save_dir, "drill_reps.jsonl"), reports)
         summary = build_drill_summary(reports, self.stroke_type)
         write_json(os.path.join(self.save_dir, "drill_summary.json"), summary)
-        if gate_info.get("reps_3d"):
-            from ..analysis.pose3d_io import write_reps_3d
-            write_reps_3d(
-                os.path.join(self.save_dir, "drill_reps_3d.npz"),
-                gate_info["reps_3d"],
-                {"model": self.lift_model_path, "joint_format": "h36m-17",
-                 "normalization": "screen", "stroke_type": self.stroke_type,
-                 "dominant_hand": self.dominant_hand},
-            )
+        self._write_reps_3d_sidecar(gate_info)
         write_json(os.path.join(self.save_dir, "metadata.json"), {
             "video": {"path": self.video_path, "name": self.video_name,
                       "fps": float(fps), "width": width, "height": height},

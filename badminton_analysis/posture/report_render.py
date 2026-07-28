@@ -36,7 +36,8 @@ def render_html(report):
     parts.append("<!doctype html><html lang='" + _esc(report.get("lang", "en")) + "'><head>"
                  "<meta charset='utf-8'><style>" + _CSS + "</style></head><body>")
     parts.append("<h1>" + _esc(h.get("stroke_label")) + "</h1>")
-    angle_space = "3D" if h.get("feature_space") == "3d" else "2D"
+    _fs = h.get("feature_space")
+    angle_space = "3D" if _fs == "3d" else ("Mixed 2D/3D" if _fs == "mixed" else "2D")
     parts.append("<div class='meta'>" + _esc(h.get("date")) + " · " + _esc(h.get("rep_count"))
                  + " reps · " + _esc(h.get("dominant_hand")) + " · " + _esc(h.get("pose_family"))
                  + " · " + angle_space + " angles</div>")
@@ -83,7 +84,12 @@ def render_html(report):
             final = r.get("final_score")
             if final is None:
                 final = r.get("overall_score")
-            parts.append("<tr><td>" + _esc(r.get("rep_id")) + "</td><td>" + _esc(final)
+            # Per-rep feature space, since a run can mix 3D-lifted and 2D-only
+            # reps (e.g. some reps had too few posed frames to lift): the
+            # top-level header badge alone can't tell a reader which rows are
+            # which.
+            _rep_fs = " (3D)" if r.get("feature_space") == "3d" else ""
+            parts.append("<tr><td>" + _esc(r.get("rep_id")) + _rep_fs + "</td><td>" + _esc(final)
                          + "</td><td>" + _esc(r.get("top_weakness")) + "</td></tr>")
         parts.append("</table>")
 

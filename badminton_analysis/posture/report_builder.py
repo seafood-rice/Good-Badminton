@@ -102,6 +102,7 @@ def _one_language(lang, reports, summary, meta):
             "overall_score": overall,
             "final_score": final if final is not None else overall,
             "top_weakness": top,
+            "feature_space": rep.get("feature_space", "2d"),
         })
 
     training_plan = generate_plan(summary)
