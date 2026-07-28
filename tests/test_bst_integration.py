@@ -187,6 +187,7 @@ def test_capture_analysis_frame_enriches_record_with_shuttle(tmp_path):
     sys_._shuttle_trajectory = None
     sys_._shuttle_source = "yolo"
     sys_._analysis_track = []
+    sys_._analysis_track_both = []
     sys_._analysis_frames = {}
     sys_.dominant_hand = "right"
     sys_._racket_detector = None
@@ -291,3 +292,111 @@ def test_run_stroke_recognition_writes_nothing_when_no_hits(tmp_path, monkeypatc
     sys_._run_stroke_recognition()
 
     assert not os.path.exists(os.path.join(str(tmp_path), "strokes.json"))
+
+
+def _person_with_feet_at(x, y):
+    kp = np.full((17, 2), 50.0, dtype=float)
+    kp[15] = (x, y)  # L_ANKLE
+    kp[16] = (x, y)  # R_ANKLE
+    return kp
+
+
+class _FakePoseVisualizerTwoPeople:
+    def __init__(self, people, offset_x=0, offset_y=0):
+        self._people = people
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+
+    def get_current_pose_data(self):
+        return {"keypoints": self._people, "offset_x": self._offset_x, "offset_y": self._offset_y}
+
+
+class _FakePlayerTrackerBoth:
+    def __init__(self, players):
+        self.players = players
+
+
+class _FakeRacketDetectorBoth:
+    def __init__(self, heads):
+        self._heads = list(heads)
+
+    def detect_racket_heads(self, frame, roi_corners=None):
+        return list(self._heads)
+
+    def detect_racket_head(self, frame, roi_corners=None):
+        return self._heads[0] if self._heads else None
+
+
+def test_capture_analysis_frame_captures_both_players_additively():
+    sys_ = object.__new__(BadmintonAnalysisSystem)
+    sys_._shuttle_trajectory = None
+    sys_._shuttle_source = "yolo"
+    sys_._analysis_track = []
+    sys_._analysis_track_both = []
+    sys_._analysis_frames = {}
+    sys_.dominant_hand = "right"
+    sys_._racket_detector = _FakeRacketDetectorBoth([(105.0, 105.0), (105.0, 505.0)])
+
+    lower_person = _person_with_feet_at(100.0, 100.0)
+    upper_person = _person_with_feet_at(100.0, 500.0)
+    sys_.player_pose_visualizer = _FakePoseVisualizerTwoPeople(np.array([lower_person, upper_person]))
+    sys_.player_tracker = _FakePlayerTrackerBoth({"lower": (100.0, 100.0), "upper": (100.0, 500.0)})
+
+    sys_._capture_analysis_frame(7, None, [(0, 0), (10, 10)], [42.0, 24.0])
+
+    rec = sys_._analysis_frames[7]
+    assert set(rec["players"]) == {"lower", "upper"}
+    assert rec["players"]["lower"]["centroid"] == (100.0, 100.0)
+    assert rec["players"]["upper"]["centroid"] == (100.0, 500.0)
+    np.testing.assert_allclose(rec["players"]["lower"]["keypoints"][15], (100.0, 100.0))
+    np.testing.assert_allclose(rec["players"]["upper"]["keypoints"][15], (100.0, 500.0))
+    assert rec["players"]["lower"]["racket_head"] == (105.0, 105.0)
+    assert rec["players"]["upper"]["racket_head"] == (105.0, 505.0)
+
+    # Non-regression: pre-existing single-player fields unchanged in meaning
+    # ("prefer lower, else upper" tracked player).
+    assert rec["player_side"] == "lower"
+    assert rec["centroid"] == (100.0, 100.0)
+    np.testing.assert_allclose(rec["keypoints"][15], (100.0, 100.0))
+    assert rec["racket_head"] == (105.0, 105.0)
+
+    both = sys_._analysis_track_both[-1]
+    assert both == {"frame": 7, "racket_lower": (105.0, 105.0), "racket_upper": (105.0, 505.0), "shuttle": (42.0, 24.0)}
+
+    # _analysis_track (TechniqueAnalysisRunner's input) keeps its exact
+    # pre-B1 shape -- no new keys leak in.
+    assert set(sys_._analysis_track[-1]) == {"frame", "racket_head", "shuttle"}
+
+
+def test_capture_analysis_frame_racket_assignment_falls_back_to_kinematic_inference():
+    """No racket detector -> each side's racket_head falls back to
+    infer_racket_head from that side's OWN pose, same fallback the
+    single-player path already had, now applied per side."""
+    sys_ = object.__new__(BadmintonAnalysisSystem)
+    sys_._shuttle_trajectory = None
+    sys_._shuttle_source = "yolo"
+    sys_._analysis_track = []
+    sys_._analysis_track_both = []
+    sys_._analysis_frames = {}
+    sys_.dominant_hand = "right"
+    sys_._racket_detector = None
+
+    from badminton_analysis.analysis import joint_angles as ja
+
+    def _person_with_arm(foot_x, foot_y):
+        kp = _person_with_feet_at(foot_x, foot_y)
+        kp[ja.R_ELBOW] = (foot_x, foot_y - 100)
+        kp[ja.R_WRIST] = (foot_x + 40, foot_y - 100)
+        return kp
+
+    lower_person = _person_with_arm(100.0, 100.0)
+    upper_person = _person_with_arm(100.0, 500.0)
+    sys_.player_pose_visualizer = _FakePoseVisualizerTwoPeople(np.array([lower_person, upper_person]))
+    sys_.player_tracker = _FakePlayerTrackerBoth({"lower": (100.0, 100.0), "upper": (100.0, 500.0)})
+
+    sys_._capture_analysis_frame(9, None, [(0, 0), (10, 10)], None)
+
+    rec = sys_._analysis_frames[9]
+    assert rec["players"]["lower"]["racket_head"] is not None
+    assert rec["players"]["upper"]["racket_head"] is not None
+    assert rec["players"]["lower"]["racket_head"] != rec["players"]["upper"]["racket_head"]

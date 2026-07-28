@@ -20,6 +20,17 @@ COURT_VIEW_CHECK_INTERVAL = 3
 # Fast mode analyzes every Nth court frame (quick look).
 FAST_FRAME_STRIDE = 3
 
+# Nearest-in-ROI-racket-detection-to-player-centroid gate for the
+# both-player capture (Task 6). Deliberately dumb/untuned v1 constant, same
+# convention as contact_px in stroke/events.py -- project 2 measures
+# accuracy against ground truth, not this plan.
+RACKET_TO_PLAYER_MAX_PX = 300.0
+
+
+def _sq_dist(a, b):
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -105,6 +116,7 @@ class BadmintonAnalysisSystem:
         self._shuttle_trajectory = None
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
+        self._analysis_track_both = []  # both-player contact track (contacts/BST only)
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
 
@@ -478,6 +490,45 @@ class BadmintonAnalysisSystem:
                 cv2.imwrite(os.path.join(self.images_save_dir, f"{frame_count}.png"), frame)
         return frame, detect_frame_count
 
+    def _capture_side_pose(self, side, people, ox, oy):
+        """This side's own pose, matched independently from all people
+        detected in the ROI this frame, by nearest foot-midpoint to the
+        side's own tracked centroid (badminton_analysis.tracking.player.
+        PlayerTracker.players[side]). Returns (keypoints, centroid), or
+        (None, None) when this side has no tracked player this frame, or
+        (None, centroid) when it does but no pose person matched.
+        """
+        from .analysis import joint_angles as ja
+
+        centroid_pt = self.player_tracker.players.get(side)
+        if centroid_pt is None:
+            return None, None
+        centroid = (float(centroid_pt[0]), float(centroid_pt[1]))
+        if not people:
+            return None, centroid
+
+        def _foot_midpoint(kp_arr):
+            pts = []
+            for idx in (ja.L_ANKLE, ja.R_ANKLE):
+                if ja.is_valid(kp_arr, idx):
+                    pts.append((float(kp_arr[idx][0]) + ox, float(kp_arr[idx][1]) + oy))
+            if pts:
+                return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+            return None
+
+        def _dist_to_centroid(pers):
+            fm = _foot_midpoint(pers)
+            if fm is None:
+                return float("inf")
+            return _sq_dist(fm, centroid)
+
+        person = min(people, key=_dist_to_centroid)
+        kp = person.astype(float).copy()
+        mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
+        kp[mask, 0] += ox
+        kp[mask, 1] += oy
+        return kp, centroid
+
     def _capture_analysis_frame(self, frame_count, frame, roi_corners, ball_position):
         from .analysis import joint_angles as ja
         pose = self.player_pose_visualizer.get_current_pose_data()
@@ -559,11 +610,48 @@ class BadmintonAnalysisSystem:
         self._analysis_track.append({
             "frame": frame_count, "racket_head": racket_head, "shuttle": shuttle,
         })
+
+        # --- B1: additive both-player capture (contacts/BST only; the
+        # single-player fields above are unchanged and keep driving
+        # TechniqueAnalysisRunner exactly as before) ---
+        from .analysis.joint_angles import infer_racket_head as _infer_racket_head_both
+
+        people_list = []
+        p_ox = p_oy = 0
+        if pose is not None and pose.get("keypoints") is not None and len(pose["keypoints"]) > 0:
+            people_list = list(pose["keypoints"])
+            p_ox, p_oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
+
+        racket_candidates = []
+        if self._racket_detector is not None:
+            racket_candidates = self._racket_detector.detect_racket_heads(frame, roi_corners=roi_corners)
+
+        players_data = {}
+        for region in ("lower", "upper"):
+            side_kp, side_centroid = self._capture_side_pose(region, people_list, p_ox, p_oy)
+            side_racket = None
+            if side_centroid is not None and racket_candidates:
+                nearest = min(racket_candidates, key=lambda p: _sq_dist(p, side_centroid))
+                if _sq_dist(nearest, side_centroid) <= RACKET_TO_PLAYER_MAX_PX ** 2:
+                    side_racket = (float(nearest[0]), float(nearest[1]))
+            if side_racket is None and side_kp is not None:
+                side_racket = _infer_racket_head_both(side_kp, dominant=self.dominant_hand)
+            players_data[region] = {
+                "keypoints": side_kp, "centroid": side_centroid, "racket_head": side_racket,
+            }
+
+        self._analysis_track_both.append({
+            "frame": frame_count,
+            "racket_lower": players_data["lower"]["racket_head"],
+            "racket_upper": players_data["upper"]["racket_head"],
+            "shuttle": shuttle,
+        })
+
         self._analysis_frames[frame_count] = {
             "frame": frame_count, "keypoints": keypoints, "conf": None,
             "racket_head": racket_head, "centroid": centroid, "nose": nose,
             "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
-            "player_side": side, "shuttle": shuttle,
+            "player_side": side, "shuttle": shuttle, "players": players_data,
         }
 
     def _run_shuttle_pretrack(self):
