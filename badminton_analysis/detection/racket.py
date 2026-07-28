@@ -39,9 +39,13 @@ class RacketDetector:
         pad = int(max(x2 - x1, y2 - y1) * self.roi_padding_ratio)
         return (x1 - pad) <= point[0] <= (x2 + pad) and (y1 - pad) <= point[1] <= (y2 + pad)
 
-    def detect_racket_head(self, frame, roi_corners=None):
+    def _boxes_in_roi(self, frame, roi_corners=None):
+        """All in-ROI (point, confidence) box centers this frame, unsorted, []
+        when the model is absent or nothing was detected. Shared by
+        detect_racket_head (single best) and detect_racket_heads (all of
+        them, for assigning different detections to different players)."""
         if self.model is None:
-            return None
+            return []
         try:
             result = self.model(frame, conf=self.conf, device=self.device, verbose=False)[0]
         except TypeError:
@@ -49,21 +53,37 @@ class RacketDetector:
 
         boxes = getattr(result, "boxes", None)
         if boxes is None or boxes.xywh.shape[0] < 1:
-            return None
+            return []
 
         xywh = boxes.xywh.detach().cpu().numpy()
         conf = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.ones(len(xywh))
 
-        best = None
-        best_conf = -1.0
+        out = []
         for box, c in zip(xywh, conf):
             cx, cy = int(box[0]), int(box[1])
             if not self._point_in_roi((cx, cy), roi_corners):
                 continue
-            if c > best_conf:
-                best_conf = float(c)
-                best = (cx, cy)
-        return best
+            out.append(((cx, cy), float(c)))
+        return out
+
+    def detect_racket_head(self, frame, roi_corners=None):
+        boxes = self._boxes_in_roi(frame, roi_corners)
+        if not boxes:
+            return None
+        return max(boxes, key=lambda b: b[1])[0]
+
+    def detect_racket_heads(self, frame, roi_corners=None):
+        """All in-ROI racket-box centers this frame, confidence-descending.
+
+        Unlike detect_racket_head (single highest-confidence box), this lets a
+        caller nearest-match different detections to different tracked
+        players (badminton_analysis.system._capture_analysis_frame's
+        both-player capture). Returns [] when the model is absent or no boxes
+        fall in the ROI.
+        """
+        boxes = self._boxes_in_roi(frame, roi_corners)
+        boxes.sort(key=lambda b: b[1], reverse=True)
+        return [pt for pt, _c in boxes]
 
     def infer_racket_head(self, keypoints, dominant="right"):
         """Kinematic fallback: infer racket head from elbow+wrist keypoints."""

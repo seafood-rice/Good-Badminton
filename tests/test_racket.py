@@ -125,3 +125,37 @@ def test_match_system_tolerates_racket_detector_construction_failure(tmp_path, m
         output_dir=str(tmp_path / "out"),
     )
     assert sys_._racket_detector is None
+
+
+def test_detect_racket_heads_returns_all_boxes_confidence_desc():
+    boxes = _FakeBoxes(xywh=[[50, 60, 10, 10], [20, 20, 10, 10]], conf=[0.4, 0.9])
+    model = _FakeModel(_FakeResult(boxes))
+    det = RacketDetector(model=model)
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    heads = det.detect_racket_heads(frame)
+    assert heads == [(20, 20), (50, 60)]  # confidence-descending: 0.9 then 0.4
+
+
+def test_detect_racket_heads_filters_outside_roi():
+    boxes = _FakeBoxes(xywh=[[50, 60, 10, 10], [500, 500, 10, 10]], conf=[0.9, 0.4])
+    model = _FakeModel(_FakeResult(boxes))
+    det = RacketDetector(model=model)
+    frame = np.zeros((600, 600, 3), dtype=np.uint8)
+    heads = det.detect_racket_heads(frame, roi_corners=[(0, 0), (100, 100)])
+    assert heads == [(50, 60)]
+
+
+def test_detect_racket_heads_empty_without_model():
+    det = RacketDetector(model=None)
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert det.detect_racket_heads(frame) == []
+
+
+def test_detect_racket_head_unchanged_after_refactor():
+    """Non-regression: detect_racket_head's own behavior is untouched by the
+    _boxes_in_roi refactor -- same fixture as test_picks_highest_confidence_center."""
+    boxes = _FakeBoxes(xywh=[[50, 60, 10, 10], [20, 20, 10, 10]], conf=[0.9, 0.4])
+    model = _FakeModel(_FakeResult(boxes))
+    det = RacketDetector(model=model)
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    assert det.detect_racket_head(frame) == (50, 60)
