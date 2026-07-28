@@ -46,6 +46,7 @@ def _bare_system(tmp_path, bst_weights, monkeypatch):
     sys_._shuttle_trajectory = None
     sys_._shuttle_source = "yolo"
     sys_._analysis_track = []
+    sys_._analysis_track_both = []
     sys_._analysis_frames = {}
     sys_.court_corners = list(VALID_COURT_CORNERS)
     # ROI stays 2-point on purpose: it's a pose-detection rectangle, unrelated
@@ -59,19 +60,10 @@ def _bare_system(tmp_path, bst_weights, monkeypatch):
 
 
 def _build_synthetic_track_and_frames(contact_frame=30, total_frames=60):
-    """Synthesize a minimal ``_analysis_track`` + ``_analysis_frames`` pair
-    that (a) yields exactly one detected hit via the real
-    ``stroke.events.detect_contacts_multi`` / ``stroke_recog.hits.hit_events``
-    both-player contact track, and (b) has >=10 posed frames (both hips
-    valid) in that hit's ``build_inputs`` window, so the real (unstubbed)
-    recognition path runs end to end.
-
-    Shuttle path is a "V": diagonally descending up to ``contact_frame``,
-    then diagonally ascending afterwards, so ``detect_contacts_multi``'s
-    direction-change check (>=45 degrees) fires exactly at ``contact_frame``.
-    ``racket_lower`` is only populated at ``contact_frame`` (``racket_upper``
-    is never populated) so no other frame is even a contact candidate and the
-    hit is attributed to "lower".
+    """Both-player synthetic track + frames: exactly one detected hit (by
+    "lower") via the real detect_contacts_multi -> hit_events chain, with
+    >=10 posed frames in that hit's build_inputs window, so the real
+    (unstubbed) recognition path runs end to end.
     """
     step = 10.0
     track = []
@@ -84,25 +76,21 @@ def _build_synthetic_track_and_frames(contact_frame=30, total_frames=60):
             x = step * contact_frame + step * offset
             y = step * contact_frame - step * offset
         shuttle = (x, y)
-        racket_lower = shuttle if f == contact_frame else None
-        racket_upper = None
+        racket_head = shuttle if f == contact_frame else None
         track.append({
-            "frame": f, "racket_lower": racket_lower, "racket_upper": racket_upper,
-            "shuttle": shuttle,
+            "frame": f, "racket_lower": racket_head, "racket_upper": None, "shuttle": shuttle,
         })
 
         keypoints = np.full((17, 2), 50.0, dtype=float)
-        players = {
-            "lower": {"keypoints": keypoints, "centroid": (50.0, 50.0)},
-            "upper": {"keypoints": keypoints, "centroid": (50.0, 50.0)},
-        }
         frames[f] = {
             "frame": f, "keypoints": keypoints, "conf": None,
-            "racket_lower": racket_lower, "racket_upper": racket_upper,
-            "centroid": (50.0, 50.0),
+            "racket_head": racket_head, "centroid": (50.0, 50.0),
             "nose": (50.0, 50.0), "shoulder": (50.0, 50.0), "hip": (50.0, 50.0),
             "elbow_angle": 170.0, "player_side": "lower", "shuttle": shuttle,
-            "players": players,
+            "players": {
+                "lower": {"keypoints": keypoints, "centroid": (50.0, 50.0), "racket_head": racket_head},
+                "upper": {"keypoints": None, "centroid": None, "racket_head": None},
+            },
         }
     return track, frames
 
@@ -232,7 +220,7 @@ def test_run_stroke_recognition_real_pipeline_uses_four_point_court_corners(tmp_
 
     track, frames = _build_synthetic_track_and_frames()
     sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
-    sys_._analysis_track = track
+    sys_._analysis_track_both = track
     sys_._analysis_frames = frames
     sys_.frame_width = 1000
     sys_.frame_height = 1000
@@ -266,7 +254,7 @@ def test_run_stroke_recognition_swallows_recognition_exceptions(tmp_path, monkey
 
     track, frames = _build_synthetic_track_and_frames()
     sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
-    sys_._analysis_track = track
+    sys_._analysis_track_both = track
     sys_._analysis_frames = frames
     sys_.frame_width = 1000
     sys_.frame_height = 1000

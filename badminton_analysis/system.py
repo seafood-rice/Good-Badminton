@@ -719,28 +719,21 @@ class BadmintonAnalysisSystem:
         """Post-loop BST coarse stroke labeling -- entirely optional.
 
         No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
-        constructor, so the default behavior of the pipeline is byte-for-byte
-        unchanged. ``StrokeRecognizer`` already degrades gracefully (returns
-        ``[]``) if the weights fail to load, so this is safe to call
-        unconditionally from ``process_video``.
-
-        Uses ``self.court_corners`` -- the 4-point court quad set alongside
-        court annotation in ``process_video`` -- rather than
-        ``self.court_roi_corners`` (a 2-point pose-detection ROI rectangle):
+        constructor. Uses ``self._analysis_track_both`` (both players' racket
+        points per frame, Task 6) so hits by EITHER player are detected and
+        correctly attributed, and ``self.court_corners`` -- the 4-point court
+        quad -- rather than ``self.court_roi_corners`` (a 2-point pose ROI):
         ``build_inputs`` -> ``CourtMapper`` requires exactly 4 corners.
 
-        Never fatal: any exception raised while recognizing strokes (bad
-        court data, a build_inputs/predict failure, etc.) is caught here and
-        only turns stroke recognition off for this run -- it must never abort
-        ``process_video`` before ``_cleanup(cap)`` runs. Writes nothing when
-        there are no hits, so ``strokes.json``'s presence stays meaningful.
+        Never fatal: any exception is caught here and only turns stroke
+        recognition off for this run. Writes nothing when there are no hits,
+        so ``strokes.json``'s presence stays a meaningful signal.
 
-        v1 limitation: ``stroke_recog.inputs.build_inputs`` (Task 3) only
-        fills in the tracked hitter's own pose/position (person index 0) plus
-        the shuttle; the opponent (person index 1) pose/position stay
-        zero-filled every frame. This is a documented v1 simplification --
-        whether coarse labels survive it on real footage is what the T9
-        validation decides, not something this task attempts to fix.
+        BST's person-0 ("hitter") and person-1 ("opponent") slots are both
+        filled from the actual hitter/opponent, chosen by shuttle proximity
+        at the contact frame -- no longer a zero-filled opponent (fixed by
+        B1; previously the tracked/near player's pose leaked into person-0
+        even for far-player hits).
         """
         if not self.bst_weights:
             return
@@ -750,7 +743,7 @@ class BadmintonAnalysisSystem:
             from .stroke_recog.recognizer import StrokeRecognizer
 
             labels = StrokeRecognizer(self.bst_weights).label_rally(
-                self._analysis_track, self._analysis_frames.get,
+                self._analysis_track_both, self._analysis_frames.get,
                 self.court_corners, (self.frame_width, self.frame_height),
             )
             if not labels:
