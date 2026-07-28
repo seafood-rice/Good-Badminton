@@ -61,16 +61,17 @@ def _bare_system(tmp_path, bst_weights, monkeypatch):
 def _build_synthetic_track_and_frames(contact_frame=30, total_frames=60):
     """Synthesize a minimal ``_analysis_track`` + ``_analysis_frames`` pair
     that (a) yields exactly one detected hit via the real
-    ``stroke.events.detect_contacts`` / ``stroke_recog.hits.hit_events``, and
-    (b) has >=10 posed frames (both hips valid) in that hit's
-    ``build_inputs`` window, so the real (unstubbed) recognition path runs
-    end to end.
+    ``stroke.events.detect_contacts_multi`` / ``stroke_recog.hits.hit_events``
+    both-player contact track, and (b) has >=10 posed frames (both hips
+    valid) in that hit's ``build_inputs`` window, so the real (unstubbed)
+    recognition path runs end to end.
 
     Shuttle path is a "V": diagonally descending up to ``contact_frame``,
-    then diagonally ascending afterwards, so ``detect_contacts``'s
+    then diagonally ascending afterwards, so ``detect_contacts_multi``'s
     direction-change check (>=45 degrees) fires exactly at ``contact_frame``.
-    ``racket_head`` is only populated at ``contact_frame`` so no other frame
-    is even a contact candidate.
+    ``racket_lower`` is only populated at ``contact_frame`` (``racket_upper``
+    is never populated) so no other frame is even a contact candidate and the
+    hit is attributed to "lower".
     """
     step = 10.0
     track = []
@@ -83,15 +84,25 @@ def _build_synthetic_track_and_frames(contact_frame=30, total_frames=60):
             x = step * contact_frame + step * offset
             y = step * contact_frame - step * offset
         shuttle = (x, y)
-        racket_head = shuttle if f == contact_frame else None
-        track.append({"frame": f, "racket_head": racket_head, "shuttle": shuttle})
+        racket_lower = shuttle if f == contact_frame else None
+        racket_upper = None
+        track.append({
+            "frame": f, "racket_lower": racket_lower, "racket_upper": racket_upper,
+            "shuttle": shuttle,
+        })
 
         keypoints = np.full((17, 2), 50.0, dtype=float)
+        players = {
+            "lower": {"keypoints": keypoints, "centroid": (50.0, 50.0)},
+            "upper": {"keypoints": keypoints, "centroid": (50.0, 50.0)},
+        }
         frames[f] = {
             "frame": f, "keypoints": keypoints, "conf": None,
-            "racket_head": racket_head, "centroid": (50.0, 50.0),
+            "racket_lower": racket_lower, "racket_upper": racket_upper,
+            "centroid": (50.0, 50.0),
             "nose": (50.0, 50.0), "shoulder": (50.0, 50.0), "hip": (50.0, 50.0),
             "elbow_angle": 170.0, "player_side": "lower", "shuttle": shuttle,
+            "players": players,
         }
     return track, frames
 
