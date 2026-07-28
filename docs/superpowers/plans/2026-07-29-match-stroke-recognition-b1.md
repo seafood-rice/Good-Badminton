@@ -1339,3 +1339,61 @@ PYTHONUTF8=1 ./.venv/Scripts/python.exe main.py \
 - badminton_analysis/stroke_recog/hits.py
 - badminton_analysis/stroke_recog/inputs.py
 - badminton_analysis/stroke_recog/recognizer.py
+
+---
+
+## Validation outcome (2026-07-29) — BLOCKED UPSTREAM (rally/court-view detection), same pattern as the original BST T9 result
+
+Ran the real match pipeline (`main.py`, all real weights: racket, TrackNetV3, BST) against a
+**reconstructed** clip — the original 750-frame validation clip no longer exists on disk and
+its extraction timestamp was never recorded (Decision Point C), so a comparable ~25s/752-frame
+segment was cut from the full Axelsen match at `-ss 150 -t 25`, anchored on rally 1's recorded
+frame range, re-encoded to 30fps. This is **not** the original clip; no comparison against the
+recorded `{net:4, clear:3, uncertain:1}` baseline is possible.
+
+**Result: 0 BST-recognized strokes** (`strokes.json` was never written; `_run_stroke_recognition`
+returns silently when `hit_events` finds no contacts).
+
+**Root cause, traced through the actual run's artifacts, is upstream of B1, not a B1 defect:**
+- Dense shuttle tracking worked well: TrackNetV3 covered 668/752 frames (88.8%).
+- But `_capture_analysis_frame` — the only producer of `_analysis_track_both`, which B1's whole
+  chain (`detect_contacts_multi` → `hit_events` → `build_inputs` → `label_rally`) depends on —
+  is gated behind `is_court_view` (`system.py:406-413`: a non-court frame returns before
+  `_capture_analysis_frame` is ever called). On this clip, `rally_segments.json` shows exactly
+  **one** rally window, frames 263-350 (87 frames, ~2.9s) — the pipeline judged only ~11.6% of
+  the 752-frame clip as "court view," so real analysis-track data exists for only that narrow
+  window. Within 87 frames, no hit satisfied the untuned default contact thresholds
+  (`contact_px=80.0`, `dir_change_deg`, `min_gap=15`).
+- This is exactly the failure mode the completion-bar design doc's §0 already documented and
+  named as its dominant blocker (0.66% court-view coverage on the full match) and exactly the
+  pattern the original BST design spec's own T9 validation hit ("BLOCKED UPSTREAM (shuttle/contact
+  detection)"). It is explicitly **B11's** scope (rally/play detection on both footage types),
+  not B1's — B1 never claimed to fix rally/court-view detection.
+- **B1's own correctness claims (done-means items 1-3) are not weakened by this result** — they
+  were independently proven by the final whole-branch review's real, non-synthetic-shortcut
+  end-to-end test (`tests/test_bst_integration.py`, added in the final-review fix pass), which
+  drives the actual `_capture_analysis_frame` → `_run_stroke_recognition` chain over a synthetic
+  90-frame rally with contacts from both sides and asserts both `"lower"` and `"upper"` appear
+  as hitters, the racket model is called once per frame, and an unmatched side degrades honestly
+  rather than cross-assigning. That test is real code-path coverage; this validation attempt's
+  null result is a real-footage rally-detection gap, not evidence against it.
+- Item 4 (plausible alternation on a real rally) is **unvalidated** — there were no contacts to
+  eyeball.
+
+**A critical, previously-unmeasured data point this run surfaced:** total processing time for
+this 25-second clip was **17,443 seconds (≈4.85 hours)** on this machine, which runs CPU-only
+PyTorch (`torch==2.5.1+cpu`, per `requirements.txt` — no CUDA GPU). The completion-bar doc's R1
+throughput risk was an estimate from a 4090 GPU; on CPU-only hardware the cost is far higher
+still. This is a direct, load-bearing data point for the owner's Q1 answer (deep analysis as a
+background job with UI-tracked status) — a background job is not a nice-to-have here, it is the
+only way any of this is usable on hardware like this one. It also means iterating on validation
+clips (trying a different segment to find one with better rally-detection coverage) costs
+multiple hours per attempt on this hardware, not minutes.
+
+**Recommendation:** do not spend further multi-hour validation attempts chasing a better clip
+segment until B11 (rally/court-view detection) is at least partially addressed — validating B1
+end-to-end on real footage is now understood to be coupled to B11's fix, not independent of it,
+confirming the completion-bar doc's dependency ordering rather than contradicting it. B1 ships
+with strong synthetic/unit/end-to-end evidence and an honestly-reported real-footage attempt
+that hit a known, out-of-scope blocker — consistent with how BST and TrackNetV3 both shipped
+"experimental" pending exactly this same class of fix.

@@ -68,24 +68,35 @@ non-regression with no weights present; full committed suite green.
 - Full committed suite at `HEAD` (`1ac402b`): 433 passed (`--ignore=tests/test_ai_handoff.py`);
   also ran the full literal suite including that continuity file once during the task loop:
   713 passed, 0 failed.
-- **Not yet run:** the plan's controller-run real-footage validation step (reconstructed
-  ~25s/752-frame clip from the full Axelsen match, since the original 750-frame validation
-  clip referenced by the BST/TrackNetV3 specs no longer exists on disk and its extraction
-  timestamp was never recorded). This is the next action.
+- **Controller-run real-footage validation: run, result BLOCKED UPSTREAM** (2026-07-29). Full
+  outcome recorded in the plan's own "Validation outcome" section
+  (`docs/superpowers/plans/2026-07-29-match-stroke-recognition-b1.md`). Summary: 0 BST strokes
+  on the reconstructed clip, root-caused to `is_court_view`'s rally/court-detection gate
+  limiting real analysis-track capture to one 87-frame window out of 752 — the same class of
+  blocker the original BST T9 validation hit, and explicitly B11's scope, not B1's. B1's own
+  correctness (done-means 1-3) already independently proven by a real end-to-end test added in
+  the final-review fix pass; only item 4 (real-rally alternation) is unvalidated.
+- **Critical new data point:** this 25s clip took **17,443s (≈4.85h)** to process on this
+  CPU-only machine (`torch==2.5.1+cpu`, no CUDA). Confirms the owner's Q1 decision
+  (background job) is necessary, not optional, and means further validation attempts (trying a
+  different clip) cost multiple hours each on this hardware.
 
 ## Blockers
 
-None currently.
+- Further real-footage validation of B1 is coupled to B11 (rally/court-view detection fixes on
+  both footage types) — chasing a better clip segment without fixing detection first risks
+  repeated multi-hour runs with the same null result. Recommend addressing B11 (or at least a
+  quick recalibration of `is_court_view`'s threshold) before another validation attempt.
 
 ## Next action
 
-Run B1's controller-run validation (plan's "Validation" section): analyze the reconstructed
-clip through the real pipeline with real weights, inspect `strokes.json` for contact count,
-both-sided hitter attribution, and a qualitative alternation check, then record an honest
-outcome note (mirroring the BST/TrackNetV3 spec convention) before this workstream moves on
-to B2-B11 (segment-scoped dense tracking, the background-job redesign, rally/play-detection
-fixes on both footage types, fps/resolution normalization — all separate, not-yet-planned
-pieces of the broader Sub-project B effort per the completion-bar doc).
+Owner decision needed: (a) accept B1 as done with synthetic/unit/end-to-end evidence plus an
+honestly-reported, upstream-blocked real-footage attempt, and move planning on to B11
+(rally/play detection) next since it's now confirmed as the actual gate on any further
+real-footage validation; or (b) spend another multi-hour validation attempt on a different clip
+segment first. Either way, B2-B10 (segment-scoped dense tracking, the background-job redesign,
+fps/resolution normalization) remain separate, not-yet-planned pieces of the broader Sub-project
+B effort per the completion-bar doc.
 
 <!-- ai-continuity:milestones:start -->
 <!-- ai-continuity:milestones:end -->
