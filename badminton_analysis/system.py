@@ -26,6 +26,24 @@ FAST_FRAME_STRIDE = 3
 # accuracy against ground truth, not this plan.
 RACKET_TO_PLAYER_MAX_PX = 300.0
 
+# Nearest-pose-person-to-player-centroid gate for the both-player capture's
+# per-side pose matching (_capture_side_pose). Deliberately dumb/untuned v1
+# constant in the same spirit as contact_px and RACKET_TO_PLAYER_MAX_PX --
+# project 2 measures accuracy against ground truth, not this plan.
+#
+# Held to a TIGHTER tolerance than RACKET_TO_PLAYER_MAX_PX on purpose: a
+# racket head can legitimately sit a full arm+racket extension away from its
+# owner's feet, whereas the quantity compared here is a foot-midpoint against
+# a tracked centroid that is itself a foot-midpoint (see
+# visualization/player_pose.py::detect_players, which feeds PlayerTracker
+# centroids computed as the ankle midpoint + 10px in y). For the player the
+# tracker actually locked onto this frame the two agree to within ~10px; the
+# slack here only covers a stale centroid held from an earlier frame while
+# that side went briefly undetected. Without this gate, a frame with only one
+# detected person would assign that SAME person to BOTH sides, because min()
+# over a one-element list always returns it regardless of distance.
+POSE_TO_PLAYER_MAX_PX = 150.0
+
 
 def _sq_dist(a, b):
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
@@ -496,7 +514,19 @@ class BadmintonAnalysisSystem:
         side's own tracked centroid (badminton_analysis.tracking.player.
         PlayerTracker.players[side]). Returns (keypoints, centroid), or
         (None, None) when this side has no tracked player this frame, or
-        (None, centroid) when it does but no pose person matched.
+        (None, centroid) when it does but no pose person matched -- i.e. the
+        nearest detected person's foot midpoint is further than
+        POSE_TO_PLAYER_MAX_PX from this side's centroid, or none of the
+        detected people has a usable foot midpoint at all.
+
+        The distance gate is load-bearing, not cosmetic: without it a frame in
+        which the pose model found only ONE person (while the cheaper player
+        tracker still holds centroids for both halves) would hand that same
+        person's keypoints to BOTH sides, since min() over a one-element list
+        always returns that element. That would fabricate a phantom opponent
+        (a near-duplicate of the hitter in BST's person-1 slot) and can flip
+        hitter attribution in stroke.events.detect_contacts_multi's
+        nearest-racket-wins comparison.
         """
         from .analysis import joint_angles as ja
 
@@ -523,6 +553,12 @@ class BadmintonAnalysisSystem:
             return _sq_dist(fm, centroid)
 
         person = min(people, key=_dist_to_centroid)
+        if _dist_to_centroid(person) > POSE_TO_PLAYER_MAX_PX ** 2:
+            # Nearest detected person is too far from this side's tracked
+            # centroid (or has no usable foot midpoint, scoring inf) -- report
+            # "tracked but unmatched" rather than borrowing the other side's
+            # player.
+            return None, centroid
         kp = person.astype(float).copy()
         mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
         kp[mask, 0] += ox
@@ -593,8 +629,17 @@ class BadmintonAnalysisSystem:
             from .visualization.technique_overlay import draw_technique_overlay
             draw_technique_overlay(frame, angles_now)
 
+        # ONE racket forward pass per frame, shared by the single-player value
+        # below and the both-player block further down. detect_racket_heads
+        # returns exactly the same in-ROI boxes detect_racket_head chooses
+        # from, sorted confidence-descending; since Python's sort is stable,
+        # racket_candidates[0] is byte-identical to
+        # detect_racket_head's max(boxes, key=confidence). Calling both would
+        # double this frame's YOLO cost on the pipeline's hot path.
+        racket_candidates = []
         if self._racket_detector is not None:
-            racket_head = self._racket_detector.detect_racket_head(frame, roi_corners=roi_corners)
+            racket_candidates = self._racket_detector.detect_racket_heads(frame, roi_corners=roi_corners)
+            racket_head = racket_candidates[0] if racket_candidates else None
         if racket_head is None and keypoints is not None:
             from .analysis.joint_angles import infer_racket_head
             racket_head = infer_racket_head(keypoints, dominant=self.dominant_hand)
@@ -622,9 +667,7 @@ class BadmintonAnalysisSystem:
             people_list = list(pose["keypoints"])
             p_ox, p_oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
 
-        racket_candidates = []
-        if self._racket_detector is not None:
-            racket_candidates = self._racket_detector.detect_racket_heads(frame, roi_corners=roi_corners)
+        # racket_candidates was already computed once above (single YOLO pass).
 
         players_data = {}
         for region in ("lower", "upper"):

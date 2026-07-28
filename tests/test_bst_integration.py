@@ -388,3 +388,217 @@ def test_capture_analysis_frame_racket_assignment_falls_back_to_kinematic_infere
     assert rec["players"]["lower"]["racket_head"] is not None
     assert rec["players"]["upper"]["racket_head"] is not None
     assert rec["players"]["lower"]["racket_head"] != rec["players"]["upper"]["racket_head"]
+
+
+def _bare_capture_system(racket_detector=None):
+    """Minimal system instance for exercising _capture_analysis_frame alone."""
+    sys_ = object.__new__(BadmintonAnalysisSystem)
+    sys_._shuttle_trajectory = None
+    sys_._shuttle_source = "yolo"
+    sys_._analysis_track = []
+    sys_._analysis_track_both = []
+    sys_._analysis_frames = {}
+    sys_.dominant_hand = "right"
+    sys_._racket_detector = racket_detector
+    return sys_
+
+
+def test_capture_side_pose_gates_a_far_nearest_person_instead_of_sharing_it():
+    """One detected person must never be assigned to BOTH sides.
+
+    The pose model can miss a small/far player while the cheaper player
+    tracker still holds a centroid for that half. min() over a one-element
+    list always returns that element regardless of distance, so without the
+    POSE_TO_PLAYER_MAX_PX gate the single lower-court person's keypoints were
+    handed to "upper" as well -- fabricating a phantom opponent that is a
+    near-duplicate of the hitter in BST's person-1 slot, and (because its
+    kinematically inferred racket point sits on the hitter's own body) able to
+    flip hitter attribution in detect_contacts_multi's nearest-wins compare.
+
+    The gated result is the state _capture_side_pose's docstring always
+    promised: (None, that side's own centroid).
+    """
+    sys_ = _bare_capture_system()
+    only_person = _person_with_feet_at(100.0, 100.0)  # squarely the lower player
+    sys_.player_pose_visualizer = _FakePoseVisualizerTwoPeople(np.array([only_person]))
+    sys_.player_tracker = _FakePlayerTrackerBoth({"lower": (100.0, 100.0), "upper": (100.0, 500.0)})
+
+    sys_._capture_analysis_frame(11, None, [(0, 0), (10, 10)], None)
+
+    rec = sys_._analysis_frames[11]
+    # The matching side still gets the real person.
+    np.testing.assert_allclose(rec["players"]["lower"]["keypoints"][15], (100.0, 100.0))
+    assert rec["players"]["lower"]["centroid"] == (100.0, 100.0)
+    # The non-matching side is honestly empty, not a copy of the lower player.
+    assert rec["players"]["upper"]["keypoints"] is None
+    assert rec["players"]["upper"]["centroid"] == (100.0, 500.0)
+    # ...and therefore has no kinematically inferred racket point either, so it
+    # cannot win detect_contacts_multi's proximity compare against the hitter.
+    assert rec["players"]["upper"]["racket_head"] is None
+    assert sys_._analysis_track_both[-1]["racket_upper"] is None
+
+
+def test_capture_side_pose_still_matches_a_moderately_stale_centroid():
+    """Positive control that the gate isn't over-tight: the tracked centroid
+    is itself a foot midpoint (visualization/player_pose.py::detect_players),
+    so a centroid held stale from a slightly earlier frame must still match
+    its own player rather than being rejected."""
+    sys_ = _bare_capture_system()
+    lower_person = _person_with_feet_at(100.0, 100.0)
+    upper_person = _person_with_feet_at(100.0, 500.0)
+    sys_.player_pose_visualizer = _FakePoseVisualizerTwoPeople(np.array([lower_person, upper_person]))
+    # Both centroids lag their player by 100px (< POSE_TO_PLAYER_MAX_PX).
+    sys_.player_tracker = _FakePlayerTrackerBoth({"lower": (100.0, 200.0), "upper": (100.0, 400.0)})
+
+    sys_._capture_analysis_frame(13, None, [(0, 0), (10, 10)], None)
+
+    rec = sys_._analysis_frames[13]
+    np.testing.assert_allclose(rec["players"]["lower"]["keypoints"][15], (100.0, 100.0))
+    np.testing.assert_allclose(rec["players"]["upper"]["keypoints"][15], (100.0, 500.0))
+
+
+# --- End-to-end: real capture -> real recognition (finding 5) ---------------
+
+E2E_VIDEO_WH = (1000, 1000)
+E2E_COURT_CORNERS = [(100, 100), (900, 100), (900, 700), (100, 700)]
+E2E_TOTAL_FRAMES = 90
+E2E_LOWER_CENTROID = (500.0, 600.0)
+E2E_UPPER_CENTROID = (500.0, 200.0)
+E2E_LOWER_CONTACT = 30
+E2E_UPPER_CONTACT = 40  # only 10 frames later: inside the default min_gap of 15
+# Frames where the pose model sees only the lower player (the finding-2
+# mechanism), chosen to sit outside both hits' SEQ_LEN build_inputs windows
+# (15..44 and 25..54) so it cannot perturb the recognition result.
+E2E_LOWER_ONLY_FRAMES = range(60, 71)
+
+
+def _e2e_shuttle_at(f):
+    """Shuttle path with a 180-degree reversal at each contact frame."""
+    if f <= E2E_LOWER_CONTACT:
+        return (500.0, 600.0 - (E2E_LOWER_CONTACT - f) * 10.0)
+    if f <= E2E_UPPER_CONTACT:
+        return (500.0, 600.0 - (f - E2E_LOWER_CONTACT) * 40.0)
+    return (500.0, 200.0 + (f - E2E_UPPER_CONTACT) * 10.0)
+
+
+def _e2e_racket_candidates(f):
+    """Each side's racket box for frame f, coincident with the shuttle only on
+    that side's own contact frame and >= 100px away (i.e. outside contact_px)
+    on every other frame."""
+    lower = (500.0, 600.0) if f == E2E_LOWER_CONTACT else (400.0, 600.0)
+    upper = (500.0, 200.0) if f == E2E_UPPER_CONTACT else (400.0, 200.0)
+    return [lower, upper]
+
+
+class _FrameKeyedRacketDetector:
+    """Returns the candidates configured for ``self.frame_no``.
+
+    Also asserts finding 1: ``detect_racket_head`` must never be called, and
+    ``calls`` lets the test pin exactly ONE racket forward pass per frame
+    (the pre-fix code ran the YOLO racket model twice on every frame).
+    """
+
+    def __init__(self):
+        self.frame_no = None
+        self.calls = 0
+
+    def detect_racket_heads(self, frame, roi_corners=None):
+        self.calls += 1
+        return list(_e2e_racket_candidates(self.frame_no))
+
+    def detect_racket_head(self, frame, roi_corners=None):
+        raise AssertionError(
+            "detect_racket_head must not be called: the capture path derives "
+            "the single-player racket_head from detect_racket_heads' first "
+            "(highest-confidence) box, so the model runs once per frame")
+
+
+class _MutablePoseVisualizer:
+    def __init__(self):
+        self.people = None
+
+    def get_current_pose_data(self):
+        return {"keypoints": self.people, "offset_x": 0, "offset_y": 0}
+
+
+def test_real_capture_to_recognition_yields_both_sides_as_hitters(tmp_path, monkeypatch):
+    """Findings 2, 3 and 1 regression: the real capture-to-recognition chain.
+
+    Drives the REAL ``_capture_analysis_frame`` (real ``_capture_side_pose``,
+    real per-side racket assignment) over a 90-frame synthetic rally with one
+    contact by "lower" (frame 30) and one by "upper" (frame 40, deliberately
+    inside the default 15-frame min_gap), then runs the REAL
+    ``_run_stroke_recognition`` -> ``label_rally`` -> ``hit_events`` ->
+    ``detect_contacts_multi`` -> ``build_inputs`` chain with only the torch
+    model (``load_bst``/``predict``) stubbed.
+
+    Pre-fix this failed twice over: the globally shared ``min_gap`` dropped the
+    frame-40 reply entirely (so "upper" never appeared in strokes.json), and
+    the ungated ``_capture_side_pose`` assigned the single detected person to
+    both sides on the lower-only frames.
+    """
+    canned_logits = np.zeros(25, dtype=np.float32)
+    canned_logits[3] = 10.0  # "Top_殺球" -> coarse "smash" (stroke_recog/classes.py)
+    monkeypatch.setattr(bst_model_mod, "load_bst", lambda weights_path: _DummyBstModel())
+    monkeypatch.setattr(bst_model_mod, "predict", lambda model, pose, shuttle, positions: canned_logits)
+
+    racket_detector = _FrameKeyedRacketDetector()
+    sys_ = _bare_system(tmp_path, bst_weights="weights/bst.pt", monkeypatch=monkeypatch)
+    sys_.dominant_hand = "right"
+    sys_._racket_detector = racket_detector
+    sys_.court_corners = list(E2E_COURT_CORNERS)
+    sys_.frame_width, sys_.frame_height = E2E_VIDEO_WH
+
+    pose_vis = _MutablePoseVisualizer()
+    sys_.player_pose_visualizer = pose_vis
+    # Both halves stay tracked for the whole clip, including the frames where
+    # the pose model only finds the lower player.
+    sys_.player_tracker = _FakePlayerTrackerBoth(
+        {"lower": E2E_LOWER_CENTROID, "upper": E2E_UPPER_CENTROID})
+
+    lower_person = _person_with_feet_at(*E2E_LOWER_CENTROID)
+    upper_person = _person_with_feet_at(*E2E_UPPER_CENTROID)
+    # A real BGR frame: _capture_analysis_frame draws the technique overlay on
+    # it via cv2 whenever a pose was captured.
+    blank_frame = np.zeros((E2E_VIDEO_WH[1], E2E_VIDEO_WH[0], 3), dtype=np.uint8)
+
+    for f in range(1, E2E_TOTAL_FRAMES + 1):
+        racket_detector.frame_no = f
+        if f in E2E_LOWER_ONLY_FRAMES:
+            pose_vis.people = np.array([lower_person])
+        else:
+            pose_vis.people = np.array([lower_person, upper_person])
+        shuttle = _e2e_shuttle_at(f)
+        sys_._capture_analysis_frame(f, blank_frame, [(0, 0), (999, 999)], list(shuttle))
+
+    # Finding 1: exactly one racket forward pass per captured frame.
+    assert racket_detector.calls == E2E_TOTAL_FRAMES
+
+    # Finding 2: on lower-only frames "upper" is honestly empty rather than a
+    # duplicate of the lower player.
+    for f in E2E_LOWER_ONLY_FRAMES:
+        players = sys_._analysis_frames[f]["players"]
+        assert players["upper"]["keypoints"] is None, f"frame {f}"
+        assert players["upper"]["centroid"] == E2E_UPPER_CENTROID
+        assert players["lower"]["keypoints"] is not None, f"frame {f}"
+
+    sys_._run_stroke_recognition()
+
+    strokes_path = os.path.join(str(tmp_path), "strokes.json")
+    assert os.path.exists(strokes_path)
+    with open(strokes_path, encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    strokes = payload["strokes"]
+    # Finding 3: BOTH sides appear as hitters even though their contacts are
+    # closer together than min_gap.
+    assert [(s["frame"], s["hitter"]) for s in strokes] == [
+        (E2E_LOWER_CONTACT, "lower"), (E2E_UPPER_CONTACT, "upper")]
+    assert {s["hitter"] for s in strokes} == {"lower", "upper"}
+    # Both hits had enough pose signal for BST, so neither degraded to
+    # "uncertain" -- the real build_inputs/CourtMapper path ran for both, with
+    # person-0/person-1 filled from opposite sides.
+    for stroke in strokes:
+        assert stroke["stroke"] == "smash", stroke
+        assert stroke["uncertain"] is False, stroke
+    assert payload["distribution"] == {"smash": 2}

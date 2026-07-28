@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from badminton_analysis.detection.racket import RacketDetector
 from badminton_analysis.analysis import joint_angles as ja
 
@@ -159,3 +160,33 @@ def test_detect_racket_head_unchanged_after_refactor():
     det = RacketDetector(model=model)
     frame = np.zeros((200, 200, 3), dtype=np.uint8)
     assert det.detect_racket_head(frame) == (50, 60)
+
+
+@pytest.mark.parametrize("conf", [
+    [0.9, 0.4],          # distinct confidences
+    [0.4, 0.9],          # distinct, reversed
+    [0.7, 0.7],          # exact tie -> stable sort must keep detection order
+    [0.7, 0.7, 0.7],     # three-way tie
+])
+def test_detect_racket_heads_first_equals_detect_racket_head(conf):
+    """Invariant system._capture_analysis_frame relies on to run the racket
+    model ONCE per frame: heads[0] is exactly what detect_racket_head returns,
+    ties included (max picks the first maximum; list.sort is stable, so
+    reverse-sorting does not reorder equal-confidence boxes)."""
+    xywh = [[50, 60, 10, 10], [20, 20, 10, 10], [80, 90, 10, 10]][:len(conf)]
+    model = _FakeModel(_FakeResult(_FakeBoxes(xywh=xywh, conf=conf)))
+    det = RacketDetector(model=model)
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    heads = det.detect_racket_heads(frame)
+    assert heads[0] == det.detect_racket_head(frame)
+
+
+def test_detect_racket_heads_empty_matches_detect_racket_head_none():
+    """The other half of the invariant: no in-ROI boxes -> [] here and None
+    there, so deriving racket_head from heads[0]-or-None cannot diverge."""
+    boxes = _FakeBoxes(xywh=[[500, 500, 10, 10]], conf=[0.9])
+    det = RacketDetector(model=_FakeModel(_FakeResult(boxes)))
+    frame = np.zeros((600, 600, 3), dtype=np.uint8)
+    roi = [(0, 0), (100, 100)]
+    assert det.detect_racket_heads(frame, roi_corners=roi) == []
+    assert det.detect_racket_head(frame, roi_corners=roi) is None

@@ -114,3 +114,27 @@ def test_detect_contacts_multi_tie_breaks_toward_lower():
     contacts = detect_contacts_multi(track)
     assert contacts[0]["contact_frame"] == 30
     assert contacts[0]["hitter"] == "lower"
+
+
+def test_detect_contacts_multi_min_gap_is_per_side_not_global():
+    """min_gap must not suppress the OPPONENT's reply.
+
+    A single shared last_contact_frame silently changed min_gap's meaning from
+    "same racket re-triggered" (detect_contacts' original, correct reading) to
+    "any contact within min_gap frames", discarding genuine replies by the
+    other player. At min_gap=15 / 30fps that is 0.5s -- well inside a fast net
+    exchange, so it could keep "upper" from ever appearing as a hitter.
+    """
+    # 10 frames apart -- closer together than the default min_gap of 15.
+    track = _track_both(30, 40, first_side="lower", second_side="upper")
+    contacts = detect_contacts_multi(track)
+    assert [(c["contact_frame"], c["hitter"]) for c in contacts] == [(30, "lower"), (40, "upper")]
+
+
+def test_detect_contacts_multi_min_gap_still_dedups_the_same_side():
+    """The other half of the contract: min_gap keeps its ORIGINAL job of
+    suppressing a repeat contact by the SAME side shortly after its own
+    previous one (same fixture as the per-side test, both hits by "lower")."""
+    track = _track_both(30, 40, first_side="lower", second_side="lower")
+    contacts = detect_contacts_multi(track)
+    assert [(c["contact_frame"], c["hitter"]) for c in contacts] == [(30, "lower")]

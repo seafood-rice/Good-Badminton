@@ -80,6 +80,14 @@ class RacketDetector:
         players (badminton_analysis.system._capture_analysis_frame's
         both-player capture). Returns [] when the model is absent or no boxes
         fall in the ROI.
+
+        Invariant callers may rely on: ``detect_racket_heads(...)[0]`` is
+        exactly ``detect_racket_head(...)`` (and ``[]`` exactly matches
+        ``None``), because both read the same ``_boxes_in_roi`` output and
+        ``list.sort`` is stable, so the first confidence-descending element is
+        the same element ``max`` picks even when confidences tie.
+        ``system._capture_analysis_frame`` depends on this to get both values
+        from a single model forward pass.
         """
         boxes = self._boxes_in_roi(frame, roi_corners)
         boxes.sort(key=lambda b: b[1], reverse=True)

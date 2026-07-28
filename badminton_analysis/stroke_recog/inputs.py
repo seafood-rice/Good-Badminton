@@ -10,18 +10,24 @@ array is built to match: ``JnB: (b, t, n, in_dim)``, ``shuttle: (b, t, 2)``,
 ``pos: (b, t, n, 2)`` -- ``build_inputs`` returns the no-batch-dim versions
 (``bst_model.predict`` adds the batch dim).
 
-Known data-availability limit: the match pipeline currently tracks a single
-player's pose/position per frame -- whichever the tracker locks onto that
-frame (``system.py::_capture_analysis_frame``) -- never both players
-simultaneously, and it does not (yet) carry a "shuttle" key on the same
-per-frame record (that lives in the separate ``_analysis_track`` list, keyed
-positionally rather than by frame). So here "player" index 0 is always the
-tracked player for that frame (nominally the hitter); index 1 is always
-zero-filled for both ``pose`` and ``positions``, and ``shuttle`` is
-zero-filled unless the caller's ``frame_lookup`` records happen to carry a
-"shuttle" key (forward-compatible: today's ``system.py`` records do not --
-closing that gap is left to the Task 5 recognizer wiring / a future
-``system.py`` patch, not this module).
+Data availability (post-B1): the match pipeline captures BOTH players per
+frame. ``system.py::_capture_analysis_frame`` writes a ``rec["players"]``
+sub-dict with a ``"lower"`` and an ``"upper"`` entry (each carrying
+``"keypoints"``, ``"centroid"``, ``"racket_head"``, any of which may be
+``None`` when that side was not tracked/posed that frame), alongside the
+pre-existing single-player top-level ``"keypoints"``/``"centroid"`` fields.
+
+Which side lands in which BST person slot is chosen by ``build_inputs``'s
+``hitter`` argument: given ``"lower"``/``"upper"``, person index 0 is the
+hitter and index 1 the opponent, both read from ``rec["players"]``. Omitted,
+``build_inputs`` keeps the pre-B1 contract -- person 0 from the record's own
+top-level ``"keypoints"``/``"centroid"`` and person 1 zero-filled. See
+``build_inputs``'s own docstring for the authoritative contract; slots with no
+data available zero-fill rather than raising.
+
+``shuttle`` comes from each per-frame record's ``"shuttle"`` key, which
+``system.py``'s records do provide (zero-filled for frames where it is absent
+or ``None``).
 """
 
 import numpy as np

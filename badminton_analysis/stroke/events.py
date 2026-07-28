@@ -88,10 +88,19 @@ def detect_contacts_multi(track, contact_px=80.0, lookahead=3, dir_change_deg=45
     frame's cached "currently tracked" player_side). Ties are broken toward
     "lower" (arbitrary; noted, not tuned).
 
+    ``min_gap`` is tracked PER SIDE, keeping the exact meaning it has in
+    detect_contacts: a same-racket dedup guard that suppresses one player's
+    racket re-triggering a contact a few frames after its own previous
+    contact. It deliberately does NOT suppress across sides -- a genuine reply
+    by the OTHER player is always kept, however soon it lands. (A single
+    shared gap would silently discard replies inside min_gap frames, i.e. 0.5s
+    at min_gap=15 / 30fps, which is well inside a fast net exchange or drive
+    rally and would produce implausible runs of the same hitter.)
+
     Returns list of {contact_frame, window_start, window_end, hitter}.
     """
     contacts = []
-    last_contact_frame = None
+    last_contact_frame = {"lower": None, "upper": None}
     for i, rec in enumerate(track):
         shuttle = rec.get("shuttle")
         if shuttle is None:
@@ -110,7 +119,8 @@ def detect_contacts_multi(track, contact_px=80.0, lookahead=3, dir_change_deg=45
         if change is None or change < dir_change_deg:
             continue
         frame = rec["frame"]
-        if last_contact_frame is not None and (frame - last_contact_frame) < min_gap:
+        prev = last_contact_frame[best_side]
+        if prev is not None and (frame - prev) < min_gap:
             continue
         contacts.append({
             "contact_frame": frame,
@@ -118,5 +128,5 @@ def detect_contacts_multi(track, contact_px=80.0, lookahead=3, dir_change_deg=45
             "window_end": frame + window_post,
             "hitter": best_side,
         })
-        last_contact_frame = frame
+        last_contact_frame[best_side] = frame
     return contacts
