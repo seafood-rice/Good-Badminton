@@ -391,13 +391,16 @@ window.Kestrel = (function () {
       fetch('/api/models').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
         var el = document.getElementById('cfg-model-chips');
         if (!el || !d) return;
-        var rktOn = !!d.racket, qmOn = !!d.quality;
+        var rktOn = !!d.racket, qmOn = !!d.quality, liftOn = !!d.lift;
         el.innerHTML =
           '<span class="chip" style="color:' + (rktOn ? 'var(--good)' : 'var(--faint)') + '">' +
             (zh ? (rktOn ? '球拍检测模型 ✓' : '球拍检测模型 未安装') : (rktOn ? 'Racket model ✓' : 'Racket model not installed')) +
           '</span>' +
           '<span class="chip" style="color:' + (qmOn ? 'var(--good)' : 'var(--faint)') + '">' +
             (zh ? (qmOn ? 'AI 评分模型 ✓' : 'AI 评分模型 未安装') : (qmOn ? 'AI scoring model ✓' : 'AI scoring model not installed')) +
+          '</span>' +
+          '<span class="chip" style="color:' + (liftOn ? 'var(--good)' : 'var(--faint)') + '">' +
+            (zh ? (liftOn ? '3D 提升模型 ✓' : '3D 提升模型 未安装') : (liftOn ? '3D lifting model ✓' : '3D lifting model not installed')) +
           '</span>';
       }).catch(function () {});
     }
