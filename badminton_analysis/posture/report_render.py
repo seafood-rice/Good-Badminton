@@ -1,5 +1,6 @@
 """Render a structured coach report to self-contained HTML and best-effort PDF."""
 import html as _html
+import re as _re
 
 _CSS = """
 body{font-family:'Noto Sans CJK SC','Microsoft YaHei','PingFang TC','Heiti TC',
@@ -106,9 +107,39 @@ def render_pdf(html, out_path):
     try:
         import weasyprint
     except Exception:
-        return False
+        return _render_pdf_xhtml2pdf(html, out_path)
     try:
         weasyprint.HTML(string=html).write_pdf(out_path)
         return True
+    except Exception:
+        return _render_pdf_xhtml2pdf(html, out_path)
+
+
+# reportlab's built-in CID fonts (Adobe-GB1/CNS1 collections) render CJK glyphs
+# without needing an embedded/bundled font file -- most PDF viewers substitute
+# a local CJK font for these standard, non-embedded font references. xhtml2pdf
+# only auto-registers one of these when a CSS font-family value matches its
+# name exactly (see xhtml2pdf.context.Context.getFontName), so plain font
+# stacks like "Microsoft YaHei, SimHei, sans-serif" resolve to Helvetica (no
+# CJK glyphs, renders as tofu boxes) unless we force one of these names in.
+_CJK_CID_FONT_BY_LANG = {"zh-hans": "STSong-Light", "zh-hant": "MSung-Light"}
+
+
+def _render_pdf_xhtml2pdf(html, out_path):
+    """Pure-Python fallback for machines without weasyprint's native GTK deps."""
+    try:
+        from xhtml2pdf import pisa
+    except Exception:
+        return False
+    lang_match = _re.search(r"<html[^>]*\blang=['\"]([^'\"]+)['\"]", html, _re.IGNORECASE)
+    lang = lang_match.group(1).lower() if lang_match else ""
+    cid_font = _CJK_CID_FONT_BY_LANG.get(lang)
+    if cid_font:
+        override = "<style>*{font-family:'" + cid_font + "' !important}</style></head>"
+        html = html.replace("</head>", override, 1)
+    try:
+        with open(out_path, "wb") as f:
+            result = pisa.CreatePDF(html, dest=f)
+        return not result.err
     except Exception:
         return False

@@ -40,27 +40,65 @@ def test_render_html_escapes_and_is_self_contained():
     assert "<style" in html.lower()  # inline CSS
 
 
-def test_render_pdf_returns_false_when_lib_absent(monkeypatch, tmp_path):
-    # Simulate weasyprint missing by making the import fail.
+def _block_import(monkeypatch, blocked_names):
     import builtins
     real_import = builtins.__import__
     def fake_import(name, *a, **k):
-        if name == "weasyprint":
-            raise ImportError("no weasyprint")
+        if name in blocked_names:
+            raise ImportError("no " + name)
         return real_import(name, *a, **k)
     monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_render_pdf_falls_back_to_xhtml2pdf_when_weasyprint_absent(monkeypatch, tmp_path):
+    # Simulate weasyprint missing by making the import fail -- render_pdf
+    # should still succeed via the pure-Python xhtml2pdf fallback.
+    _block_import(monkeypatch, {"weasyprint"})
+    out = tmp_path / "r.pdf"
+    assert render_pdf("<html><body>x</body></html>", str(out)) is True
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_render_pdf_returns_false_when_no_renderer_available(monkeypatch, tmp_path):
+    # Simulate neither PDF backend being installed.
+    _block_import(monkeypatch, {"weasyprint", "xhtml2pdf"})
     out = tmp_path / "r.pdf"
     assert render_pdf("<html><body>x</body></html>", str(out)) is False
     assert not out.exists()
 
 
-def test_render_html_empty_sections_safe():
-    html = render_html({"lang": "en", "header": {}, "summary": {},
-                        "strengths": [], "weaknesses": [], "per_rep": [], "training_plan": {}})
-    assert "<html" in html.lower()  # produced a document, no crash
+def test_render_pdf_xhtml2pdf_fallback_renders_cjk_glyphs(monkeypatch, tmp_path):
+    # The xhtml2pdf fallback must force a CJK-capable CID font for Chinese
+    # reports -- without it, reportlab's default font silently drops every
+    # CJK glyph and the PDF renders as blank/tofu boxes with no error.
+    _block_import(monkeypatch, {"weasyprint"})
+    html = render_html(_zh_hans_report())
+    out = tmp_path / "zh.pdf"
+    assert render_pdf(html, str(out)) is True
+    from pypdf import PdfReader
+    text = "".join(p.extract_text() for p in PdfReader(str(out)).pages)
+    assert "杀" in text and "球" in text  # from the stroke_label "杀球"
 
 
-def test_render_pdf_returns_false_on_render_error(monkeypatch, tmp_path):
+def test_render_pdf_returns_false_when_weasyprint_errors_and_no_fallback(monkeypatch, tmp_path):
+    # weasyprint present but its render call raises, AND xhtml2pdf is
+    # unavailable -- render_pdf must report failure, not a half-written file.
+    import sys, types
+    fake = types.ModuleType("weasyprint")
+    class _HTML:
+        def __init__(self, *a, **k): pass
+        def write_pdf(self, *a, **k): raise RuntimeError("boom")
+    fake.HTML = _HTML
+    monkeypatch.setitem(sys.modules, "weasyprint", fake)
+    _block_import(monkeypatch, {"xhtml2pdf"})
+    out = tmp_path / "r.pdf"
+    assert render_pdf("<html><body>x</body></html>", str(out)) is False
+    assert not out.exists()
+
+
+def test_render_pdf_falls_back_when_weasyprint_errors(monkeypatch, tmp_path):
+    # weasyprint present but its render call raises -- render_pdf should
+    # still succeed via the xhtml2pdf fallback.
     import sys, types
     fake = types.ModuleType("weasyprint")
     class _HTML:
@@ -69,8 +107,14 @@ def test_render_pdf_returns_false_on_render_error(monkeypatch, tmp_path):
     fake.HTML = _HTML
     monkeypatch.setitem(sys.modules, "weasyprint", fake)
     out = tmp_path / "r.pdf"
-    assert render_pdf("<html><body>x</body></html>", str(out)) is False
-    assert not out.exists()
+    assert render_pdf("<html><body>x</body></html>", str(out)) is True
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_render_html_empty_sections_safe():
+    html = render_html({"lang": "en", "header": {}, "summary": {},
+                        "strengths": [], "weaknesses": [], "per_rep": [], "training_plan": {}})
+    assert "<html" in html.lower()  # produced a document, no crash
 
 
 def _zh_hans_report():

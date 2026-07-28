@@ -18,3 +18,5 @@ scikit-learn>=1.0.0
 openpyxl>=3.0.0
 flask>=2.0,<4.0
 parse
+xhtml2pdf>=0.2.11
+weasyprint>=60
