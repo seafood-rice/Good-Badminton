@@ -101,23 +101,48 @@ class PlayerTracker:
                 self.match_stats[region]["total_frames"] += 1
                 self.rally_stats[region]["total_frames"] += 1
 
-        upper_court_centroids = []
-        lower_court_centroids = []
+        # Split candidates into court halves using the true net line rather than
+        # a fixed image row. The net sits at half the court length, so mapping a
+        # player's feet to court coordinates and comparing court-Y to that line
+        # is perspective-correct: it follows the net even when the camera is
+        # angled, where a single image row would sit deep in the near court.
+        # Each candidate carries its court-Y (or None if the mapping failed, in
+        # which case we fall back to the legacy image-row threshold).
+        net_court_y = self.court_mapper.court_dimensions[1] / 2.0
+        half_candidates = {"upper": [], "lower": []}
         for centroid in centroids:
-            if centroid[1] < self.threshold:
-                upper_court_centroids.append(centroid)
+            court_position = self.court_mapper.image_to_court(centroid)
+            if court_position is not None and len(court_position) >= 2:
+                court_y = float(court_position[1])
+                region = "upper" if court_y < net_court_y else "lower"
             else:
-                lower_court_centroids.append(centroid)
-
-        if len(upper_court_centroids) > 1:
-            upper_court_centroids.sort(key=lambda p: -p[1])
-            upper_court_centroids = [upper_court_centroids[0]]
-
-        filtered_centroids = upper_court_centroids + lower_court_centroids
-
-        for centroid in filtered_centroids:
-            try:
+                court_y = None
                 region = "upper" if centroid[1] < self.threshold else "lower"
+            half_candidates[region].append((centroid, court_y))
+
+        # Keep at most one player per half: the candidate closest to the net.
+        # In a busy venue this reliably prefers the on-court player over
+        # spectators or resting players deep in a half (or just beyond the
+        # baseline within the detection margin). "Closest to the net" is the
+        # court-Y nearest the net line, falling back to image-row proximity to
+        # the net when court-Y is unavailable.
+        selected = {}
+        for region, candidates in half_candidates.items():
+            if not candidates:
+                continue
+            if region == "upper":
+                # Behind the net: nearest net == largest court-Y (or image-Y).
+                best = max(candidates, key=lambda c: c[1] if c[1] is not None else c[0][1])
+            else:
+                # In front of the net: nearest net == smallest court-Y (or image-Y).
+                best = min(candidates, key=lambda c: c[1] if c[1] is not None else c[0][1])
+            selected[region] = best[0]
+
+        for region in ("upper", "lower"):
+            if region not in selected:
+                continue
+            centroid = selected[region]
+            try:
                 left_hand = left_hand_positions.get(centroid[1])
                 right_hand = right_hand_positions.get(centroid[1])
                 self._update_player_position(region, centroid, left_hand, right_hand, players_record)
