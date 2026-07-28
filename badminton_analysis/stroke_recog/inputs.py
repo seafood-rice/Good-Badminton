@@ -150,7 +150,23 @@ def _foot_point(rec):
     return None
 
 
-def build_inputs(contact_frame, frame_lookup, court_corners, video_wh):
+def _select_hitter_and_opponent(rec, hitter):
+    """(hitter_rec, opponent_rec) sub-dicts to read pose/position from.
+
+    hitter is None/"unknown" -> (rec, None): today's pre-B1 contract
+    (person-0 from the record's own top-level keys, person-1 always zero).
+    hitter is "lower"/"upper" -> reads rec["players"][hitter] /
+    rec["players"][opponent]; missing/absent -> None (zero-fills that slot,
+    never raises -- same never-fatal convention as the rest of this module).
+    """
+    if hitter not in ("lower", "upper"):
+        return rec, None
+    players = (rec or {}).get("players") or {}
+    opponent = "upper" if hitter == "lower" else "lower"
+    return players.get(hitter), players.get(opponent)
+
+
+def build_inputs(contact_frame, frame_lookup, court_corners, video_wh, hitter=None):
     """Assemble one hit's (pose, shuttle, positions) BST input arrays.
 
     Gathers the ``SEQ_LEN``-frame window centered on ``contact_frame`` (15
@@ -175,6 +191,13 @@ def build_inputs(contact_frame, frame_lookup, court_corners, video_wh):
     court_corners : sequence of 4 (x, y) points
         Passed straight to ``badminton_analysis.court.mapper.CourtMapper``.
     video_wh : (width, height)
+    hitter : "lower" | "upper" | None
+        (new, optional) selects which side's data fills person-0 (hitter) vs
+        person-1 (opponent), read from each window frame's
+        ``rec["players"][side]`` sub-dict (badminton_analysis.system's
+        both-player capture). Omitted/None keeps the original v1 contract:
+        person-0 from the record's own top-level "keypoints"/"centroid",
+        person-1 always zero-filled.
 
     Returns
     -------
@@ -185,8 +208,9 @@ def build_inputs(contact_frame, frame_lookup, court_corners, video_wh):
     half = SEQ_LEN // 2
     start = contact_frame - half
     records = [frame_lookup(idx) for idx in range(start, start + SEQ_LEN)]
+    sides = [_select_hitter_and_opponent(rec, hitter) for rec in records]
 
-    if sum(1 for rec in records if _is_posed(rec)) < _MIN_POSED_FRAMES:
+    if sum(1 for hitter_rec, _opp in sides if _is_posed(hitter_rec)) < _MIN_POSED_FRAMES:
         return None
 
     mapper = CourtMapper(court_corners)
@@ -195,17 +219,26 @@ def build_inputs(contact_frame, frame_lookup, court_corners, video_wh):
     shuttle = np.zeros(SHUTTLE_SHAPE, dtype=np.float32)
     positions = np.zeros(POS_SHAPE, dtype=np.float32)
 
-    for t, rec in enumerate(records):
-        if rec is not None and rec.get("keypoints") is not None:
-            pose[t, 0] = _normalize_pose(rec["keypoints"])
+    for t, (rec, (hitter_rec, opponent_rec)) in enumerate(zip(records, sides)):
+        if hitter_rec is not None and hitter_rec.get("keypoints") is not None:
+            pose[t, 0] = _normalize_pose(hitter_rec["keypoints"])
+        if opponent_rec is not None and opponent_rec.get("keypoints") is not None:
+            pose[t, 1] = _normalize_pose(opponent_rec["keypoints"])
 
         shuttle[t] = _shuttle_xy(rec, video_wh)
 
-        foot = _foot_point(rec)
+        foot = _foot_point(hitter_rec)
         if foot is not None:
             court_xy = mapper.image_to_court(foot)
             if len(court_xy):
                 positions[t, 0, 0] = float(court_xy[0]) / _COURT_W
                 positions[t, 0, 1] = float(court_xy[1]) / _COURT_H
+
+        foot_opp = _foot_point(opponent_rec)
+        if foot_opp is not None:
+            court_xy_opp = mapper.image_to_court(foot_opp)
+            if len(court_xy_opp):
+                positions[t, 1, 0] = float(court_xy_opp[0]) / _COURT_W
+                positions[t, 1, 1] = float(court_xy_opp[1]) / _COURT_H
 
     return {"pose": pose, "shuttle": shuttle, "positions": positions}
