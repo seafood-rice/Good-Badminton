@@ -15,12 +15,16 @@
   branched from `claude/motionbert-3d-lifting`'s tip rather than `main`, since
   `main` is far behind and the MotionBERT branch's PR (seafood-rice/Good-Badminton#1) is
   expected to land first; this branch will likely need a rebase once that merges.
-- **Head commit:** matches base commit as of this record; updated at each milestone.
-- **Last milestone:** 2026-07-29 - completion bar drafted (`docs/superpowers/specs/
-  2026-07-29-match-stroke-recognition-b-design.md`), owner decisions recorded (background
-  job with UI status tracking; both fixed-camera and broadcast footage in scope; strict
-  full-rally coverage as the target); the in-flight `player.py` net-line half-classification
-  fix landed as the first commit (prerequisite for hitter-by-proximity selection).
+- **Head commit:** `1ac402b` (final-review fix pass, all 7 B1 tasks + prerequisite fix landed).
+- **Last milestone:** 2026-07-29 - **B1 (both-player capture + hitter selection) complete.**
+  All 7 tasks implemented via subagent-driven-development (fresh implementer + task review
+  per task), plus a final whole-branch review that found and fixed 5 Important
+  cross-task issues invisible at task scope: the racket YOLO model ran twice per frame,
+  `_capture_side_pose` had no distance gate (letting one player's pose populate both sides
+  when only one was detected), `detect_contacts_multi`'s `min_gap` was shared across
+  players (silently dropping a genuine reply from the other side), a stale module
+  docstring, and a missing end-to-end capture-to-recognition test. Re-review confirmed all
+  5 fixed with no new breakage. Full committed suite: 433 passed.
 
 ## Acceptance criteria
 
@@ -48,25 +52,40 @@ non-regression with no weights present; full committed suite green.
 ## Changed paths
 
 - `badminton_analysis/tracking/player.py`, `tests/test_player_half_classification.py`
-  (commit `fe31415`, net-line half-classification fix, landed).
-- `docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md` (this milestone).
+  (commit `fe31415`, net-line half-classification fix).
+- `docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md` (completion bar).
+- `docs/superpowers/plans/2026-07-29-match-stroke-recognition-b1.md` (B1 implementation plan).
+- `badminton_analysis/detection/racket.py`, `badminton_analysis/stroke/events.py`,
+  `badminton_analysis/stroke_recog/{hits,inputs,recognizer}.py`, `badminton_analysis/system.py`
+  (the 7 B1 tasks + final-review fix pass), plus their test files.
 
 ## Verification
 
-- `tests/test_player_half_classification.py tests/test_bst_integration.py`: 11 passed.
-- Full suite (`--ignore=tests/test_ai_handoff.py`): 411 passed. Tested on the dirty tree at
-  commit `fe31415` on `claude/match-stroke-recognition-b`.
+- Per-task: 7 task-scoped reviews, all approved (task 7's fix-in-round for `min_gap`/pose-gate
+  issues landed in the final-review pass below, not per-task).
+- Final whole-branch review: 5 Important findings, 1 fix round, re-review clean, no new
+  Critical/Important breakage.
+- Full committed suite at `HEAD` (`1ac402b`): 433 passed (`--ignore=tests/test_ai_handoff.py`);
+  also ran the full literal suite including that continuity file once during the task loop:
+  713 passed, 0 failed.
+- **Not yet run:** the plan's controller-run real-footage validation step (reconstructed
+  ~25s/752-frame clip from the full Axelsen match, since the original 750-frame validation
+  clip referenced by the BST/TrackNetV3 specs no longer exists on disk and its extraction
+  timestamp was never recorded). This is the next action.
 
 ## Blockers
 
-None currently. B1's implementation plan is the next artifact to produce.
+None currently.
 
 ## Next action
 
-Write the implementation plan for B1 (both-player capture + hitter-by-proximity selection +
-BST person-0/person-1 fill), scoped to validate against the known-working 750-frame Axelsen
-clip segment, per the owner's explicit direction to start there rather than the full
-background-job/rally-detection scope.
+Run B1's controller-run validation (plan's "Validation" section): analyze the reconstructed
+clip through the real pipeline with real weights, inspect `strokes.json` for contact count,
+both-sided hitter attribution, and a qualitative alternation check, then record an honest
+outcome note (mirroring the BST/TrackNetV3 spec convention) before this workstream moves on
+to B2-B11 (segment-scoped dense tracking, the background-job redesign, rally/play-detection
+fixes on both footage types, fps/resolution normalization — all separate, not-yet-planned
+pieces of the broader Sub-project B effort per the completion-bar doc).
 
 <!-- ai-continuity:milestones:start -->
 <!-- ai-continuity:milestones:end -->
