@@ -76,25 +76,48 @@ non-regression with no weights present; full committed suite green.
   blocker the original BST T9 validation hit, and explicitly B11's scope, not B1's. B1's own
   correctness (done-means 1-3) already independently proven by a real end-to-end test added in
   the final-review fix pass; only item 4 (real-rally alternation) is unvalidated.
-- **Critical new data point:** this 25s clip took **17,443s (≈4.85h)** to process on this
-  CPU-only machine (`torch==2.5.1+cpu`, no CUDA). Confirms the owner's Q1 decision
-  (background job) is necessary, not optional, and means further validation attempts (trying a
-  different clip) cost multiple hours each on this hardware.
+- **Critical data point, CORRECTED 2026-08-01:** this 25s clip took **17,443s (≈4.85h)**
+  wall-clock, which this bullet originally attributed to a CPU-only machine
+  (`torch==2.5.1+cpu`, no CUDA). **That attribution was false.** This machine has an NVIDIA
+  RTX 4090 and the project venv's torch is `2.5.1+cu121` with CUDA available; the
+  `requirements.txt` pin does not match what is actually installed (a real, separate
+  reproducibility hazard worth tracking — a fresh install from `requirements.txt` would
+  genuinely be CPU-only). The 17,443s was almost entirely a blocked interactive stdin prompt
+  (`"Press Enter/Y to accept auto detection; press M/R/Esc for manual annotation."`, printed
+  despite `--display false`), not compute: `auto_court_preview.png` was written at 02:43:06
+  and the run did not proceed until `court_annotations.txt`/`metadata.json` appeared at
+  07:26:56, 4h43m50s later. Actual analysis time was ~6m51s. Full investigation in
+  `docs/superpowers/plans/2026-07-29-match-stroke-recognition-b1.md`'s "Validation outcome"
+  section and `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md` §0.10.
+  The owner's Q1 decision (background job) is still correct, but for two different reasons:
+  (1) the stdin-blocking defect just found can hang any unattended run indefinitely, and (2)
+  TrackNetV3's dense pre-pass is genuinely slow at native 4K (2.33 s/frame measured, vs 0.385
+  s/frame at 1080p) regardless of GPU, because the bottleneck is per-pixel preprocessing, not
+  the network itself — not because the machine lacks a GPU.
 
 ## Blockers
 
 - Further real-footage validation of B1 is coupled to B11 (rally/court-view detection fixes on
   both footage types) — chasing a better clip segment without fixing detection first risks
-  repeated multi-hour runs with the same null result. Recommend addressing B11 (or at least a
+  repeated runs with the same null result. Recommend addressing B11 (or at least a
   quick recalibration of `is_court_view`'s threshold) before another validation attempt.
+- **New defect found during the 2026-07-29 validation run (recorded 2026-08-01):** the
+  pipeline blocks on an interactive stdin prompt (`"Press Enter/Y to accept auto detection;
+  press M/R/Esc for manual annotation."`) even when invoked with `--display false`. It
+  silently consumed 4h43m of the run's 17,443s wall-clock time. Any unattended/background
+  invocation — directly relevant to B10, the planned background-job redesign — can hang
+  indefinitely at this prompt. Not fixed as part of this correction; tracked here so B10
+  planning accounts for it.
 
 ## Next action
 
 Owner decision needed: (a) accept B1 as done with synthetic/unit/end-to-end evidence plus an
 honestly-reported, upstream-blocked real-footage attempt, and move planning on to B11
 (rally/play detection) next since it's now confirmed as the actual gate on any further
-real-footage validation; or (b) spend another multi-hour validation attempt on a different clip
-segment first. Either way, B2-B10 (segment-scoped dense tracking, the background-job redesign,
+real-footage validation; or (b) spend another validation attempt on a different clip
+segment first — note the real analysis cost per attempt is on the order of minutes, not
+hours, once the stdin-blocking defect above is worked around (see the corrected Verification
+data point). Either way, B2-B10 (segment-scoped dense tracking, the background-job redesign,
 fps/resolution normalization) remain separate, not-yet-planned pieces of the broader Sub-project
 B effort per the completion-bar doc.
 

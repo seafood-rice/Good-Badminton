@@ -1380,20 +1380,49 @@ returns silently when `hit_events` finds no contacts).
 - Item 4 (plausible alternation on a real rally) is **unvalidated** — there were no contacts to
   eyeball.
 
-**A critical, previously-unmeasured data point this run surfaced:** total processing time for
-this 25-second clip was **17,443 seconds (≈4.85 hours)** on this machine, which runs CPU-only
-PyTorch (`torch==2.5.1+cpu`, per `requirements.txt` — no CUDA GPU). The completion-bar doc's R1
-throughput risk was an estimate from a 4090 GPU; on CPU-only hardware the cost is far higher
-still. This is a direct, load-bearing data point for the owner's Q1 answer (deep analysis as a
-background job with UI-tracked status) — a background job is not a nice-to-have here, it is the
-only way any of this is usable on hardware like this one. It also means iterating on validation
-clips (trying a different segment to find one with better rally-detection coverage) costs
-multiple hours per attempt on this hardware, not minutes.
+**A previously-unmeasured data point this run surfaced — CORRECTED 2026-08-01:** total
+wall-clock time for this 25-second clip was **17,443 seconds (≈4.85 hours)**. This section
+originally attributed that to CPU-only PyTorch (`torch==2.5.1+cpu`, per `requirements.txt` —
+no CUDA GPU) and concluded the completion-bar doc's 4090-GPU throughput estimate was
+optimistic. **That attribution was false and is corrected here** (full investigation in
+`docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md` §0.10, following this
+project's precedent of correcting its own prior premises rather than silently rewriting
+them). This machine has an RTX 4090, and the project venv's torch is `2.5.1+cu121` with
+`torch.cuda.is_available() == True` — the `requirements.txt` pin does not reflect what is
+actually installed in this venv (itself a real, separate reproducibility hazard: a fresh
+install from `requirements.txt` would genuinely be CPU-only and this slow).
 
-**Recommendation:** do not spend further multi-hour validation attempts chasing a better clip
-segment until B11 (rally/court-view detection) is at least partially addressed — validating B1
-end-to-end on real footage is now understood to be coupled to B11's fix, not independent of it,
-confirming the completion-bar doc's dependency ordering rather than contradicting it. B1 ships
-with strong synthetic/unit/end-to-end evidence and an honestly-reported real-footage attempt
-that hit a known, out-of-scope blocker — consistent with how BST and TrackNetV3 both shipped
-"experimental" pending exactly this same class of fix.
+The 17,443s was almost entirely a blocked interactive prompt, not compute. File mtimes in
+`outputs/b1-validation/`: `auto_court_preview.png` was written at `02:43:06`, after which the
+pipeline printed `"Press Enter/Y to accept auto detection; press M/R/Esc for manual
+annotation."` and blocked on stdin — this was a headless/background invocation with no stdin
+attached, despite `--display false` having been passed. `court_annotations.txt` and
+`metadata.json` were not written until `07:26:56`, **4h43m50s later**, when the prompt
+finally resolved. Actual analysis time was **~6m51s**, of which the TrackNetV3 dense
+pre-pass was ~4m49s (0.385 s/frame at 1080p, from the run log's iteration count). The
+completion-bar doc's R1 throughput risk, estimated from a 4090 GPU, was never actually
+contradicted by a measured CPU-only cost, because no such cost exists on this machine.
+
+The load-bearing conclusions survive, for the correct reasons. **First**, the pipeline has a
+genuine defect: it blocks on an interactive stdin prompt even when invoked with `--display
+false`, and it silently consumed 4h43m in this run. Any unattended/background invocation (the
+owner's Q1 answer: deep analysis as a background job with UI-tracked status) can hang
+indefinitely at this prompt — a background job needs this fixed or bypassed, not just a
+queue added around today's blocking behaviour. **Second**, TrackNetV3's dense pre-pass is
+genuinely slow at native 4K regardless of GPU: 2.33 s/frame measured on this machine (900
+frames in 2,099.5s), versus 0.385 s/frame at 1080p, because the bottleneck is per-pixel
+preprocessing (decode/resize/median-image), not the network's fixed-size input. A full
+match's dense pre-pass at the 4K rate is tens of hours even on a 4090. Iterating on
+validation clips does not cost "multiple hours per attempt" purely from hardware as
+originally claimed here — the real cost is resolution- and pre-pass-dependent, and any
+headless attempt risks hitting the stdin-blocking defect above.
+
+**Recommendation:** do not spend further validation attempts chasing a better clip segment
+until B11 (rally/court-view detection) is at least partially addressed — validating B1
+end-to-end on real footage is now understood to be coupled to B11's fix, not independent of
+it, confirming the completion-bar doc's dependency ordering rather than contradicting it. Any
+future headless/background validation run should also either pre-supply the court-detection
+answer or fix the stdin-blocking defect first, or it risks silently hanging exactly as this
+run did. B1 ships with strong synthetic/unit/end-to-end evidence and an honestly-reported
+real-footage attempt that hit a known, out-of-scope blocker — consistent with how BST and
+TrackNetV3 both shipped "experimental" pending exactly this same class of fix.

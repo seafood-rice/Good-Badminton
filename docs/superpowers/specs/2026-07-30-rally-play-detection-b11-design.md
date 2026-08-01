@@ -221,11 +221,15 @@ That is a rally-plausible structure for a singles match segment, from a signal w
 is measured present in 95.6% of frames. It is **not validated against ground truth** — see
 §9 and §12.
 
-### 0.9 Cost measurements (the CPU-only constraint, quantified)
+### 0.9 Cost measurements — NCC costs (GPU/CPU framing corrected in §0.10)
 
-This machine is CPU-only (`requirements.txt` pins `torch==2.5.1+cpu`, no CUDA GPU); the B1
-validation run took 17,443s (~4.85h) for a 25-second clip. Measured `matchTemplate` cost,
-plus three candidate replacements, over the real videos:
+**Correction (2026-08-01):** the original version of this subsection, and §6 below, claimed
+this machine was CPU-only and that the B1 validation run's 17,443s was compute time spent
+processing a 25-second clip. Both claims were false — see §0.10 for the full correction and
+the real numbers. The `matchTemplate` costs measured below are unaffected: they are real
+OpenCV CPU-operation costs (this codebase has no GPU path for `cv2.matchTemplate`), measured
+on this machine, and remain accurate regardless of the CPU/GPU question. Measured
+`matchTemplate` cost, plus three candidate replacements, over the real videos:
 
 | Signal | 1080p (ms/frame) | 4K (ms/frame) | Discriminates? |
 |---|---|---|---|
@@ -245,6 +249,139 @@ recording: the court surface is a near-uniform low-texture region, so after mean
 subtraction an NCC over it is mostly noise — "just crop to the court" is the obvious
 proposal and the data kills it.
 
+### 0.10 CORRECTION (2026-08-01): this machine is not CPU-only, and the B1 run's 17,443s was mostly a blocked prompt, not compute
+
+Two premises stated in the original §0.9 and in §6 were false. This document already has a
+precedent for correcting its own prior premises (§0's introduction; the R10 amendment in
+§12.D); this subsection follows that precedent rather than silently rewriting the earlier
+text.
+
+**The false claim:** "This machine is CPU-only (`requirements.txt` pins `torch==2.5.1+cpu`,
+no CUDA GPU); the B1 validation run took 17,443s (~4.85h) for a 25-second clip," which §6
+then elevated to "The CPU-only constraint is the primary design driver: it rules out any
+per-frame learned classifier."
+
+**What is actually true:**
+
+1. **A GPU is present and in use.** `nvidia-smi` reports an NVIDIA GeForce RTX 4090. The
+   project venv's installed torch is `2.5.1+cu121` with `torch.cuda.is_available() == True`
+   (both verified by running them). The false inference came from `requirements.txt` pinning
+   `torch==2.5.1+cpu` — that pin does not match what is actually installed in this venv. This
+   is still worth recording as a real, separate hazard: a fresh install from
+   `requirements.txt` would get a CPU build and would genuinely be this slow. It does **not**
+   mean this machine, or the runs measured in this document, were CPU-bound.
+
+2. **The 17,443s was almost entirely a blocked interactive prompt, not compute.** File
+   mtimes in `outputs/b1-validation/`:
+   - `02:43:06` — `auto_court_preview.png` written; the pipeline then printed `"Press
+     Enter/Y to accept auto detection; press M/R/Esc for manual annotation."` and blocked on
+     stdin. The run was headless/background with no stdin attached, despite `--display
+     false` having been passed.
+   - `07:26:56` — `court_annotations.txt` and `metadata.json` written: the prompt finally
+     resolved, **4h43m50s later**.
+   - `07:33:47` — all remaining outputs written.
+   - **Actual analysis time was ~6m51s**, of which the TrackNetV3 dense pre-pass was ~4m49s
+     (the run log records 47 iterations over 752 frames in 4:49 ⇒ **0.385 s/frame at
+     1080p**).
+
+3. **The run's own log recorded the real per-frame main-loop cost:** `"Frame 300: pose
+   0.02s, shuttlecock 0.02s, shuttle draw 0.00s, players draw 0.02s, court draw 0.00s"` ≈
+   **0.06 s/frame** for the streaming loop at 1080p — GPU-accelerated and fast, nothing like
+   the multi-second-per-frame figure the false claim implied.
+
+4. **A new GPU measurement, added by this correction:** TrackNetV3 on native 4K
+   (3840x2160) DJI footage costs **2.33 s/frame** (900 frames in 2,099.5s), versus 0.385
+   s/frame at 1080p. ~6x cost for 4x the pixels means the bottleneck is **per-pixel work (4K
+   decode, resize, median-image generation) — not the neural network**, which sees a fixed
+   288x512 input regardless of source resolution. This is actionable: downscaling or
+   cropping before TrackNetV3 should cut its cost substantially, and it is independent of the
+   CPU/GPU correction.
+
+**A genuine defect this uncovered — not just a measurement artifact.** The pipeline blocks
+on an interactive stdin prompt (`"Press Enter/Y to accept auto detection; press M/R/Esc for
+manual annotation."`) even when invoked with `--display false`. It silently consumed 4h43m
+in this run. This is directly relevant to B10 (the planned background-job redesign): any
+unattended/background invocation can hang indefinitely at this prompt. Recorded here as a
+finding; not fixed as part of this correction or this document.
+
+**What survives unchanged.** Every `cv2.matchTemplate` / NCC measurement in §0.9 above, and
+the §0.6 threshold-recalibration verdict, are OpenCV CPU-operation measurements made on this
+machine and are unaffected by the GPU correction. The signal-D 480px-downscale finding
+(17-69x cheaper, same distribution) also stands. §1, §3, §6, §11, and §13 below are updated
+to remove the false CPU-only framing while keeping the cost numbers that were always real.
+
+---
+
+### 0.11 TrackNetV3 measured on native 4K DJI footage: does NOT supply a usable shuttle input
+
+The owner authorised the "highest-value cheap experiment" from §0's open question B: run
+TrackNetV3 (not `yolo11s-ball`) on the DJI 4K footage and see whether it supplies the shuttle
+track that C2's rally segmentation depends on. Two runs, both on a 15 s / 900-frame native-4K
+segment cut at `-ss 25 -t 15` from `Dji 20260718111111 0010 D.mp4` (chosen because
+`detections.jsonl`'s non-artifact shuttle hits cluster densest at 25-40 s). GPU (RTX 4090),
+`device=None` which `third_party/tracknet/infer.py:158` resolves to cuda when available.
+
+| Metric | `yolo11s-ball` (recorded run) | TrackNetV3, full frame, 900 fr | TrackNetV3, frames 0-300 |
+|---|---|---|---|
+| Frames with a shuttle | ~25 % | **95.3 %** (858/900) | **94.3 %** (283/300) |
+| Single dominant static position | 87 % @ (473,846) | **42.5 % @ (1829,536)** | 7.4 % @ (1792,585) |
+| Zero-motion consecutive pairs | - | ~25 % | 6.4 % |
+| Median consecutive displacement | - | 7.0 px | 11.3 px |
+| **Inside the court polygon** | 1 of 4,194 | **0 of 858** | **0 of 283** |
+
+**The 95 % detection rate is misleading, and visual inspection is what establishes that.**
+Cropping the frame around individual detections and looking at them:
+
+- The 42.5 % cluster at (1829,536), held unbroken for frames 314-614 (5.0 s), is a **ceiling
+  light fixture** in the hall roof. Not the shuttle.
+- A sampled *moving* detection (frame 134, (1605,1019)) is a **racket being swung on a
+  different court in the background**. Not the analysed court's shuttle.
+
+**Root cause: footage framing, not the tracker.** This DJI camera captures a multi-court
+training hall. The analysed court quad spans x 145..3827, y 1122..2095 — 96 % of frame width
+but only the bottom ~45 % of frame height. The upper ~52 % of every frame is hall ceiling,
+spectators, and *other courts in simultaneous play*. TrackNetV3 was trained on broadcast
+footage where one court dominates the frame; here it has several candidate shuttles plus
+static roof clutter and picks the wrong ones.
+
+**Why "inside the court polygon" is itself the wrong test** (and why §0's earlier "1 of 4,194
+inside, 17 in a raised play volume" reads the way it does): the polygon is the court *floor*.
+A shuttle in flight is above the floor, which in image space means *above* the quad. So a
+0 %-inside result is expected even for a perfect tracker and is not by itself evidence of
+failure. The evidence of failure is the visual inspection plus the vertical distribution:
+**100 % of the cropped run's 283 detections sit above y=1122 with median y=831**, i.e. in the
+band where the *background* courts appear (further from camera ⇒ higher in frame), not on a
+trajectory over the analysed near court.
+
+**A crop cannot cleanly fix this, and the experiment that looked like it tested that did
+not.** The second run was intended as a court-crop test, but the computed crop came out at
+**96.4 % of the 4K area** (3840x2082) — because the court already spans 96 % of frame width,
+and the headroom the shuttle legitimately needs above the court pushed the top edge to y=51.
+So the two runs above differ by *segment length* (900 vs the first 300 frames, which exclude
+the 314-614 static-lock stretch), **not** by cropping. The apparent improvement in the static
+-lock and zero-motion columns is that confound, not a crop effect. Recorded explicitly so no
+one reads the third column as "cropping helps."
+
+The deeper point stands independently of that failed test: the shuttle over the *analysed*
+court flies from y≈2095 (near baseline) up through y≈500-800 on a high clear, and the
+*background* courts occupy y≈600-1100. **Those bands overlap**, so no axis-aligned spatial
+crop can separate the analysed court's shuttle from the background courts' shuttles.
+Disambiguation needs a non-spatial signal — e.g. requiring the shuttle to be near the tracked
+players, or temporal-trajectory continuity anchored on the near court.
+
+**Cost:** 2.33 s/frame at native 4K (2,099.5 s for 900 frames) and 1.63 s/frame on the
+96.4 %-area re-encode, both on the 4090 — consistent with §0.10.4's finding that per-pixel
+preprocessing, not the network, dominates.
+
+**Consequence for this design.** C2's shuttle-based rally segmentation (signal S1) is
+**unavailable on the owner's own footage class** with either shuttle detector currently in the
+repo. This is not fixable by swapping detectors, which was the hypothesis worth testing and is
+now tested. Either C2 relies on the non-shuttle signals for this footage class (the
+wrist/swing signal, §0's 23-segment result — plausible but still unvalidated), or the shuttle
+input needs a disambiguation stage that does not exist yet. This is a **new, measured blocker
+on B11's fixed-camera half**, and it strengthens rather than weakens the §0 recommendation
+that the owner decide whether multi-court hall footage is a supported input at all.
+
 ---
 
 ## 1. Goal
@@ -252,7 +389,8 @@ proposal and the data kills it.
 Make the pipeline (a) capture analysis data on essentially all frames where the court is
 actually in view, on both of the project's footage classes, and (b) emit `rally_segments`
 that correspond to actual rallies rather than to camera framing or to the whole video — at a
-per-frame cost no greater than today's, on CPU-only hardware, with the achieved quality
+per-frame cost no greater than today's (§0.10 corrects an earlier false CPU-only framing of
+this constraint; the cost discipline itself still applies), with the achieved quality
 reported honestly rather than assumed.
 
 ---
@@ -291,8 +429,11 @@ importance:
 1. **Not a learned-classifier problem.** The premise that motivated that framing (cuts,
    replays, score bugs, zooms) is absent from this project's footage (§0.5). Both files are
    continuous single-angle recordings. There is no shot-boundary problem to detect and no
-   evidence in hand that this project needs a learned play/non-play classifier. On CPU-only
-   hardware that is fortunate; it would also be unjustified.
+   evidence in hand that this project needs a learned play/non-play classifier. That
+   conclusion rests on the footage having nothing for such a classifier to classify, not on
+   hardware — an RTX 4090 is available on this machine (§0.10 corrects an earlier false
+   CPU-only claim), so a learned classifier is not foreclosed by lack of compute; it is
+   simply unjustified by the evidence in hand.
 2. **The court-view gate is a recalibration, specifically a self-calibration.** The signal
    already ranks real non-play below real play (§0.4); the shipped constant simply sits at
    ~p99.4 of the broadcast distribution. A robust lower-tail cut derived per video lands
@@ -480,10 +621,17 @@ left alone; unifying it is out of scope (§10).
 
 ---
 
-## 6. CPU-only cost budget
+## 6. Cost budget (corrected 2026-08-01 — see §0.10)
 
-The CPU-only constraint is the primary design driver: it rules out any per-frame learned
-classifier and any per-frame optical flow, and it is why C2 is offline rather than streaming.
+An earlier version of this section claimed "the CPU-only constraint is the primary design
+driver: it rules out any per-frame learned classifier." That claim was false: this machine
+has an RTX 4090, and the project venv's torch is `2.5.1+cu121` with CUDA available (§0.10).
+The reason C2 stays offline rather than streaming is not a CPU limitation — it is that
+`rally_segments` only needs to exist once per completed video, so there is nothing to gain
+from streaming it.
+
+The `matchTemplate` costs below were always real CPU-operation measurements (this codebase's
+NCC path has no GPU variant) and are unaffected by the correction:
 
 | Stage | Cost | Notes |
 |---|---|---|
@@ -492,10 +640,30 @@ classifier and any per-frame optical flow, and it is why C2 is offline rather th
 | C1 gate, 4K | **1.7 ms/frame** every frame | vs 120.6-138.5 ms every 3rd frame today (~40-46 ms/frame amortised) |
 | C2 segmenter | **O(frames), one pass, no decode** | operates on the recorded track; milliseconds total |
 
-**Net: B11 makes the per-frame budget cheaper, not more expensive** — roughly 6-8x cheaper
-at 1080p and ~25x at 4K, saving ~11 minutes of wall clock on the DJI clip alone — while
-removing the gate's 2-frame staleness. All four numbers above are measured on this machine
-(§0.9), not estimated.
+**Net: B11 makes the C0/C1/C2 per-frame budget cheaper, not more expensive** — roughly 6-8x
+cheaper at 1080p and ~25x at 4K, saving ~11 minutes of wall clock on the DJI clip alone —
+while removing the gate's 2-frame staleness. All four numbers above are measured on this
+machine (§0.9), not estimated.
+
+**What the real (GPU-corrected) budget is.** The genuinely expensive stage is not the gate —
+it is TrackNetV3's dense pre-pass, measured post-correction at 0.385 s/frame at 1080p and
+2.33 s/frame at native 4K (§0.10.4). The ~6x cost for 4x the pixels shows the bottleneck is
+per-pixel preprocessing (decode/resize/median-image), not the fixed 288x512 network input —
+so downscaling before TrackNetV3, not more GPU, is the lever. A full 64,085-frame match at
+the 4K rate is **~41 hours** for that one pre-pass stage alone, even on a 4090; at the 1080p
+rate it is **~6.9 hours**. The streaming main loop (pose + shuttlecock + draws) is cheap by
+comparison at ~0.06 s/frame (§0.10.3) and is already GPU-accelerated.
+
+**What this does and does not rule out.** A per-frame learned play/non-play classifier is no
+longer foreclosed by hardware — a 4090 is available, so it is a genuinely open option, not
+something this design can dismiss on cost grounds alone. This design still does not adopt
+one, but for the reason given in §3 finding 1: the footage has no shot-boundary problem for
+such a classifier to solve, which is a footage-content argument, independent of hardware.
+Cost discipline still matters, for a narrower and more honest reason: TrackNetV3's dense
+pre-pass is genuinely slow on 4K source video regardless of GPU, which is why the
+per-frame budget above is still worth minimising and why B10's background-job work remains
+warranted (§0.10's stdin-blocking finding is a second, independent reason for the same
+conclusion).
 
 The cost that B11 *does* add is downstream and indirect: opening the gate from 0.66% to ~98%
 on the broadcast video means pose/racket/shuttle detection now run on ~98% of frames instead
@@ -659,10 +827,11 @@ and on the domain-shift risk (R7) that remains unmeasured.
   relative to a full run and should precede committing to this design's signal-selection
   logic.
 - **R3 — Opening the gate multiplies run time.** Going from 0.66% to ~98% court frames on
-  the broadcast video means ~150x more frames reach pose/racket/shuttle detection. On
-  CPU-only hardware the first post-B11 full-match run will be far slower than the recorded
-  950s. Intended, but it makes B10 (background job) a hard prerequisite for any full-match
-  validation, not a parallel nicety.
+  the broadcast video means ~150x more frames reach pose/racket/shuttle detection. Even with
+  the RTX 4090 available (§0.10), the first post-B11 full-match run will be far slower than
+  the recorded 950s: those stages' cost is dominated by per-pixel preprocessing at full
+  source resolution, not raw GPU throughput (§0.10.4, §6). Intended, but it makes B10
+  (background job) a hard prerequisite for any full-match validation, not a parallel nicety.
 - **R4 — More court frames changes an existing shipped feature.** `TechniqueAnalysisRunner`
   consumes the same `_analysis_track`; admitting ~150x more frames on broadcast footage will
   produce a substantially different `technique_summary.json` on the same input. Intended, but
@@ -738,8 +907,11 @@ owner's own footage. **Proposed default: out of scope for B11, raised as its own
 
 ## 13. Global constraints
 
-- **CPU-only.** No per-frame learned classifier, no per-frame optical flow. Every proposed
-  per-frame cost is measured, not estimated (§0.9, §6).
+- **Cost-aware, not CPU-only** (corrected 2026-08-01, §0.10). This machine has an RTX 4090
+  and a working CUDA torch install; an earlier version of this constraint falsely claimed
+  otherwise. No per-frame learned classifier is adopted in this design, but on the
+  footage-content grounds in §3 finding 1, not a hardware limit. Every proposed per-frame
+  cost is still measured, not estimated (§0.9, §6, §0.10).
 - **Never-fatal.** Neither the gate's calibration nor the segmenter may crash the pipeline;
   every failure path leaves the match video and outputs intact (§7).
 - **Zero regression when pinned.** With `--court-view-threshold 0.75` and the signal forced,
