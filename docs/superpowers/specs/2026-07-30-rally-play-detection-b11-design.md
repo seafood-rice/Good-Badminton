@@ -379,8 +379,65 @@ repo. This is not fixable by swapping detectors, which was the hypothesis worth 
 now tested. Either C2 relies on the non-shuttle signals for this footage class (the
 wrist/swing signal, §0's 23-segment result — plausible but still unvalidated), or the shuttle
 input needs a disambiguation stage that does not exist yet. This is a **new, measured blocker
-on B11's fixed-camera half**, and it strengthens rather than weakens the §0 recommendation
-that the owner decide whether multi-court hall footage is a supported input at all.
+on B11's fixed-camera half**.
+
+---
+
+### 0.12 Owner decision (2026-08-02): multi-court hall footage IS a supported input
+
+§0.11 closed by recommending the owner decide whether multi-court hall footage is supported.
+**Decision: it is.** That makes shuttle-candidate disambiguation in-scope work rather than an
+avoidable problem, and it sizes B11's fixed-camera half accordingly.
+
+**Architectural finding that makes this tractable: TrackNetV3 already computes multiple
+shuttle candidates per frame and discards all but one.** `third_party/tracknet/infer.py:36-50`
+(`predict_location`, verbatim from upstream) runs `cv2.findContours` over the thresholded
+heatmap to get *every* blob, then keeps only the single largest-area rect:
+
+```python
+(cnts, _) = cv2.findContours(heatmap.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+rects = [cv2.boundingRect(ctr) for ctr in cnts]
+# ... keeps rects[max_area_idx], drops the rest
+```
+
+This is structurally the same defect B1 Task 1 already fixed for rackets
+(`detect_racket_head` → `detect_racket_heads`: return every in-ROI box, disambiguate
+downstream). Measured on the same 900-frame 4K segment, by monkeypatching `predict_location`
+to record every rect while still returning upstream's choice: **26.4 % of frames that have any
+candidate have more than one** (mean 1.27, median 1, max 3 per frame). So the multi-candidate
+substrate is real, and exposing it needs a vendored-code change of the same shape and size as
+Task 1's.
+
+**Honest caveat: the experiment intended to prove the analysed court's shuttle is among the
+discarded candidates did NOT prove it, because the test was mis-designed.** It scored
+candidates against an "analysed-court play volume" of y 587..2095 — but the *background*
+courts sit at y≈600..1100, i.e. **inside that band**. The volume therefore does not
+discriminate analysed-court from background-court detections, which is the very overlap
+§0.11 identified. Its headline numbers ("upstream's kept blob in-volume 92.7 %", "0 frames
+recoverable from discarded candidates") are consequently **not evidence either way** and must
+not be cited as refuting the hypothesis. Recorded rather than quietly dropped.
+
+**What visual inspection does establish.** Overlaying the court quad and the detection on full
+frames (`f118`, `f748`, `f856`, detections in the ambiguous y 700..900 band, ceiling-light lock
+excluded) shows the detections sitting **on the far wall / background-court region, well above
+and outside the analysed court quad** — consistent with §0.11. Since these false positives are
+*far* above the quad, a candidate filter of "inside the analysed court quad plus modest
+headroom" would reject them. What remains unproven is whether a **true** positive exists in the
+discarded candidates to be recovered — that needs a discriminating test (candidate-vs-tracked-
+player proximity, using the both-player positions B1 now records), not another volume heuristic.
+
+**Unplanned observation the frames surfaced, needs owner confirmation.** In the inspected
+frames the analysed court shows **one player** (in `f118` in a ready/split-step stance; in
+`f748` standing idle), in a hall where many other courts are in simultaneous play. If this
+footage is **solo or coached practice** rather than a two-player match, then part of "no
+analysed-court shuttle found" may be "there was no sustained two-player rally to find" — a
+different problem from detector confusion, and one that would question whether *full-match
+stroke recognition* (which assumes two players trading strokes, and whose BST model is a
+singles-match model) is the right goal for this footage at all. The recorded
+`detections.jsonl` for the full DJI run does track both an `upper` and a `lower` player, so
+this is **not** a settled conclusion — it may be a sampling artifact of the three frames
+inspected. Flagged for the owner, who knows what was being filmed, rather than assumed either
+way.
 
 ---
 
