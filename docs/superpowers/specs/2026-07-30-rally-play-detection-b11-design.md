@@ -608,13 +608,63 @@ interpretable.
 footage has now been tried and each fails for a different reason: shuttle trajectory is absent
 (§0.11, §0.14), single-frame posture is too weak, and far-player motion is both noisy and too
 insensitive after correction. **Validating the swing signal requires human-labelled rally
-boundaries** — there is no substitute available in-repo. Recommended, and small: the owner
-labels rally start/stop for one contiguous 2-3 minute stretch of the DJI footage (roughly
-15-25 rallies), which is enough to compute real precision/recall for segment boundaries and to
-fit the `swing_frac` / `gap_sec` / `min_len_sec` constants instead of inheriting them from
-`rep_segmenter`'s drill context. Until that exists, C2's swing path should ship behind the
-same honest "experimental" labelling BST and the quality model already use, and B11 must not
-claim validated rally segmentation on this footage class.
+boundaries** — there is no substitute available in-repo. §0.16 is that validation.
+
+---
+
+### 0.16 VALIDATED against human labels (2026-08-02): a good rally *detector*, a poor *boundary* estimator — and the constants are not the problem
+
+The owner labelled rally start/stop over the 60-240 s stretch of the DJI match:
+**11 rallies**, no spans marked unusable. Scored with `scripts/score_rally_labels.py`, which
+applies the perspective-correct teleport caps from §0.15 Defect 2. Window 61-244 s.
+
+| Configuration | Precision | Recall | F1 | Rallies found | Start err | End err |
+|---|---|---|---|---|---|---|
+| **As shipped** (`0.25 / 1.0 s / 2.0 s`) | 0.642 | 0.646 | **0.644** | **10 / 11** | **+1.90 s** | +0.59 s |
+| **Best of 84-point grid** (`0.25 / 1.5 s / 3.0 s`) | 0.605 | 0.775 | **0.679** | **11 / 11** | — | — |
+
+**Finding 1 — the signal detects rallies well but bounds them poorly.** It finds 10 of 11
+rallies as shipped and 11 of 11 when fitted, so as a *detector* it works. But frame-level F1 is
+only ~0.65: precision 0.64 means about a third of predicted rally time is not rally, and recall
+0.65 means about a third of real rally time is missed. 15 segments are predicted where 11
+rallies exist. For C2's purpose — deciding which spans deserve expensive downstream work — this
+is still useful (it would cut work to roughly a third while keeping nearly every rally), but it
+is **not** accurate enough to hand BST a trustworthy per-rally window unaided.
+
+**Finding 2 — tuning the constants does not rescue it, which corrects an earlier expectation.**
+The full grid over `swing_frac` x `gap_sec` x `min_len_sec` moves F1 from 0.644 to 0.679: **+3.5
+points.** An earlier note in this workstream speculated the inherited `rep_segmenter` defaults
+were poorly suited to match footage, on the strength of a smoke test that showed a large
+improvement — but that smoke test used *fabricated* labels, so its movement was meaningless.
+Against real labels the as-shipped constants are within noise of the best available. **The
+limitation is the signal, not its parameters**, so retuning is not the lever and Defect 1's
+under-specified recipe matters less than it appeared.
+
+**Finding 3 — the start boundary lags the serve by ~1.9 s, and that is real.** The labels are
+whole-second values, so label granularity alone contributes about ±0.5 s; the +0.59 s median
+*end* error is therefore within label noise and should not be treated as a finding. The
++1.90 s median *start* error is well outside it. The mechanism is inherent to the signal: a
+serve is a small, brief motion, and a smoothed wrist-speed threshold cannot cross until
+sustained movement follows. Any consumer needing the serve inside its window must pad the
+segment start by at least ~2 s.
+
+**Recommendation: do not adopt the fitted constants.** The +3.5 F1 points are fitted on 11
+rallies from a single video, which is a real overfitting risk, and `min_len_sec 3.0` would
+discard genuinely short rallies on other footage. Keep the as-shipped values, and record the
+measured behaviour instead: pad segment starts by ~2 s, expect ~0.65 precision/recall on
+boundaries, and expect near-complete rally detection.
+
+**Status of the swing path: measured, honestly bounded, still "experimental."** It now has real
+numbers on the owner's own footage rather than "looks plausible", which is what §0.15 asked
+for. It is fit for gating expensive work and unfit for defining authoritative rally windows.
+B11 may claim *measured* rally segmentation with these figures quoted; it must not claim
+accurate boundaries.
+
+**Caveats on this validation, stated plainly:** 11 rallies in one 3-minute window of one video;
+whole-second label granularity; a single labeller with no second opinion; and the labels cover
+only the fixed-camera multi-court class, so nothing here transfers to broadcast footage.
+Widening the labelled set is the cheapest way to firm this up if the numbers ever need to
+carry more weight than "fit for gating."
 
 ---
 
