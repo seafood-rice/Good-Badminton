@@ -477,15 +477,61 @@ computable from data the pipeline already records post-B1. It also means a candi
 a strong, quantified signal to reject on — the current false positives are wrong by ~600 px and
 by distribution shape, not marginally wrong.
 
-**The one question still open**, and the only cheap experiment left worth running before
-committing to the design: **is a true positive present among the candidates
-`predict_location` currently discards?** §0.12's attempt could not answer it (non-discriminating
-volume), and this section's analysis scores only the *kept* blob. Answering it requires one
-instrumented run that persists **every** candidate per frame (~35 min for 900 frames at 4K on
-the 4090) and then scores each candidate with the two criteria above. If a true positive is
-recoverable, B11's shuttle input is fixed by a Task-1-shaped vendored change plus a proximity
-filter. If it is not, TrackNetV3 cannot serve this footage class at all and the shuttle signal
-(S1) must be dropped from C2 for multi-court footage in favour of the wrist/swing signal.
+**The one question still open** was whether a true positive is present among the candidates
+`predict_location` discards. §0.14 answers it.
+
+---
+
+### 0.14 ANSWERED (2026-08-02): the discarded candidates do not contain the shuttle either — TrackNetV3 cannot serve this footage class
+
+The instrumented run §0.13 called for. `predict_location` monkeypatched to persist **every**
+contour candidate per frame (still returning upstream's max-area choice, so behaviour is
+unchanged), over the same 900-frame native-4K DJI segment; each candidate then scored against
+the two §0.13 criteria using the pipeline's own recorded player positions. Plausible = within
+150 px above the far player and 250 px below the near player. 900/900 calls captured; 367
+frames had both ≥1 candidate and both players known.
+
+| Outcome | Frames | Share |
+|---|---|---|
+| Upstream's **kept** blob plausible | 21 | 5.7 % |
+| Kept implausible **but a discarded candidate plausible** | **1** | **0.3 %** |
+| **No plausible candidate at all** | **345** | **94.0 %** |
+
+**Verdict: the Task-1-shaped "return all candidates" fix would gain 0.3 %.** In 94 % of
+scorable frames TrackNetV3 emits *no* candidate anywhere near the analysed court's play region
+— the shuttle is not being discarded, it is **never detected**. The hypothesis §0.12 raised is
+therefore refuted on its own terms, and refuted cheaply, before any code was written against it.
+
+Corroborating detail: the 22 frames with *some* plausible candidate have a
+distance-to-nearest-player distribution (p25 816, median 1195, p75 1270) that is **wider and
+farther** than the kept blobs' (605/752/985) rather than tighter and nearer. If those 22 were
+real shuttle detections they should sit closer to a player, not farther. They are most likely
+background objects that happen to fall inside the vertical band — i.e. even the 5.7 %+0.3 % is
+probably not signal.
+
+**Consequences, and they are design-level:**
+
+1. **Signal S1 (shuttle trajectory) is unavailable for multi-court hall footage.** Not
+   "degraded" — absent. C2's rally segmentation must not depend on it for this footage class,
+   which the owner has confirmed is supported (§0.12). The wrist/swing signal (§0's 23-segment
+   result) becomes the primary segmentation signal for this class, and its validation moves from
+   "nice to have" onto B11's critical path.
+2. **Neither shuttle detector in the repo works on this footage.** `yolo11s-ball` fails by
+   static-artifact domination (§0.11), TrackNetV3 by not detecting the shuttle at all. Swapping
+   or re-tuning detectors is now an exhausted avenue; a genuine fix would need a detector
+   trained or fine-tuned on this footage class, which is a separate project of its own and well
+   outside B11.
+3. **Do not spend the vendored `predict_location` change.** It is cheap and mirrors B1 Task 1,
+   which made it attractive, but it is now measured to buy 0.3 % on the footage class it was
+   meant to serve. Recorded explicitly so it is not revived later on the strength of the
+   architectural symmetry alone.
+4. **The B1 contact/hitter machinery is unaffected.** It consumes racket points and player
+   poses, not the shuttle track, and its correctness was proven independently (B1's end-to-end
+   test). What is blocked is rally *segmentation* input, not stroke attribution.
+
+**What this experiment cost and why it was worth it:** ~35 minutes of GPU time to avoid
+building a vendored-code change plus a proximity-filter stage against a signal that does not
+exist on the target footage.
 
 ---
 
