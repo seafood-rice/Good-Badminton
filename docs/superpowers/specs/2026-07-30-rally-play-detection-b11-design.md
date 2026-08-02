@@ -738,6 +738,75 @@ are ruled out. Note that A also cannot rescue *existing* footage shot on the wid
 framing — a detector fine-tuned on it would still be fighting a few-pixel target — so D matters
 for future footage regardless of what is done about the archive.
 
+### 0.19 Option C TESTED (2026-08-02): tiling gives a 4x improvement at no extra cost — partial success, not yet sufficient
+
+**First, a correction to how C was framed above.** "Crop *and upscale*" is wrong: TrackNetV3
+resizes any input to a fixed 512x288, so upscaling before that resize is undone by it. The only
+lever is **how many original pixels are fed per forward pass**, which means **tiling**. Framed
+correctly, the arithmetic predicts the failure and the fix:
+
+| | full frame (7.5x downscale) | 4 tiles (1.9x) |
+|---|---|---|
+| Shuttle at far baseline (~8.5 px @4K) | **1.1 px** | **4.5 px** |
+| Shuttle mid-court (~24 px @4K) | 3.2 px | 12.8 px |
+| Shuttle at near baseline (~48 px @4K) | 6.4 px | 25.8 px |
+
+TrackNet needs roughly 2-3 px to fire, so full-frame is arithmetically hopeless at the far end —
+which explains §0.14's 94 %-no-candidate result rather than merely restating it.
+
+**Test:** 4 horizontal tiles (12 % overlap) over the play band, 300 frames starting at 66.5 s —
+inside labelled rally #1, so ground truth says a rally IS in play and a null result would be
+meaningful.
+
+| Metric | Full frame (§0.14) | 4 tiles |
+|---|---|---|
+| Frames with a plausible candidate | **5.7 %** | **24.1 %** (57/237) |
+| Distance to nearest player (p25 / med / p75) | 642 / 652 / 852 — suspiciously tight | **176 / 785 / 1154 — wide** |
+| Cost | 2.33 s/frame | **1.95 s/frame** |
+
+**Three findings:**
+
+1. **A 4x improvement in plausible detections** (5.7 % → 24.1 %), in the direction and roughly
+   the magnitude the pixel arithmetic predicted.
+2. **The distance distribution is physically credible for the first time.** §0.13 established
+   that a real shuttle's distance to the nearest player must *vary* — near zero at contact,
+   large mid-flight — and that a tight cluster is the signature of a fixed background structure.
+   Full-frame gave 642/652/852 (tight, i.e. background). Tiled gives 176/785/1154 (wide), and
+   the p25 of 176 px is contact-range (~0.3 m at near-court scale, ~0.6 m mid-court). The
+   full-frame run never produced anything that close to a player.
+3. **Tiling is not more expensive — it is slightly cheaper.** 4 tiles cost 1.95 s/frame against
+   full-frame's 2.33 s/frame, because per-pixel preprocessing dominates (§0.10.4) and the total
+   pixel count is similar; the 4 extra forward passes are cheap by comparison. This removes the
+   obvious objection to the approach.
+
+**But 24 % is not yet sufficient, and the reason is specific.** During a rally the shuttle is in
+play essentially 100 % of the time, so 24 % is still mostly misses. More importantly,
+`stroke/events.py::_shuttle_dir_change` needs **three consecutive non-missing points** to
+measure the direction change a contact is defined by, so what matters is not coverage but the
+supply of consecutive runs. **This experiment did not measure run lengths** — only per-frame
+counts were persisted — so whether 24 % yields usable 3-frame runs is unmeasured and is the next
+thing to check before drawing any conclusion about sufficiency.
+
+**Also observed: tile yield is very asymmetric** — tiles 1/2 returned 136/142 detections, tiles
+3/4 only 23/17. The players sat at x≈1990 and x≈2260 during this window, i.e. in tiles 2-3, so
+tile 1's 136 detections are largely false positives on the adjacent court's clutter. Restricting
+tiles to the analysed court's own x-range, rather than the full frame width, should raise
+precision at no cost.
+
+**Verdict: C is a partial success and should not be abandoned in favour of A yet.** The cheap
+next steps, in order: (i) measure consecutive-run lengths, since that is the actual requirement;
+(ii) restrict tiles to the court's x-range to drop tile-1-style false positives; (iii) try 8
+tiles, since the trend with tile count is favourable and cost is flat.
+
+**A caveat that matters for option A.** At 3x zoom on a native 4K frame mid-rally, the shuttle
+could not be located by eye — the background behind the far player is dense with
+shuttle-coloured distractors (light clothing, white benches, an adjacent court's net, shoes).
+If a human cannot reliably see the shuttle at native resolution, **hand-labelling for A is
+correspondingly hard**, because you cannot label what you cannot see. This is a single-frame
+observation and not conclusive (the shuttle may simply have been outside the crop), but it means
+A's labelling cost should be validated on a handful of frames *before* committing to it — and it
+strengthens the case for D (tighter framing), which fixes visibility at source.
+
 ---
 
 ## 1. Goal
