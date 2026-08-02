@@ -738,7 +738,12 @@ are ruled out. Note that A also cannot rescue *existing* footage shot on the wid
 framing — a detector fine-tuned on it would still be fighting a few-pixel target — so D matters
 for future footage regardless of what is done about the archive.
 
-### 0.19 Option C TESTED (2026-08-02): tiling gives a 4x improvement at no extra cost — partial success, not yet sufficient
+### 0.19 Option C first tiling attempt (2026-08-02) — SUPERSEDED, see §0.20
+
+> **Do not rely on this section's numbers.** §0.20 shows the downscale figures below are
+> width-only and the tiles were the wrong shape, so the "1.9x", "4x improvement" and cost
+> claims are all wrong. Kept for the record and because its *reasoning* about why coverage is
+> the wrong metric (consecutive runs are what matters) still holds.
 
 **First, a correction to how C was framed above.** "Crop *and upscale*" is wrong: TrackNetV3
 resizes any input to a fixed 512x288, so upscaling before that resize is undone by it. The only
@@ -806,6 +811,121 @@ correspondingly hard**, because you cannot label what you cannot see. This is a 
 observation and not conclusive (the shuttle may simply have been outside the crop), but it means
 A's labelling cost should be validated on a handful of frames *before* committing to it — and it
 strengthens the case for D (tighter framing), which fixes visibility at source.
+
+### 0.20 CORRECTION (2026-08-03): §0.19's tiling test measured the wrong thing — the downscale figures are width-only and the tiles were the wrong shape
+
+**The defect.** `third_party/tracknet/utils/general.py:15-16` sets `HEIGHT = 288`, `WIDTH = 512`,
+and `third_party/tracknet/dataset.py` resizes every frame with
+`img.resize(size=(self.WIDTH, self.HEIGHT))` — a **non-aspect-preserving** resize to exactly
+512x288. §0.19 tiled **horizontally only**, producing tall thin tiles, and reported
+`tile_w / 512` as "the downscale". That figure ignores the vertical axis, which was the binding
+constraint in every tiled run:
+
+| Tiling | x-scale | y-scale | **effective (binding)** |
+|---|---|---|---|
+| Full frame 3840x2160 | 7.50x | 7.50x | **7.50x** (16:9, isotropic) |
+| §0.19 "4 tiles" 1030x1540 | 2.01x | **5.35x** | **5.35x** — not 1.9x |
+| follow-up "8 tiles" 514x1540 | 1.00x | **5.35x** | **5.35x** — not native |
+
+So horizontal-only tiling moved the binding scale from 7.5x to 5.35x, a 1.4x improvement — not
+the 4x (or 7.5x "native") the width-only figure implied. **§0.19's arithmetic table is therefore
+wrong**: the far-baseline shuttle went from ~1.1 px to ~1.6 px vertically, not to the 4.5 px
+claimed, which is still below anything the net can fire on. A second, subtler harm: a round
+8.5 px shuttle is squashed to roughly 4 px wide by 1.6 px tall, a horizontal streak unlike
+anything in TrackNet's training distribution, so even a "detectable-size" blob is the wrong
+shape.
+
+**What this invalidates.** The three §0.19 follow-ups were run (court-restricted x-range,
+run-length measurement, 8 tiles). The 4-tile arm completed: 51/300 frames accepted (17.0 %),
+10 consecutive runs of which only 4 were length >= 3 (longest 13), and the **real
+`detect_contacts_multi` fired 0 contacts** inside labelled rally #1, at 2.92 s/frame. That
+0 is **not evidence against option C**, because the geometry above shows the configuration
+never delivered the resolution C is premised on. The 8-tile arm was stopped once the flaw was
+identified rather than spending ~15 min re-confirming the same wrong geometry. §0.19's headline
+"4x improvement at no extra cost" also does not survive: the 24.1 % came from full-width tiles
+whose 5.7 %-baseline comparison mixed a changed x-range with a changed scale, and the cost
+claim (1.95 vs 2.33 s/frame) is contradicted by this run's 2.92 s/frame.
+
+**The corrected test.** 16:9 tiles, gridded in **both** dimensions so x-scale == y-scale ==
+the stated downscale, with origins spaced evenly across the play band for complete coverage
+with even overlap:
+
+| Config | Tile | Grid | Effective scale | Far shuttle (8.5 px @4K) |
+|---|---|---|---|---|
+| A | 1434x806 | 3 x 2 = 6 | **2.80x** | ~3.0 px |
+| B | 910x512 | 4 x 3 = 12 | **1.78x** | ~4.8 px |
+
+Same 300-frame window at 66.5 s inside labelled rally #1, same one-shuttle-per-frame selection,
+same real `detect_contacts_multi`. Added diagnostic: the shuttle-to-nearer-racket distance
+distribution, so a null result separates "the track misses the contact moments" from
+"`contact_px = 80` is too tight" — note 80 px is 13 cm at the near baseline (603.8 px/m) but
+75 cm at the far baseline (106.3 px/m), so that constant is itself perspective-blind.
+
+**Method note carried forward.** `detections.jsonl` records wrists but no racket point, so this
+harness uses the per-player wrist midpoint as the racket stand-in. Reasonable, but not what the
+production path uses, so a contact count from this harness is indicative rather than exact.
+
+**Standing lesson:** when a preprocessing step resizes to a fixed non-square target, the
+binding scale is `max(w / W, h / H)`, never one axis alone. Any future tiling work must state
+both axes.
+
+### 0.21 Option C ANSWERED (2026-08-03): properly tiled, C still fails — and resolution is ruled out as the cause
+
+Both corrected configs ran to completion on the 300-frame window inside labelled rally #1.
+
+| | Full frame | horiz-only (void) | **A: 2.80x, 6 tiles** | **B: 1.78x, 12 tiles** |
+|---|---|---|---|---|
+| Effective scale | 7.50x | 5.35x | **2.80x** | **1.78x** |
+| Raw detections (all tiles) | — | — | **292** | **172** |
+| Accepted shuttle (of 300) | — | 51 (17.0 %) | **48 (16.0 %)** | **28 (9.3 %)** |
+| Consecutive runs >= 3 | — | 4 | **3** | **4** |
+| **Real `detect_contacts_multi`** | **0** | **0** | **0** | **0** |
+| Min shuttle-to-racket px | — | — | **119** | **301** |
+| Cost | 2.33 s/frame | 2.92 | **2.19** | **2.26** |
+
+**1. Zero contacts at every scale tested,** from 7.50x down to 1.78x — a 4.2x-per-axis
+improvement in original pixels per forward pass, inside a rally the owner labelled as live play.
+
+**2. The resolution hypothesis that motivated C is refuted, not merely unconfirmed.** Going
+*finer* made it *worse*: raw detections fell 292 -> 172 and accepted frames 48 -> 28 when moving
+from 2.80x to 1.78x. If small shuttle size were the binding constraint, B had to beat A. It lost.
+More tiles also means more independent chances to fire, so the drop cannot be explained by
+reduced sampling. The coherent reading is that these detections are **large-scale background
+structure whose ball-likeness depends on the downscale** — zoom in and it stops resembling a
+ball — rather than a shuttle that was previously too small to see.
+
+**3. The detections are provably not this court's shuttle, and this settles the gate-vs-track
+question** the distance diagnostic was added for. Across config A's 48 accepted frames:
+**0 fall within `contact_px = 80`**, exactly **1 falls within 300 px**, and the distribution is
+p25 509 / median 1498 / max 2100 px. Config B is worse still (min 301, none within 300). In a
+5-second rally with several strokes, a genuine shuttle track *must* repeatedly pass within
+contact range of a racket. It never does. So the blocker is **the track, not the
+`contact_px`/dir-change gate** — no amount of loosening the perspective-blind 80 px constant
+would produce contacts here, because there is nothing near the rackets to gate.
+
+**4. Cost was never the objection.** 2.19 and 2.26 s/frame against full-frame's 2.33 — tiling is
+cost-neutral. C fails on capability, not budget.
+
+**One thing not to overclaim.** Detections were near-absent from the lower tile rows (config B's
+entire bottom row returned 0). That is *suggestive* of domain failure but is not evidence: the
+shuttle spends most of its flight high in the frame, so the near-floor band may legitimately
+contain no shuttle. It is recorded as an observation, not an argument.
+
+**Verdict: option C is exhausted.** TrackNetV3 does not detect this court's shuttle at any scale
+from 7.50x to 1.78x, and the failure is not one that more resolution fixes. Combined with §0.14
+(the discarded candidates do not contain it either), TrackNetV3 is finished as a candidate for
+this footage class. This does not overturn §0.17 — it strengthens it.
+
+**Next, per the owner's "try C then A if doesn't work": A's feasibility gate runs first.** §0.19
+flagged that A (hand-label + fine-tune) presupposes the shuttle is *visible*, and that it could
+not be found by eye at 3x zoom on a native 4K frame. That gate is now the cheapest decisive test
+available, and it is detector-independent: **is the shuttle present in the pixels at all?** With
+a static camera, median-subtracted native-resolution differencing over the play band should
+reveal a small object on a ballistic path if the information is there. If a coherent ballistic
+track exists, A is feasible (and a classical tracker may even be the cheaper answer). If nothing
+coherent exists, then A cannot be labelled, and the honest conclusion is D (tighter framing at
+capture) or accepting that this footage class does not support shuttle-based rally detection —
+which is what §0.17 already concluded on independent grounds.
 
 ---
 
