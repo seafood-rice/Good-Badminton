@@ -535,6 +535,89 @@ exist on the target footage.
 
 ---
 
+### 0.15 Swing-signal validation attempt (2026-08-02): partially corroborated, plus two defects and a data-quality problem
+
+§0.14 promoted the wrist/swing signal to C2's primary segmentation signal for multi-court
+footage, so §0.8's "not validated against ground truth" became critical path. This is that
+attempt. **Outcome: partially corroborated, not validated** — no trustworthy automated ground
+truth exists on this footage, and the attempt surfaced two defects in the §0.8 recipe itself.
+
+**Defect 1 — §0.8's reported numbers are not reproducible from its own written recipe.**
+Re-implementing the recipe as documented (per-frame wrist displacement, teleport rejection at
+`max(100 px, 10 x median)`, 0.5 s smoothing over `max(lower, upper)` wrist speed, segment at
+`0.25 x p99.5`, 1.0 s gap close, 2.0 s minimum) yields **25 segments / 62.1 % coverage /
+median 5.57 s / longest 16.18 s**, against §0.8's reported **23 / 41.2 % / 3.95 s / 14.25 s**.
+Same footage, same stated parameters. The recipe as written is therefore under-specified —
+most likely the per-player wrist point (§0.8 does not say how left/right wrists are combined;
+this reproduction averaged whichever were present). Whichever variant was originally used must
+be pinned in the implementation, because the coverage figure differs by 20 points.
+
+**Defect 2 (the substantive one) — the teleport-rejection threshold is in absolute pixels and
+is ~4.7x too loose for the far player.** From the court quad's own geometry, the horizontal
+scale is **106.3 px/m at the far baseline** but **603.8 px/m at the near baseline**. A generous
+12 m/s human sprint cap is therefore 21.3 px/frame for the far player and 120.9 px/frame for
+the near one. The recipe's fixed `max(100 px, ...)` is about right for the near player and lets
+roughly 4.7x too much through for the far player. This is the same class of defect as B7's
+fps/resolution normalisation: **a constant expressed in absolute pixels applied across a
+perspective gradient.** Fix: derive the cap per player from that player's own court position
+(px/m at their y), not from a global constant.
+
+**Data-quality problem this exposed — the far player's track contains ~5.6 % identity
+switches.** Frame-to-frame far-player centroid displacements, converted to implied speed at
+106 px/m: p50 1.5 m/s, p90 5.8 m/s (both plausible), but **p95 22.4 m/s, p99 689 m/s, p99.9
+929 m/s**, with **687 of 12,333 samples (5.6 %) implying >12 m/s** — physically impossible, so
+these are the tracker jumping between people (the far player is small and the hall is full of
+candidates), not motion. **This matters beyond B11:** B1's hitter attribution picks the hitter
+by shuttle-proximity to each side's racket point, so for ~5.6 % of frames the "far racket
+point" belongs to a different person entirely. B1's logic is correct; its *input* is noisy on
+this footage class. Worth a bounded follow-up (temporal-consistency gating on the far player's
+identity), tracked here rather than assumed harmless.
+
+**The validation itself.** With no shuttle available (§0.14) and single-frame posture
+adjudication too weak to be ground truth (contact sheets were built and inspected; predicted-
+ACTIVE cells do mostly show athletic/lunging postures and predicted-IDLE cells mostly upright
+ones, but 2 of 12 inspected idle cells looked like play), the strongest available independent
+signal is the **far player's centroid motion** — a rally requires both players engaged, and the
+far player's centroid is present in 77.1 % of frames, far denser than her wrists (16.0 %).
+
+A first pass at this cross-check reported **0/25 segments corroborated**, with predicted-idle
+gaps scoring *higher* far-player activity (56-61 %) than any predicted-active segment
+(max 18 %). That anti-correlation was the tell that **the cross-check itself was invalid**: it
+inherited the same too-loose 100 px teleport cap, so it was largely measuring identity
+switches, which cluster in the idle stretches where the tracker has nothing stable to hold.
+Recorded rather than discarded, because the failure is what located Defect 2.
+
+Re-run with the physically-derived 21.3 px/frame far-player cap (585 displacements rejected as
+switches):
+
+| | |
+|---|---|
+| Active segments corroborated by far-player motion | **17 of 25 (68 %)** |
+| Suspect (far player idle throughout) | 8 of 25 — segments 1, 2, 4, 5, 11, 16, 18, 22 |
+| Idle gaps that also show far-player activity | 15 of 25 |
+
+The anti-correlation disappears, which is the main reason to trust the corrected run over the
+first. **But this is corroboration, not validation**, and it should not be over-read: after
+proper teleport rejection the far player's genuine motion is small, so the derived threshold
+falls to 0.98 px/frame (≈0.6 m/s), which is barely above standing shuffle. At that sensitivity
+the "15 of 25 idle gaps look active" figure is as likely to be threshold non-discrimination as
+genuine missed rallies. The 68 % corroboration is meaningful; the gap figure is not yet
+interpretable.
+
+**Conclusion and what B11 needs.** Every automated ground-truth proxy available on this
+footage has now been tried and each fails for a different reason: shuttle trajectory is absent
+(§0.11, §0.14), single-frame posture is too weak, and far-player motion is both noisy and too
+insensitive after correction. **Validating the swing signal requires human-labelled rally
+boundaries** — there is no substitute available in-repo. Recommended, and small: the owner
+labels rally start/stop for one contiguous 2-3 minute stretch of the DJI footage (roughly
+15-25 rallies), which is enough to compute real precision/recall for segment boundaries and to
+fit the `swing_frac` / `gap_sec` / `min_len_sec` constants instead of inheriting them from
+`rep_segmenter`'s drill context. Until that exists, C2's swing path should ship behind the
+same honest "experimental" labelling BST and the quality model already use, and B11 must not
+claim validated rally segmentation on this footage class.
+
+---
+
 ## 1. Goal
 
 Make the pipeline (a) capture analysis data on essentially all frames where the court is
