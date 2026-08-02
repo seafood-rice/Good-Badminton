@@ -927,6 +927,87 @@ coherent exists, then A cannot be labelled, and the honest conclusion is D (tigh
 capture) or accepting that this footage class does not support shuttle-based rally detection —
 which is what §0.17 already concluded on independent grounds.
 
+### 0.22 A's gate PASSES (2026-08-03): the shuttle IS in the pixels, was recovered classically, and is physically verified
+
+**Two corrections first, both mine, both made during this work.**
+
+1. **A wide 0.35x survey render led me to read the analysed court as having only one player
+   ("solo drill, far half empty"). That was wrong.** At native resolution there is plainly an
+   opponent at the far end, and the pipeline's `UPPER` point sits on her feet — the expected
+   ground-contact point. Both tracked subjects are correct and this is a two-player match, as
+   the owner stated. The misreading came from judging a downscaled montage; it is recorded
+   because it briefly threatened §0.21's premise.
+2. **The first instrument (`shuttle_visibility.py`) is void, not merely unconvincing.** It
+   reported ~8.6M "ballistic chains" on the DJI clip and ~20M on the broadcast control, so it
+   had no discriminating power in either direction. Causes: the chain-extension loop never
+   re-checked `min_speed`, so stationary noise chained across the whole window (hence "longest
+   180, speed 0"); 339-909 candidate blobs/frame put mean spacing near the matching tolerance,
+   making chance matches near-certain; and every seeding triple was counted as its own chain.
+   Two time-coded "motion trail" renderings failed the same way, swamped by genuine background
+   motion. Recorded as **inconclusive** per the interpretation fixed before running them.
+
+**§0.21's premise is confirmed, so the C verdict stands.** A rally IS in progress during the
+window every C test used: the near player is mid-overhead-swing at t=68.0 s and lunging at
+69.5 s and 71.0 s.
+
+**The finding.** With the `min_speed` bug fixed, the search restricted to the analysed court and
+its airspace, and both players' own neighbourhoods excluded, a 30-frame chain emerged spanning
+t = 68.485-68.969 s. Its native crops show an unmistakable shuttlecock, and the numbers are
+decisive:
+
+| | f89 | f98 | f108 | f118 |
+|---|---|---|---|---|
+| position (px) | (2493,758) | (2053,856) | (1914,925) | (1850,995) |
+| speed (px/frame) | 96 | 23 | 8 | 7 |
+| blob area (px^2) | 1053 | 245 | 151 | 76 |
+
+- **Strictly monotonic** in x (2493→1850) and y (758→995) across all 30 frames.
+- **Speed decays 96 → 7 px/frame** — the extreme drag deceleration characteristic of a
+  shuttlecock and of almost nothing else.
+- **Area tracks speed almost exactly proportionally** (speed ratio 13.7, area ratio 13.9). So
+  the blob's size is *motion-blur length*, not object size — which is only true of a genuinely
+  small, fast-moving object. The shuttle's true extent is ~10 px, inflated to ~36 px when fast.
+- **The path is in the right place**: it rises from the near player's side and descends to
+  terminate just above the far player, who is standing ready to receive. It is a clear/lob
+  from near to far, following her overhead swing at t~68.1 s.
+
+**Consequences.**
+
+1. **Option A's feasibility gate PASSES.** The shuttle is visible at native resolution and
+   trivially labellable where it was found. §0.19's "could not find it by eye at 3x zoom" was a
+   single unlucky observation, now superseded.
+2. **A cheaper option than A appears: a classical detector.** Background subtraction plus
+   ballistic chaining *already* recovered this trajectory with no training and no labels. That
+   may beat fine-tuning on cost — it is now the option to cost out first.
+3. **§0.21 is reinforced, not weakened.** The shuttle's true size is ~10 px at 4K, so at config
+   A's 2.80x it lands at ~3.6 px — within TrackNet's firing range — and TrackNet *still* found
+   nothing near the players. That is domain/appearance mismatch, exactly as §0.21 concluded from
+   the resolution inversion. Resolution was never the binding constraint.
+4. **Near-court resolution is excellent** — the near player's racket *mesh* is resolvable — so
+   labelling or detecting a near-half shuttle is easy. The far half is the hard case.
+
+**Limits, so this is not over-read.**
+
+- **One trajectory, in one rally.** This proves the signal exists and is recoverable; it does not
+  establish per-frame coverage, and coverage is what C2 needs.
+- **It was found against the dark banner**, a clean high-contrast background. Against the
+  cluttered mid-frame band (benches, spectators, adjacent courts) it will be much harder, and the
+  low-flight portion near the floor was not recovered here at all.
+- **Precision is presently terrible**: the same search produced 89,683 chains at 168
+  candidates/frame. The shuttle was the *longest* chain, but "longest" is not a usable selector
+  in production. Suppressing that clutter is the actual engineering work.
+- The contact-count harness caveat from §0.20 still applies to any figure derived from
+  `detections.jsonl` wrists as a racket stand-in.
+
+Evidence images and the two scripts are kept under `outputs/b11-shuttle-visibility/`
+(gitignored, local only): `shuttle_hunt.png` (native crops along the chain), `confirm_arc.png`
+(full-frame path with tracked players), `court_geometry.png`, `find_shuttle_hi.png`.
+
+**Next action for the owner's decision:** cost out the classical shuttle detector (background
+subtraction + ballistic chaining + clutter suppression, evaluated for per-frame coverage against
+the 11 labelled rallies) *before* committing to A's hand-labelling and fine-tuning, since the
+classical route has already demonstrated recovery at zero training cost.
+
 ---
 
 ## 1. Goal
