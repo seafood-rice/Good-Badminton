@@ -668,6 +668,78 @@ carry more weight than "fit for gating."
 
 ---
 
+### 0.17 DECISION (2026-08-02): do not build C2 for multi-court footage; the binding constraint is the shuttle detector
+
+The question put to this analysis was: is F1 0.644 / +1.9 s start lag good enough to build C2
+on, or should the padding and precision be fixed first? **Neither. The premise is the problem.**
+
+**Why C2 cannot serve its purpose on this footage class.**
+`badminton_analysis/stroke/events.py::detect_contacts_multi` begins each frame with
+`if shuttle is None: continue`. No shuttle ⇒ no contacts ⇒ no hits ⇒ no BST strokes, *regardless
+of how accurately rallies are segmented*. §0.11 and §0.14 established the shuttle is
+undetectable here by both detectors in the repo. C2 exists to gate the dense-tracking → BST
+chain; that chain is severed upstream of C2, so improving C2's precision changes nothing
+downstream.
+
+**What C2 could still deliver, measured against the owner's labels** (11 rallies, 61-244 s):
+
+| Metric | True | Reported | Verdict |
+|---|---|---|---|
+| Rally detection | 11 | 10 found | **usable** |
+| Mean rally duration | 7.2 s | 7.4 s (+3 %) | **usable** |
+| Rally count | 11 | 15 (**+36 %**) | not shippable |
+| Total rally time | 79 s | 111 s (**+41 %**) | not shippable |
+| Work:rest ratio | 43:57 | **61:39** | not shippable |
+
+Count and total time inflate proportionally, so *duration* survives while *volume* does not.
+The unusable figures are precisely the ones a coach would check against their own sense of a
+session, so shipping them costs trust in the whole tool.
+
+**Precision is not cheaply improvable — two attempts, both measured.** The 84-point constant
+grid buys +3.5 F1 (§0.16). Requiring both players to be engaged — the obvious co-signal, using
+the corrected far-player teleport cap — is *worse*: precision 0.642 → 0.661 but recall
+0.646 → 0.309, detection 10/11 → 7/11, F1 0.644 → 0.422. Recorded so neither idea is retried
+on intuition.
+
+**Decision.**
+1. **Ship only the two usable outputs** (rally detection, typical rally duration). Suppress
+   rally count, total play time, and work:rest for this footage class until precision improves.
+2. **Shelve C2 as scoped for multi-court fixed-camera footage.** Revisit it for *broadcast*
+   footage, where the shuttle is detectable (92 % density on the Axelsen clip) and C2's gating
+   purpose is intact.
+3. **Fund the shuttle detector next.** It gates contacts, hitter attribution, BST, *and* would
+   lift rally segmentation as a side effect.
+
+### 0.18 Scoping the shuttle detector (the actual next investment)
+
+**Precedent exists in-repo.** The racket detector was solved exactly this way:
+`scripts/convert_racketdb_cvat.py` (external dataset → Roboflow-style YOLO layout) plus
+`scripts/train_racket_detector.py` (fine-tune + install weights, weights git-ignored). A
+shuttle detector would reuse that pipeline shape rather than invent one.
+
+**What does *not* transfer: the data.** The racket detector fine-tuned on RacketDB, a public
+CC-BY-4.0 dataset. For the shuttle there is no public dataset in this domain — ShuttleSet (which
+TrackNetV3 and BST were trained on) is *broadcast* footage, which is the domain that already
+works. The gap is specifically fixed-camera multi-court hall footage, and closing it means
+labelling the owner's own video.
+
+**Options, with the honest cost of each:**
+
+| Option | What it involves | Assessment |
+|---|---|---|
+| **A. Hand-label + fine-tune YOLO** | Label shuttle position on ~2-5k frames of own footage, run it through the existing two-script pipeline | Follows proven in-repo precedent. Main cost is labelling: the shuttle is only a few px at 4K and motion-blurred, so this is slow, eye-straining work — the expensive part by far. |
+| **B. Semi-automatic bootstrap** | Run existing detectors, keep plausible hits, hand-correct the rest | **Rejected on measured grounds:** §0.14 found *no* plausible candidate in 94 % of frames, so there is almost nothing to bootstrap from. |
+| **C. Crop-and-upscale before detection** | Crop to the play band, upscale, then detect — raising the shuttle's effective pixel size | Untested and cheap to test. §0.11 showed horizontal cropping cannot help (court spans 96 % of frame width), but *vertical* cropping to the play band plus upscaling was never tried. Worth one experiment before committing to A. |
+| **D. Change the filming setup** | Position the camera tighter on a single court | **Likely the cheapest fix overall, and it is the owner's call, not a code change.** A tighter frame makes the shuttle bigger, the far player bigger, and removes the background courts that defeated TrackNetV3 — improving every stage at once. Costs nothing to try on the next session. |
+
+**Recommended order: D, then C, then A.** D costs one session's setup change and may dissolve
+the problem; C costs one experiment; A is a real project and should only be funded once D and C
+are ruled out. Note that A also cannot rescue *existing* footage shot on the wide multi-court
+framing — a detector fine-tuned on it would still be fighting a few-pixel target — so D matters
+for future footage regardless of what is done about the archive.
+
+---
+
 ## 1. Goal
 
 Make the pipeline (a) capture analysis data on essentially all frames where the court is
