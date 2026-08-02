@@ -415,7 +415,7 @@ def test_capture_side_pose_gates_a_far_nearest_person_instead_of_sharing_it():
     kinematically inferred racket point sits on the hitter's own body) able to
     flip hitter attribution in detect_contacts_multi's nearest-wins compare.
 
-    The gated result is the state _capture_side_pose's docstring always
+    The gated result is the state _capture_side_poses.  docstring always
     promised: (None, that side's own centroid).
     """
     sys_ = _bare_capture_system()
@@ -436,6 +436,71 @@ def test_capture_side_pose_gates_a_far_nearest_person_instead_of_sharing_it():
     # cannot win detect_contacts_multi's proximity compare against the hitter.
     assert rec["players"]["upper"]["racket_head"] is None
     assert sys_._analysis_track_both[-1]["racket_upper"] is None
+
+
+def test_one_person_in_gate_range_of_both_sides_is_not_shared():
+    """The distance gate alone is NOT enough: assignment must be one-to-one.
+
+    Regression for the case the gate cannot catch (Codex review on PR #2).
+    When only one person is detected but BOTH tracked centroids are within
+    POSE_TO_PLAYER_MAX_PX of them -- e.g. both players near the projected net,
+    with one detection missed -- two independent nearest-neighbour searches
+    both return that same person. The gate passes, because the person really
+    is close to both.
+
+    Consequences that made this worth fixing rather than tolerating: BST's
+    person-1 (opponent) slot becomes a near-duplicate of person-0 (hitter),
+    which is worse than the honest zero-fill it replaced; and the duplicated
+    racket point makes racket_lower == racket_upper, so _dist() ties in
+    detect_contacts_multi and its documented tie-break sends EVERY such
+    contact to "lower" -- misattributing genuine upper-side hits, i.e.
+    defeating the exact bug this capture path was built to fix.
+    """
+    sys_ = _bare_capture_system()
+    # One person at y=300; both centroids within 150px of it (y=260 and y=340),
+    # so the distance gate admits the pairing for both sides.
+    only_person = _person_with_feet_at(100.0, 300.0)
+    sys_.player_pose_visualizer = _FakePoseVisualizerTwoPeople(np.array([only_person]))
+    sys_.player_tracker = _FakePlayerTrackerBoth({"lower": (100.0, 340.0), "upper": (100.0, 260.0)})
+
+    sys_._capture_analysis_frame(12, None, [(0, 0), (10, 10)], None)
+
+    players = sys_._analysis_frames[12]["players"]
+    got = [s for s in ("lower", "upper") if players[s]["keypoints"] is not None]
+    assert len(got) == 1, f"person shared across sides: {got}"
+    # "upper" is nearer (|300-260| = 40 vs |300-340| = 40 ... tie broken by the
+    # closest-first pass), so exactly one side wins it and the other is honest.
+    other = "upper" if got[0] == "lower" else "lower"
+    assert players[other]["keypoints"] is None
+    assert players[other]["centroid"] is not None, "unmatched side keeps its centroid"
+    # The decisive downstream property: the two racket points must not be equal,
+    # or detect_contacts_multi ties and always credits "lower".
+    both = sys_._analysis_track_both[-1]
+    assert not (both["racket_lower"] is not None
+                and both["racket_lower"] == both["racket_upper"]), \
+        "duplicated racket point would tie detect_contacts_multi"
+
+
+def test_one_racket_box_in_gate_range_of_both_sides_is_not_shared():
+    """Same one-to-one requirement for the racket assignment, which has its own
+    (larger) gate and so is easier to trip: both players can sit within
+    RACKET_TO_PLAYER_MAX_PX of a single detected racket box."""
+    sys_ = _bare_capture_system()
+    lower_person = _person_with_feet_at(100.0, 340.0)
+    upper_person = _person_with_feet_at(100.0, 260.0)
+    sys_.player_pose_visualizer = _FakePoseVisualizerTwoPeople(
+        np.array([lower_person, upper_person]))
+    sys_.player_tracker = _FakePlayerTrackerBoth({"lower": (100.0, 340.0), "upper": (100.0, 260.0)})
+    # A single racket box roughly between them, inside the 300px gate for both.
+    sys_._racket_detector = _FakeRacketDetectorBoth([(100.0, 300.0)])
+
+    sys_._capture_analysis_frame(13, None, [(0, 0), (10, 10)], None)
+
+    both = sys_._analysis_track_both[-1]
+    # Both sides matched a pose here, so each still gets *a* racket point (the
+    # loser falls back to kinematic inference from its own pose) -- but they
+    # must not be the same detected box.
+    assert both["racket_lower"] != both["racket_upper"]
 
 
 def test_capture_side_pose_still_matches_a_moderately_stale_centroid():
@@ -524,7 +589,7 @@ class _MutablePoseVisualizer:
 def test_real_capture_to_recognition_yields_both_sides_as_hitters(tmp_path, monkeypatch):
     """Findings 2, 3 and 1 regression: the real capture-to-recognition chain.
 
-    Drives the REAL ``_capture_analysis_frame`` (real ``_capture_side_pose``,
+    Drives the REAL ``_capture_analysis_frame`` (real ``_capture_side_poses``,
     real per-side racket assignment) over a 90-frame synthetic rally with one
     contact by "lower" (frame 30) and one by "upper" (frame 40, deliberately
     inside the default 15-frame min_gap), then runs the REAL
@@ -534,7 +599,7 @@ def test_real_capture_to_recognition_yields_both_sides_as_hitters(tmp_path, monk
 
     Pre-fix this failed twice over: the globally shared ``min_gap`` dropped the
     frame-40 reply entirely (so "upper" never appeared in strokes.json), and
-    the ungated ``_capture_side_pose`` assigned the single detected person to
+    the ungated per-side matching assigned the single detected person to
     both sides on the lower-only frames.
     """
     canned_logits = np.zeros(25, dtype=np.float32)

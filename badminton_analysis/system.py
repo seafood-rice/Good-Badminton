@@ -27,7 +27,7 @@ FAST_FRAME_STRIDE = 3
 RACKET_TO_PLAYER_MAX_PX = 300.0
 
 # Nearest-pose-person-to-player-centroid gate for the both-player capture's
-# per-side pose matching (_capture_side_pose). Deliberately dumb/untuned v1
+# per-side pose matching (_capture_side_poses). Deliberately dumb/untuned v1
 # constant in the same spirit as contact_px and RACKET_TO_PLAYER_MAX_PX --
 # project 2 measures accuracy against ground truth, not this plan.
 #
@@ -47,6 +47,42 @@ POSE_TO_PLAYER_MAX_PX = 150.0
 
 def _sq_dist(a, b):
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+
+def _assign_one_to_one(side_points, candidates, max_sq):
+    """Assign at most one candidate index to each side, and each candidate to at
+    most one side, pairing closest-first.
+
+    ``side_points`` is {side: (x, y)}; ``candidates`` is a list where an entry may
+    be None (unusable, e.g. a detected person with no valid ankle). Pairs further
+    apart than ``max_sq`` (squared px) are not eligible at all. Returns
+    {side: candidate index}, omitting sides that won nothing.
+
+    Closest-first is what makes this one-to-one rather than two independent
+    nearest-neighbour searches: with two sides competing for the same detection,
+    the nearer side takes it and the other is left unmatched instead of both
+    silently sharing it. Both callers (pose people, racket boxes) need exactly
+    that, so the rule lives here once.
+    """
+    pairs = []
+    for side, pt in side_points.items():
+        if pt is None:
+            continue
+        for i, c in enumerate(candidates):
+            if c is None:
+                continue
+            d = _sq_dist(c, pt)
+            if d <= max_sq:
+                pairs.append((d, side, i))
+    pairs.sort(key=lambda p: p[0])
+    chosen, used_sides, used_cands = {}, set(), set()
+    for _d, side, i in pairs:
+        if side in used_sides or i in used_cands:
+            continue
+        chosen[side] = i
+        used_sides.add(side)
+        used_cands.add(i)
+    return chosen
 
 
 def load_runtime_dependencies():
@@ -508,34 +544,40 @@ class BadmintonAnalysisSystem:
                 cv2.imwrite(os.path.join(self.images_save_dir, f"{frame_count}.png"), frame)
         return frame, detect_frame_count
 
-    def _capture_side_pose(self, side, people, ox, oy):
-        """This side's own pose, matched independently from all people
-        detected in the ROI this frame, by nearest foot-midpoint to the
-        side's own tracked centroid (badminton_analysis.tracking.player.
-        PlayerTracker.players[side]). Returns (keypoints, centroid), or
-        (None, None) when this side has no tracked player this frame, or
-        (None, centroid) when it does but no pose person matched -- i.e. the
-        nearest detected person's foot midpoint is further than
-        POSE_TO_PLAYER_MAX_PX from this side's centroid, or none of the
-        detected people has a usable foot midpoint at all.
+    def _side_centroids(self):
+        """{side: tracked centroid} for the sides the tracker holds this frame."""
+        out = {}
+        for side in ("lower", "upper"):
+            pt = self.player_tracker.players.get(side)
+            if pt is not None:
+                out[side] = (float(pt[0]), float(pt[1]))
+        return out
 
-        The distance gate is load-bearing, not cosmetic: without it a frame in
-        which the pose model found only ONE person (while the cheaper player
-        tracker still holds centroids for both halves) would hand that same
-        person's keypoints to BOTH sides, since min() over a one-element list
-        always returns that element. That would fabricate a phantom opponent
-        (a near-duplicate of the hitter in BST's person-1 slot) and can flip
-        hitter attribution in stroke.events.detect_contacts_multi's
-        nearest-racket-wins comparison.
+    def _capture_side_poses(self, side_centroids, people, ox, oy):
+        """{side: keypoints or None} -- each side's own pose, assigned ONE-TO-ONE.
+
+        Two gates are load-bearing here, and they catch different failures:
+
+        1. A distance gate (POSE_TO_PLAYER_MAX_PX). Without it, the nearest
+           detected person is accepted however far away they are.
+        2. **One-to-one assignment.** Without it, a frame in which the pose
+           model found only ONE person (while the cheaper player tracker still
+           holds centroids for BOTH halves, each within the gate -- e.g. both
+           players near the projected net) hands that same person's keypoints
+           to both sides, because two independent nearest-neighbour searches
+           over the same list can return the same element. That fabricates a
+           phantom opponent: BST's person-1 slot becomes a near-duplicate of
+           the hitter (worse than the honest zero-fill it replaced), and the
+           duplicated racket point ties in
+           stroke.events.detect_contacts_multi, whose tie-break then sends
+           every such contact to "lower" -- misattributing genuine upper-side
+           hits, i.e. defeating the very fix this capture path exists for.
+
+        A side that is tracked but wins no person is reported as None, so the
+        caller records "tracked but unmatched" rather than borrowing the other
+        side's player.
         """
         from .analysis import joint_angles as ja
-
-        centroid_pt = self.player_tracker.players.get(side)
-        if centroid_pt is None:
-            return None, None
-        centroid = (float(centroid_pt[0]), float(centroid_pt[1]))
-        if not people:
-            return None, centroid
 
         def _foot_midpoint(kp_arr):
             pts = []
@@ -546,24 +588,21 @@ class BadmintonAnalysisSystem:
                 return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
             return None
 
-        def _dist_to_centroid(pers):
-            fm = _foot_midpoint(pers)
-            if fm is None:
-                return float("inf")
-            return _sq_dist(fm, centroid)
+        feet = [_foot_midpoint(p) for p in (people or [])]
+        chosen = _assign_one_to_one(side_centroids, feet, POSE_TO_PLAYER_MAX_PX ** 2)
 
-        person = min(people, key=_dist_to_centroid)
-        if _dist_to_centroid(person) > POSE_TO_PLAYER_MAX_PX ** 2:
-            # Nearest detected person is too far from this side's tracked
-            # centroid (or has no usable foot midpoint, scoring inf) -- report
-            # "tracked but unmatched" rather than borrowing the other side's
-            # player.
-            return None, centroid
-        kp = person.astype(float).copy()
-        mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
-        kp[mask, 0] += ox
-        kp[mask, 1] += oy
-        return kp, centroid
+        out = {}
+        for side in side_centroids:
+            i = chosen.get(side)
+            if i is None:
+                out[side] = None
+                continue
+            kp = people[i].astype(float).copy()
+            mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
+            kp[mask, 0] += ox
+            kp[mask, 1] += oy
+            out[side] = kp
+        return out
 
     def _capture_analysis_frame(self, frame_count, frame, roi_corners, ball_position):
         from .analysis import joint_angles as ja
@@ -669,14 +708,24 @@ class BadmintonAnalysisSystem:
 
         # racket_candidates was already computed once above (single YOLO pass).
 
+        # Both assignments are ONE-TO-ONE across the two sides (see
+        # _assign_one_to_one): two independent nearest-neighbour searches would
+        # hand a single detected person -- or a single racket box -- to BOTH
+        # sides whenever both tracked centroids are in gate range, fabricating a
+        # phantom opponent and a tied racket point that misattributes contacts.
+        side_centroids = self._side_centroids()
+        side_poses = self._capture_side_poses(side_centroids, people_list, p_ox, p_oy)
+        racket_pick = _assign_one_to_one(side_centroids, racket_candidates,
+                                         RACKET_TO_PLAYER_MAX_PX ** 2)
+
         players_data = {}
         for region in ("lower", "upper"):
-            side_kp, side_centroid = self._capture_side_pose(region, people_list, p_ox, p_oy)
+            side_centroid = side_centroids.get(region)
+            side_kp = side_poses.get(region)
             side_racket = None
-            if side_centroid is not None and racket_candidates:
-                nearest = min(racket_candidates, key=lambda p: _sq_dist(p, side_centroid))
-                if _sq_dist(nearest, side_centroid) <= RACKET_TO_PLAYER_MAX_PX ** 2:
-                    side_racket = (float(nearest[0]), float(nearest[1]))
+            ri = racket_pick.get(region)
+            if ri is not None:
+                side_racket = (float(racket_candidates[ri][0]), float(racket_candidates[ri][1]))
             if side_racket is None and side_kp is not None:
                 side_racket = _infer_racket_head_both(side_kp, dominant=self.dominant_hand)
             players_data[region] = {
