@@ -426,18 +426,66 @@ headroom" would reject them. What remains unproven is whether a **true** positiv
 discarded candidates to be recovered — that needs a discriminating test (candidate-vs-tracked-
 player proximity, using the both-player positions B1 now records), not another volume heuristic.
 
-**Unplanned observation the frames surfaced, needs owner confirmation.** In the inspected
-frames the analysed court shows **one player** (in `f118` in a ready/split-step stance; in
-`f748` standing idle), in a hall where many other courts are in simultaneous play. If this
-footage is **solo or coached practice** rather than a two-player match, then part of "no
-analysed-court shuttle found" may be "there was no sustained two-player rally to find" — a
-different problem from detector confusion, and one that would question whether *full-match
-stroke recognition* (which assumes two players trading strokes, and whose BST model is a
-singles-match model) is the right goal for this footage at all. The recorded
-`detections.jsonl` for the full DJI run does track both an `upper` and a `lower` player, so
-this is **not** a settled conclusion — it may be a sampling artifact of the three frames
-inspected. Flagged for the owner, who knows what was being filmed, rather than assumed either
-way.
+**Solo-practice hypothesis: RAISED AND REFUTED.** The inspected frames showed only one player
+on the analysed court, raising the possibility that this footage was solo/coached practice
+rather than a match — which would have made full-match stroke recognition the wrong goal for
+it. **The owner confirms (2026-08-02) it is a real two-player match**, and the data agrees, so
+the three-frame observation was a sampling artifact (rallies have idle moments, and the far
+player is small and easy to miss by eye at downscaled preview size). Recorded because it was
+raised in this document and must not be left dangling.
+
+---
+
+### 0.13 The disambiguation anchor exists and is dense; and TrackNetV3's chosen detection is provably not this court's shuttle
+
+Measured against the full DJI run's own `outputs/Dji 20260718111111 0010 D/detections.jsonl`
+(16,889 records) and the 858-detection trajectory from §0.11's full-frame run.
+
+**Player-tracking density (the anchor B1 provides).** Both players carry real image
+coordinates in **12,872 of 16,889 records (76.2 %)**. A first pass at this figure reported
+"100 %"; that was wrong — it tested for the *presence* of the per-player dict, which is always
+emitted, while **4,017 records (23.8 %) carry `"image": null`** for one player. Corrected here
+because the density figure sizes how often a proximity-based disambiguation rule can fire at
+all: 76 % is dense enough to anchor on, but it is not universal, so the rule needs a defined
+fallback for the other 24 %.
+
+**Scoring TrackNetV3's chosen detections against the tracked players** (780 detections that
+align to a both-players-tracked frame, clip time mapped as `t = 25 + f/59.94`):
+
+| Measurement | Value |
+|---|---|
+| Median far-player image y | 1172 |
+| Median detection image y | **570** (≈600 px *above* the far player) |
+| Detections >150 px above the far player | **743 of 780 (95 %)** |
+| Distance to the *nearer* player (px @4K) | p25 **642**, median **652**, p75 **852** |
+
+Two independent reasons this is conclusive rather than suggestive:
+
+1. **95 % of detections sit far above the far player.** A rally shuttle between players at
+   y≈1172 and y≈1451 spends most of its time within and near that band, rising above it only
+   on clears — not 600 px above the *far* player in 95 % of frames.
+2. **The distance-to-nearest-player distribution is far too tight** (642/652/852 across the
+   quartiles). A genuine shuttle's distance to the nearest player varies enormously over a
+   rally — near zero at each contact, large mid-flight. A distribution this narrow is the
+   signature of a **fixed background structure**, which is exactly what §0.11's visual
+   inspection found.
+
+**What this buys B11.** It converts the disambiguation criterion from a guess into a measured
+one: the analysed court's shuttle must stay within the tracked players' vertical band plus
+bounded headroom, and its distance to the nearest player must *vary* across a rally. Both are
+computable from data the pipeline already records post-B1. It also means a candidate filter has
+a strong, quantified signal to reject on — the current false positives are wrong by ~600 px and
+by distribution shape, not marginally wrong.
+
+**The one question still open**, and the only cheap experiment left worth running before
+committing to the design: **is a true positive present among the candidates
+`predict_location` currently discards?** §0.12's attempt could not answer it (non-discriminating
+volume), and this section's analysis scores only the *kept* blob. Answering it requires one
+instrumented run that persists **every** candidate per frame (~35 min for 900 frames at 4K on
+the 4090) and then scores each candidate with the two criteria above. If a true positive is
+recoverable, B11's shuttle input is fixed by a Task-1-shaped vendored change plus a proximity
+filter. If it is not, TrackNetV3 cannot serve this footage class at all and the shuttle signal
+(S1) must be dropped from C2 for multi-court footage in favour of the wrist/swing signal.
 
 ---
 
