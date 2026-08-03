@@ -1008,6 +1008,84 @@ subtraction + ballistic chaining + clutter suppression, evaluated for per-frame 
 the 11 labelled rallies) *before* committing to A's hand-labelling and fine-tuning, since the
 classical route has already demonstrated recovery at zero training cost.
 
+### 0.23 Classical detector COSTED (2026-08-03): clears the bar TrackNet failed, 25x cheaper, zero training data — but precision is the open work
+
+A costing spike ran over **all 11 labelled rallies** (4,735 frames, 79 s of rally time). The
+selector uses the §0.22 discovery as its discriminator: a real shuttle's blob **area tracks its
+speed** proportionally, because apparent size is motion-blur length. Clutter has no such
+relation. Chains are scored on that correlation plus brightness and length, replacing "longest
+chain", which §0.22 recorded as unusable.
+
+| Metric | Classical prototype | TrackNetV3 (§0.21) |
+|---|---|---|
+| Compute | **86 ms/frame** (two-pass) | 2,190-2,330 ms/frame |
+| Frames within `contact_px = 80` | **43** | **0 of 48** |
+| Min shuttle-to-racket distance | **10 px** | 119 px |
+| Contacts fired (real `detect_contacts_multi`) | **17** | **0** |
+| Precision vs the §0.22 verified arc | **30/30 within 25 px** | n/a |
+| Training data required | **none** | none (but unusable here) |
+
+**Compute, with the cost split measured rather than assumed.** Decode+crop is 25.1 ms/frame and
+the OpenCV stage (absdiff, threshold, open, connected components) is 13.9 ms/frame, so **decode
+is 64 %** of per-frame cost. The spike's two passes (median, then detect) pay decode twice; a
+single-pass design with a running background estimate would cost **~46 ms/frame**, i.e. about
+**2.8 h of compute per hour of 60 fps footage** against the spike's 5.16 h. That fits decision 1
+(deep analysis as a background job with UI-tracked status). TrackNetV3 at 2.2 s/frame would be
+~130 h per footage-hour — infeasible regardless of accuracy.
+
+**What is NOT established, stated plainly.**
+
+1. **The candidate cap binds on 100 % of frames.** Every rally reports exactly 60.0
+   candidates/frame and **533,718 candidates were dropped** by the `MAX_CAND_PER_FRAME = 60`
+   truncation. The "keep the brightest 60" rule can discard a dim far-court shuttle, so **every
+   recall figure above is affected by an arbitrary truncation** and must not be trusted until
+   candidate suppression makes the cap non-binding. This is the single biggest caveat.
+2. **The 83.7 % coverage figure is not a quality measure.** `MIN_LEN = 4` guarantees every
+   selected point sits inside a >=3 run, so `inruns == cov` is an artifact of construction, not
+   evidence. And 421 runs for 11 shuttles is ~38 fragments per rally when there is exactly one
+   shuttle — so a large share of selections are wrong.
+3. **Precision is verified on one trajectory only, with shared-method bias.** The §0.22 arc was
+   found using background subtraction + compact-blob + chaining, and this detector shares that
+   preprocessing. The 30/30 validates the *new* part (area~speed scoring, greedy non-overlapping
+   selection) at a tight 25 px tolerance; it is not an end-to-end independent check.
+4. **Contact recall is low:** 17 contacts over 11 rallies (~1.5/rally) against perhaps 6-12
+   strokes per rally. **Rally 4 fired zero contacts**, so 1 of 11 rallies currently has no
+   signal at all. That is the concrete gap to close.
+5. The §0.20 wrist-as-racket-proxy caveat still applies to every contact count here.
+
+**Architectural finding that changes the shape of the work.** This method depends on a **static
+camera** for its median background, so it serves the fixed-camera and DJI hall classes but
+**cannot serve broadcast footage**, which has camera motion — and broadcast is explicitly in
+scope (owner decision 2, "both"). TrackNetV3 *is* trained for broadcast. So the classical
+detector does not replace TrackNetV3; the two are **complementary**, and the design needs a
+footage-class router (static vs moving camera) choosing between them. That is additional scope
+not previously identified.
+
+**Work items, and why this is structurally cheaper than option A.**
+
+| # | Item | Notes |
+|---|---|---|
+| 1 | Candidate suppression: court mask, static-structure exclusion, per-region budgets, illumination/shadow handling — until the cap stops binding | The main precision work and the **largest unknown** |
+| 2 | Single-target tracker: one-shuttle prior, gap tolerance through occlusion, track birth/death — replaces greedy chain selection, fixes fragmentation | Standard, well-understood |
+| 3 | Perspective-correct contact gating (`contact_px = 80` is depth-blind: 13 cm near, 75 cm far) | Needed regardless of detector; already flagged §0.15/§0.20 |
+| 4 | Single-pass restructure with running background estimate | Halves decode; ~86 -> ~46 ms/frame |
+| 5 | Footage-class router (static -> classical, broadcast -> TrackNetV3) | Newly identified above |
+| 6 | Evaluation ground truth: ~200-500 hand-clicked shuttle positions across several rallies | **For evaluation only, not training** |
+| 7 | Pipeline integration, config, tests following existing patterns | — |
+
+Items **2, 3, 6 and 7 are required for option A as well** — a per-frame detector gives neither a
+track, nor correct gating, nor integration, nor an evaluation set. So the classical route's work
+is close to a **subset** of A's, and A adds on top of it a training set (thousands of labels, not
+hundreds) plus training and model-management infrastructure. Effort figures are deliberately not
+quoted here: item 1 is the unknown, and any day-count before it is attempted would be invention
+rather than estimate.
+
+**Recommendation.** Proceed with the classical detector. The decision point is **after items 1
+and 2**, measured against the expanded evaluation set from item 6, with the bar being *enough
+contacts to identify the first and last contact of each rally* (today 1 of 11 rallies yields
+none). If precision plateaus below that bar, fall back to A with the tracker, gating, router and
+integration already built — none of that work is wasted.
+
 ---
 
 ## 1. Goal
