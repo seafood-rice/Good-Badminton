@@ -17,8 +17,38 @@ class StrokeEvent:
         return asdict(self)
 
 
+CONTACT_M = 0.30
+"""Contact radius in metres, for the perspective-correct gate.
+
+A fixed pixel radius is wrong across a perspective gradient. Measured on the DJI
+footage, 80 px is 0.13 m at the near baseline (603.8 px/m) but 0.75 m at the far
+one (106.3 px/m) -- so it accepts non-contacts far away and rejects real contacts
+close up. At the mid-court scale of ~355 px/m, 0.30 m is ~107 px, comparable to
+the legacy 80 px, while scaling to ~32 px far and ~181 px near.
+"""
+
+
 def _dist(a, b):
     return float(np.hypot(a[0] - b[0], a[1] - b[1]))
+
+
+def _contact_radius(shuttle, contact_px, contact_m, scale):
+    """Pixel radius allowed at this shuttle's depth.
+
+    Returns ``contact_px`` unchanged unless a metre radius and a ``px_per_m``
+    provider are both supplied, so existing callers are unaffected. The radius is
+    taken at the SHUTTLE's row rather than the racket's: the shuttle is the object
+    whose position the gate is testing, and at contact the two are within a
+    racket-length anyway.
+    """
+    if contact_m is None:
+        return contact_px
+    return contact_m * scale.px_per_m(shuttle[1])
+
+
+def _validate_gate(contact_m, scale):
+    if contact_m is not None and scale is None:
+        raise ValueError("contact_m requires a scale providing px_per_m(y)")
 
 
 def _seg_angle(p, q):
@@ -42,9 +72,15 @@ def _shuttle_dir_change(track, i, lookahead):
     return diff if diff <= 180.0 else 360.0 - diff
 
 
-def detect_contacts(track, contact_px=80.0, lookahead=3, dir_change_deg=45.0,
-                    window_pre=20, window_post=15, min_gap=15):
-    """Find racket-shuttle impacts. Returns list of {contact_frame, window_start, window_end}."""
+def detect_contacts(track, contact_px=80.0, contact_m=None, scale=None, lookahead=3,
+                    dir_change_deg=45.0, window_pre=20, window_post=15, min_gap=15):
+    """Find racket-shuttle impacts. Returns list of {contact_frame, window_start, window_end}.
+
+    ``contact_m`` plus ``scale`` (any object exposing ``px_per_m(y)``) opt into a
+    depth-scaled contact radius; both default to None, which keeps the fixed
+    ``contact_px`` behaviour exactly as before.
+    """
+    _validate_gate(contact_m, scale)
     contacts = []
     last_contact_frame = None
     for i, rec in enumerate(track):
@@ -52,7 +88,7 @@ def detect_contacts(track, contact_px=80.0, lookahead=3, dir_change_deg=45.0,
         shuttle = rec.get("shuttle")
         if racket is None or shuttle is None:
             continue
-        if _dist(racket, shuttle) >= contact_px:
+        if _dist(racket, shuttle) >= _contact_radius(shuttle, contact_px, contact_m, scale):
             continue
         change = _shuttle_dir_change(track, i, lookahead)
         if change is None or change < dir_change_deg:
@@ -69,7 +105,8 @@ def detect_contacts(track, contact_px=80.0, lookahead=3, dir_change_deg=45.0,
     return contacts
 
 
-def detect_contacts_multi(track, contact_px=80.0, lookahead=3, dir_change_deg=45.0,
+def detect_contacts_multi(track, contact_px=80.0, contact_m=None, scale=None,
+                          lookahead=3, dir_change_deg=45.0,
                           window_pre=20, window_post=15, min_gap=15):
     """Find racket-shuttle impacts by EITHER player.
 
@@ -97,21 +134,28 @@ def detect_contacts_multi(track, contact_px=80.0, lookahead=3, dir_change_deg=45
     at min_gap=15 / 30fps, which is well inside a fast net exchange or drive
     rally and would produce implausible runs of the same hitter.)
 
+    ``contact_m`` plus ``scale`` (any object exposing ``px_per_m(y)``) opt into a
+    depth-scaled contact radius; both default to None, which keeps the fixed
+    ``contact_px`` behaviour exactly as before. Scaling changes the gate only --
+    hitter attribution is still the nearer racket point, unchanged.
+
     Returns list of {contact_frame, window_start, window_end, hitter}.
     """
+    _validate_gate(contact_m, scale)
     contacts = []
     last_contact_frame = {"lower": None, "upper": None}
     for i, rec in enumerate(track):
         shuttle = rec.get("shuttle")
         if shuttle is None:
             continue
+        radius = _contact_radius(shuttle, contact_px, contact_m, scale)
         best_side, best_dist = None, None
         for side in ("lower", "upper"):
             racket = rec.get("racket_" + side)
             if racket is None:
                 continue
             d = _dist(racket, shuttle)
-            if d < contact_px and (best_dist is None or d < best_dist):
+            if d < radius and (best_dist is None or d < best_dist):
                 best_dist, best_side = d, side
         if best_side is None:
             continue
