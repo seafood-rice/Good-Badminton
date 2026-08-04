@@ -1086,6 +1086,86 @@ contacts to identify the first and last contact of each rally* (today 1 of 11 ra
 none). If precision plateaus below that bar, fall back to A with the tracker, gating, router and
 integration already built — none of that work is wasted.
 
+### 0.24 Classical detector FAILS the gate (2026-08-04): coverage is anti-correlated with ground truth
+
+Tasks 1-5 of the implementation plan are built and tested (501 tests pass). Measured on real
+footage, the detector does not work, and the failure is not marginal.
+
+**The decisive measurement.** Matched 420-frame windows, inside labelled rallies versus between
+them, using the owner's own rally labels:
+
+| window | frames | candidates/frame | covered | coverage | top chain score |
+|---|---|---|---|---|---|
+| **IN** rally 1 (66-73 s) | 420 | 119.0 | 84 | **20.0 %** | 39.58 |
+| **BETWEEN** rallies (76-83 s) | 420 | 143.8 | 123 | **29.3 %** | 15.85 |
+| **IN** rally 2 (88-95 s) | 420 | 131.9 | 19 | **4.5 %** | 18.01 |
+| **BETWEEN** rallies (96-101 s) | 300 | 120.5 | 68 | **22.7 %** | 29.41 |
+
+**Coverage is higher where there is no shuttle than where there is one.** This is the same
+failure signature recorded in §0.15's far-player cross-check: a measurement that anti-correlates
+with ground truth is measuring something other than what it claims. It is not a tuning problem.
+
+**A confidence floor cannot rescue it.** The score ranges overlap in the wrong direction — rally
+2's genuine shuttle tops out at 18.01 while between-rally clutter reaches 29.41. Any threshold
+that admits the real shuttle admits more clutter than shuttle.
+
+**Why §0.22's 30/30 result did not generalise.** That arc was recovered exactly, twice
+(hand-verified, then through the real pipeline). But it was a bright, high-contrast clear
+silhouetted against a dark banner — the easiest possible case, and §0.22 explicitly flagged it as
+"one trajectory, in one rally… found against the clean dark banner". Rally 2's shuttle is not
+found at all (4.5 % coverage). The single verified trajectory was not representative, exactly as
+that caveat warned.
+
+**Two of my own earlier measurements were biased, and both flattered the result.**
+
+1. **§0.23's candidate load and Task 4's 0.19 % drop rate were measured only INSIDE rally
+   windows.** Across the wider video raw load is ~520/frame rather than ~130, and the band budget
+   drops 44 % of candidates (1,007,130 of 2,274,715). Sampling only rallies understated clutter
+   roughly fourfold.
+2. **Task 3's clutter robustness used uniform-random clutter**, which rarely forms a ballistic
+   chain. Its own docstring flagged that real clutter is structured and therefore harder; real
+   data confirms it. Structured clutter *does* form long chains satisfying the area~speed
+   signature, so that signature is far less discriminating than §0.22's single arc implied.
+
+**Compute also regressed rather than improved:** 300 ms/frame (18.0 h per footage-hour) against
+152 ms (9.1 h) before Task 5, because candidate load quadrupled outside rallies. `frame_candidates`
+itself did improve, 80 -> 29.8 ms/frame, via an 8-bit LUT for gain correction and a court-bbox
+crop. Two profiling results worth keeping: gain correction was a third of the per-frame cost, and
+`scipy.ndimage.maximum` would have been a **200x regression** against the per-component Python
+loop (288 ms vs 1.43 ms), because the loop touches only each component's bounding box.
+
+**Defects found and fixed along the way (all retained, all tested):**
+
+- `is_static_camera` lacked a Hanning window, so edge leakage produced spurious peaks at half
+  the working width and **inverted the verdict** — a static clip read as moving more than a
+  panning one.
+- Its threshold had inconsistent units across input resolutions; it is now expressed in original
+  frame pixels.
+- **§0.23's claim that broadcast footage "has camera motion" is wrong for this corpus.** The
+  broadcast clip measures a median 1.37 px/frame of fixed-camera jitter with high correlation
+  responses — an elevated static camera, not a pan. The threshold is now 3.0 px/frame so both
+  real clips clear it with margin instead of the broadcast clip sitting knife-edge.
+- `select_track`'s one-shuttle prior applied whole-video can return only one trajectory plus its
+  neighbours, while a match holds hundreds of flights; and chain search did not scale (420 frames
+  in 8 s, 4,376 frames unfinished after ~400 s). Both fixed by windowed tracking (300-frame
+  windows, 30-frame overlap, centrality-based merge). But windowing then guarantees *every*
+  window yields a track, which is what makes the between-rally fabrication above so large.
+
+**Status and recommendation.** The classical detector is **not wired into the pipeline** — the
+Task 6 router and Task 7 evaluation harness were not built, because routing footage to a detector
+whose coverage anti-correlates with ground truth would degrade the shipped product. Tasks 1 and 2
+(perspective scale, perspective-correct contact gate) stand on their own merits and are already
+committed; they are correct, tested against the real court quad, and useful to any future
+detector.
+
+The §0.23 gate — *enough contacts to identify each rally's first and last contact* — cannot be met
+by this approach on this footage. That leaves the owner a decision between option A
+(hand-label and fine-tune, whose feasibility gate §0.22 passed: the shuttle IS visible at native
+resolution) and option D (tighter framing at capture, which fixes signal quality at source and
+would make both detectors' jobs far easier). §0.17's original conclusion — that this footage class
+does not support shuttle-based rally detection without a change at capture time — now has direct
+supporting evidence rather than only inference.
+
 ---
 
 ## 1. Goal
