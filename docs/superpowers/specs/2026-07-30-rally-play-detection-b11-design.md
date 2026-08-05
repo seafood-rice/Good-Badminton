@@ -1166,6 +1166,82 @@ would make both detectors' jobs far easier). §0.17's original conclusion — th
 does not support shuttle-based rally detection without a change at capture time — now has direct
 supporting evidence rather than only inference.
 
+### 0.25 OWNER DECISION (2026-08-04): option D — fix it at capture. Requirements derived and a validator shipped
+
+The owner chose D. The deliverables are a capture specification derived from measurement and
+`scripts/check_capture_quality.py`, which validates a new camera setup in minutes rather than
+after a full analysis run.
+
+**The finding that reframes D: the problem is camera POSITION, not camera quality.**
+
+Running the checker on the DJI clip:
+
+| check | result | verdict | provenance |
+|---|---|---|---|
+| perspective span | **5.68x** (far 106 px/m, near 604 px/m) | **FAIL** (limit 2.0x) | derived |
+| minimum scale on court | 106 px/m → shuttle 3.5 px at 2x tiling | **PASS** (floor 92 px/m) | derived |
+| competing movers | **117/frame** (max 165) | **FAIL** (target 25) | target, unvalidated |
+| camera stability | static | PASS | calibrated |
+
+**Resolution is adequate.** 106 px/m clears the 92 px/m floor, so a better sensor would not have
+helped — which is the same conclusion §0.21 reached when going finer made detection *worse*. What
+fails is the 5.68x perspective span and the clutter. Buying a sharper camera is the wrong
+purchase; moving the one you have is the right one.
+
+**Thresholds and where each comes from.** Two are derived from geometry, one calibrated, one an
+honest target:
+
+- `MAX_SPAN = 2.0` — **derived.** Above 2x no single absolute-pixel constant serves both ends of
+  the court, and the far shuttle drops below the detector floor while the near one is comfortable.
+  This is the defect that made an 80 px contact gate mean 0.13 m near and 0.75 m far.
+- `MIN_PX_PER_M = 92` — **derived** as `3 px floor x 2x tiling / 0.065 m shuttle`.
+- `MAX_CANDIDATES_PER_FRAME = 25` — **a target with no measured success case behind it.** The DJI
+  clip measures 117/frame and fails; no footage that *succeeds* has been measured, so a pass here
+  is necessary, not sufficient. The script and its tests both say so, and a test asserts the
+  wording stays.
+- `MAX_CAMERA_SHIFT_PX = 3.0` — **calibrated:** DJI tripod 0.0, this project's broadcast clip 1.37.
+
+**The framing requirement, derived rather than asserted.** End-on span is `(L + d0)/d0` for a
+camera `d0` behind the baseline, so with `L = 13.4 m`:
+
+| target span | end-on camera distance behind the baseline |
+|---|---|
+| 3.0x | 6.7 m |
+| 2.0x | **13.4 m** |
+| 1.5x | 26.8 m |
+
+No practical indoor distance reaches 2.0x end-on. Side-on span is
+`sqrt(D^2 + (L/2)^2)/D` at perpendicular distance `D`:
+
+| D | span | scale with court length across 3840 px | shuttle at 2x tiling |
+|---|---|---|---|
+| 4 m | 1.95x | 287 px/m uniform | 9 px |
+| 6 m | **1.50x** | 287 px/m uniform | 9 px |
+| 8 m | **1.30x** | 287 px/m uniform | 9 px |
+
+**So side-on at 6-8 m satisfies both geometry checks, and no practical end-on setup does.** It
+also raises the far-end scale from 106 to ~287 px/m, making the shuttle 9 px after tiling instead
+of 3.5.
+
+**Elevate and angle down** to address competing movers: the current camera looks along the court
+into the rest of the hall, which is why spectators and adjacent courts sit inside the shuttle's
+own flight band (measured: 44.5 and 66.2 candidates/frame in the two bands the verified arc flies
+through). Looking downward puts floor behind the shuttle instead of people. Note the mechanism
+that does *not* help here — per-band budgeting — because the clutter shares the shuttle's bands
+rather than sitting nearer the camera (§0.24).
+
+**A correction to how the clutter should be measured.** An earlier attempt scored "structurally
+active pixels" inside the flight band and got 0.2 %, which looks excellent and is misleading: the
+static mask removes *persistent* motion, while the real competitors are transient passers-by whose
+pixels are active in too few frames to be masked. Competing candidates per frame is the metric
+that tracks the failure; the validator uses that.
+
+**Open risk carried forward.** Side-on framing changes the viewpoint that BST and the pose models
+see. BST is a singles-match model whose training distribution is broadcast-style end-on; a side-on
+view may degrade stroke classification even as it fixes shuttle detection. That trade-off is
+unmeasured and should be checked on a short side-on test clip before committing to a rebuild of
+the capture setup.
+
 ---
 
 ## 1. Goal
