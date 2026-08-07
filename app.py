@@ -3,6 +3,7 @@
 
 import os, sys, json, time, subprocess, glob, shutil
 from pathlib import Path
+from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
@@ -307,7 +308,12 @@ def api_videos():
                 'status': status,
                 'date': datetime.date.fromtimestamp(p.stat().st_mtime).isoformat(),
                 'duration_sec': _video_duration_sec(p),
-                'thumb': f'/api/output/{name}/thumb.jpg' if thumb_path.exists() else None,
+                # Percent-encode the stem: a raw space makes this URL malformed, and
+                # kestrel.js renders it inside an unquoted CSS url(), whose grammar
+                # forbids spaces -- the parser drops the whole declaration and no
+                # thumbnail appears. Flask decodes %20 back to a space when routing.
+                'thumb': (f'/api/output/{quote(name, safe="")}/thumb.jpg'
+                          if thumb_path.exists() else None),
                 'output_dir': str(out_dir) if has_match else None,
             })
     return jsonify(videos)

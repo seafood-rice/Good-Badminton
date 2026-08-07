@@ -70,6 +70,59 @@ def test_videos_backfills_thumbnail(client, monkeypatch):
     assert row["thumb"] == "/api/output/clip/thumb.jpg"
 
 
+def test_thumb_url_is_percent_encoded_for_names_with_spaces(client, monkeypatch):
+    """A URL with raw spaces is malformed and breaks the CSS url() that renders it.
+
+    kestrel.js builds `background-image:url(<thumb>)` unquoted. An unquoted CSS
+    url() cannot contain spaces, so the whole declaration is dropped by the parser
+    and no thumbnail appears. Verified in a browser:
+
+        url(/api/output/Dji 2026 0010 D/thumb.jpg)   -> DROPPED, no image
+        url(/api/output/Dji%202026%200010%20D/...)   -> parses OK
+
+    This surfaced as "H.265 DJI videos have no thumbnail", but the codec is
+    incidental: those files were merely the only ones with spaces in their names.
+    Thumbnail generation works fine for 10-bit HEVC.
+    """
+    c, videos, outputs = client
+    (videos / "Dji 20260718 0010 D.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    monkeypatch.setattr(webapp, "_write_first_frame",
+                        lambda vp, dest: (dest.parent.mkdir(parents=True, exist_ok=True),
+                                          dest.write_bytes(b"\xff\xd8\xff"), True)[-1])
+    row = next(r for r in c.get("/api/videos").get_json()
+               if r["name"] == "Dji 20260718 0010 D")
+    assert " " not in row["thumb"], f"raw space in thumb URL: {row['thumb']!r}"
+    assert row["thumb"] == "/api/output/Dji%2020260718%200010%20D/thumb.jpg"
+
+
+def test_encoded_thumb_url_still_serves_the_file(client, monkeypatch):
+    """Encoding must not break retrieval -- Flask decodes %20 back to a space."""
+    c, videos, outputs = client
+    (videos / "Dji 20260718 0010 D.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    monkeypatch.setattr(webapp, "_write_first_frame",
+                        lambda vp, dest: (dest.parent.mkdir(parents=True, exist_ok=True),
+                                          dest.write_bytes(b"\xff\xd8\xff"), True)[-1])
+    row = next(r for r in c.get("/api/videos").get_json()
+               if r["name"] == "Dji 20260718 0010 D")
+    resp = c.get(row["thumb"])
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"\xff\xd8\xff")
+
+
+def test_plain_names_keep_an_unescaped_thumb_url(client, monkeypatch):
+    """Encoding must not churn URLs for the names that already worked."""
+    c, videos, outputs = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    monkeypatch.setattr(webapp, "_write_first_frame",
+                        lambda vp, dest: (dest.parent.mkdir(parents=True, exist_ok=True),
+                                          dest.write_bytes(b"\xff\xd8\xff"), True)[-1])
+    row = next(r for r in c.get("/api/videos").get_json() if r["name"] == "clip")
+    assert row["thumb"] == "/api/output/clip/thumb.jpg"
+
+
 def test_stats_aggregates_outputs(client, monkeypatch):
     c, videos, outputs = client
     (videos / "m.mp4").write_bytes(b"\x00")
