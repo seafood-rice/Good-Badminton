@@ -101,6 +101,20 @@ def test_competing_movers_threshold_is_labelled_unvalidated():
     assert "necessary, not sufficient" in tail
 
 
+def test_suggest_mode_needs_no_video(capsys):
+    """--suggest prints derived framing tables; requiring --video made it unusable."""
+    rc = mod.main(["--suggest"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "side-on" in out and "span" in out
+
+
+def test_missing_video_without_suggest_is_an_error():
+    with pytest.raises(SystemExit) as e:
+        mod.main(["--quad", "10,20 30,20 40,50 5,50"])
+    assert e.value.code != 0
+
+
 def test_measure_clutter_rejects_an_unreadable_video(tmp_path):
     with pytest.raises(ValueError):
         mod.measure_clutter(str(tmp_path / "missing.mp4"), DJI_QUAD, 0.0, 60, 4)
