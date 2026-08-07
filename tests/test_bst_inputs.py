@@ -121,3 +121,72 @@ def test_bone_pairs_match_exact_upstream_order():
     ]
     assert bi.BONE_PAIRS == expected
     assert len(bi.BONE_PAIRS) == 19
+
+
+def _side_dict(offset=0.0):
+    j = np.arange(17, dtype=float)
+    kp = np.stack([600 + 2 * j, 300 + 3 * j], axis=1)
+    if offset:
+        # A uniform additive offset alone would be a pure translation, and
+        # _normalize_pose's bbox-centered scaling is translation- and
+        # scale-invariant -- so it would normalize identically to offset=0
+        # and never actually distinguish "upper" from "lower". Perturb each
+        # joint non-uniformly instead so the relative geometry (and hence
+        # the normalized pose) genuinely differs.
+        kp[:, 0] += offset * np.sin(j)
+        kp[:, 1] += offset * np.cos(j)
+    return {
+        "keypoints": kp,
+        "centroid": (float(kp[11][0] + kp[12][0]) / 2.0, float(kp[11][1] + kp[12][1]) / 2.0),
+    }
+
+
+def _both_players_record(frame, shuttle=(640.0, 360.0)):
+    return {
+        "shuttle": shuttle,
+        "players": {"lower": _side_dict(offset=0.0), "upper": _side_dict(offset=100.0)},
+    }
+
+
+def test_hitter_lower_fills_person0_from_lower_person1_from_upper():
+    records = {f: _both_players_record(f) for f in range(WINDOW_START, WINDOW_START + bi.SEQ_LEN)}
+    result = bi.build_inputs(CONTACT_FRAME, records.get, COURT_CORNERS, VIDEO_WH, hitter="lower")
+    assert result is not None
+    contact_index = bi.SEQ_LEN // 2
+    # person-0 (hitter=lower) and person-1 (opponent=upper) both carry real,
+    # DIFFERENT data -- opponent is no longer permanently zero-filled.
+    assert np.any(result["pose"][contact_index, 0] != 0.0)
+    assert np.any(result["pose"][contact_index, 1] != 0.0)
+    assert not np.allclose(result["pose"][contact_index, 0], result["pose"][contact_index, 1])
+    assert np.any(result["positions"][contact_index, 0] != result["positions"][contact_index, 1])
+
+
+def test_hitter_upper_swaps_person0_and_person1():
+    records = {f: _both_players_record(f) for f in range(WINDOW_START, WINDOW_START + bi.SEQ_LEN)}
+    result_lower = bi.build_inputs(CONTACT_FRAME, records.get, COURT_CORNERS, VIDEO_WH, hitter="lower")
+    result_upper = bi.build_inputs(CONTACT_FRAME, records.get, COURT_CORNERS, VIDEO_WH, hitter="upper")
+    contact_index = bi.SEQ_LEN // 2
+    # Swapping hitter swaps which side lands in person-0 vs person-1.
+    np.testing.assert_allclose(result_lower["pose"][contact_index, 0], result_upper["pose"][contact_index, 1])
+    np.testing.assert_allclose(result_lower["pose"][contact_index, 1], result_upper["pose"][contact_index, 0])
+
+
+def test_hitter_none_default_is_byte_identical_to_pre_b1_behavior():
+    """No hitter given -> exactly today's contract: person-0 from the
+    record's top-level keypoints/centroid, person-1 zero-filled."""
+    records = {f: _record(f) for f in range(WINDOW_START, WINDOW_START + bi.SEQ_LEN)}
+    result = bi.build_inputs(CONTACT_FRAME, records.get, COURT_CORNERS, VIDEO_WH)
+    assert result is not None
+    assert np.all(result["pose"][:, 1] == 0.0)
+    assert np.all(result["positions"][:, 1] == 0.0)
+
+
+def test_hitter_given_but_players_key_missing_degrades_to_zero_fill():
+    """Never-fatal: a hitter is requested but some/all frames in the window
+    lack the "players" sub-dict (e.g. that frame wasn't densely captured) ->
+    those frames zero-fill rather than raising."""
+    records = {f: {"shuttle": (640.0, 360.0)} for f in range(WINDOW_START, WINDOW_START + bi.SEQ_LEN)}
+    result = bi.build_inputs(CONTACT_FRAME, records.get, COURT_CORNERS, VIDEO_WH, hitter="lower")
+    # Too few posed frames (none have "players") -> gate returns None, same
+    # never-fatal contract as test_all_none_keypoints_returns_none.
+    assert result is None

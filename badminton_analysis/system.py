@@ -20,6 +20,71 @@ COURT_VIEW_CHECK_INTERVAL = 3
 # Fast mode analyzes every Nth court frame (quick look).
 FAST_FRAME_STRIDE = 3
 
+# Nearest-in-ROI-racket-detection-to-player-centroid gate for the
+# both-player capture (Task 6). Deliberately dumb/untuned v1 constant, same
+# convention as contact_px in stroke/events.py -- project 2 measures
+# accuracy against ground truth, not this plan.
+RACKET_TO_PLAYER_MAX_PX = 300.0
+
+# Nearest-pose-person-to-player-centroid gate for the both-player capture's
+# per-side pose matching (_capture_side_poses). Deliberately dumb/untuned v1
+# constant in the same spirit as contact_px and RACKET_TO_PLAYER_MAX_PX --
+# project 2 measures accuracy against ground truth, not this plan.
+#
+# Held to a TIGHTER tolerance than RACKET_TO_PLAYER_MAX_PX on purpose: a
+# racket head can legitimately sit a full arm+racket extension away from its
+# owner's feet, whereas the quantity compared here is a foot-midpoint against
+# a tracked centroid that is itself a foot-midpoint (see
+# visualization/player_pose.py::detect_players, which feeds PlayerTracker
+# centroids computed as the ankle midpoint + 10px in y). For the player the
+# tracker actually locked onto this frame the two agree to within ~10px; the
+# slack here only covers a stale centroid held from an earlier frame while
+# that side went briefly undetected. Without this gate, a frame with only one
+# detected person would assign that SAME person to BOTH sides, because min()
+# over a one-element list always returns it regardless of distance.
+POSE_TO_PLAYER_MAX_PX = 150.0
+
+
+def _sq_dist(a, b):
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+
+
+def _assign_one_to_one(side_points, candidates, max_sq):
+    """Assign at most one candidate index to each side, and each candidate to at
+    most one side, pairing closest-first.
+
+    ``side_points`` is {side: (x, y)}; ``candidates`` is a list where an entry may
+    be None (unusable, e.g. a detected person with no valid ankle). Pairs further
+    apart than ``max_sq`` (squared px) are not eligible at all. Returns
+    {side: candidate index}, omitting sides that won nothing.
+
+    Closest-first is what makes this one-to-one rather than two independent
+    nearest-neighbour searches: with two sides competing for the same detection,
+    the nearer side takes it and the other is left unmatched instead of both
+    silently sharing it. Both callers (pose people, racket boxes) need exactly
+    that, so the rule lives here once.
+    """
+    pairs = []
+    for side, pt in side_points.items():
+        if pt is None:
+            continue
+        for i, c in enumerate(candidates):
+            if c is None:
+                continue
+            d = _sq_dist(c, pt)
+            if d <= max_sq:
+                pairs.append((d, side, i))
+    pairs.sort(key=lambda p: p[0])
+    chosen, used_sides, used_cands = {}, set(), set()
+    for _d, side, i in pairs:
+        if side in used_sides or i in used_cands:
+            continue
+        chosen[side] = i
+        used_sides.add(side)
+        used_cands.add(i)
+    return chosen
+
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -105,6 +170,7 @@ class BadmintonAnalysisSystem:
         self._shuttle_trajectory = None
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
+        self._analysis_track_both = []  # both-player contact track (contacts/BST only)
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
 
@@ -478,6 +544,66 @@ class BadmintonAnalysisSystem:
                 cv2.imwrite(os.path.join(self.images_save_dir, f"{frame_count}.png"), frame)
         return frame, detect_frame_count
 
+    def _side_centroids(self):
+        """{side: tracked centroid} for the sides the tracker holds this frame."""
+        out = {}
+        for side in ("lower", "upper"):
+            pt = self.player_tracker.players.get(side)
+            if pt is not None:
+                out[side] = (float(pt[0]), float(pt[1]))
+        return out
+
+    def _capture_side_poses(self, side_centroids, people, ox, oy):
+        """{side: keypoints or None} -- each side's own pose, assigned ONE-TO-ONE.
+
+        Two gates are load-bearing here, and they catch different failures:
+
+        1. A distance gate (POSE_TO_PLAYER_MAX_PX). Without it, the nearest
+           detected person is accepted however far away they are.
+        2. **One-to-one assignment.** Without it, a frame in which the pose
+           model found only ONE person (while the cheaper player tracker still
+           holds centroids for BOTH halves, each within the gate -- e.g. both
+           players near the projected net) hands that same person's keypoints
+           to both sides, because two independent nearest-neighbour searches
+           over the same list can return the same element. That fabricates a
+           phantom opponent: BST's person-1 slot becomes a near-duplicate of
+           the hitter (worse than the honest zero-fill it replaced), and the
+           duplicated racket point ties in
+           stroke.events.detect_contacts_multi, whose tie-break then sends
+           every such contact to "lower" -- misattributing genuine upper-side
+           hits, i.e. defeating the very fix this capture path exists for.
+
+        A side that is tracked but wins no person is reported as None, so the
+        caller records "tracked but unmatched" rather than borrowing the other
+        side's player.
+        """
+        from .analysis import joint_angles as ja
+
+        def _foot_midpoint(kp_arr):
+            pts = []
+            for idx in (ja.L_ANKLE, ja.R_ANKLE):
+                if ja.is_valid(kp_arr, idx):
+                    pts.append((float(kp_arr[idx][0]) + ox, float(kp_arr[idx][1]) + oy))
+            if pts:
+                return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+            return None
+
+        feet = [_foot_midpoint(p) for p in (people or [])]
+        chosen = _assign_one_to_one(side_centroids, feet, POSE_TO_PLAYER_MAX_PX ** 2)
+
+        out = {}
+        for side in side_centroids:
+            i = chosen.get(side)
+            if i is None:
+                out[side] = None
+                continue
+            kp = people[i].astype(float).copy()
+            mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
+            kp[mask, 0] += ox
+            kp[mask, 1] += oy
+            out[side] = kp
+        return out
+
     def _capture_analysis_frame(self, frame_count, frame, roi_corners, ball_position):
         from .analysis import joint_angles as ja
         pose = self.player_pose_visualizer.get_current_pose_data()
@@ -542,8 +668,17 @@ class BadmintonAnalysisSystem:
             from .visualization.technique_overlay import draw_technique_overlay
             draw_technique_overlay(frame, angles_now)
 
+        # ONE racket forward pass per frame, shared by the single-player value
+        # below and the both-player block further down. detect_racket_heads
+        # returns exactly the same in-ROI boxes detect_racket_head chooses
+        # from, sorted confidence-descending; since Python's sort is stable,
+        # racket_candidates[0] is byte-identical to
+        # detect_racket_head's max(boxes, key=confidence). Calling both would
+        # double this frame's YOLO cost on the pipeline's hot path.
+        racket_candidates = []
         if self._racket_detector is not None:
-            racket_head = self._racket_detector.detect_racket_head(frame, roi_corners=roi_corners)
+            racket_candidates = self._racket_detector.detect_racket_heads(frame, roi_corners=roi_corners)
+            racket_head = racket_candidates[0] if racket_candidates else None
         if racket_head is None and keypoints is not None:
             from .analysis.joint_angles import infer_racket_head
             racket_head = infer_racket_head(keypoints, dominant=self.dominant_hand)
@@ -559,11 +694,56 @@ class BadmintonAnalysisSystem:
         self._analysis_track.append({
             "frame": frame_count, "racket_head": racket_head, "shuttle": shuttle,
         })
+
+        # --- B1: additive both-player capture (contacts/BST only; the
+        # single-player fields above are unchanged and keep driving
+        # TechniqueAnalysisRunner exactly as before) ---
+        from .analysis.joint_angles import infer_racket_head as _infer_racket_head_both
+
+        people_list = []
+        p_ox = p_oy = 0
+        if pose is not None and pose.get("keypoints") is not None and len(pose["keypoints"]) > 0:
+            people_list = list(pose["keypoints"])
+            p_ox, p_oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
+
+        # racket_candidates was already computed once above (single YOLO pass).
+
+        # Both assignments are ONE-TO-ONE across the two sides (see
+        # _assign_one_to_one): two independent nearest-neighbour searches would
+        # hand a single detected person -- or a single racket box -- to BOTH
+        # sides whenever both tracked centroids are in gate range, fabricating a
+        # phantom opponent and a tied racket point that misattributes contacts.
+        side_centroids = self._side_centroids()
+        side_poses = self._capture_side_poses(side_centroids, people_list, p_ox, p_oy)
+        racket_pick = _assign_one_to_one(side_centroids, racket_candidates,
+                                         RACKET_TO_PLAYER_MAX_PX ** 2)
+
+        players_data = {}
+        for region in ("lower", "upper"):
+            side_centroid = side_centroids.get(region)
+            side_kp = side_poses.get(region)
+            side_racket = None
+            ri = racket_pick.get(region)
+            if ri is not None:
+                side_racket = (float(racket_candidates[ri][0]), float(racket_candidates[ri][1]))
+            if side_racket is None and side_kp is not None:
+                side_racket = _infer_racket_head_both(side_kp, dominant=self.dominant_hand)
+            players_data[region] = {
+                "keypoints": side_kp, "centroid": side_centroid, "racket_head": side_racket,
+            }
+
+        self._analysis_track_both.append({
+            "frame": frame_count,
+            "racket_lower": players_data["lower"]["racket_head"],
+            "racket_upper": players_data["upper"]["racket_head"],
+            "shuttle": shuttle,
+        })
+
         self._analysis_frames[frame_count] = {
             "frame": frame_count, "keypoints": keypoints, "conf": None,
             "racket_head": racket_head, "centroid": centroid, "nose": nose,
             "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
-            "player_side": side, "shuttle": shuttle,
+            "player_side": side, "shuttle": shuttle, "players": players_data,
         }
 
     def _run_shuttle_pretrack(self):
@@ -631,28 +811,21 @@ class BadmintonAnalysisSystem:
         """Post-loop BST coarse stroke labeling -- entirely optional.
 
         No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
-        constructor, so the default behavior of the pipeline is byte-for-byte
-        unchanged. ``StrokeRecognizer`` already degrades gracefully (returns
-        ``[]``) if the weights fail to load, so this is safe to call
-        unconditionally from ``process_video``.
-
-        Uses ``self.court_corners`` -- the 4-point court quad set alongside
-        court annotation in ``process_video`` -- rather than
-        ``self.court_roi_corners`` (a 2-point pose-detection ROI rectangle):
+        constructor. Uses ``self._analysis_track_both`` (both players' racket
+        points per frame, Task 6) so hits by EITHER player are detected and
+        correctly attributed, and ``self.court_corners`` -- the 4-point court
+        quad -- rather than ``self.court_roi_corners`` (a 2-point pose ROI):
         ``build_inputs`` -> ``CourtMapper`` requires exactly 4 corners.
 
-        Never fatal: any exception raised while recognizing strokes (bad
-        court data, a build_inputs/predict failure, etc.) is caught here and
-        only turns stroke recognition off for this run -- it must never abort
-        ``process_video`` before ``_cleanup(cap)`` runs. Writes nothing when
-        there are no hits, so ``strokes.json``'s presence stays meaningful.
+        Never fatal: any exception is caught here and only turns stroke
+        recognition off for this run. Writes nothing when there are no hits,
+        so ``strokes.json``'s presence stays a meaningful signal.
 
-        v1 limitation: ``stroke_recog.inputs.build_inputs`` (Task 3) only
-        fills in the tracked hitter's own pose/position (person index 0) plus
-        the shuttle; the opponent (person index 1) pose/position stay
-        zero-filled every frame. This is a documented v1 simplification --
-        whether coarse labels survive it on real footage is what the T9
-        validation decides, not something this task attempts to fix.
+        BST's person-0 ("hitter") and person-1 ("opponent") slots are both
+        filled from the actual hitter/opponent, chosen by shuttle proximity
+        at the contact frame -- no longer a zero-filled opponent (fixed by
+        B1; previously the tracked/near player's pose leaked into person-0
+        even for far-player hits).
         """
         if not self.bst_weights:
             return
@@ -662,7 +835,7 @@ class BadmintonAnalysisSystem:
             from .stroke_recog.recognizer import StrokeRecognizer
 
             labels = StrokeRecognizer(self.bst_weights).label_rally(
-                self._analysis_track, self._analysis_frames.get,
+                self._analysis_track_both, self._analysis_frames.get,
                 self.court_corners, (self.frame_width, self.frame_height),
             )
             if not labels:

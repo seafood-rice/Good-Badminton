@@ -13,6 +13,7 @@ def _make_system(tmp_path, **kw):
     s._shuttle_trajectory = None
     s._shuttle_source = "yolo"
     s._analysis_track = []
+    s._analysis_track_both = []
     s._analysis_frames = {}
     s.save_dir = str(tmp_path)
     s.video_path = str(tmp_path / "v.mp4")
