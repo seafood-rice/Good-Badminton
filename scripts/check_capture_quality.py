@@ -190,7 +190,9 @@ def suggest():
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video", required=True)
+    # --video is not declared required: --suggest prints the derived framing tables
+    # and needs no clip, so requiring it made that mode unusable.
+    ap.add_argument("--video", default=None)
     ap.add_argument("--quad", default=None,
                     help="court_annotations.txt path, or 'x,y x,y x,y x,y' (TL TR BR BL)")
     ap.add_argument("--start-sec", type=float, default=0.0)
@@ -203,6 +205,8 @@ def main(argv=None):
     if args.suggest:
         suggest()
         return 0
+    if not args.video:
+        ap.error("--video is required (or use --suggest for the framing tables)")
     quad = parse_quad(args.quad)
     if quad is None:
         print("a court quad is required: pass --quad with a court_annotations.txt "

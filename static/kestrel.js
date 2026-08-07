@@ -130,7 +130,12 @@ window.Kestrel = (function () {
       (state.lang==='zh'?'暂无视频':'No videos') + '</p>'; return; }
     wrap.innerHTML = vids.map(function (v) {
       var nm = (v.name || '').replace(/"/g, '&quot;');
-      var thumb = v.thumb ? 'background-image:url(' + v.thumb + ')' : '';
+      // Single-quote the CSS url(): an UNQUOTED url() cannot contain spaces, so a
+      // stem like "Dji 2026 0010 D" made the whole declaration invalid and the
+      // parser dropped it, leaving a blank thumbnail. The server now percent-encodes
+      // the stem, and single quotes keep this valid even inside the style="..."
+      // attribute below (double quotes would terminate the attribute).
+      var thumb = v.thumb ? "background-image:url('" + v.thumb + "')" : '';
       var dur = v.duration_sec ? Math.floor(v.duration_sec/60)+':'+('0'+Math.round(v.duration_sec%60)).slice(-2) : '';
       return '<div class="vcard" role="button" tabindex="0" data-name="' + nm + '"><div class="vthumb" style="' + thumb + '">' +
         '<span class="vmode mono">' + modeLabel(v) + '</span>' +
