@@ -53,6 +53,12 @@
 <div class="ct">
   <h1>🏸 Good Badminton <span>AI 羽毛球分析</span></h1>
 
+  <!-- ===== Mode Switch ===== -->
+  <div id="mode-switch" style="margin:12px 0;display:flex;gap:8px">
+    <button id="mode-match" onclick="setMode('match')">🏟 比赛分析 Match</button>
+    <button id="mode-posture" class="btn2" onclick="setMode('posture')">🧍 姿态训练 Posture</button>
+  </div>
+
   <!-- ===== Video Selection ===== -->
   <div class="panel" id="panel-videos">
     <div class="ph">📁 选择视频</div>
@@ -66,6 +72,7 @@
     <div style="margin-top:8px">
       <select id="lang-sel"><option value="zh">中文</option><option value="en">English</option></select>
       <select id="pose-sel"><option value="yolo-pose">YOLO Pose (快)</option><option value="rtmpose">RTMPose (准)</option></select>
+      <label style="font-size:.85rem;margin:0 4px"><input type="checkbox" id="tech-sel" checked> 技术分析 Technique</label>
       <button id="btn-detect" disabled onclick="doDetect()">🔍 1. 自动检测球场</button>
       <button id="btn-analyze" disabled onclick="doAnalyze()">▶ 2. 开始分析</button>
       <button class="btn2" id="btn-delete" disabled onclick="doDelete()">🗑 删除结果</button>
@@ -133,19 +140,96 @@
       <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置热力图</div><img id="rheat" alt="热力图"></div>
       <div><div style="font-size:.8rem;color:var(--mu);margin-bottom:4px">位置散点图</div><img id="rscatter" alt="散点图"></div>
     </div>
+
+    <!-- ===== Technique Analysis Sub-panel ===== -->
+    <div id="techniquePanel" class="hidden" style="margin-top:24px;border-top:1px solid var(--bor);padding-top:20px;">
+      <div class="ph">🏸 技术分析 / Technique Analysis</div>
+      <div id="techniqueSummary" style="margin-bottom:16px;font-size:.85rem;color:var(--mu)"></div>
+      <div id="strokeList" style="margin-bottom:12px"></div>
+      <div id="strokeDetail" class="hidden" style="margin-bottom:12px;background:#0f172a;border-radius:8px;padding:12px;font-size:.82rem"></div>
+      <div id="trainingPlan" style="margin-top:20px;border-top:1px solid var(--bor);padding-top:16px;">
+        <div class="ph">🏋 训练计划 / Training Plan</div>
+        <div style="margin-bottom:12px">
+          <button id="planCourtBtn" onclick="showPlanLocation('court')">🏟 球场 On-Court</button>
+          <button id="planHomeBtn" class="btn2" onclick="showPlanLocation('home')">🏠 居家 At-Home</button>
+          <button class="btn3" id="planRegenBtn" onclick="regeneratePlan()">🔄 重新生成 Regenerate</button>
+        </div>
+        <div id="planWeeks" style="font-size:.85rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Posture Drill Panel ===== -->
+  <div class="panel hidden" id="panel-posture" style="margin-top:16px">
+    <div class="ph">🧍 姿态训练 Posture Drill</div>
+    <div style="margin:8px 0">
+      <label>击球类型 Stroke:
+        <select id="posture-stroke">
+          <option value="high_clear">高远球 High Clear</option>
+          <option value="smash">杀球 Smash</option>
+          <option value="drop_shot">吊球 Drop Shot</option>
+          <option value="serve">发球 Serve</option>
+        </select>
+      </label>
+      <label style="margin-left:12px">持拍手 Hand:
+        <select id="posture-hand"><option value="right">右 Right</option><option value="left">左 Left</option></select>
+      </label>
+      <label style="margin-left:12px">姿态模型 Pose:
+        <select id="posture-pose-family">
+          <option value="yolo-pose">YOLO Pose (快)</option>
+          <option value="rtmpose">RTMPose (准)</option>
+          <option value="rtmo">RTMO</option>
+        </select>
+      </label>
+      <button id="btn-posture-analyze" onclick="postureAnalyze()" disabled>▶ 分析 Analyze</button>
+    </div>
+    <div id="posture-progress-wrap" class="hidden">
+      <div style="background:#222;border-radius:6px;overflow:hidden;height:14px">
+        <div id="posture-pfill" style="height:100%;width:0;background:var(--ac)"></div>
+      </div>
+      <div id="posture-pmsg" style="font-size:.8rem;color:var(--mu);margin-top:4px"></div>
+    </div>
+    <div id="posture-results" class="hidden" style="margin-top:12px">
+      <video id="posture-video" controls style="width:100%;max-height:480px;background:#000"></video>
+      <div id="posture-summary" style="margin-top:10px"></div>
+      <div id="posture-rep-list"></div>
+      <div id="posture-rep-detail" class="hidden" style="margin:10px 0;background:#0f172a;border-radius:8px;padding:12px"></div>
+      <div id="posture-plan" style="margin-top:14px">
+        <div class="ph">🏋 训练计划 Training Plan</div>
+        <button onclick="posturePlanLoc('court')">🏟 球场 On-Court</button>
+        <button class="btn2" onclick="posturePlanLoc('home')">🏠 居家 At-Home</button>
+        <button onclick="postureRegen()">🔄 重新生成 Regenerate</button>
+        <div id="posture-plan-weeks"></div>
+      </div>
+      <div id="posture-report" class="hidden" style="margin-top:16px">
+        <div class="ph">📋 教练报告 Coach Report</div>
+        <div style="margin:6px 0">
+          <button onclick="postureReportLang('en')">EN</button>
+          <button class="btn2" onclick="postureReportLang('zh-Hant')">繁體</button>
+          <button class="btn2" onclick="postureReportLang('zh-Hans')">简体</button>
+          <a id="report-dl-html" href="#" target="_blank" style="margin-left:12px">⬇ HTML</a>
+          <a id="report-dl-pdf" href="#" target="_blank" class="hidden">⬇ PDF</a>
+        </div>
+        <div id="report-body"></div>
+      </div>
+    </div>
   </div>
 </div>
 
 <script>
 // ── State ──
 var selVideo = null, clicks = [], annoImg = null, sx = 1, sy = 1;
+var _mode = 'match';        // current UI mode; kept in sync by setMode()
+var _videoMap = {};         // filename -> video meta from /api/videos (has_result, ...)
 
 // ── Load videos ──
 function loadVideos() {
   fetch('/api/videos').then(function(r){return r.json()}).then(function(vids){
     var h = '';
+    _videoMap = {};
     for (var i = 0; i < vids.length; i++) {
       var v = vids[i];
+      _videoMap[v.filename] = v;
       var b = '';
       if (v.has_result) b = '<span class="badge badge-ok">已完成</span>';
       else if (v.has_annotations) b = '<span class="badge badge-rd">已标注球场</span>';
@@ -167,6 +251,35 @@ function pickVideo(el, fn) {
   document.getElementById('btn-detect').disabled = false;
   document.getElementById('btn-analyze').disabled = false;
   document.getElementById('btn-delete').disabled = false;
+  var pb = document.getElementById('btn-posture-analyze'); if (pb) pb.disabled = false;
+  restoreForMode();
+}
+
+// Reload whatever results already exist for the selected video in the current
+// mode, so previously-analyzed videos show their technique panel / coach report
+// without re-running. Safe no-op when nothing has been analyzed yet.
+function restoreForMode() {
+  if (!selVideo) return;
+  var stem = selVideo.replace(/\.[^.]+$/,'');
+  if (_mode === 'posture') { postureLoad(stem); }
+  else { matchRestore(stem); }
+}
+
+function matchRestore(stem) {
+  var meta = _videoMap[selVideo];
+  var panel = document.getElementById('panel-results');
+  if (!meta || !meta.has_result) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  var bust = '?' + Date.now();
+  var vid = document.getElementById('rvideo');
+  vid.src = '/api/output/'+stem+'/detect_'+stem+'.mp4'+bust; vid.load();
+  document.getElementById('rheat').src = '/api/output/'+stem+'/position_visualizations/heatmaps/match_heatmap.png'+bust;
+  document.getElementById('rscatter').src = '/api/output/'+stem+'/position_visualizations/scatter_plots/match_scatter.png'+bust;
+  // Rally clips need a fresh run's segment data; disable until re-analyzed.
+  document.getElementById('rally-info').textContent = '';
+  document.getElementById('btn-clip').disabled = true;
+  document.getElementById('clip-list').innerHTML = '';
+  loadTechnique(stem);
 }
 
 // ── Upload ──
@@ -336,7 +449,7 @@ function doAnalyze() {
   var btn = document.getElementById('btn-analyze');
   btn.disabled = true; btn.textContent = '启动中...';
   fetch('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({video:selVideo, language:document.getElementById('lang-sel').value, pose_family:document.getElementById('pose-sel').value})})
+    body:JSON.stringify({video:selVideo, language:document.getElementById('lang-sel').value, pose_family:document.getElementById('pose-sel').value, analyze_technique:document.getElementById('tech-sel').checked})})
   .then(function(r){return r.json()}).then(function(){
     document.getElementById('panel-progress').classList.remove('hidden');
     document.getElementById('panel-progress').scrollIntoView({behavior:'smooth'});
@@ -387,6 +500,7 @@ function showResults(r) {
     document.getElementById('rally-info').textContent = '';
     document.getElementById('btn-clip').disabled = true;
   }
+  if (r.video_name) loadTechnique(r.video_name);
 }
 
 function doClip() {
@@ -429,6 +543,371 @@ function doDelete() {
 
 // ── Init ──
 loadVideos();
+setMode('match');
+
+// ── Technique Analysis ──
+var _techniqueData = null;
+var _planData = null;
+var _currentVideo = null;
+var METRIC_LABEL = {
+  elbow_extension: '肘部伸展 Elbow', trunk_rotation: '躯干旋转 Trunk',
+  wrist_flexion: '手腕角度 Wrist', knee_flexion: '屈膝 Knee',
+  hip_shoulder_separation: '髋肩分离 Hip-Shoulder', weight_transfer: '重心转移 Weight'
+};
+
+function scoreColor(s) {
+  if (s == null) return '#888';
+  if (s >= 75) return '#3fb950';
+  if (s >= 50) return '#d29922';
+  return '#f85149';
+}
+
+function loadTechnique(videoName) {
+  _currentVideo = videoName;
+  fetch('/api/technique/' + videoName).then(function(r) {
+    if (!r.ok) {
+      document.getElementById('techniquePanel').classList.add('hidden');
+      return null;
+    }
+    return r.json();
+  }).then(function(data) {
+    if (!data) return;
+    _techniqueData = data;
+    document.getElementById('techniquePanel').classList.remove('hidden');
+    renderSummary();
+    renderStrokeList();
+    loadPlan();
+  }).catch(function() {
+    document.getElementById('techniquePanel').classList.add('hidden');
+  });
+}
+
+function renderSummary() {
+  var s = _techniqueData.summary;
+  var html = '<p>共检测 <b>' + s.stroke_count + '</b> 次击球 / ' + s.stroke_count + ' strokes detected.</p><ul style="margin:8px 0 8px 16px">';
+  var byType = s.by_type || {};
+  for (var type in byType) {
+    if (Object.prototype.hasOwnProperty.call(byType, type)) {
+      var info = byType[type];
+      html += '<li>' + type + ': ' + info.count + ' 次, 平均分 ' + (info.avg_score != null ? info.avg_score : 'N/A') + '</li>';
+    }
+  }
+  html += '</ul>';
+  var rw = s.recurring_weaknesses || [];
+  if (rw.length) {
+    html += '<p style="margin-top:6px">主要弱点 / Top weaknesses:</p><ul style="margin:4px 0 0 16px">';
+    for (var i = 0; i < Math.min(3, rw.length); i++) {
+      html += '<li>' + (METRIC_LABEL[rw[i].metric] || rw[i].metric) + ' (' + rw[i].count + ')</li>';
+    }
+    html += '</ul>';
+  }
+  document.getElementById('techniqueSummary').innerHTML = html;
+}
+
+function renderStrokeList() {
+  var strokes = _techniqueData.strokes;
+  var html = '<div style="font-weight:600;margin-bottom:8px;font-size:.85rem">击球列表 / Strokes — 点击查看详情</div>';
+  for (var i = 0; i < strokes.length; i++) {
+    var st = strokes[i];
+    var c = scoreColor(st.overall_score);
+    html += '<div onclick="showStrokeDetail(' + i + ')" style="cursor:pointer;padding:7px 10px;border-left:5px solid ' + c + ';margin:4px 0;background:#0f172a;border-radius:0 6px 6px 0;font-size:.83rem">'
+      + '#' + (i + 1) + ' ' + st.stroke_type
+      + ' — <b style="color:' + c + '">' + (st.overall_score != null ? st.overall_score : 'N/A') + '</b></div>';
+  }
+  document.getElementById('strokeList').innerHTML = html;
+  // Reset the detail box when (re)loading a stroke list, so no stale detail lingers.
+  var detail = document.getElementById('strokeDetail');
+  detail.innerHTML = '';
+  detail.classList.add('hidden');
+}
+
+function showStrokeDetail(i) {
+  var st = _techniqueData.strokes[i];
+  var html = '<div style="font-weight:600;margin-bottom:10px">击球 #' + (i + 1) + ': ' + st.stroke_type + '</div>';
+  var pm = st.per_metric || {};
+  for (var metric in pm) {
+    if (Object.prototype.hasOwnProperty.call(pm, metric)) {
+      var m = pm[metric];
+      var sc = m.score;
+      var w = sc == null ? 0 : Math.max(0, Math.min(100, sc));
+      html += '<div style="margin:5px 0;display:flex;align-items:center;gap:8px">'
+        + '<span style="display:inline-block;width:170px;flex-shrink:0">' + (METRIC_LABEL[metric] || metric) + '</span>'
+        + '<span style="display:inline-block;width:200px;background:#333;border-radius:3px;flex-shrink:0">'
+        +   '<span style="display:inline-block;height:12px;width:' + (w * 2) + 'px;background:' + scoreColor(sc) + ';border-radius:3px;"></span>'
+        + '</span>'
+        + '<span style="color:var(--mu)">' + (m.measured != null ? m.measured : 'N/A')
+        + (m.ideal_range ? ' (ideal ' + m.ideal_range[0] + '–' + m.ideal_range[1] + ')' : '') + '</span>'
+        + '</div>';
+    }
+  }
+  var weaknesses = st.weaknesses || [];
+  if (weaknesses.length) {
+    html += '<div style="margin-top:10px;font-weight:600">改进建议 / Suggestions</div><ul style="margin:6px 0 0 16px">';
+    for (var j = 0; j < weaknesses.length; j++) {
+      html += '<li style="margin:3px 0">' + weaknesses[j].description + '</li>';
+    }
+    html += '</ul>';
+  }
+  var detail = document.getElementById('strokeDetail');
+  detail.innerHTML = html;
+  detail.classList.remove('hidden');
+}
+
+function loadPlan() {
+  fetch('/api/training-plan/' + _currentVideo).then(function(r) {
+    if (!r.ok) return null;
+    return r.json();
+  }).then(function(data) {
+    if (!data) return;
+    _planData = data;
+    showPlanLocation('court');
+  }).catch(function() {});
+}
+
+function regeneratePlan() {
+  var btn = document.getElementById('planRegenBtn');
+  btn.disabled = true; btn.textContent = '生成中...';
+  fetch('/api/training-plan/' + _currentVideo, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({weeks: 4})
+  }).then(function(r) {
+    btn.disabled = false; btn.textContent = '🔄 重新生成 Regenerate';
+    if (!r.ok) return null;
+    return r.json();
+  }).then(function(data) {
+    if (!data) return;
+    _planData = data;
+    showPlanLocation('court');
+  }).catch(function() {
+    btn.disabled = false; btn.textContent = '🔄 重新生成 Regenerate';
+  });
+}
+
+function showPlanLocation(loc) {
+  if (!_planData) return;
+  // Update button styles. Active = no class (inherits the accent `button` style);
+  // inactive = 'btn2' (muted secondary). Do NOT change '' to 'btn' — there is no
+  // standalone .btn element styling beyond the shared `button,.btn` rule.
+  var courtBtn = document.getElementById('planCourtBtn');
+  var homeBtn = document.getElementById('planHomeBtn');
+  if (loc === 'court') {
+    courtBtn.className = ''; homeBtn.className = 'btn2';
+  } else {
+    courtBtn.className = 'btn2'; homeBtn.className = '';
+  }
+  var html = '';
+  var weeks = _planData.weeks || [];
+  for (var i = 0; i < weeks.length; i++) {
+    var wk = weeks[i];
+    var rows = (wk.sessions || []).filter(function(s) { return s.location === loc; });
+    if (!rows.length) continue;
+    html += '<div style="margin-bottom:12px"><div style="font-weight:600;margin-bottom:4px">第 ' + wk.week + ' 周 (' + wk.phase + ') / Week ' + wk.week + '</div><ul style="margin-left:16px">';
+    for (var j = 0; j < rows.length; j++) {
+      var s = rows[j];
+      html += '<li style="margin:3px 0">' + s.name
+        + ' — ' + (s.sets != null ? s.sets : '?') + '×' + (s.reps != null ? s.reps : '?')
+        + ', ' + s.frequency_per_week + '×/周'
+        + (s.duration_min ? ', ' + s.duration_min + 'min' : '')
+        + '</li>';
+    }
+    html += '</ul></div>';
+  }
+  document.getElementById('planWeeks').innerHTML = html || '<p style="color:var(--mu)">本视图暂无项目 / Nothing scheduled for this view.</p>';
+}
+
+// ── Posture Drill ──
+var _postureData = null, _posturePlan = null;
+
+var _matchHidden = {};  // remembers which match panels setMode hid when entering posture
+function setMode(mode) {
+  _mode = mode;
+  var posture = mode === 'posture';
+  // The match flow owns panel-court/panel-results visibility (shown after detect/analyze).
+  // Don't force them visible (that would flash empty panels on cold load); only hide them
+  // when switching INTO posture, and restore exactly those when switching back.
+  ['panel-court','panel-results'].forEach(function(id){
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (posture) {
+      if (!el.classList.contains('hidden')) { el.classList.add('hidden'); _matchHidden[id] = true; }
+    } else if (_matchHidden[id]) {
+      el.classList.remove('hidden'); _matchHidden[id] = false;
+    }
+  });
+  document.getElementById('panel-posture').classList.toggle('hidden', !posture);
+  document.getElementById('mode-match').className = posture ? 'btn2' : '';
+  document.getElementById('mode-posture').className = posture ? '' : 'btn2';
+  var pb = document.getElementById('btn-posture-analyze');
+  if (pb) pb.disabled = !selVideo;
+  restoreForMode();
+}
+
+function postureAnalyze() {
+  if (!selVideo) return;
+  var btn = document.getElementById('btn-posture-analyze');
+  btn.disabled = true; btn.textContent = '分析中...';
+  document.getElementById('posture-progress-wrap').classList.remove('hidden');
+  fetch('/api/posture/analyze', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({video: selVideo,
+      stroke_type: document.getElementById('posture-stroke').value,
+      dominant_hand: document.getElementById('posture-hand').value,
+      pose_family: document.getElementById('posture-pose-family').value})})
+  .then(function(r){return r.json()}).then(function(d){
+    if (!d.ok) { alert('启动失败: '+(d.error||'未知')); btn.disabled=false; btn.textContent='▶ 分析 Analyze'; return; }
+    posturePoll(d.job_id);
+  }).catch(function(){
+    btn.disabled = false; btn.textContent = '▶ 分析 Analyze';
+    document.getElementById('posture-pmsg').textContent = '启动失败，请重试';
+  });
+}
+
+function posturePoll(jid) {
+  var iv = setInterval(function(){
+    fetch('/api/posture-analyze-status/'+jid).then(function(r){return r.json()}).then(function(d){
+      document.getElementById('posture-pfill').style.width = (d.progress||0)+'%';
+      document.getElementById('posture-pmsg').textContent = d.message||'';
+      if (d.status === 'completed') {
+        clearInterval(iv);
+        var btn = document.getElementById('btn-posture-analyze');
+        btn.disabled = false; btn.textContent = '▶ 重新分析';
+        if (d.result && d.result.output_video) {
+          var v = document.getElementById('posture-video');
+          v.src = d.result.output_video+'?'+Date.now(); v.load();
+        }
+        postureLoad(selVideo.replace(/\.[^.]+$/,''));
+      } else if (d.status === 'error') {
+        clearInterval(iv);
+        var b = document.getElementById('btn-posture-analyze');
+        b.disabled = false; b.textContent = '▶ 重试';
+        document.getElementById('posture-pmsg').textContent = d.message||'失败';
+      }
+    }).catch(function(){
+      // Network/status error: stop polling and let the user retry rather than loop forever.
+      clearInterval(iv);
+      var b = document.getElementById('btn-posture-analyze');
+      b.disabled = false; b.textContent = '▶ 重试';
+      document.getElementById('posture-pmsg').textContent = '状态查询失败，请重试';
+    });
+  }, 2000);
+}
+
+function postureLoad(stem) {
+  fetch('/api/posture/'+stem).then(function(r){ if(!r.ok) return null; return r.json(); })
+  .then(function(d){
+    // No drill data for this video (e.g. switching to an un-analyzed clip):
+    // hide any stale results from a previously-selected video.
+    if (!d) { document.getElementById('posture-results').classList.add('hidden'); return; }
+    _postureData = d;
+    document.getElementById('posture-results').classList.remove('hidden');
+    // Point the player at the annotated clip (idempotent: posturePoll sets the
+    // same URL after a fresh run; here it also covers the restore-on-select path).
+    var pv = document.getElementById('posture-video');
+    var want = '/api/output/'+stem+'/posture/detect_'+stem+'.mp4';
+    if (pv.src.indexOf(want) === -1) { pv.src = want+'?'+Date.now(); pv.load(); }
+    var s = d.summary;
+    var html = '<p>共 <b>'+s.rep_count+'</b> 次重复 / '+s.rep_count+' reps. 平均分 '
+      + (s.mean_score!=null?s.mean_score:'N/A') + '，一致性(越低越稳) ' + (s.consistency!=null?s.consistency:'N/A') + '</p>';
+    if (s.best_rep) html += '<p>最佳 Rep '+s.best_rep.rep_id+' ('+s.best_rep.score+') · 最弱 Rep '+(s.worst_rep?s.worst_rep.rep_id+' ('+s.worst_rep.score+')':'N/A')+'</p>';
+    if ((s.recurring_weaknesses||[]).length) {
+      html += '<p>主要弱点 Top weaknesses:</p><ul style="margin:4px 0 0 16px">';
+      s.recurring_weaknesses.slice(0,3).forEach(function(w){ html += '<li>'+(METRIC_LABEL[w.metric]||w.metric)+' ('+w.count+')</li>'; });
+      html += '</ul>';
+    }
+    document.getElementById('posture-summary').innerHTML = html;
+    var rl = '<div style="font-weight:600;margin:8px 0">重复列表 Reps — 点击查看</div>';
+    (d.reps||[]).forEach(function(rep, i){
+      var c = scoreColor(rep.overall_score);
+      rl += '<div onclick="postureRepDetail('+i+')" style="cursor:pointer;padding:7px 10px;border-left:5px solid '+c+';margin:4px 0;background:#0f172a;border-radius:0 6px 6px 0;font-size:.83rem">Rep '+rep.rep_id+' — <b style="color:'+c+'">'+(rep.overall_score!=null?rep.overall_score:'N/A')+'</b></div>';
+    });
+    document.getElementById('posture-rep-list').innerHTML = rl;
+    var dt = document.getElementById('posture-rep-detail'); dt.innerHTML=''; dt.classList.add('hidden');
+    postureLoadPlan(stem);
+    postureShowReport(stem);
+  });
+}
+
+function postureRepDetail(i) {
+  var rep = _postureData.reps[i];
+  var html = '<div style="font-weight:600;margin-bottom:10px">Rep '+rep.rep_id+': '+rep.stroke_type+'</div>';
+  var pm = rep.per_metric || {};
+  for (var metric in pm) {
+    if (!Object.prototype.hasOwnProperty.call(pm, metric)) continue;
+    var m = pm[metric]; var sc = m.score; var w = sc==null?0:Math.max(0,Math.min(100,sc));
+    html += '<div style="margin:5px 0;display:flex;align-items:center;gap:8px">'
+      + '<span style="display:inline-block;width:170px;flex-shrink:0">'+(METRIC_LABEL[metric]||metric)+'</span>'
+      + '<span style="display:inline-block;width:200px;background:#333;border-radius:3px;flex-shrink:0"><span style="display:inline-block;height:12px;width:'+(w*2)+'px;background:'+scoreColor(sc)+';border-radius:3px;"></span></span>'
+      + '<span style="color:var(--mu)">'+(m.measured!=null?m.measured:'N/A')+(m.ideal_range?' (ideal '+m.ideal_range[0]+'–'+m.ideal_range[1]+')':'')+'</span></div>';
+  }
+  if ((rep.weaknesses||[]).length) {
+    html += '<div style="margin-top:10px;font-weight:600">改进建议 Suggestions</div><ul style="margin:6px 0 0 16px">';
+    rep.weaknesses.forEach(function(wk){ html += '<li style="margin:3px 0">'+wk.description+'</li>'; });
+    html += '</ul>';
+  }
+  var dt = document.getElementById('posture-rep-detail'); dt.innerHTML = html; dt.classList.remove('hidden');
+}
+
+function postureLoadPlan(stem) {
+  fetch('/api/posture-plan/'+stem).then(function(r){ if(!r.ok) return null; return r.json(); })
+  .then(function(d){ if(!d) return; _posturePlan = d; posturePlanLoc('court'); });
+}
+
+function postureRegen() {
+  if (!selVideo) return;
+  var stem = selVideo.replace(/\.[^.]+$/,'');
+  fetch('/api/posture-plan/'+stem, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({weeks:4})})
+  .then(function(r){return r.json()}).then(function(d){ _posturePlan = d; posturePlanLoc('court'); });
+}
+
+function posturePlanLoc(loc) {
+  if (!_posturePlan) return;
+  var html = '';
+  (_posturePlan.weeks||[]).forEach(function(wk){
+    var rows = (wk.sessions||[]).filter(function(s){ return s.location === loc; });
+    if (!rows.length) return;
+    html += '<h4>第 '+wk.week+' 周 ('+wk.phase+')</h4><ul>';
+    rows.forEach(function(s){ html += '<li>'+s.name+' — '+s.sets+'×'+s.reps+', '+s.frequency_per_week+'×/周, '+s.duration_min+'min</li>'; });
+    html += '</ul>';
+  });
+  document.getElementById('posture-plan-weeks').innerHTML = html || '<p>本视图暂无项目</p>';
+}
+
+function postureShowReport(stem) {
+  document.getElementById('posture-report').classList.remove('hidden');
+  postureReportLang('en', stem);
+}
+
+function postureReportLang(lang, stem) {
+  stem = stem || (selVideo ? selVideo.replace(/\.[^.]+$/,'') : null);
+  if (!stem) return;
+  fetch('/api/posture-report/'+stem+'?lang='+lang).then(function(r){ if(!r.ok) return null; return r.json(); })
+  .then(function(d){
+    if (!d) { document.getElementById('report-body').innerHTML = '<p>暂无报告</p>'; return; }
+    var h = d.header||{}, s = d.summary||{};
+    var html = '<div style="background:#0f172a;border-radius:8px;padding:12px">';
+    html += '<div style="font-weight:600">'+(h.stroke_label||h.stroke||'')+' · '+(h.rep_count||0)+' reps</div>';
+    html += '<p>'+(s.verdict_text||'')+'</p>';
+    (d.strengths||[]).forEach(function(x){
+      html += '<div style="border-left:4px solid #3fb950;padding:6px 10px;margin:4px 0">'
+        + '<b>'+(x.metric_label||x.metric)+'</b> ['+(x.impact_label||'')+']<br>'+(x.text||'')+'</div>';
+    });
+    (d.weaknesses||[]).forEach(function(x){
+      var ideal = (Array.isArray(x.ideal_range) && x.ideal_range.length >= 2) ? x.ideal_range : ['',''];
+      html += '<div style="border-left:4px solid #f85149;padding:6px 10px;margin:4px 0">'
+        + '<b>'+(x.metric_label||x.metric)+'</b> ['+(x.impact_label||'')+']<br>'
+        + '实测 '+(x.measured!=null?x.measured:'N/A')+' (理想 '+ideal[0]+'–'+ideal[1]+')<br>'
+        + (x.mechanism_text||'')+'<br><i>'+(x.drill_text||'')+'</i></div>';
+    });
+    html += '</div>';
+    document.getElementById('report-body').innerHTML = html;
+    document.getElementById('report-dl-html').href = '/api/output/'+stem+'/posture/coach_report_'+lang+'.html';
+    var pdf = document.getElementById('report-dl-pdf');
+    pdf.href = '/api/output/'+stem+'/posture/coach_report_'+lang+'.pdf';
+    pdf.classList.remove('hidden');  // PDF is best-effort; a 404 on click is acceptable if it wasn't produced
+  }).catch(function(){
+    document.getElementById('report-body').innerHTML = '<p>加载失败 / load failed</p>';
+  });
+}
 </script>
 </body>
 </html>

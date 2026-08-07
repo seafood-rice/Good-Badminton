@@ -1,43 +1,40 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Virtual environment
 .venv/
-venv/
-env/
-.agents/
 
-# Local inputs and generated outputs
-results/
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Analysis outputs
 outputs/
-*.log
 
-# User videos and auto-generated templates
-videos/*
-!videos/demo.mp4
-!videos/demo1.mp4
-templates/_auto_*
-*.mp4
-*.mov
-*.avi
-*.mkv
+# Auto-extracted templates
+templates/_auto_*.png
 
-# Model weights are intentionally not published
-weights/*
-!weights/.gitkeep
+# Model weights (downloaded separately)
+weights/
+
+# Training datasets (downloaded separately)
+data/
+runs/
+
+# Uploaded videos
+videos/
+
+# SDD scratch (progress ledger lives here)
+.superpowers/
+.gstack/
+
+# Machine-local agent/tool state and volatile files. Never committed, and kept out of the
+# AI-continuity dirty-fingerprint baseline (some are active/locked, e.g. the TokenSave DB).
+# The tracked portable team files (.claude/active-team.md, .claude/agents/*, .codex/active-team.md,
+# .codex/agents/*) are deliberately NOT ignored.
+.tokensave/
+.claude/.ccteams-manifest.json
+.claude/.headroom_wrap_marker.json
+.claude/settings.local.json
+.codex/config.toml
+server*.log
+*.err.log
 *.pt
-*.pth
-*.onnx
-
-# OS and editor files
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-
-# Dev files
-.local/

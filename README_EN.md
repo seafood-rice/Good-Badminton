@@ -56,6 +56,226 @@ Video preview: `assets/demo_en.mp4`.
 - **Position charts** - Automatically generates player position heatmaps and scatter plots.
 - **Chinese / English display** - Switch visualization text with `--language zh/en`.
 - **Local execution** - Videos, models, and analysis outputs stay on your local machine.
+- **Stroke technique analysis** - Detects stroke types, analyzes key joint angles, generates biomechanical scores and improvement suggestions.
+- **Intelligent training plan** - Generates progressive multi-week training plans targeting detected weaknesses, with on-court and at-home exercises.
+
+> 📄 For training data, metrics, and licensing notes behind the racket detector and AI form-scoring models, see the [model cards](docs/model-cards.md).
+
+## 🎯 Stroke Technique Analysis
+
+Enable technique analysis to automatically detect stroke types, analyze key joint angles, generate biomechanical scores with improvement suggestions, and create personalized training plans.
+
+### Enabling Technique Analysis
+
+Add the `--analyze-technique` flag to the command line:
+
+```bash
+python main.py --video-path videos/demo.mp4 --analyze-technique
+```
+
+#### Optional Parameters
+
+- `--racket-model weights/yolo11s-racket.pt` — Path to a YOLO racket detection model. **Optional**: If not provided or the file does not exist, the system automatically falls back to a kinematic inference method that estimates racket position from elbow and wrist keypoints. Technique analysis still works (with slightly lower precision).
+- `--dominant-hand right|left` — Player's racket hand (default `right`).
+
+### Output Files
+
+When technique analysis is enabled, the following files are generated in `outputs/<video_name>/`:
+
+| File | Description |
+|------|---|
+| `strokes.jsonl` | Biomechanical report for each detected stroke (stroke type, overall score, per-joint scores, weaknesses with descriptions, strengths) |
+| `technique_summary.json` | Match-level summary: stroke counts by type, average scores, recurring weaknesses |
+| `training_plan.json` | Generated when requested via Web UI; a progressive multi-week plan targeting detected weaknesses |
+
+### Web UI Technique Panel
+
+After analysis completes with `--analyze-technique`, the results page displays a **Technique Analysis** panel featuring:
+
+- **Stroke list** — All detected strokes with overall scores
+- **Stroke detail** — Key joint angles vs. ideal ranges, improvement suggestions
+- **Match summary** — Stroke type statistics, average scores, recurring weaknesses
+- **Training plan** — Multi-week progressive plan targeting detected weaknesses, toggleable on-court/at-home modes, regenerate button
+
+### Supported Stroke Types
+
+- High Clear
+- Smash
+- Drop Shot
+- Serve
+
+### Notes
+
+- Racket detection is **optional**. If `--racket-model` is not provided or the file does not exist, the system automatically uses kinematic inference (estimating racket position from elbow and wrist keypoints).
+- Biomechanical reference ranges in `badminton_analysis/analysis/reference_ranges.py` are indicative first-release starting values and can be tuned to match your training objectives.
+- Biomechanical scores are based on key joint angles including shoulder, elbow, wrist, hip, knee, and ankle.
+
+## 🧍 Posture Drill — Repetition Practice Mode
+
+In addition to match analysis, the system supports a **single-player posture drill mode** for practicing a single stroke type repeatedly and receiving real-time feedback.
+
+### What Is Posture Drill
+
+- **Court-free practice** — No need to annotate a court; ideal for daily training and at-home drills
+- **Single stroke focus** — Choose one stroke type (High Clear, Smash, Drop Shot, or Serve) and repeat it multiple times
+- **Side-view format** — Film from a **side / profile view** to capture key joint angles clearly
+- **Automatic segmentation** — The system automatically detects each repetition from wrist-speed peaks in the swing motion; no manual marking required
+- **Optional shuttlecock** — If a shuttlecock is visible in the video, the system uses it to refine the stroke contact moment; shadow practice (no ball) is also supported
+
+### Enabling Posture Drill
+
+Use the command-line tool `main_posture.py`:
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear --dominant-hand right
+```
+
+#### Required Parameters
+
+- `--video-path` — Input video path
+- `--stroke-type` — Stroke type: `high_clear` (High Clear) / `smash` (Smash) / `drop_shot` (Drop Shot) / `serve` (Serve)
+
+#### Optional Parameters
+
+- `--dominant-hand` — Racket hand: `right` (right-handed) or `left` (left-handed), default `right`
+- `--output-dir` — Output directory, default `outputs/<video_name>/posture`
+- `--ball-model` — Shuttlecock detection model path, optional
+- `--display` — Show OpenCV preview window, default `false`
+
+### Output Files
+
+When posture drill analysis completes, the output directory `outputs/<video_name>/posture/` contains:
+
+| File | Description |
+|------|---|
+| `detect_<video_name>.mp4` | Annotated video with live joint-angle overlay |
+| `drill_reps.jsonl` | Biomechanical report for each repetition (per-joint-angle scores, weaknesses with suggestions) |
+| `drill_summary.json` | Drill summary: rep count, mean/best/worst score, consistency (standard deviation of per-rep scores; lower = more consistent), recurring weaknesses |
+| `training_plan.json` | Generated when requested via Web UI; progressive training plan targeting detected weaknesses |
+
+### Web UI Posture Drill Panel
+
+Select **🧍 Posture Drill** from the top mode switch to enter the drill workflow:
+
+1. **Choose stroke type and dominant hand** — High Clear, Smash, Drop Shot, or Serve; left-handed or right-handed
+2. **Upload video and analyze** — No court annotation needed; the system automatically detects repetitions
+3. **Review drill results** —
+   - **Repetition list** — All detected reps with score badges
+   - **Rep details** — Click a rep to see its key joint angles, comparison with ideal ranges, and improvement suggestions
+   - **Drill summary** — Overall score, consistency, recurring weaknesses
+4. **Generate training plan** — Supports **on-court / at-home** toggle; can be regenerated
+
+### Supported Stroke Types
+
+Same as match mode: High Clear, Smash, Drop Shot, Serve.
+
+### Skeleton Overlay and Pose Model Selection
+
+Posture drill mode supports a **human skeleton overlay** that draws skeletal structure and keypoints in real time on the output video. You can choose from different pose model families via the command line:
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --pose-family rtmpose --pose-mode balanced
+```
+
+#### Pose Model Families
+
+- `yolo-pose` (default) — Ultralytics YOLO Pose, built into YOLOv11
+- `rtmpose` — Two-stage RTMPose model, more accurate
+- `rtmo` — Lightweight one-stage RTM model
+
+#### Optional Parameters
+
+- `--pose-family` — Model family: `yolo-pose` / `rtmpose` / `rtmo` (default `yolo-pose`)
+- `--pose-mode` — Processing mode for RTMPose/RTMO (only applicable to these two families):
+  - `lightweight` — Lightweight, prioritizes speed
+  - `balanced` — Balanced mode (default), tradeoff between speed and accuracy
+  - `performance` — Performance mode, larger model, higher accuracy but slower
+
+RTMPose/RTMO ONNX weights download automatically on first run (same as match mode).
+
+> 💡 **Web UI Model Selection**: In the Web UI Posture Drill panel, you can select the model family and processing mode from dropdown menus without memorizing command-line arguments.
+
+### Notes
+
+- **Side-view is the tuned/supported view for this release**; other camera angles (front, rear, etc.) are future work
+- Biomechanical reference ranges are shared with match mode and based on key joint angles (shoulder, elbow, wrist, hip, knee, ankle, etc.)
+
+### 📊 Professional Coach Report — Tri-Lingual Versions
+
+Upon completion of posture drill analysis, the system automatically generates a **professional coach report** that correlates every biomechanical finding to shot-quality impact (power, accuracy, consistency, and injury risk). The report includes an overall verdict, strengths, weaknesses (measured values vs. ideal ranges + why it affects performance + corrective drills), a per-repetition data table, and a targeted training plan. Reports are automatically generated in **three languages**:
+
+- **English**
+- **Traditional Chinese (繁體)**
+- **Simplified Chinese (简体)**
+
+#### Output Files
+
+Reports are generated in `outputs/<video_name>/posture/` and include:
+
+| File | Description |
+|------|---|
+| `coach_report_en.json` | English coach report (structured data) |
+| `coach_report_en.html` | English coach report (web version) |
+| `coach_report_en.pdf` | English coach report (PDF, if weasyprint is installed) |
+| `coach_report_zh-Hant.json` | Traditional Chinese coach report (structured data) |
+| `coach_report_zh-Hant.html` | Traditional Chinese coach report (web version) |
+| `coach_report_zh-Hant.pdf` | Traditional Chinese coach report (PDF, if weasyprint is installed) |
+| `coach_report_zh-Hans.json` | Simplified Chinese coach report (structured data) |
+| `coach_report_zh-Hans.html` | Simplified Chinese coach report (web version) |
+| `coach_report_zh-Hans.pdf` | Simplified Chinese coach report (PDF, if weasyprint is installed) |
+
+> 📝 **PDF Generation is Best-Effort** — PDF support requires the optional `weasyprint` library. If not installed, the system still generates JSON and HTML versions; PDF is skipped without error. Traditional Chinese PDF glyph rendering depends on CJK fonts installed on your system.
+
+#### Web UI Coach Report Panel
+
+After analysis completes, the results page displays a **Coach Report** panel featuring:
+
+- **Language switcher** — Instantly toggle between EN / 繁體 / 简体 without page reload
+- **Download links** — Download HTML version or PDF version (PDF only shown if generation succeeded)
+- **Content overview** — Overall verdict, shot strengths, areas for improvement, key weaknesses with corresponding corrective drills, per-repetition score table, multi-week training plan
+
+#### Optional LLM Prose Polish
+
+By default, the coach report is generated entirely from a carefully curated built-in knowledge base and **runs completely offline with no external service calls**. Optionally, you can use an LLM to add human-friendly prose polish to report text sections (numbers and scores are never changed):
+
+```bash
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm claude:claude-opus-4-1-20250805
+```
+
+#### Supported LLM Providers
+
+- **Anthropic Claude** — Format: `claude:<model_id>` (e.g., `claude:claude-opus-4-1-20250805`)
+- **OpenAI** — Format: `openai:<model_id>` (e.g., `openai:gpt-4o`)
+- **Google Gemini** — Format: `google:<model_id>` (e.g., `google:gemini-2.0-flash`)
+- **Local Compatible Endpoint** — Format: `local:<base_url>` (e.g., `local:http://localhost:8000`) with no authentication required
+
+#### Authentication Mechanism
+
+**Important**: The system **does not implement** any login, OAuth flow, or subscription payment. Instead, it reuses credentials already stored by each provider's official CLI tool (e.g., Claude Code), or reads API keys from environment variables, or uses local authentication-free endpoints:
+
+- **Anthropic (Claude)** — Reuses Claude Code login credentials; or environment variable `ANTHROPIC_API_KEY`
+- **OpenAI** — Environment variable `OPENAI_API_KEY`
+- **Google Gemini** — Environment variable `GOOGLE_API_KEY`
+- **Local endpoint** — No authentication required
+
+If `--report-llm` is not specified or credentials are unavailable, the system uses the default offline knowledge base. The LLM is only used for optional prose polish and never changes any report data or scores.
+
+#### Examples
+
+```bash
+# Default offline mode, no LLM calls
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear
+
+# Use Claude for prose polish (requires Claude Code login or ANTHROPIC_API_KEY environment variable)
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm claude:claude-opus-4-1-20250805
+
+# Use local OpenAI-compatible endpoint (no credentials needed)
+python main_posture.py --video-path videos/drill.mov --stroke-type high_clear \
+  --report-llm local:http://localhost:8000
+```
 
 ## Requirements
 
@@ -219,6 +439,9 @@ RTMPose / RTMO modes:
 --visualize-positions true|false     Generate heatmaps and scatter plots, default true
 --audio true|false                   Keep original video audio, default true
 --language {zh,en}                   Visualization language
+--analyze-technique                  Enable stroke technique analysis (disabled by default)
+--racket-model                       Path to YOLO racket detection model; optional, kinematic inference is used if not provided
+--dominant-hand                      Player's racket hand: right or left (default right)
 ```
 
 ## 📊 Outputs
@@ -249,6 +472,9 @@ badminton_analysis/
 ├── detection/       # Shuttlecock detection and pose detection
 ├── media/           # Video/audio processing
 ├── tracking/        # Player tracking
+├── stroke/          # Stroke detection and classification
+├── analysis/        # Biomechanical analysis and scoring
+├── training/        # Training plan generation
 └── visualization/   # Video overlays, statistics charts, and position plots
 ```
 

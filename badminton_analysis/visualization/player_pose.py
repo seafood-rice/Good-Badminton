@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from ..detection.rtmpose import RTMPoseProcessor
+from .skeleton import SKELETON_CONNECTIONS, draw_skeleton
 
 
 class PlayerPoseVisualizer:
@@ -25,20 +26,7 @@ class PlayerPoseVisualizer:
         self.court_mapper = None
         self.court_filter_margin = court_filter_margin
 
-        self.skeleton_connections = [
-            (5, 6),
-            (5, 7),
-            (7, 9),
-            (6, 8),
-            (8, 10),
-            (5, 11),
-            (6, 12),
-            (11, 12),
-            (11, 13),
-            (13, 15),
-            (12, 14),
-            (14, 16),
-        ]
+        self.skeleton_connections = SKELETON_CONNECTIONS
 
     def detect_players(self, roi, x1, y1, court_mapper=None):
         centroids = []
@@ -157,25 +145,15 @@ class PlayerPoseVisualizer:
 
     def _draw_skeleton_on_frame(self, frame, keypoints, offset_x, offset_y):
         for person in self._normalize_people(keypoints):
-            person_arr = np.asarray(person)
+            person_arr = np.asarray(person, dtype=float)
             if person_arr.ndim != 2 or person_arr.shape[1] < 2:
                 continue
-
-            keypoint_count = person_arr.shape[0]
-            for a, b in self.skeleton_connections:
-                if a >= keypoint_count or b >= keypoint_count:
-                    continue
-                x1, y1 = float(person_arr[a, 0]), float(person_arr[a, 1])
-                x2, y2 = float(person_arr[b, 0]), float(person_arr[b, 1])
-                if x1 > 1 and y1 > 1 and x2 > 1 and y2 > 1:
-                    pt1 = (int(x1 + offset_x), int(y1 + offset_y))
-                    pt2 = (int(x2 + offset_x), int(y2 + offset_y))
-                    cv2.line(frame, pt1, pt2, (255, 191, 0), 2, cv2.LINE_AA)
-
-            for i in range(keypoint_count):
-                x_raw, y_raw = float(person_arr[i, 0]), float(person_arr[i, 1])
-                if x_raw > 1 and y_raw > 1:
-                    cv2.circle(frame, (int(x_raw + offset_x), int(y_raw + offset_y)), 3, (255, 128, 0), -1, cv2.LINE_AA)
+            shifted = person_arr.copy()
+            # shift only present points (leave the <=1 "missing" sentinel untouched)
+            present = ~((shifted[:, 0] <= 1) & (shifted[:, 1] <= 1))
+            shifted[present, 0] += offset_x
+            shifted[present, 1] += offset_y
+            draw_skeleton(frame, shifted)
 
     def get_current_pose_data(self):
         return self.current_pose_data

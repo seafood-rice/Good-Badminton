@@ -1,0 +1,464 @@
+import numpy as np
+import pytest
+
+from badminton_analysis.posture.system import PostureAnalysisSystem, person_roi
+from badminton_analysis.detection.racket import RacketDetector
+from badminton_analysis.visualization.skeleton import draw_skeleton
+from badminton_analysis.visualization.technique_overlay import draw_technique_overlay
+import badminton_analysis.analysis.joint_angles as ja
+import app as webapp
+
+
+def _system(tmp_path, **kwargs):
+    video = tmp_path / "drill.mp4"
+    video.write_bytes(b"x")  # ctor only checks existence
+    return PostureAnalysisSystem(str(video), "high_clear",
+                                 output_dir=str(tmp_path / "out"), **kwargs)
+
+
+def _kp():
+    kp = np.zeros((17, 2), dtype=float)
+    kp[ja.R_ELBOW] = (100.0, 100.0)
+    kp[ja.R_WRIST] = (120.0, 80.0)
+    return kp
+
+
+# ── person_roi: bounding box around valid keypoints, padded by ROI_MARGIN ──
+
+def test_person_roi_none_when_kp_is_none():
+    assert person_roi(None) is None
+
+
+def test_person_roi_none_when_fewer_than_two_valid_joints():
+    kp = np.zeros((17, 2), dtype=float)
+    kp[ja.R_WRIST] = (120.0, 80.0)  # only one valid joint; rest are (0, 0) sentinels
+    assert person_roi(kp) is None
+
+
+def test_person_roi_expands_bbox_by_margin():
+    kp = _kp()  # R_ELBOW (100, 100), R_WRIST (120, 80) -> bbox 20 x 20
+    # pad = ROI_MARGIN(0.75) * max(width=20, height=20) = 15
+    assert person_roi(kp) == [(85.0, 65.0), (135.0, 115.0)]
+
+
+# ── Sticky person selection: _capture_frame must not flip between people ───
+# Picking whoever currently has the largest keypoint spread, independently
+# every frame, flips the pick in multi-person scenes; each flip teleports
+# the tracked wrist by hundreds of px. _select_person instead stays locked
+# onto the previous pick unless it jumps further than PERSON_STICKY_MAX_JUMP.
+
+def _person(cx, cy, size=20):
+    """A full (17,2) keypoint array centered at (cx, cy): every joint is
+    valid (x>1, y>1) so mean-of-valid-joints == (cx, cy) exactly, and the
+    bounding-box spread ((max-min) summed over x and y) == 2*size.
+    """
+    kp = np.full((17, 2), (float(cx), float(cy)), dtype=float)
+    kp[ja.R_ELBOW] = (cx - size / 2, cy - size / 2)
+    kp[ja.R_WRIST] = (cx + size / 2, cy + size / 2)
+    return kp
+
+
+class _QueuedPose:
+    """Fake pose processor: returns one pre-scripted (keypoints, scores) per
+    call, in order - lets a test script exactly what each frame "detects".
+    """
+    def __init__(self, frames):
+        self._frames = list(frames)
+
+    def process_frame(self, frame):
+        return self._frames.pop(0)
+
+
+def _capture(sys_, frame, frame_count, pose):
+    sys_._capture_frame(frame, frame_count, pose, None, ja.R_WRIST, ja,
+                        draw_technique_overlay, draw_skeleton)
+    return sys_._frames[frame_count]["keypoints"]
+
+
+def test_no_anchor_picks_largest_spread(tmp_path):
+    """A1: with no established anchor (fresh system, first frame ever),
+    selection is largest-spread - the pre-fix behavior, preserved for the
+    very first pick (there is nothing yet to be sticky to).
+    """
+    sys_ = _system(tmp_path, show_overlay=False)
+    frame = np.zeros((600, 800, 3), dtype=np.uint8)
+    p = _person(100, 100, size=20)
+    q = _person(700, 500, size=200)
+    pose = _QueuedPose([([p, q], None)])
+    got = _capture(sys_, frame, 1, pose)
+    assert np.array_equal(got, q)
+
+
+def test_sticky_selection_keeps_anchored_person_despite_larger_rival(tmp_path):
+    """A2 (red before the fix - the money test): once P is the tracked
+    person, a farther, much-larger-spread person Q must not steal the pick
+    frame-to-frame. Before the fix, `_capture_frame` re-picks the largest
+    spread every single frame, so Q wins and the tracked wrist teleports
+    ~700px. After the fix, selection stays anchored on P because P remains
+    within PERSON_STICKY_MAX_JUMP of the anchor on every frame.
+    """
+    sys_ = _system(tmp_path, show_overlay=False)
+    frame = np.zeros((600, 800, 3), dtype=np.uint8)
+
+    p1 = _person(100, 100, size=20)
+    p2 = _person(110, 105, size=20)   # P drifts slightly frame to frame
+    p3 = _person(105, 110, size=20)
+    q = _person(700, 500, size=200)   # opposite corner, much larger spread
+
+    # First frame contains only P, so the anchor locks onto P. Every frame
+    # after that contains both, in varying order, so a non-sticky picker
+    # would flip to Q (larger spread) as soon as Q appears.
+    pose = _QueuedPose([
+        ([p1], None),
+        ([q, p2], None),
+        ([p2, q], None),
+        ([q, p3], None),
+    ])
+    expected = [p1, p2, p2, p3]
+
+    for frame_count, exp in enumerate(expected, start=1):
+        got = _capture(sys_, frame, frame_count, pose)
+        assert np.array_equal(got, exp), "frame %d picked the wrong person" % frame_count
+
+
+def test_lost_anchor_falls_back_to_largest_spread(tmp_path):
+    """A3: P disappears and only the far Q remains -> fall back to
+    largest-spread re-acquisition (no crash, and the anchor re-locks onto Q
+    instead of staying permanently stuck on the now-vanished P).
+    """
+    sys_ = _system(tmp_path, show_overlay=False)
+    frame = np.zeros((600, 800, 3), dtype=np.uint8)
+
+    p = _person(100, 100, size=20)
+    q = _person(700, 500, size=200)
+    pose = _QueuedPose([([p], None), ([q], None)])
+
+    _capture(sys_, frame, 1, pose)
+    got = _capture(sys_, frame, 2, pose)
+
+    assert np.array_equal(got, q)
+    assert sys_._person_anchor == (700.0, 500.0)
+
+
+class _FakeDetector:
+    def __init__(self, point):
+        self.point = point
+        self.calls = 0
+
+    def detect_racket_head(self, frame, roi_corners=None):
+        self.calls += 1
+        return self.point
+
+
+def test_detector_result_wins(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector((5.0, 6.0))
+    head, detected = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head == (5.0, 6.0)
+    assert detected is True
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+
+
+def test_fallback_when_detector_returns_none(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector(None)
+    head, detected = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None  # wrist inference produced a point
+    assert detected is False
+    assert sys_._racket_stats == {"detected": 0, "inferred": 1}
+
+
+def test_fallback_when_no_detector(tmp_path):
+    sys_ = _system(tmp_path)
+    assert sys_._racket_detector is None
+    head, detected = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None
+    assert detected is False
+    assert sys_._racket_stats == {"detected": 0, "inferred": 1}
+
+
+def test_pose_less_frame_skips_detector_and_stats(tmp_path):
+    # kp None: no person bbox to ROI-gate against, so the detector must NOT run
+    # (an ungated detection could land on a racket-lookalike like a wall fan) and
+    # neither stat should move -- keeps the detected/inferred provenance honest.
+    sys_ = _system(tmp_path)
+    det = _FakeDetector((5.0, 6.0))
+    sys_._racket_detector = det
+    head, detected = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head is None
+    assert detected is False
+    assert det.calls == 0
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
+
+
+def test_missing_weights_path_does_not_raise(tmp_path):
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "nope.pt"))
+    sys_._build_racket_detector()
+    assert sys_._racket_detector is None or sys_._racket_detector.model is None
+    head, detected = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None
+    assert detected is False
+
+
+def test_no_pose_and_no_detection_yields_none(tmp_path):
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = _FakeDetector(None)
+    head, detected = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head is None
+    assert detected is False
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
+
+
+def test_detector_construction_failure_is_tolerated(tmp_path, monkeypatch):
+    import badminton_analysis.detection.racket as racket_mod
+
+    def _boom(self, *a, **k):
+        raise RuntimeError("cuda exploded")
+
+    monkeypatch.setattr(racket_mod.RacketDetector, "__init__", _boom)
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "w.pt"))
+    sys_._build_racket_detector()
+    assert sys_._racket_detector is None
+    head, detected = sys_._resolve_racket_head(frame=None, kp=_kp(), ja=ja)
+    assert head is not None
+    assert detected is False
+
+
+# ── Person-ROI gate on the posture detection path ───────────────────────────
+# RacketDetector.detect_racket_head already filters candidate boxes against
+# roi_corners via RacketDetector._point_in_roi; these tests fake the
+# underlying YOLO model (not detect_racket_head itself) so that filtering
+# actually runs and the gate is genuinely exercised.
+
+class _FakeBoxes:
+    def __init__(self, xywh, conf):
+        self.xywh = _FakeTensor(np.array(xywh, dtype=float))
+        self.conf = _FakeTensor(np.array(conf, dtype=float))
+
+
+class _FakeTensor:
+    def __init__(self, arr):
+        self._arr = arr
+        self.shape = arr.shape
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self._arr
+
+
+class _FakeYoloResult:
+    def __init__(self, boxes):
+        self.boxes = boxes
+
+
+class _FakeYoloModel:
+    def __init__(self, xywh, conf):
+        self._result = _FakeYoloResult(_FakeBoxes(xywh, conf))
+
+    def __call__(self, frame, **kwargs):
+        return [self._result]
+
+
+def test_gate_accepts_detection_near_person(tmp_path):
+    sys_ = _system(tmp_path)
+    kp = _kp()  # person_roi(kp) == [(85.0, 65.0), (135.0, 115.0)]
+    sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[110, 90, 10, 10]], conf=[0.9]))
+    head, detected = sys_._resolve_racket_head(frame=None, kp=kp, ja=ja)
+    assert head == (110, 90)
+    assert detected is True
+    assert sys_._racket_stats == {"detected": 1, "inferred": 0}
+
+
+def test_gate_rejects_detection_far_from_person(tmp_path):
+    """Wall-fan-style false positive: a detection far outside the person ROI
+    is rejected inside detect_racket_head, and the method falls through to
+    kinematic inference instead of corrupting wrist_flexion.
+
+    Fails before the person-ROI gate (the far detection was accepted because
+    no ROI was passed to reject it); passes after.
+    """
+    sys_ = _system(tmp_path)
+    kp = _kp()
+    sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[900, 900, 10, 10]], conf=[0.9]))
+    head, detected = sys_._resolve_racket_head(frame=None, kp=kp, ja=ja)
+    assert head is not None  # kinematic fallback still produced a point
+    assert head != (900, 900)
+    assert detected is False
+    assert sys_._racket_stats == {"detected": 0, "inferred": 1}
+
+
+def test_gate_ignores_detector_result_when_pose_missing(tmp_path):
+    # Even a real detector that WOULD return a box is not consulted on a pose-less
+    # frame: with no person bbox there is nothing to ROI-gate the box against, so an
+    # ungated detection (e.g. a wall fan at (900, 900)) must not be accepted.
+    sys_ = _system(tmp_path)
+    sys_._racket_detector = RacketDetector(model=_FakeYoloModel(xywh=[[900, 900, 10, 10]], conf=[0.9]))
+    head, detected = sys_._resolve_racket_head(frame=None, kp=None, ja=ja)
+    assert head is None
+    assert detected is False
+    assert sys_._racket_stats == {"detected": 0, "inferred": 0}
+
+
+def test_posture_builds_racket_detector_with_conf_0_15(tmp_path, monkeypatch):
+    """Posture path must use conf=0.15 for close-up drill footage (lower threshold)."""
+    import badminton_analysis.detection.racket as racket_mod
+
+    recorded_kwargs = {}
+
+    def capture_init(self, *args, **kwargs):
+        recorded_kwargs.update(kwargs)
+        # Minimal setup to avoid errors
+        self.conf = kwargs.get('conf', 0.25)
+        self.model = None
+        self.device = 'cpu'
+        self.roi_padding_ratio = 0.08
+
+    monkeypatch.setattr(racket_mod.RacketDetector, "__init__", capture_init)
+    sys_ = _system(tmp_path, racket_model_path=str(tmp_path / "w.pt"))
+    sys_._build_racket_detector()
+    assert recorded_kwargs.get('conf') == 0.15
+
+
+def test_racket_weights_prefers_n_then_s(tmp_path):
+    assert webapp._racket_weights(base=tmp_path) is None
+    (tmp_path / "yolo11s-racket.pt").write_bytes(b"s")
+    assert webapp._racket_weights(base=tmp_path).endswith("yolo11s-racket.pt")
+    (tmp_path / "yolo11n-racket.pt").write_bytes(b"n")
+    assert webapp._racket_weights(base=tmp_path).endswith("yolo11n-racket.pt")
+
+
+def test_racket_weights_default_base_is_weights_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "PROJECT_ROOT", tmp_path)
+    assert webapp._racket_weights() is None
+    (tmp_path / "weights").mkdir()
+    (tmp_path / "weights" / "yolo11n-racket.pt").write_bytes(b"n")
+    assert webapp._racket_weights().endswith("yolo11n-racket.pt")
+
+
+# ── Route-level: --racket-model reaches the subprocess cmd ─────────────────
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "OUTPUTS", tmp_path)
+    webapp.app.config["TESTING"] = True
+    return webapp.app.test_client()
+
+
+class _FakeProc:
+    returncode = 0
+
+    def poll(self):
+        return 0
+
+    def wait(self):
+        return 0
+
+
+class _FakePostureProc:
+    # non-zero return skips the ffmpeg re-encode branch of the posture
+    # tracking thread, so these tests stay hermetic regardless of thread
+    # scheduling relative to monkeypatch teardown.
+    returncode = 1
+    stdout = []
+
+    def wait(self):
+        return 1
+
+
+def test_analyze_command_includes_racket_model_when_weights_found(client, tmp_path, monkeypatch):
+    videos = tmp_path / "vids"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "TEMPLATES", tmp_path / "tpl")
+    (tmp_path / "tpl").mkdir()
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: "weights/yolo11n-racket.pt")
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakeProc())
+
+    r = client.post("/api/analyze", json={"video": "clip.mp4"})
+    assert r.status_code == 200
+    cmd = captured["cmd"]
+    assert "--racket-model" in cmd
+    assert cmd[cmd.index("--racket-model") + 1] == "weights/yolo11n-racket.pt"
+
+
+def test_analyze_command_omits_racket_model_when_weights_absent(client, tmp_path, monkeypatch):
+    videos = tmp_path / "vids"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "TEMPLATES", tmp_path / "tpl")
+    (tmp_path / "tpl").mkdir()
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: None)
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakeProc())
+
+    r = client.post("/api/analyze", json={"video": "clip.mp4"})
+    assert r.status_code == 200
+    assert "--racket-model" not in captured["cmd"]
+
+
+def test_posture_command_includes_racket_model_when_weights_found(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: "weights/yolo11n-racket.pt")
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePostureProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakePostureProc())
+
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear"})
+    assert r.status_code == 200
+    cmd = captured["cmd"]
+    assert "--racket-model" in cmd
+    assert cmd[cmd.index("--racket-model") + 1] == "weights/yolo11n-racket.pt"
+
+
+def test_posture_command_omits_racket_model_when_weights_absent(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webapp, "VIDEOS", tmp_path)
+    (tmp_path / "clip.mp4").write_bytes(b"x")
+
+    monkeypatch.setattr(webapp, "_racket_weights", lambda base=None: None)
+
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakePostureProc()
+
+    monkeypatch.setattr(webapp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(webapp.subprocess, "run", lambda *a, **k: _FakePostureProc())
+
+    r = client.post("/api/posture/analyze",
+                    json={"video": "clip.mp4", "stroke_type": "high_clear"})
+    assert r.status_code == 200
+    assert "--racket-model" not in captured["cmd"]

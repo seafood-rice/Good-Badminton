@@ -2,6 +2,7 @@
 import os
 
 from badminton_analysis.system import BadmintonAnalysisSystem, load_runtime_dependencies
+from badminton_analysis.visualization.player_positions import analyze_player_positions
 
 
 
@@ -25,15 +26,24 @@ def main():
     parser.add_argument('--performance-stats', action='store_true', default=True, help='显示性能统计信息')
     parser.add_argument('--visualize-positions', choices=['true', 'false'], default='true', help='是否生成球员位置热力图和散点图，默认 true')
     parser.add_argument('--audio', choices=['true', 'false'], default='true', help='是否保留原视频音频，默认 true')
+    parser.add_argument('--analyze-technique', action='store_true', default=False,
+                        help='启用击球姿态生物力学分析，输出 strokes.jsonl 与 technique_summary.json')
+    parser.add_argument('--racket-model', default='weights/yolo11s-racket.pt', type=str,
+                        help='YOLO 球拍检测模型路径（用于击球分析）')
+    parser.add_argument('--bst-model', default=None, type=str,
+                        help='BST 击球类型识别模型路径（可选，用于击球分析）')
+    parser.add_argument('--tracknet-model', default=None, type=str,
+                        help='TrackNetV3 追踪模型路径（可选，密集羽毛球轨迹）')
+    parser.add_argument('--inpaintnet-model', default=None, type=str,
+                        help='TrackNetV3 InpaintNet 轨迹修补模型路径（可选）')
+    parser.add_argument('--analysis-quality', default='accurate', choices=['accurate', 'fast'],
+                        help='accurate=每帧分析（默认）；fast=抽帧快速预览（密集分析关闭）')
+    parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
+                        help='球员持拍手，默认 right')
     parser.add_argument('--language', default='zh', choices=['zh', 'en'], help='选择界面语言 (zh/en)')
     args = parser.parse_args()
 
     load_runtime_dependencies()
-
-    if args.language == 'en':
-        from badminton_analysis.visualization.player_positions_en import analyze_player_positions
-    else:
-        from badminton_analysis.visualization.player_positions_zh import analyze_player_positions
 
     system = BadmintonAnalysisSystem(
         args.video_path,
@@ -52,7 +62,14 @@ def main():
         pose_mode=args.pose_mode,
         pose_family=args.pose_family,
         yolo_pose_model=args.yolo_pose_model,
-        show_pose_roi=args.pose_roi == 'true'
+        show_pose_roi=args.pose_roi == 'true',
+        analyze_technique=args.analyze_technique,
+        racket_model_path=args.racket_model,
+        dominant_hand=args.dominant_hand,
+        bst_weights=args.bst_model,
+        tracknet_weights=args.tracknet_model,
+        inpaintnet_weights=args.inpaintnet_model,
+        analysis_quality=args.analysis_quality,
     )
 
     system.keep_audio = args.audio == 'true'
@@ -60,7 +77,7 @@ def main():
 
     if args.visualize_positions == 'true':
         print("\n开始生成球员位置可视化...")
-        analyze_player_positions(system.detections_path, os.path.join(system.save_dir, 'position_visualizations'), fps=system.fps)
+        analyze_player_positions(system.detections_path, os.path.join(system.save_dir, 'position_visualizations'), fps=system.fps, language=args.language)
         print("球员位置可视化完成")
 
 if __name__ == "__main__":

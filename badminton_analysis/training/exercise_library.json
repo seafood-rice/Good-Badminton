@@ -1,0 +1,301 @@
+[
+  {"id": "shadow_clear", "name": "Shadow clear swings", "name_zh": "高远球挥拍练习", "category": "on_court",
+   "target_weaknesses": ["elbow_extension", "wrist_flexion"],
+   "description": "Full overhead clear motion without a shuttle, focusing on full arm extension and wrist snap at the top.",
+   "description_zh": "不用球做完整的高远球挥拍动作，重点体会手臂充分伸展和击球点的手腕发力。",
+   "instructions": {
+     "en": ["Stand side-on with your racket arm back, elbow bent about 90 degrees and non-racket arm pointing up.",
+            "Swing up and rotate through, reaching as high as you can at the imaginary contact point.",
+            "Snap the wrist at the top, follow through across your body, and reset to the start position."],
+     "zh": ["侧身站立，持拍手后引，肘部约成90度，非持拍手指向上方。",
+            "向上挥拍并转体，在想象的击球点尽量伸高手臂。",
+            "在最高点抖腕发力，顺势收拍到身体另一侧，然后回到起始姿势。"]},
+   "coaching_cues": {
+     "en": ["Reach for the ceiling at contact.", "Hips turn before the arm swings."],
+     "zh": ["击球瞬间像去摸天花板一样伸高。", "先转髋，再挥臂。"]},
+   "common_mistakes": {
+     "en": ["Hitting with a bent elbow, which cuts power and reach.", "Facing the net square-on instead of starting side-on."],
+     "zh": ["击球时手肘弯曲，力量和高度都打了折扣。", "正对球网站位，没有先侧身。"]},
+   "video_url": "https://www.youtube.com/watch?v=xRv1JLg4NMM",
+   "equipment": "racket", "difficulty": "beginner", "duration_min": 10, "reps": 20, "sets": 3, "location": "court"},
+
+  {"id": "overhead_band_press", "name": "Resistance band overhead press", "name_zh": "弹力带过头推举", "category": "strength",
+   "target_weaknesses": ["elbow_extension"],
+   "description": "Press a resistance band overhead to full lockout to build extension strength.",
+   "description_zh": "用弹力带向头顶上方推举至手臂完全伸直，增强伸肘力量。",
+   "instructions": {
+     "en": ["Stand on the middle of the band with feet shoulder-width apart, holding an end in each hand at shoulder height.",
+            "Press both hands straight up until your elbows fully lock out overhead.",
+            "Lower back to shoulder height with control and repeat."],
+     "zh": ["双脚与肩同宽踩住弹力带中段，双手各握一端置于肩部高度。",
+            "双手竖直向上推举，直到手肘在头顶完全伸直。",
+            "有控制地放回肩部高度，再重复。"]},
+   "coaching_cues": {
+     "en": ["Finish with biceps beside your ears.", "Keep your ribs down — don't arch the lower back."],
+     "zh": ["推到最高点时大臂贴近耳朵。", "肋骨下沉，不要塌腰。"]},
+   "common_mistakes": {
+     "en": ["Stopping short of full lockout, which skips the range this drill exists to train.", "Leaning back and pressing forward instead of straight up."],
+     "zh": ["没有推到完全伸直，恰恰错过了这个动作要练的幅度。", "身体后仰把带子往前推，而不是竖直向上。"]},
+   "video_url": "https://www.youtube.com/results?search_query=resistance+band+overhead+press+form",
+   "equipment": "resistance band", "difficulty": "beginner", "duration_min": 8, "reps": 12, "sets": 3, "location": "home"},
+
+  {"id": "wall_throws", "name": "Overhead medicine ball wall throws", "name_zh": "药球过头掷墙", "category": "strength",
+   "target_weaknesses": ["elbow_extension", "weight_transfer"],
+   "description": "Explosively throw a light medicine ball overhead into a wall, extending fully and driving weight forward.",
+   "description_zh": "将轻药球从头顶爆发式掷向墙面，手臂充分伸展，重心向前压。",
+   "instructions": {
+     "en": ["Stand about two meters from a solid wall, ball held behind your head with both hands.",
+            "Step forward and throw the ball hard at a spot high on the wall, extending your arms fully.",
+            "Catch the rebound (or pick the ball up), reset your stance, and repeat."],
+     "zh": ["距离结实的墙面约两米，双手将球举到脑后。",
+            "上步并将球用力掷向墙面高处，双臂完全伸展。",
+            "接住反弹（或捡回球），恢复站位后重复。"]},
+   "coaching_cues": {
+     "en": ["Throw comes from the step, not just the arms.", "Finish with your chest over your front foot."],
+     "zh": ["力量来自上步，不只是手臂。", "掷完时胸口压在前脚上方。"]},
+   "common_mistakes": {
+     "en": ["Throwing flat-footed with arms only.", "Using a ball so heavy the movement turns slow — this drill is about speed."],
+     "zh": ["站着不动只用手臂扔。", "球太重导致动作变慢——这个练习追求的是速度。"]},
+   "video_url": "https://www.youtube.com/results?search_query=overhead+medicine+ball+wall+throw+technique",
+   "equipment": "medicine ball", "difficulty": "intermediate", "duration_min": 10, "reps": 10, "sets": 3, "location": "home"},
+
+  {"id": "trunk_rotation_drill", "name": "Cable/band trunk rotations", "name_zh": "弹力带转体", "category": "strength",
+   "target_weaknesses": ["trunk_rotation", "hip_shoulder_separation"],
+   "description": "Rotate the trunk against band resistance to build rotational power.",
+   "description_zh": "对抗弹力带阻力做躯干旋转，提升转体力量。",
+   "instructions": {
+     "en": ["Anchor a band at chest height and stand side-on to the anchor, both hands on the handle, arms extended.",
+            "Rotate your trunk away from the anchor, keeping your arms straight and hips driving the turn.",
+            "Return slowly to the start and finish the set before switching sides."],
+     "zh": ["把弹力带固定在胸口高度，侧对固定点站立，双手握住把手，手臂伸直。",
+            "以髋部带动，躯干向远离固定点的方向旋转，手臂保持伸直。",
+            "缓慢转回起始位置，完成一组后换边。"]},
+   "coaching_cues": {
+     "en": ["Turn your belt buckle, not just your shoulders.", "Slow back, fast out."],
+     "zh": ["转动腰带扣的方向，而不是只转肩。", "回来慢，转出去快。"]},
+   "common_mistakes": {
+     "en": ["Arms bend and do the work instead of the trunk.", "Feet stay glued so the hips never rotate."],
+     "zh": ["手臂弯曲代替躯干发力。", "双脚钉在地上，髋部完全没有转动。"]},
+   "video_url": "https://www.youtube.com/results?search_query=standing+band+trunk+rotation+exercise",
+   "equipment": "resistance band", "difficulty": "beginner", "duration_min": 8, "reps": 15, "sets": 3, "location": "home"},
+
+  {"id": "thoracic_rotation_stretch", "name": "Thoracic spine rotation stretch", "name_zh": "胸椎旋转拉伸", "category": "mobility",
+   "target_weaknesses": ["trunk_rotation"],
+   "description": "Open-book thoracic rotations to improve mid-back rotational range.",
+   "description_zh": "“翻书式”胸椎旋转，改善中背部的旋转幅度。",
+   "instructions": {
+     "en": ["Lie on your side with knees stacked and bent to 90 degrees, arms extended together in front of your chest.",
+            "Keeping the knees glued together, open your top arm like a book toward the floor behind you, following the hand with your eyes.",
+            "Pause two breaths at your end range, close back up, and repeat, then switch sides."],
+     "zh": ["侧卧，双膝并拢弯曲90度，双臂并拢伸直放在胸前。",
+            "双膝保持贴紧，上侧手臂像翻书一样向身后打开，眼睛跟着手走。",
+            "在最大幅度停留两次呼吸，合回原位重复，然后换边。"]},
+   "coaching_cues": {
+     "en": ["Knees stay glued together.", "Follow your hand with your eyes."],
+     "zh": ["双膝始终贴紧。", "眼睛跟着手走。"]},
+   "common_mistakes": {
+     "en": ["Top knee lifts, turning it into a hip stretch instead of a mid-back stretch.", "Rushing through instead of pausing at the end range."],
+     "zh": ["上侧膝盖抬起，变成了拉髋而不是拉中背。", "动作太快，没有在最大幅度停留。"]},
+   "video_url": "https://www.youtube.com/results?search_query=open+book+thoracic+rotation+stretch",
+   "equipment": "none", "difficulty": "beginner", "duration_min": 5, "reps": 12, "sets": 2, "location": "home"},
+
+  {"id": "rotation_smash_drill", "name": "Multi-shuttle rotational smash", "name_zh": "多球转体杀球", "category": "on_court",
+   "target_weaknesses": ["trunk_rotation", "hip_shoulder_separation", "weight_transfer"],
+   "description": "Feed multi-shuttle smashes emphasizing hip-shoulder separation and forward drive.",
+   "description_zh": "多球连续杀球练习，强调髋肩分离和向前的重心驱动。",
+   "instructions": {
+     "en": ["Have a partner feed high lifts to your rear court, one shuttle every few seconds.",
+            "For each feed, turn side-on, load the back leg, then rotate hips first and shoulders after into the smash.",
+            "Land with your weight coming forward onto the front leg and recover to base before the next feed."],
+     "zh": ["请同伴向你的后场连续喂高球，每隔几秒一个。",
+            "每一拍都先侧身、后腿蓄力，然后先转髋、后转肩完成杀球。",
+            "落地时重心压向前腿，回位到中心后再接下一个球。"]},
+   "coaching_cues": {
+     "en": ["Hips lead, shoulders follow.", "Land forward, not underneath yourself."],
+     "zh": ["髋先动，肩随后。", "向前落地，不要原地落下。"]},
+   "common_mistakes": {
+     "en": ["Arm-only smashes with a square chest — no separation, no power.", "Falling backward after contact instead of driving through."],
+     "zh": ["正对球网只用手臂杀球——没有转体分离，也就没有力量。", "击球后身体向后倒，而不是向前压。"]},
+   "video_url": "https://www.youtube.com/watch?v=H7kpZ9inc10",
+   "equipment": "racket, shuttles", "difficulty": "advanced", "duration_min": 15, "reps": 30, "sets": 2, "location": "court"},
+
+  {"id": "wrist_snap_drill", "name": "Wrist snap shadow drill", "name_zh": "手腕发力挥拍练习", "category": "on_court",
+   "target_weaknesses": ["wrist_flexion"],
+   "description": "Short overhead snaps focusing on wrist pronation at contact.",
+   "description_zh": "短促的头顶挥拍，专注体会击球瞬间的手腕内旋发力。",
+   "instructions": {
+     "en": ["Hold the racket overhead in a relaxed forehand grip, elbow high and slightly bent.",
+            "Do a short, sharp snap forward — forearm rotates and the wrist whips the racket head through.",
+            "Stop the racket head just after the imaginary contact point, reset, and repeat in rhythm."],
+     "zh": ["放松地正手握拍举过头顶，抬肘并略微弯曲。",
+            "做短促有力的向前抖动——前臂旋转，手腕把拍头“甩”出去。",
+            "拍头在想象的击球点稍前方停住，回位后按节奏重复。"]},
+   "coaching_cues": {
+     "en": ["Grip relaxed until the moment of the snap.", "Let the racket head do the traveling, not the arm."],
+     "zh": ["抖腕前握拍保持放松。", "让拍头走远，而不是整条手臂。"]},
+   "common_mistakes": {
+     "en": ["Squeezing the grip the whole time, which kills the whip.", "Swinging from the shoulder instead of snapping from the forearm and wrist."],
+     "zh": ["全程紧握球拍，鞭打效果全无。", "用肩膀抡大臂，而不是靠前臂和手腕发力。"]},
+   "video_url": "https://www.youtube.com/results?search_query=badminton+wrist+action+forearm+rotation+tutorial",
+   "equipment": "racket", "difficulty": "beginner", "duration_min": 8, "reps": 25, "sets": 3, "location": "court"},
+
+  {"id": "wrist_curls", "name": "Weighted wrist curls", "name_zh": "负重腕弯举", "category": "strength",
+   "target_weaknesses": ["wrist_flexion"],
+   "description": "Wrist flexion/extension curls with a light dumbbell to build forearm control.",
+   "description_zh": "用轻哑铃做手腕屈伸弯举，增强前臂控制力。",
+   "instructions": {
+     "en": ["Sit with your forearm resting on your thigh, wrist and hand hanging past the knee, dumbbell in hand.",
+            "Curl the wrist up as far as it goes, then lower with control to a full stretch.",
+            "Finish the set, then flip your palm down and repeat as extensions."],
+     "zh": ["坐姿，前臂放在大腿上，手腕和手悬出膝盖，握住哑铃。",
+            "手腕向上卷起到最大幅度，再有控制地放下到完全伸展。",
+            "完成一组后手心翻转朝下，做反向的伸腕练习。"]},
+   "coaching_cues": {
+     "en": ["Forearm stays glued to the thigh.", "Full range beats heavy weight."],
+     "zh": ["前臂始终贴住大腿。", "幅度做满比重量更重要。"]},
+   "common_mistakes": {
+     "en": ["Lifting the forearm off the thigh to cheat the curl.", "Going too heavy and shrinking the range to a wiggle."],
+     "zh": ["前臂离开大腿借力。", "重量太大，动作缩成了小幅度晃动。"]},
+   "video_url": "https://www.youtube.com/results?search_query=dumbbell+wrist+curl+extension+form",
+   "equipment": "dumbbell", "difficulty": "intermediate", "duration_min": 8, "reps": 15, "sets": 3, "location": "home"},
+
+  {"id": "split_step_lunge", "name": "Split-step into lunge", "name_zh": "分腿垫步接弓步", "category": "on_court",
+   "target_weaknesses": ["knee_flexion", "weight_transfer"],
+   "description": "Split-step then deep lunge to the net, loading the knees and transferring weight forward.",
+   "description_zh": "先做分腿垫步，再向网前做深弓步，充分屈膝并把重心送向前方。",
+   "instructions": {
+     "en": ["Start at the base position; do a small hop landing on both feet at the same time, knees soft.",
+            "Push off immediately into a long lunge toward the net, front knee bending over the foot.",
+            "Push back off the front leg to return to base, and repeat in rhythm."],
+     "zh": ["从中心位置开始，小跳后双脚同时落地，膝盖保持弹性。",
+            "落地后立刻蹬地，向网前跨出一个大弓步，前膝在脚面上方弯曲。",
+            "用前腿蹬地退回中心位置，按节奏重复。"]},
+   "coaching_cues": {
+     "en": ["Land the split-step as the opponent hits.", "Front knee tracks over the toes, chest stays up."],
+     "zh": ["对手击球瞬间正好落地。", "前膝对准脚尖，上身保持挺直。"]},
+   "common_mistakes": {
+     "en": ["Split-step too high and slow — it's a quick, low hop.", "Lunging with a straight front leg and letting the knee cave inward."],
+     "zh": ["垫步跳得太高太慢——它应该又快又低。", "弓步时前腿伸直、膝盖内扣。"]},
+   "video_url": "https://www.youtube.com/watch?v=gy4YZS5tGxE",
+   "equipment": "none", "difficulty": "intermediate", "duration_min": 10, "reps": 12, "sets": 3, "location": "court"},
+
+  {"id": "single_leg_squat", "name": "Single-leg squats", "name_zh": "单腿深蹲", "category": "strength",
+   "target_weaknesses": ["knee_flexion"],
+   "description": "Controlled single-leg squats to build stance stability and leg drive.",
+   "description_zh": "有控制的单腿下蹲，增强站位稳定性和腿部蹬伸力量。",
+   "instructions": {
+     "en": ["Stand on one leg next to a chair or wall for balance if needed, other leg out in front.",
+            "Bend the standing knee and sit your hips back as low as you can control.",
+            "Drive back up through the whole foot without letting the knee collapse inward; finish the set, then switch legs."],
+     "zh": ["单腿站立，需要时可扶椅背或墙保持平衡，另一条腿伸向前方。",
+            "支撑腿屈膝、臀部向后坐，下蹲到自己能控制的最低点。",
+            "全脚掌发力站起，膝盖不要内扣；完成一组后换腿。"]},
+   "coaching_cues": {
+     "en": ["Sit back, don't dip forward.", "Knee points the same way as the toes."],
+     "zh": ["臀部向后坐，不要往前栽。", "膝盖方向始终对准脚尖。"]},
+   "common_mistakes": {
+     "en": ["Knee caving inward on the way up.", "Dropping fast and bouncing out of the bottom instead of controlling it."],
+     "zh": ["站起时膝盖内扣。", "快速下坠再借反弹站起，失去控制。"]},
+   "video_url": "https://www.youtube.com/results?search_query=single+leg+squat+progression+tutorial",
+   "equipment": "none", "difficulty": "intermediate", "duration_min": 10, "reps": 10, "sets": 3, "location": "home"},
+
+  {"id": "hip_flexor_stretch", "name": "Hip flexor stretch", "name_zh": "髋屈肌拉伸", "category": "flexibility",
+   "target_weaknesses": ["hip_shoulder_separation", "knee_flexion"],
+   "description": "Half-kneeling hip flexor stretch to open the hips for rotation and lunging.",
+   "description_zh": "半跪姿髋屈肌拉伸，打开髋部，为转体和弓步创造空间。",
+   "instructions": {
+     "en": ["Kneel on one knee with the other foot planted in front, both knees at 90 degrees.",
+            "Tuck your tailbone slightly and shift your weight forward until you feel a stretch at the front of the kneeling-side hip.",
+            "Hold and breathe, then ease off; finish the set and switch sides."],
+     "zh": ["单膝跪地，另一只脚踩在身前，两膝都约成90度。",
+            "骨盆微微后收，重心向前移，直到跪侧髋部前方有拉伸感。",
+            "保持并深呼吸，然后放松；完成一组后换边。"]},
+   "coaching_cues": {
+     "en": ["Tuck the tailbone before you shift forward.", "Stretch should be felt in the hip, not the lower back."],
+     "zh": ["先收骨盆，再前移重心。", "拉伸感应该在髋前，而不是腰上。"]},
+   "common_mistakes": {
+     "en": ["Arching the lower back instead of tucking, which fakes the stretch.", "Lunging so far forward the front knee passes way beyond the toes."],
+     "zh": ["塌腰代替收骨盆，拉伸变成了假动作。", "前移过猛，前膝远远超过脚尖。"]},
+   "video_url": "https://www.youtube.com/results?search_query=half+kneeling+hip+flexor+stretch",
+   "equipment": "none", "difficulty": "beginner", "duration_min": 5, "reps": 4, "sets": 2, "location": "home"},
+
+  {"id": "shoulder_dislocates", "name": "Band shoulder dislocates", "name_zh": "弹力带肩部环绕", "category": "mobility",
+   "target_weaknesses": ["wrist_flexion", "elbow_extension"],
+   "description": "Pass a band overhead and behind to improve shoulder/arm mobility for the overhead action.",
+   "description_zh": "双手持弹力带从体前经头顶绕到身后，改善肩臂在头顶动作中的灵活性。",
+   "instructions": {
+     "en": ["Hold a band in front of you with a wide grip, arms straight.",
+            "Keeping both arms straight, lift the band up, over your head, and down behind your back in one slow arc.",
+            "Reverse the arc back to the front; widen your grip if the shoulders pinch."],
+     "zh": ["双手宽距握住弹力带置于体前，手臂伸直。",
+            "双臂保持伸直，将带子缓慢地举过头顶、绕到身后，画一个完整的弧线。",
+            "沿原弧线转回体前；如果肩部有夹挤感就把握距加宽。"]},
+   "coaching_cues": {
+     "en": ["Arms stay straight the whole way around.", "Slower is better — no rushing through the sticky point."],
+     "zh": ["整个过程手臂保持伸直。", "越慢越好——不要冲过最紧的位置。"]},
+   "common_mistakes": {
+     "en": ["Bending the elbows to sneak past the tight spot.", "Grip too narrow, forcing the shoulders to shrug and strain."],
+     "zh": ["弯曲手肘偷偷绕过最紧的位置。", "握距太窄，迫使耸肩硬掰。"]},
+   "video_url": "https://www.youtube.com/results?search_query=band+shoulder+dislocates+tutorial",
+   "equipment": "resistance band", "difficulty": "beginner", "duration_min": 5, "reps": 12, "sets": 2, "location": "home"},
+
+  {"id": "lunge_footwork", "name": "Four-corner lunge footwork", "name_zh": "四角弓步步法", "category": "on_court",
+   "target_weaknesses": ["weight_transfer", "knee_flexion"],
+   "description": "Lunge to four court corners and recover, driving weight into and out of each lunge.",
+   "description_zh": "依次向场地四个角做弓步并回位，每一步都把重心压进弓步再蹬回。",
+   "instructions": {
+     "en": ["Start at the base position in the middle of the court.",
+            "Move to each corner in turn — front two with lunges, rear two with side-on steps — touching the floor or a marker at each corner.",
+            "Push hard off the outside leg to recover to base between corners; keep the rhythm steady."],
+     "zh": ["从场地中央的中心位置出发。",
+            "依次移动到四个角——前场两点用弓步，后场两点侧身移动——每个角触地或触碰标志物。",
+            "每个角之后用外侧腿用力蹬地回中；保持稳定节奏。"]},
+   "coaching_cues": {
+     "en": ["Push off the outside leg to come back.", "Stay low between corners — don't stand up in the middle."],
+     "zh": ["回中靠外侧腿蹬地。", "移动全程保持低重心——中途不要站直。"]},
+   "common_mistakes": {
+     "en": ["Standing tall at base before each move, wasting the first step.", "Small shuffles into the corner instead of one committed lunge."],
+     "zh": ["每次出发前在中心站得笔直，浪费了第一步。", "到角落前碎步蹭过去，而不是一个果断的弓步。"]},
+   "video_url": "https://www.youtube.com/watch?v=fBa08o5GEqw",
+   "equipment": "none", "difficulty": "intermediate", "duration_min": 12, "reps": 16, "sets": 2, "location": "court"},
+
+  {"id": "serve_target_practice", "name": "Serve target practice", "name_zh": "发球落点练习", "category": "on_court",
+   "target_weaknesses": ["wrist_flexion", "trunk_rotation"],
+   "description": "Serve to marked targets to refine controlled wrist and trunk action on the serve.",
+   "description_zh": "向标记好的目标区发球，打磨发球时手腕和躯干的控制。",
+   "instructions": {
+     "en": ["Place targets (cones, shuttle tubes, or paper) in the front corners and back tramlines of the service box.",
+            "Serve in sets of ten to one target at a time — low serves skimming the tape, high serves dropping steeply on the back target.",
+            "Count your hits per set and try to beat that number on the next set."],
+     "zh": ["在发球区前角和后发球线附近摆放目标（雪糕筒、球筒或纸张都可以）。",
+            "每十个为一组，只打同一个目标——低发球贴网带飞过，高发球在后场目标上方陡直下落。",
+            "记录每组命中数，下一组尝试打破自己的纪录。"]},
+   "coaching_cues": {
+     "en": ["Same relaxed swing every time — let the target do the coaching.", "Low serve: guide it, don't hit it."],
+     "zh": ["每一次都用同样放松的挥拍——让目标来当教练。", "低发球是“送”过去的，不是“打”过去的。"]},
+   "common_mistakes": {
+     "en": ["Changing the swing on misses instead of repeating the same motion.", "Gripping tight and stabbing at the shuttle on the low serve."],
+     "zh": ["一没打中就乱改动作，而不是重复同一个挥拍。", "低发球时握死球拍去戳球。"]},
+   "video_url": "https://www.youtube.com/results?search_query=badminton+backhand+low+serve+tutorial",
+   "equipment": "racket, shuttles", "difficulty": "beginner", "duration_min": 12, "reps": 30, "sets": 2, "location": "court"},
+
+  {"id": "med_ball_rotational_throw", "name": "Rotational medicine ball throw", "name_zh": "药球转体抛掷", "category": "strength",
+   "target_weaknesses": ["hip_shoulder_separation", "trunk_rotation"],
+   "description": "Explosive sideways medicine ball throws to develop hip-shoulder separation power.",
+   "description_zh": "侧向爆发式抛掷药球，发展髋肩分离的旋转爆发力。",
+   "instructions": {
+     "en": ["Stand side-on to a wall, about two meters away, ball held at your back hip with both hands.",
+            "Load into the back leg, then rip the hips toward the wall and let the shoulders and ball whip through after.",
+            "Release the ball into the wall at chest height, catch the rebound, reset, and repeat; switch sides each set."],
+     "zh": ["侧对墙站立，距离约两米，双手将球持于后侧髋旁。",
+            "重心压进后腿蓄力，然后髋部猛然转向墙面，让肩和球随后甩出。",
+            "在胸口高度把球掷向墙面，接住反弹后回位重复；每组换一边。"]},
+   "coaching_cues": {
+     "en": ["Hips fire first, ball leaves last.", "Throw through the wall, not at it."],
+     "zh": ["髋先启动，球最后出手。", "把球“穿过”墙扔出去，而不是碰到墙就算。"]},
+   "common_mistakes": {
+     "en": ["Arms swing the ball while the hips stay still — no separation being trained.", "Standing too close to the wall to finish the rotation."],
+     "zh": ["只有手臂在抡球，髋部纹丝不动——完全没练到分离。", "离墙太近，转体还没做完就撞墙了。"]},
+   "video_url": "https://www.youtube.com/results?search_query=rotational+medicine+ball+wall+throw+tutorial",
+   "equipment": "medicine ball", "difficulty": "advanced", "duration_min": 10, "reps": 8, "sets": 3, "location": "home"}
+]

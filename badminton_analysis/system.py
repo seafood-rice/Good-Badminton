@@ -1,10 +1,24 @@
 ﻿import os
+import json
 import tempfile
 from tkinter import filedialog
 import tkinter as tk
 import time
 import argparse
 
+# TrackNetV3 dense pre-pass is only feasible on short clips: eval_mode='weight'
+# runs ~0.4s/frame, so a full-length match (tens of thousands of frames) would
+# take hours. Above this frame budget we skip the pre-pass and fall back to the
+# yolo shuttle so match analysis stays responsive.
+SHUTTLE_PRETRACK_MAX_FRAMES = 2000
+
+# Court-view state changes slowly (rally boundaries span >=5 frames); recompute the
+# template match only every N frames and hold the result between checks. Lossless
+# within the existing 5-frame rally thresholds.
+COURT_VIEW_CHECK_INTERVAL = 3
+
+# Fast mode analyzes every Nth court frame (quick look).
+FAST_FRAME_STRIDE = 3
 
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
@@ -59,14 +73,17 @@ def load_runtime_dependencies():
     SCHEMA_VERSION = _SCHEMA_VERSION
 
 class BadmintonAnalysisSystem:
-    def __init__(self, video_path, show_display=True, 
-                 show_skeletons=True, show_player_trajectories=True, 
+    def __init__(self, video_path, show_display=True,
+                 show_skeletons=True, show_player_trajectories=True,
                  show_court_trajectory=True, show_shuttlecock_trajectory=True,
-                 show_player_stats=True, show_performance_stats=False, 
+                 show_player_stats=True, show_performance_stats=False,
                  save_images=False, language='zh', output_dir=None,
                  ball_model_path='weights/yolo11s-ball.pt', template_path=None,
                  pose_mode='balanced', pose_family='rtmpose',
-                 yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True):
+                 yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
+                 analyze_technique=False, racket_model_path=None, dominant_hand="right",
+                 bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
+                 analysis_quality="accurate"):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -76,7 +93,20 @@ class BadmintonAnalysisSystem:
         self.pose_family = pose_family
         self.yolo_pose_model = yolo_pose_model
         self.show_pose_roi = show_pose_roi
-
+        self.analyze_technique = analyze_technique
+        self.analysis_quality = analysis_quality
+        if analysis_quality == "fast":
+            self.analyze_technique = False  # dense analytics need every frame
+        self.racket_model_path = racket_model_path
+        self.dominant_hand = dominant_hand
+        self.bst_weights = bst_weights
+        self.tracknet_weights = tracknet_weights
+        self.inpaintnet_weights = inpaintnet_weights
+        self._shuttle_trajectory = None
+        self._shuttle_source = "yolo"
+        self._analysis_track = []   # contact detection track
+        self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
+        self._racket_detector = None
 
         self.show_skeletons = show_skeletons
         self.show_player_trajectories = show_player_trajectories
@@ -104,6 +134,14 @@ class BadmintonAnalysisSystem:
             self.rtmpose_processor = RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
         self.yolo_ball_model = YOLO(self.ball_model_path)
 
+        if self.analyze_technique:
+            from .detection.racket import RacketDetector
+            try:
+                self._racket_detector = RacketDetector(model_path=self.racket_model_path)
+            except Exception as e:
+                print(f"Racket detector unavailable ({e}); using wrist inference.")
+                self._racket_detector = None
+
         self.last_stats_update_frame = 0
 
 
@@ -111,6 +149,8 @@ class BadmintonAnalysisSystem:
         self.video_name = os.path.basename(self.video_path)[:-4]
         self.save_dir = output_dir or os.path.join('outputs', self.video_name)
         os.makedirs(self.save_dir, exist_ok=True)
+        self._total_frames = 0
+        self._write_progress("initializing")
         self.images_save_dir = os.path.join(self.save_dir, 'detect_images')
         os.makedirs(self.images_save_dir, exist_ok=True)
         
@@ -150,6 +190,8 @@ class BadmintonAnalysisSystem:
 
         self.is_court_view_count = 0
         self.consecutive_non_court_frames = 0
+        self._court_view_cached = None
+        self._court_view_last_frame = -10
         self.rally_active = False
         self.rally_count = 0
         self.rally_segments = []  # [(rally_id, start_frame, end_frame), ...]
@@ -171,6 +213,7 @@ class BadmintonAnalysisSystem:
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._total_frames = total_frames
         if fps <= 0:
             raise RuntimeError(f"Unable to read FPS from video: {self.video_path}")
         video_duration = total_frames / fps
@@ -192,10 +235,13 @@ class BadmintonAnalysisSystem:
         corners, roi_corners, mid_height = self._setup_court_annotation(template_color)
         self.court_corners = corners
         self.court_roi_corners = roi_corners
+        self._write_progress("court_setup")
+        progress_interval = max(1, int(fps))
 
         self._write_metadata(fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height)
+        self._run_shuttle_pretrack()
         self.detection_writer = JsonlDetectionWriter(self.detections_path)
-        
+
 
         self.court_mapper = CourtMapper(corners)
         self.player_pose_visualizer.court_mapper = self.court_mapper
@@ -218,6 +264,8 @@ class BadmintonAnalysisSystem:
             if not ret:
                 break
             frame_count += 1
+            if frame_count % progress_interval == 0:
+                self._write_progress("analyzing", current_frame=frame_count)
             frame, detect_frame_count = self._process_frame(frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count)
 
         # 视频结束时如果还在回合中，记录最后一个回合
@@ -240,7 +288,13 @@ class BadmintonAnalysisSystem:
         print(f"原始视频时长: {video_duration:.2f} 秒")
         print(f"处理耗时: {processing_time:.2f} 秒")
         print(f"处理速度比: {processing_time/video_duration:.2f}x")
-        
+
+        self._write_progress("visualizing")
+        if self.analyze_technique:
+            self._run_technique_analysis()
+
+        self._run_stroke_recognition()
+
         self._cleanup(cap)
 
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
@@ -276,13 +330,24 @@ class BadmintonAnalysisSystem:
         }
         write_json(self.metadata_path, metadata)
 
+    def _analyze_this_frame(self, frame_count):
+        """Gate for the heavy per-frame analysis (pose/ball/draw).
+
+        Accurate mode analyzes every court frame (behavior-preserving). Fast mode
+        strides the heavy analysis to every FAST_FRAME_STRIDE-th court frame for a
+        quick overview.
+        """
+        if self.analysis_quality != "fast":
+            return True
+        return frame_count % FAST_FRAME_STRIDE == 0
+
     def _process_frame(self, frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count):
 
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         # frame = self.draw_court_roi(frame, corners, roi_corners)
 
-        is_court = self.is_court_view(gray_frame, template_gray)
+        is_court = self._court_view_for_frame(gray_frame, template_gray, frame_count)
         
         if is_court:
             self.is_court_view_count += 1
@@ -309,6 +374,12 @@ class BadmintonAnalysisSystem:
 
 
         if not is_court:
+            # Full-duration output: write the raw (un-annotated) frame instead of
+            # dropping it, so the result video matches the input duration.
+            if self.show_display:
+                cv2.imshow('frame', frame)
+                cv2.waitKey(1)
+            out.write(frame)
             return frame, detect_frame_count
 
         detect_frame_count += 1
@@ -320,6 +391,15 @@ class BadmintonAnalysisSystem:
             cv2.rectangle(frame, roi_corners[0], roi_corners[1], (255, 0, 0), 2)
             cv2.putText(frame, "Pose ROI", (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2, cv2.LINE_AA)
 
+        if not self._analyze_this_frame(frame_count):
+            # Fast mode: this court frame is outside the analysis stride, so skip
+            # the heavy pose/ball/draw work and write the raw frame through,
+            # mirroring the non-court passthrough above.
+            if self.show_display:
+                cv2.imshow('frame', frame)
+                cv2.waitKey(1)
+            out.write(frame)
+            return frame, detect_frame_count
 
         pose_t0 = time.time()
         centroids, point_left_hands, point_right_hands = self.player_pose_visualizer.detect_players(roi, x1, y1)
@@ -336,9 +416,11 @@ class BadmintonAnalysisSystem:
         shuttle_draw_elapsed = time.time() - shuttle_draw_t0
         
 
-        players = self.player_tracker.update(frame_count, centroids, ball_position, 
+        players = self.player_tracker.update(frame_count, centroids, ball_position,
                                              point_left_hands, point_right_hands, detect_frame_count)
-        
+
+        if self.analyze_technique:
+            self._capture_analysis_frame(frame_count, frame, roi_corners, ball_position)
 
         if frame_count == 1 or not self.cached_movement_stats:
             self.cached_movement_stats = self.player_tracker.get_player_movement_stats()
@@ -395,6 +477,206 @@ class BadmintonAnalysisSystem:
             if self.save_images:
                 cv2.imwrite(os.path.join(self.images_save_dir, f"{frame_count}.png"), frame)
         return frame, detect_frame_count
+
+    def _capture_analysis_frame(self, frame_count, frame, roi_corners, ball_position):
+        from .analysis import joint_angles as ja
+        pose = self.player_pose_visualizer.get_current_pose_data()
+        keypoints = None
+        racket_head = None
+        nose = shoulder = hip = centroid = None
+        elbow_angle = None
+        angles_now = None
+        side = "unknown"
+
+        # centroid + side from tracked players (prefer lower court, else upper)
+        for region in ("lower", "upper"):
+            p = self.player_tracker.players.get(region)
+            if p is not None:
+                centroid = (float(p[0]), float(p[1]))
+                side = region
+                break
+
+        if pose is not None and pose.get("keypoints") is not None and len(pose["keypoints"]) > 0:
+            people = pose["keypoints"]
+            ox, oy = pose.get("offset_x", 0), pose.get("offset_y", 0)
+
+            def _foot_midpoint(kp_arr, ox, oy):
+                pts = []
+                for idx in (ja.L_ANKLE, ja.R_ANKLE):
+                    if ja.is_valid(kp_arr, idx):
+                        pts.append((float(kp_arr[idx][0]) + ox, float(kp_arr[idx][1]) + oy))
+                if pts:
+                    xs = sum(p[0] for p in pts) / len(pts)
+                    ys = sum(p[1] for p in pts) / len(pts)
+                    return (xs, ys)
+                return None
+
+            if centroid is not None and len(people) > 1:
+                def _dist_to_centroid(pers):
+                    fm = _foot_midpoint(pers, ox, oy)
+                    if fm is None:
+                        return float("inf")
+                    return (fm[0]-centroid[0])**2 + (fm[1]-centroid[1])**2
+                person = min(people, key=_dist_to_centroid)
+            else:
+                person = people[0]
+
+            kp = person.astype(float).copy()
+            # shift ROI-local keypoints back to full-frame coords (ignore missing <=1)
+            mask = ~((kp[:, 0] <= 1) & (kp[:, 1] <= 1))
+            kp[mask, 0] += ox
+            kp[mask, 1] += oy
+            keypoints = kp
+            if ja.is_valid(kp, ja.NOSE):
+                nose = (float(kp[ja.NOSE][0]), float(kp[ja.NOSE][1]))
+            dom = ja.R_SHOULDER if self.dominant_hand == "right" else ja.L_SHOULDER
+            dom_hip = ja.R_HIP if self.dominant_hand == "right" else ja.L_HIP
+            if ja.is_valid(kp, dom):
+                shoulder = (float(kp[dom][0]), float(kp[dom][1]))
+            if ja.is_valid(kp, dom_hip):
+                hip = (float(kp[dom_hip][0]), float(kp[dom_hip][1]))
+            angles_now = ja.compute_joint_angles(kp, dominant=self.dominant_hand)
+            elbow_angle = angles_now.get("elbow_extension")
+
+        if keypoints is not None and angles_now is not None:
+            from .visualization.technique_overlay import draw_technique_overlay
+            draw_technique_overlay(frame, angles_now)
+
+        if self._racket_detector is not None:
+            racket_head = self._racket_detector.detect_racket_head(frame, roi_corners=roi_corners)
+        if racket_head is None and keypoints is not None:
+            from .analysis.joint_angles import infer_racket_head
+            racket_head = infer_racket_head(keypoints, dominant=self.dominant_hand)
+
+        shuttle = None
+        if self._shuttle_trajectory is not None:
+            pt = self._shuttle_trajectory.get(frame_count)
+            if pt is not None:
+                shuttle = (float(pt[0]), float(pt[1]))
+        elif ball_position and ball_position != [0, 0]:
+            shuttle = (float(ball_position[0]), float(ball_position[1]))
+
+        self._analysis_track.append({
+            "frame": frame_count, "racket_head": racket_head, "shuttle": shuttle,
+        })
+        self._analysis_frames[frame_count] = {
+            "frame": frame_count, "keypoints": keypoints, "conf": None,
+            "racket_head": racket_head, "centroid": centroid, "nose": nose,
+            "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
+            "player_side": side, "shuttle": shuttle,
+        }
+
+    def _run_shuttle_pretrack(self):
+        """Offline TrackNetV3 dense-shuttle pre-pass. Never fatal.
+
+        Populates ``self._shuttle_trajectory`` (keyed by match-loop
+        ``frame_count`` = TrackNet 0-based frame + 1) and sets
+        ``self._shuttle_source = 'tracknet'``. On any failure or when weights
+        are absent, leaves the trajectory None so ``_capture_analysis_frame``
+        falls back to the yolo shuttle (byte-identical to today).
+        """
+        if not (self.tracknet_weights and self.analyze_technique):
+            return
+        try:
+            _cap = cv2.VideoCapture(self.video_path)
+            n_frames = int(_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            _cap.release()
+        except Exception:
+            n_frames = 0
+        if n_frames > SHUTTLE_PRETRACK_MAX_FRAMES:
+            print(f"TrackNetV3 pre-pass skipped: {n_frames} frames > "
+                  f"{SHUTTLE_PRETRACK_MAX_FRAMES} budget; using yolo shuttle.")
+            return
+        try:
+            from .shuttle_track import tracknet as tnmod
+            from .shuttle_track import trajectory as tjmod
+
+            params = {"eval_mode": "weight",
+                      "inpaint": bool(self.inpaintnet_weights),
+                      "roi": self.court_roi_corners}
+            cache_path = os.path.join(self.save_dir, "shuttle_trajectory.json")
+            key = tjmod.cache_key(self.video_path, params)
+            traj0 = tjmod.load_cache(cache_path, key)
+            if traj0 is None:
+                models = tnmod.load_tracknet(self.tracknet_weights, self.inpaintnet_weights)
+                traj0 = tnmod.track_video(self.video_path, models, court_roi=self.court_roi_corners)
+                tjmod.save_cache(cache_path, key, traj0)
+            # Align TrackNet 0-based frames to the match loop's 1-based frame_count.
+            self._shuttle_trajectory = {f + 1: pt for f, pt in traj0.items()}
+            self._shuttle_source = "tracknet"
+            detected = sum(1 for pt in traj0.values() if pt is not None)
+            print(f"Dense shuttle tracking: {detected}/{len(traj0)} frames via TrackNetV3")
+        except Exception as e:  # never fatal
+            print(f"TrackNetV3 pre-pass unavailable ({e}); using yolo shuttle.")
+            self._shuttle_trajectory = None
+            self._shuttle_source = "yolo"
+
+    def _run_technique_analysis(self):
+        from .analysis.biomechanics import BiomechanicalAnalyzer
+        from .analysis.technique_writer import write_stroke_reports, build_match_summary
+        runner = TechniqueAnalysisRunner(
+            BiomechanicalAnalyzer(dominant=self.dominant_hand),
+            racket_detector=self._racket_detector,
+            dominant=self.dominant_hand,
+            fps=self.fps,
+        )
+        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get)
+        strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
+        summary_path = os.path.join(self.save_dir, "technique_summary.json")
+        write_stroke_reports(strokes_path, reports)
+        write_json(summary_path, build_match_summary(reports))
+        print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
+
+    def _run_stroke_recognition(self):
+        """Post-loop BST coarse stroke labeling -- entirely optional.
+
+        No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
+        constructor, so the default behavior of the pipeline is byte-for-byte
+        unchanged. ``StrokeRecognizer`` already degrades gracefully (returns
+        ``[]``) if the weights fail to load, so this is safe to call
+        unconditionally from ``process_video``.
+
+        Uses ``self.court_corners`` -- the 4-point court quad set alongside
+        court annotation in ``process_video`` -- rather than
+        ``self.court_roi_corners`` (a 2-point pose-detection ROI rectangle):
+        ``build_inputs`` -> ``CourtMapper`` requires exactly 4 corners.
+
+        Never fatal: any exception raised while recognizing strokes (bad
+        court data, a build_inputs/predict failure, etc.) is caught here and
+        only turns stroke recognition off for this run -- it must never abort
+        ``process_video`` before ``_cleanup(cap)`` runs. Writes nothing when
+        there are no hits, so ``strokes.json``'s presence stays meaningful.
+
+        v1 limitation: ``stroke_recog.inputs.build_inputs`` (Task 3) only
+        fills in the tracked hitter's own pose/position (person index 0) plus
+        the shuttle; the opponent (person index 1) pose/position stay
+        zero-filled every frame. This is a documented v1 simplification --
+        whether coarse labels survive it on real footage is what the T9
+        validation decides, not something this task attempts to fix.
+        """
+        if not self.bst_weights:
+            return
+
+        try:
+            from collections import Counter
+            from .stroke_recog.recognizer import StrokeRecognizer
+
+            labels = StrokeRecognizer(self.bst_weights).label_rally(
+                self._analysis_track, self._analysis_frames.get,
+                self.court_corners, (self.frame_width, self.frame_height),
+            )
+            if not labels:
+                return
+            strokes_path = os.path.join(self.save_dir, "strokes.json")
+            distribution = dict(Counter(label["stroke"] for label in labels))
+            payload = {"strokes": labels, "distribution": distribution}
+            if self._shuttle_source == "tracknet":
+                payload["shuttle_source"] = "tracknet"
+            write_json(strokes_path, payload)
+            print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
+        except Exception as e:
+            print(f"Stroke recognition skipped: {e}")
+            return
 
     def _get_template_path(self):
         """Get the court template image path."""
@@ -477,6 +759,35 @@ class BadmintonAnalysisSystem:
             f.write(f"mid_height={mid_height}\n")
         return corners, roi_corners, mid_height
 
+    # Per-stage fixed pct for non-analyzing stages; analyzing derives from frames.
+    _PROGRESS_STAGE_PCT = {
+        "initializing": 1, "court_setup": 3, "analyzing": None,
+        "visualizing": 97, "encoding": 99, "done": 100,
+    }
+
+    def _write_progress(self, stage, current_frame=None):
+        """Write a progress heartbeat to <save_dir>/progress.json. Never fatal."""
+        try:
+            total = int(getattr(self, "_total_frames", 0) or 0)
+            fixed = self._PROGRESS_STAGE_PCT.get(stage)
+            if fixed is not None:
+                pct = fixed
+            elif total > 0 and current_frame is not None:
+                pct = max(3, min(96, int(current_frame / total * 100)))
+            else:
+                pct = 3
+            payload = {
+                "stage": stage,
+                "current_frame": int(current_frame or 0),
+                "total_frames": total,
+                "pct": int(pct),
+                "updated": time.time(),
+            }
+            with open(os.path.join(self.save_dir, "progress.json"), "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+        except Exception:
+            pass
+
     def _cleanup(self, cap):
         """Clean up resources and merge audio when needed."""
         if self.detection_writer is not None:
@@ -492,6 +803,7 @@ class BadmintonAnalysisSystem:
         if self.show_display:
             cv2.destroyAllWindows()
 
+        self._write_progress("encoding")
         if hasattr(self, 'keep_audio') and self.keep_audio:
             vap.process_video_with_audio(
                 video_path=self.video_path,
@@ -505,6 +817,8 @@ class BadmintonAnalysisSystem:
                 output_path=self.output_video_path
             )
 
+        self._write_progress("done")
+
     def analyze_shuttlecock(self, roi_corners, corners):
         """Hit-point analysis is currently disabled."""
         raise RuntimeError(
@@ -517,8 +831,95 @@ class BadmintonAnalysisSystem:
         # print("match score: ", result)
         return np.max(result) >= threshold
 
+    def _court_view_for_frame(self, gray_frame, template_gray, frame_count):
+        """Recompute is_court_view only every COURT_VIEW_CHECK_INTERVAL frames,
+        holding the cached result between checks. Lossless within the existing
+        5-frame rally thresholds (boundaries may shift by <= interval-1 frames)."""
+        cached = getattr(self, "_court_view_cached", None)
+        last_frame = getattr(self, "_court_view_last_frame", -10)
+        if cached is None or frame_count - last_frame >= COURT_VIEW_CHECK_INTERVAL:
+            self._court_view_cached = self.is_court_view(gray_frame, template_gray)
+            self._court_view_last_frame = frame_count
+        return self._court_view_cached
+
     def draw_court_roi(self, frame, corners, roi_corners):
         self.court_mapper = CourtMapper(corners)
         overlay, mid_height_int = self.court_mapper.draw_court_overlay(frame)
         cv2.rectangle(overlay, roi_corners[0], roi_corners[1], (255, 0, 0), 2)
         return overlay
+
+
+class TechniqueAnalysisRunner:
+    """Post-loop orchestration: contacts -> classification -> biomechanical reports."""
+
+    def __init__(self, analyzer, racket_detector=None, dominant="right",
+                 window_pre=20, window_post=15, fps=30.0):
+        self.analyzer = analyzer
+        self.racket_detector = racket_detector
+        self.dominant = dominant
+        self.window_pre = window_pre
+        self.window_post = window_post
+        self.fps = fps
+
+    def _build_classifier_window(self, contact_frame, window_start, window_end, frame_lookup):
+        racket_head, nose, shoulder, hip, elbow_angle, centroid = [], [], [], [], [], []
+        contact_index = 0
+        for offset, idx in enumerate(range(window_start, window_end + 1)):
+            rec = frame_lookup(idx) or {}
+            if idx == contact_frame:
+                contact_index = offset
+            racket_head.append(rec.get("racket_head"))
+            nose.append(rec.get("nose"))
+            shoulder.append(rec.get("shoulder"))
+            hip.append(rec.get("hip"))
+            elbow_angle.append(rec.get("elbow_angle"))
+            centroid.append(rec.get("centroid"))
+        return {
+            "contact_index": contact_index, "racket_head": racket_head, "nose": nose,
+            "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
+            "centroid": centroid, "fps": self.fps,
+        }
+
+    def _window_frames(self, window_start, window_end, frame_lookup):
+        frames = []
+        for idx in range(window_start, window_end + 1):
+            rec = frame_lookup(idx)
+            if rec is None:
+                continue
+            frames.append({
+                "frame": idx,
+                "keypoints": rec.get("keypoints"),
+                "conf": rec.get("conf"),
+                "racket_head": rec.get("racket_head"),
+                "centroid": rec.get("centroid"),
+            })
+        return frames
+
+    def run(self, track, frame_lookup):
+        from .stroke.events import detect_contacts, StrokeEvent
+        from .stroke.classifier import classify_stroke
+        contacts = detect_contacts(
+            track, window_pre=self.window_pre, window_post=self.window_post)
+        reports = []
+        events = []
+        for c in contacts:
+            cw = self._build_classifier_window(
+                c["contact_frame"], c["window_start"], c["window_end"], frame_lookup)
+            stroke_type, conf = classify_stroke(cw)
+            # player_side from the contact frame's centroid if available, else "unknown"
+            contact_rec = frame_lookup(c["contact_frame"]) or {}
+            side = contact_rec.get("player_side", "unknown")
+            event = StrokeEvent(
+                stroke_type=stroke_type,
+                contact_frame=c["contact_frame"],
+                window_start=c["window_start"],
+                window_end=c["window_end"],
+                player_side=side,
+                confidence=conf,
+            )
+            window_frames = self._window_frames(
+                c["window_start"], c["window_end"], frame_lookup)
+            report = self.analyzer.analyze(event, window_frames)
+            reports.append(report)
+            events.append(event)
+        return reports, events

@@ -4,6 +4,8 @@
 import os, sys, json, time, subprocess, glob, shutil
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
+from badminton_analysis.data.writer import write_json
+from badminton_analysis.training.plan_generator import generate_plan
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -20,32 +22,342 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
-_venv_python = str(PROJECT_ROOT / '.venv' / 'bin' / 'python3')
+def _find_venv_python():
+    candidates = [
+        PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe',  # Windows
+        PROJECT_ROOT / '.venv' / 'bin' / 'python3',          # macOS/Linux
+        PROJECT_ROOT / '.venv' / 'bin' / 'python',
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return sys.executable
+
+_venv_python = _find_venv_python()
+
+
+def _parse_progress_line(line):
+    """Parse 'PROGRESS <pct> <stage>' emitted by a worker. None if not a progress line."""
+    parts = line.strip().split()
+    if len(parts) == 3 and parts[0] == "PROGRESS":
+        try:
+            return int(parts[1]), parts[2]
+        except ValueError:
+            return None
+    return None
+
+
+def _rep_clip_window(contact_frame, fps, padding=1.5):
+    """Seconds window (start, duration) around a rep's contact frame, start clamped to 0."""
+    if not fps or fps <= 0:
+        fps = 30.0
+    center = (contact_frame or 0) / fps
+    start = max(0.0, center - padding)
+    return round(start, 3), round(padding * 2, 3)
+
+
+_DELETE_SCOPES = ('match', 'posture', 'clips', 'reports', 'all')
+
+
+def _safe_stem(video_name):
+    """Validated video stem for delete operations. None if malformed or unknown."""
+    if not video_name or not isinstance(video_name, str):
+        return None
+    if '/' in video_name or '\\' in video_name or '..' in video_name:
+        return None
+    if video_name != video_name.strip():
+        return None
+    if Path(video_name).name != video_name:
+        return None
+    if (OUTPUTS / video_name).is_dir():
+        return video_name
+    if VIDEOS.exists() and any(p.is_file() and p.stem == video_name for p in VIDEOS.iterdir()):
+        return video_name
+    return None
+
+
+def _delete_groups(stem, scope):
+    """Disjoint (key, [paths]) groups a delete scope removes. Paths are files or dirs."""
+    out = OUTPUTS / stem
+    posture = out / 'posture'
+
+    def match_paths():
+        if not out.is_dir():
+            return []
+        return [p for p in out.iterdir() if p.name not in ('posture', 'thumb.jpg')]
+
+    def source_paths():
+        files = []
+        if VIDEOS.exists():
+            files += [p for p in VIDEOS.iterdir() if p.is_file() and p.stem == stem]
+        if TEMPLATES.exists():
+            files += [p for p in TEMPLATES.iterdir()
+                      if p.is_file() and p.stem == '_auto_' + stem]
+        return files
+
+    if scope == 'match':
+        return [('match', match_paths())]
+    if scope == 'posture':
+        return [('posture', [posture] if posture.is_dir() else [])]
+    if scope == 'clips':
+        rally = out / 'clips'
+        rep = posture / 'rep_clips'
+        return [('clips_rally', [rally] if rally.is_dir() else []),
+                ('clips_rep', [rep] if rep.is_dir() else [])]
+    if scope == 'reports':
+        reports = ([p for p in posture.iterdir() if p.name.startswith('coach_report_')]
+                   if posture.is_dir() else [])
+        return [('reports', reports)]
+    if scope == 'all':
+        thumb = out / 'thumb.jpg'
+        return [('source', source_paths()),
+                ('match', match_paths()),
+                ('posture', [posture] if posture.is_dir() else []),
+                ('thumb', [thumb] if thumb.is_file() else [])]
+    return []
+
+
+def _paths_stats(paths):
+    """(file count, size MB rounded 1dp) for files and recursive dir contents."""
+    files = 0
+    size = 0
+    for p in paths:
+        if p.is_dir():
+            for f in p.rglob('*'):
+                if f.is_file():
+                    files += 1
+                    size += f.stat().st_size
+        elif p.is_file():
+            files += 1
+            size += p.stat().st_size
+    return files, round(size / 1024 / 1024, 1)
+
+
+def _running_job_for(stem):
+    """Id of any non-terminal analysis job working on this video, else None."""
+    active = ('pending', 'running', 'reencoding')
+    for job_id, job in list(jobs.items()):
+        if job.get('status') not in active:
+            continue
+        jv = str(job.get('video_name') or '')
+        if (job_id == stem or job_id == 'posture_' + stem
+                or jv == stem or jv.rsplit('.', 1)[0] == stem):
+            return job_id
+    return None
+
+
+def _racket_weights(base=None):
+    """Path to trained racket-detector weights when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    for name in ('yolo11n-racket.pt', 'yolo11s-racket.pt'):
+        p = base / name
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def _quality_weights(base=None):
+    """Path to trained AI form-score weights when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'quality-high_clear.pt'
+    return str(p) if p.is_file() else None
+
+
+def _lift_weights(base=None):
+    """Path to the MotionBERT 3D pose-lift checkpoint when installed, else None.
+
+    Server-resolved on purpose: the path is fed to a ``torch.load`` that must
+    unpickle (official checkpoints bundle non-tensor training state), so it must
+    never come from request data. See docs/motionbert-weights.md.
+    """
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'motionbert.pt'
+    return str(p) if p.is_file() else None
+
+
+def _bst_weights(base=None):
+    """Path to trained BST stroke-recognition weights when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'bst-shuttleset.pt'
+    return str(p) if p.is_file() else None
+
+
+def _tracknet_weights(base=None):
+    """Path to the TrackNetV3 tracking model when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'tracknet.pt'
+    return str(p) if p.is_file() else None
+
+
+def _inpaintnet_weights(base=None):
+    """Path to the TrackNetV3 InpaintNet rectifier when installed, else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'inpaintnet.pt'
+    return str(p) if p.is_file() else None
+
+
+def _read_progress_file(save_dir):
+    """Read <save_dir>/progress.json written by the analysis subprocess, or None."""
+    p = os.path.join(str(save_dir), 'progress.json')
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding='utf-8') as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _reset_progress_file(save_dir):
+    """Remove a stale progress.json before a (re-)run so the UI starts clean."""
+    try:
+        p = os.path.join(str(save_dir), 'progress.json')
+        if os.path.isfile(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
+def _log_tail(path, n=40):
+    """Return the last n lines of a log file, or '' if unreadable."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            return ''.join(fh.readlines()[-n:])
+    except OSError:
+        return ''
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _video_duration_sec(path):
+    """Best-effort video duration in seconds; None if it can't be read."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        cap.release()
+        if fps > 0 and frames > 0:
+            return round(frames / fps, 1)
+    except Exception:
+        pass
+    return None
+
+
+def _write_first_frame(video_path, dest):
+    """Grab frame 0 of the video and save a JPEG at dest. Returns bool."""
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return False
+        h, w = frame.shape[:2]
+        scale = min(1.0, 640 / max(w, 1))
+        if scale < 1.0:
+            frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return bool(cv2.imwrite(str(dest), frame))
+    except Exception:
+        return False
+
+
+def _ensure_thumbnail(video_path, stem):
+    """Ensure OUTPUTS/<stem>/thumb.jpg exists; return its Path or None."""
+    dest = OUTPUTS / stem / 'thumb.jpg'
+    if dest.exists():
+        return dest
+    if _write_first_frame(video_path, dest):
+        return dest
+    return None
+
+
 @app.route('/api/videos')
 def api_videos():
     """列出所有视频和对应的分析结果"""
+    import datetime
     videos = []
     for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
         for p in sorted(VIDEOS.glob(ext)):
             name = p.stem
             out_dir = OUTPUTS / name
-            has_result = (out_dir / 'detections.jsonl').exists()
+            has_match = (out_dir / 'detections.jsonl').exists()
+            has_posture = (out_dir / 'posture' / 'drill_summary.json').exists()
             has_annotations = (out_dir / 'court_annotations.txt').exists()
+            thumb_path = out_dir / 'thumb.jpg'
+            if not thumb_path.exists():
+                _ensure_thumbnail(p, name)
+            if has_match or has_posture:
+                status = 'analyzed'
+            elif has_annotations:
+                status = 'court_set'
+            else:
+                status = 'new'
             videos.append({
                 'name': name,
                 'filename': p.name,
                 'size_mb': round(p.stat().st_size / 1024 / 1024, 1),
-                'has_result': has_result,
+                'has_result': has_match,
                 'has_annotations': has_annotations,
-                'output_dir': str(out_dir) if has_result else None,
+                'has_match': has_match,
+                'has_posture': has_posture,
+                'status': status,
+                'date': datetime.date.fromtimestamp(p.stat().st_mtime).isoformat(),
+                'duration_sec': _video_duration_sec(p),
+                'thumb': f'/api/output/{name}/thumb.jpg' if thumb_path.exists() else None,
+                'output_dir': str(out_dir) if has_match else None,
             })
     return jsonify(videos)
+
+
+@app.route('/api/stats')
+def api_stats():
+    """Dashboard tiles: counts + aggregate scores across all outputs."""
+    count = analyzed = rallies = 0
+    score_sum = score_n = 0.0
+    for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
+        for p in VIDEOS.glob(ext):
+            count += 1
+            out = OUTPUTS / p.stem
+            has_match = (out / 'detections.jsonl').exists()
+            has_posture = (out / 'posture' / 'drill_summary.json').exists()
+            if has_match or has_posture:
+                analyzed += 1
+            rf = out / 'rally_segments.json'
+            if rf.exists():
+                try:
+                    with open(rf, encoding='utf-8') as f:
+                        rallies += len(json.load(f).get('rallies', []))
+                except Exception:
+                    pass
+            tf = out / 'technique_summary.json'
+            if tf.exists():
+                try:
+                    with open(tf, encoding='utf-8') as f:
+                        by_type = json.load(f).get('by_type', {})
+                    vals = [v['avg_score'] for v in by_type.values()
+                            if isinstance(v, dict) and v.get('avg_score') is not None]
+                    if vals:
+                        score_sum += sum(vals) / len(vals)
+                        score_n += 1
+                except Exception:
+                    pass
+    avg = round(score_sum / score_n, 1) if score_n else None
+    return jsonify({'videos': count, 'analyzed': analyzed,
+                    'rallies': rallies, 'avg_technique_score': avg})
+
+
+@app.route('/api/models')
+def api_models():
+    """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer, 3D pose lifter) are installed."""
+    return jsonify({'racket': _racket_weights() is not None,
+                    'quality': _quality_weights() is not None,
+                    'bst': _bst_weights() is not None,
+                    'tracknet': _tracknet_weights() is not None,
+                    'lift': _lift_weights() is not None})
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -59,6 +371,7 @@ def api_upload():
         return jsonify({'error': '空文件名'}), 400
     save_path = VIDEOS / name
     file.save(str(save_path))
+    _ensure_thumbnail(save_path, save_path.stem)
     return jsonify({'ok': True, 'filename': name, 'size_mb': round(save_path.stat().st_size / 1024 / 1024, 1)})
 
 
@@ -198,6 +511,8 @@ def api_analyze():
     video_name = data.get('video')
     language = data.get('language', 'zh')
     pose_family = data.get('pose_family', 'yolo-pose')
+    analyze_technique = data.get('analyze_technique', True)
+    quality = data.get('analysis_quality', 'accurate')
 
     video_path = VIDEOS / video_name
     if not video_path.exists():
@@ -205,6 +520,7 @@ def api_analyze():
 
     save_dir = OUTPUTS / video_path.stem
     save_dir.mkdir(exist_ok=True)
+    _reset_progress_file(save_dir)
 
     # 检查球场标注
     has_annotations = (save_dir / 'court_annotations.txt').exists()
@@ -228,6 +544,24 @@ def api_analyze():
         '--visualize-positions', 'true',
         '--performance-stats',
     ]
+    cmd += ['--analysis-quality', quality]
+    if analyze_technique:
+        cmd.append('--analyze-technique')
+
+    racket_weights = _racket_weights()
+    if racket_weights:
+        cmd += ['--racket-model', racket_weights]
+
+    bst_weights = _bst_weights()
+    if bst_weights:
+        cmd += ['--bst-model', bst_weights]
+
+    tracknet_weights = _tracknet_weights()
+    if tracknet_weights:
+        cmd += ['--tracknet-model', tracknet_weights]
+    inpaintnet_weights = _inpaintnet_weights()
+    if inpaintnet_weights:
+        cmd += ['--inpaintnet-model', inpaintnet_weights]
 
     job_id = video_path.stem
     jobs[job_id] = {
@@ -236,48 +570,41 @@ def api_analyze():
         'message': '准备启动...',
         'video_name': video_name,
         'save_dir': str(save_dir),
+        'stage': 'analyzing',
     }
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    log_path = os.path.join(str(save_dir), 'analyze.log')
+    log_fh = open(log_path, 'w', encoding='utf-8')
+    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT,
                             text=True, cwd=str(PROJECT_ROOT), env=env)
     jobs[job_id]['proc'] = proc
     jobs[job_id]['status'] = 'running'
+    jobs[job_id]['log_path'] = log_path
 
     # 启动进度跟踪线程
     import threading
 
     def track_progress():
         job = jobs[job_id]
-        detections_file = os.path.join(job['save_dir'], 'detections.jsonl')
-
-        # 先从视频获取总帧数
-        total_frames = 100  # fallback
-        try:
-            import cv2
-            cap = cv2.VideoCapture(str(video_path))
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
-        except:
-            pass
 
         while job['status'] == 'running' and proc.poll() is None:
-            # 通过 detections.jsonl 行数估算进度
-            if os.path.exists(detections_file):
-                try:
-                    with open(detections_file) as f:
-                        count = sum(1 for _ in f)
-                    pct = min(99, max(0, int(count / total_frames * 100)))
-                except:
-                    count = 0
-                    pct = 0
-                job['progress'] = pct
-                job['message'] = f'分析中... {count}/{total_frames} 帧'
-            time.sleep(1.5)
+            prog = _read_progress_file(job['save_dir'])
+            if prog is not None:
+                job['progress'] = int(prog.get('pct', job.get('progress', 0)))
+                job['stage'] = prog.get('stage', job.get('stage'))
+                job['updated'] = prog.get('updated')
+                job['message'] = f"分析中... {prog.get('current_frame', 0)}/{prog.get('total_frames', 0)} 帧"
+            time.sleep(1.0)
 
         proc.wait()
+        try:
+            log_fh.close()
+        except Exception:
+            pass
 
         if proc.returncode == 0:
             job['status'] = 'reencoding'
+            job['stage'] = 'encoding'
             job['progress'] = 99
             job['message'] = '正在转码为浏览器兼容格式...'
 
@@ -286,7 +613,7 @@ def api_analyze():
             sd = str(save_dir)
             raw_video = os.path.join(sd, f'detect_{vs}.mp4')
             h264_video = os.path.join(sd, f'detect_{vs}_h264.mp4')
-            ffmpeg_bin = os.path.expanduser('~/.local/bin/ffmpeg')
+            ffmpeg_bin = shutil.which('ffmpeg') or os.path.expanduser('~/.local/bin/ffmpeg')
 
             try:
                 subprocess.run([
@@ -302,6 +629,7 @@ def api_analyze():
                 # 即使转码失败也继续，原始视频可能在某些播放器能播放
 
             job['status'] = 'completed'
+            job['stage'] = 'done'
             job['progress'] = 100
             job['message'] = '分析完成!'
 
@@ -329,7 +657,9 @@ def api_analyze():
             }
         else:
             job['status'] = 'error'
-            job['message'] = f'分析失败 (exit={proc.returncode})'
+            job['stage'] = 'error'
+            tail = _log_tail(job.get('log_path', ''), n=40)
+            job['message'] = f'分析失败 (exit={proc.returncode})\n{tail}'
 
     threading.Thread(target=track_progress, daemon=True).start()
     return jsonify({'ok': True, 'job_id': job_id})
@@ -346,6 +676,8 @@ def api_status(job_id):
         'progress': job.get('progress', 0),
         'message': job.get('message', ''),
         'result': job.get('result'),
+        'stage': job.get('stage'),
+        'updated': job.get('updated'),
     })
 
 
@@ -432,12 +764,382 @@ def serve_template_image(video_name):
 @app.route('/api/output/<video_name>/<path:subpath>', methods=['DELETE'])
 def delete_output(video_name, subpath):
     """删除某个输出文件或整个输出目录"""
-    filepath = OUTPUTS / video_name / subpath
+    if _safe_stem(video_name) is None:
+        return jsonify({'error': '无效的删除请求'}), 400
+    base = (OUTPUTS / video_name).resolve()
+    filepath = (OUTPUTS / video_name / subpath).resolve()
+    try:
+        filepath.relative_to(base)
+    except ValueError:
+        return jsonify({'error': '无效的删除请求'}), 400
     if filepath.is_dir():
         shutil.rmtree(str(filepath))
     elif filepath.exists():
         filepath.unlink()
     return jsonify({'ok': True})
+
+
+@app.route('/api/technique/<video_name>')
+def api_technique(video_name):
+    """Return technique summary + per-stroke reports for a video."""
+    out_dir = OUTPUTS / video_name
+    summary_path = out_dir / 'technique_summary.json'
+    if not summary_path.exists():
+        return jsonify({'error': '还没有技术分析数据，请先用 --analyze-technique 运行分析'}), 404
+
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+
+        strokes = []
+        strokes_path = out_dir / 'strokes.jsonl'
+        if strokes_path.exists():
+            with open(strokes_path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        strokes.append(json.loads(line))
+    except Exception as e:
+        return jsonify({'error': 'failed to read report'}), 500
+
+    return jsonify({'summary': summary, 'strokes': strokes})
+
+
+def _load_or_make_training_plan(video_name, weeks=4, force=False):
+    out_dir = OUTPUTS / video_name
+    plan_path = out_dir / 'training_plan.json'
+    summary_path = out_dir / 'technique_summary.json'
+
+    if plan_path.exists() and not force:
+        try:
+            with open(plan_path, encoding='utf-8') as f:
+                return json.load(f), 200
+        except Exception as e:
+            return {'error': str(e)}, 500
+
+    if not summary_path.exists():
+        return {'error': '没有技术分析数据，无法生成训练计划'}, 404
+
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        plan = generate_plan(summary, weeks=weeks)
+        write_json(str(plan_path), plan)
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+    return plan, 200
+
+
+@app.route('/api/training-plan/<video_name>', methods=['GET'])
+def api_training_plan(video_name):
+    plan, status = _load_or_make_training_plan(video_name)
+    return jsonify(plan), status
+
+
+@app.route('/api/training-plan/<video_name>', methods=['POST'])
+def api_training_plan_regenerate(video_name):
+    data = request.json or {}
+    try:
+        weeks = int(data.get('weeks', 4))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'weeks 必须是整数'}), 400
+    plan, status = _load_or_make_training_plan(video_name, weeks=weeks, force=True)
+    return jsonify(plan), status
+
+
+@app.route('/api/posture/<video_name>')
+def api_posture(video_name):
+    """Return drill summary + per-rep reports for a posture-drill video."""
+    out_dir = OUTPUTS / video_name / 'posture'
+    summary_path = out_dir / 'drill_summary.json'
+    if not summary_path.exists():
+        return jsonify({'error': '还没有姿态训练分析数据，请先运行姿态分析'}), 404
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        reps = []
+        reps_path = out_dir / 'drill_reps.jsonl'
+        if reps_path.exists():
+            with open(reps_path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        reps.append(json.loads(line))
+        return jsonify({'summary': summary, 'reps': reps})
+    except Exception as e:
+        return jsonify({'error': 'failed to read report'}), 500
+
+
+@app.route('/api/posture-rep-clip/<video_name>', methods=['POST'])
+def api_posture_rep_clip(video_name):
+    """On-demand ffmpeg crop of a single rep window from the annotated posture video."""
+    data = request.get_json(silent=True) or {}
+    rep_id = data.get('rep_id')
+    if rep_id is None:
+        return jsonify({'error': '需要 rep_id'}), 400
+    out_dir = OUTPUTS / video_name / 'posture'
+    reps_path = out_dir / 'drill_reps.jsonl'
+    if not reps_path.exists():
+        return jsonify({'error': '没有 rep 数据'}), 404
+    rep = None
+    try:
+        with open(reps_path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                r = json.loads(line)
+                if str(r.get('rep_id')) == str(rep_id):
+                    rep = r
+                    break
+    except Exception:
+        return jsonify({'error': 'rep 数据读取失败'}), 500
+    if rep is None:
+        return jsonify({'error': 'rep 不存在'}), 404
+    video_file = out_dir / ('detect_' + video_name + '.mp4')
+    if not video_file.exists():
+        return jsonify({'error': '没有标注视频'}), 404
+    fps = 30.0
+    meta_path = out_dir / 'metadata.json'
+    if meta_path.exists():
+        try:
+            with open(meta_path, encoding='utf-8') as f:
+                fps = (json.load(f).get('video', {}) or {}).get('fps') or 30.0
+        except Exception:
+            fps = 30.0
+    start, duration = _rep_clip_window(rep.get('contact_frame', 0), fps)
+    clip_dir = out_dir / 'rep_clips'
+    clip_dir.mkdir(exist_ok=True)
+    out_file = clip_dir / ('rep_' + str(rep_id) + '.mp4')
+    ffmpeg_bin = shutil.which('ffmpeg') or 'ffmpeg'
+    try:
+        subprocess.run([ffmpeg_bin, '-y', '-ss', str(start), '-i', str(video_file),
+                        '-t', str(duration), '-c:v', 'libx264', '-preset', 'fast',
+                        '-crf', '23', '-movflags', '+faststart', str(out_file)],
+                       check=True, capture_output=True, timeout=120)
+    except Exception as e:
+        return jsonify({'error': 'ffmpeg 失败: ' + str(e)}), 500
+    return jsonify({'ok': True,
+                    'url': '/api/output/' + video_name + '/posture/rep_clips/rep_' + str(rep_id) + '.mp4'})
+
+
+@app.route('/api/delete-preview/<video_name>')
+def api_delete_preview(video_name):
+    """What a delete scope would remove: disjoint groups with file counts + sizes."""
+    scope = request.args.get('scope', '')
+    stem = _safe_stem(video_name)
+    if stem is None or scope not in _DELETE_SCOPES:
+        return jsonify({'error': '无效的删除请求'}), 400
+    rows = []
+    total_files = 0
+    total_size = 0.0
+    for key, paths in _delete_groups(stem, scope):
+        files, size_mb = _paths_stats(paths)
+        if files:
+            rows.append({'key': key, 'files': files, 'size_mb': size_mb})
+            total_files += files
+            total_size += size_mb
+    return jsonify({'ok': True, 'scope': scope, 'groups': rows,
+                    'total_files': total_files, 'total_size_mb': round(total_size, 1)})
+
+
+@app.route('/api/delete/<video_name>', methods=['POST'])
+def api_delete(video_name):
+    """Permanently delete a scope's files. 409 while an analysis job runs on the video."""
+    data = request.get_json(silent=True) or {}
+    scope = data.get('scope', '')
+    stem = _safe_stem(video_name)
+    if stem is None or scope not in _DELETE_SCOPES:
+        return jsonify({'error': '无效的删除请求'}), 400
+    if _running_job_for(stem):
+        return jsonify({'error': '该视频正在分析中，请等待完成后再删除'}), 409
+    deleted = 0
+    groups = sorted(_delete_groups(stem, scope), key=lambda g: g[0] == 'source')
+    try:
+        for _key, paths in groups:
+            for p in paths:
+                if p.is_dir():
+                    deleted += sum(1 for f in p.rglob('*') if f.is_file())
+                    shutil.rmtree(str(p))
+                elif p.is_file():
+                    p.unlink()
+                    deleted += 1
+        # For scope "all", also delete the parent outputs directory
+        if scope == 'all':
+            out_dir = OUTPUTS / stem
+            if out_dir.is_dir() and not list(out_dir.iterdir()):
+                shutil.rmtree(str(out_dir))
+            for stale_id in (stem, 'posture_' + stem):
+                job = jobs.get(stale_id)
+                if job and job.get('status') not in ('pending', 'running', 'reencoding'):
+                    jobs.pop(stale_id, None)
+    except Exception:
+        return jsonify({'error': '删除失败'}), 500
+    return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})
+
+
+def _load_or_make_posture_plan(video_name, weeks=4, force=False):
+    out_dir = OUTPUTS / video_name / 'posture'
+    plan_path = out_dir / 'training_plan.json'
+    summary_path = out_dir / 'drill_summary.json'
+    if plan_path.exists() and not force:
+        try:
+            with open(plan_path, encoding='utf-8') as f:
+                return json.load(f), 200
+        except Exception as e:
+            return {'error': str(e)}, 500
+    if not summary_path.exists():
+        return {'error': '没有姿态分析数据，无法生成训练计划'}, 404
+    try:
+        with open(summary_path, encoding='utf-8') as f:
+            summary = json.load(f)
+        plan = generate_plan(summary, weeks=weeks)
+        write_json(str(plan_path), plan)
+        return plan, 200
+    except Exception as e:
+        return {'error': str(e)}, 500
+
+
+@app.route('/api/posture-plan/<video_name>', methods=['GET'])
+def api_posture_plan(video_name):
+    plan, status = _load_or_make_posture_plan(video_name)
+    return jsonify(plan), status
+
+
+@app.route('/api/posture-plan/<video_name>', methods=['POST'])
+def api_posture_plan_regenerate(video_name):
+    data = request.json or {}
+    try:
+        weeks = int(data.get('weeks', 4))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'weeks 必须是整数'}), 400
+    plan, status = _load_or_make_posture_plan(video_name, weeks=weeks, force=True)
+    return jsonify(plan), status
+
+
+@app.route('/api/posture/analyze', methods=['POST'])
+def api_posture_analyze():
+    data = request.json or {}
+    video_name = data.get('video')
+    stroke_type = data.get('stroke_type')
+    dominant = data.get('dominant_hand', 'right')
+    pose_family = data.get('pose_family', 'yolo-pose')
+    report_llm = data.get('report_llm', 'off')
+    if pose_family not in ('yolo-pose', 'rtmpose', 'rtmo'):
+        return jsonify({'error': 'invalid pose_family'}), 400
+    if not video_name or stroke_type not in ('high_clear', 'smash', 'drop_shot', 'serve'):
+        return jsonify({'error': '需要 video 和有效的 stroke_type'}), 400
+
+    video_path = VIDEOS / video_name
+    if not video_path.exists():
+        return jsonify({'error': '视频不存在'}), 404
+
+    save_dir = OUTPUTS / video_path.stem / 'posture'
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        _venv_python, str(PROJECT_ROOT / 'main_posture.py'),
+        '--video-path', str(video_path),
+        '--stroke-type', stroke_type,
+        '--dominant-hand', dominant,
+        '--pose-family', pose_family,
+        '--output-dir', str(save_dir),
+        '--display', 'false',
+        '--report-llm', report_llm,
+    ]
+
+    racket_weights = _racket_weights()
+    if racket_weights:
+        cmd += ['--racket-model', racket_weights]
+
+    quality_weights = _quality_weights()
+    if quality_weights:
+        cmd += ['--quality-model', quality_weights]
+
+    # Resolved server-side like every other model path: the checkpoint is
+    # unpickled by torch.load, so a request must never be able to name the file.
+    lift_weights = _lift_weights()
+    if lift_weights:
+        cmd += ['--lift-model', lift_weights]
+        lift_device = data.get('lift_device', 'auto')
+        if lift_device in ('auto', 'cpu', 'cuda'):
+            cmd += ['--lift-device', lift_device]
+
+    job_id = 'posture_' + video_path.stem
+    jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',
+                    'video_name': video_path.stem, 'save_dir': str(save_dir)}
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, cwd=str(PROJECT_ROOT), env=os.environ.copy())
+    jobs[job_id]['proc'] = proc
+
+    import threading
+
+    def track():
+        job = jobs[job_id]
+        job['stage'] = 'loading'
+        for line in proc.stdout:
+            parsed = _parse_progress_line(line)
+            if parsed:
+                job['progress'], job['stage'] = parsed[0], parsed[1]
+        proc.wait()
+        if proc.returncode == 0:
+            job['stage'] = 'encoding'
+            job['progress'] = max(job.get('progress', 0), 96)
+            job['message'] = '完成!'
+            vs = video_path.stem
+            sd = str(save_dir)
+            raw = os.path.join(sd, 'detect_' + vs + '.mp4')
+            h264 = os.path.join(sd, 'detect_' + vs + '_h264.mp4')
+            ffmpeg_bin = shutil.which('ffmpeg') or 'ffmpeg'
+            try:
+                subprocess.run([ffmpeg_bin, '-y', '-i', raw, '-c:v', 'libx264',
+                                '-preset', 'fast', '-crf', '23', '-movflags', '+faststart', h264],
+                               check=True, capture_output=True, timeout=600)
+                if os.path.exists(h264) and os.path.getsize(h264) > 0:
+                    os.replace(h264, raw)
+            except Exception as e:
+                print('posture ffmpeg re-encode failed: ' + str(e))
+            job['status'] = 'completed'
+            job['progress'] = 100
+            job['stage'] = 'done'
+            job['result'] = {'video_name': vs,
+                             'output_video': '/api/output/' + vs + '/posture/detect_' + vs + '.mp4'}
+        else:
+            job['status'] = 'error'
+            job['stage'] = 'error'
+            job['message'] = '姿态分析失败 (exit=' + str(proc.returncode) + ')'
+
+    threading.Thread(target=track, daemon=True).start()
+    return jsonify({'ok': True, 'job_id': job_id})
+
+
+@app.route('/api/posture-analyze-status/<job_id>')
+def api_posture_analyze_status(job_id):
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({'status': 'not_found'}), 404
+    return jsonify({'status': job.get('status'), 'progress': job.get('progress', 0),
+                    'message': job.get('message', ''), 'result': job.get('result'),
+                    'stage': job.get('stage')})
+
+
+_REPORT_LANGS = ("en", "zh-Hant", "zh-Hans")
+
+
+@app.route('/api/posture-report/<video_name>')
+def api_posture_report(video_name):
+    lang = request.args.get('lang', 'en')
+    if lang not in _REPORT_LANGS:
+        return jsonify({'error': 'invalid lang'}), 400
+    path = OUTPUTS / video_name / 'posture' / ('coach_report_' + lang + '.json')
+    if not path.exists():
+        return jsonify({'error': '还没有教练报告，请先运行姿态分析'}), 404
+    try:
+        with open(path, encoding='utf-8') as f:
+            return jsonify(json.load(f))
+    except Exception as e:
+        return jsonify({'error': 'failed to read report'}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -447,6 +1149,11 @@ def delete_output(video_name, subpath):
 @app.route('/')
 def index():
     return (PROJECT_ROOT / 'web_ui.html').read_text(encoding='utf-8')
+
+
+@app.route('/kestrel')
+def kestrel():
+    return (PROJECT_ROOT / 'kestrel.html').read_text(encoding='utf-8')
 
 
 if __name__ == '__main__':
