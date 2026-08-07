@@ -738,7 +738,12 @@ are ruled out. Note that A also cannot rescue *existing* footage shot on the wid
 framing — a detector fine-tuned on it would still be fighting a few-pixel target — so D matters
 for future footage regardless of what is done about the archive.
 
-### 0.19 Option C TESTED (2026-08-02): tiling gives a 4x improvement at no extra cost — partial success, not yet sufficient
+### 0.19 Option C first tiling attempt (2026-08-02) — SUPERSEDED, see §0.20
+
+> **Do not rely on this section's numbers.** §0.20 shows the downscale figures below are
+> width-only and the tiles were the wrong shape, so the "1.9x", "4x improvement" and cost
+> claims are all wrong. Kept for the record and because its *reasoning* about why coverage is
+> the wrong metric (consecutive runs are what matters) still holds.
 
 **First, a correction to how C was framed above.** "Crop *and upscale*" is wrong: TrackNetV3
 resizes any input to a fixed 512x288, so upscaling before that resize is undone by it. The only
@@ -806,6 +811,436 @@ correspondingly hard**, because you cannot label what you cannot see. This is a 
 observation and not conclusive (the shuttle may simply have been outside the crop), but it means
 A's labelling cost should be validated on a handful of frames *before* committing to it — and it
 strengthens the case for D (tighter framing), which fixes visibility at source.
+
+### 0.20 CORRECTION (2026-08-03): §0.19's tiling test measured the wrong thing — the downscale figures are width-only and the tiles were the wrong shape
+
+**The defect.** `third_party/tracknet/utils/general.py:15-16` sets `HEIGHT = 288`, `WIDTH = 512`,
+and `third_party/tracknet/dataset.py` resizes every frame with
+`img.resize(size=(self.WIDTH, self.HEIGHT))` — a **non-aspect-preserving** resize to exactly
+512x288. §0.19 tiled **horizontally only**, producing tall thin tiles, and reported
+`tile_w / 512` as "the downscale". That figure ignores the vertical axis, which was the binding
+constraint in every tiled run:
+
+| Tiling | x-scale | y-scale | **effective (binding)** |
+|---|---|---|---|
+| Full frame 3840x2160 | 7.50x | 7.50x | **7.50x** (16:9, isotropic) |
+| §0.19 "4 tiles" 1030x1540 | 2.01x | **5.35x** | **5.35x** — not 1.9x |
+| follow-up "8 tiles" 514x1540 | 1.00x | **5.35x** | **5.35x** — not native |
+
+So horizontal-only tiling moved the binding scale from 7.5x to 5.35x, a 1.4x improvement — not
+the 4x (or 7.5x "native") the width-only figure implied. **§0.19's arithmetic table is therefore
+wrong**: the far-baseline shuttle went from ~1.1 px to ~1.6 px vertically, not to the 4.5 px
+claimed, which is still below anything the net can fire on. A second, subtler harm: a round
+8.5 px shuttle is squashed to roughly 4 px wide by 1.6 px tall, a horizontal streak unlike
+anything in TrackNet's training distribution, so even a "detectable-size" blob is the wrong
+shape.
+
+**What this invalidates.** The three §0.19 follow-ups were run (court-restricted x-range,
+run-length measurement, 8 tiles). The 4-tile arm completed: 51/300 frames accepted (17.0 %),
+10 consecutive runs of which only 4 were length >= 3 (longest 13), and the **real
+`detect_contacts_multi` fired 0 contacts** inside labelled rally #1, at 2.92 s/frame. That
+0 is **not evidence against option C**, because the geometry above shows the configuration
+never delivered the resolution C is premised on. The 8-tile arm was stopped once the flaw was
+identified rather than spending ~15 min re-confirming the same wrong geometry. §0.19's headline
+"4x improvement at no extra cost" also does not survive: the 24.1 % came from full-width tiles
+whose 5.7 %-baseline comparison mixed a changed x-range with a changed scale, and the cost
+claim (1.95 vs 2.33 s/frame) is contradicted by this run's 2.92 s/frame.
+
+**The corrected test.** 16:9 tiles, gridded in **both** dimensions so x-scale == y-scale ==
+the stated downscale, with origins spaced evenly across the play band for complete coverage
+with even overlap:
+
+| Config | Tile | Grid | Effective scale | Far shuttle (8.5 px @4K) |
+|---|---|---|---|---|
+| A | 1434x806 | 3 x 2 = 6 | **2.80x** | ~3.0 px |
+| B | 910x512 | 4 x 3 = 12 | **1.78x** | ~4.8 px |
+
+Same 300-frame window at 66.5 s inside labelled rally #1, same one-shuttle-per-frame selection,
+same real `detect_contacts_multi`. Added diagnostic: the shuttle-to-nearer-racket distance
+distribution, so a null result separates "the track misses the contact moments" from
+"`contact_px = 80` is too tight" — note 80 px is 13 cm at the near baseline (603.8 px/m) but
+75 cm at the far baseline (106.3 px/m), so that constant is itself perspective-blind.
+
+**Method note carried forward.** `detections.jsonl` records wrists but no racket point, so this
+harness uses the per-player wrist midpoint as the racket stand-in. Reasonable, but not what the
+production path uses, so a contact count from this harness is indicative rather than exact.
+
+**Standing lesson:** when a preprocessing step resizes to a fixed non-square target, the
+binding scale is `max(w / W, h / H)`, never one axis alone. Any future tiling work must state
+both axes.
+
+### 0.21 Option C ANSWERED (2026-08-03): properly tiled, C still fails — and resolution is ruled out as the cause
+
+Both corrected configs ran to completion on the 300-frame window inside labelled rally #1.
+
+| | Full frame | horiz-only (void) | **A: 2.80x, 6 tiles** | **B: 1.78x, 12 tiles** |
+|---|---|---|---|---|
+| Effective scale | 7.50x | 5.35x | **2.80x** | **1.78x** |
+| Raw detections (all tiles) | — | — | **292** | **172** |
+| Accepted shuttle (of 300) | — | 51 (17.0 %) | **48 (16.0 %)** | **28 (9.3 %)** |
+| Consecutive runs >= 3 | — | 4 | **3** | **4** |
+| **Real `detect_contacts_multi`** | **0** | **0** | **0** | **0** |
+| Min shuttle-to-racket px | — | — | **119** | **301** |
+| Cost | 2.33 s/frame | 2.92 | **2.19** | **2.26** |
+
+**1. Zero contacts at every scale tested,** from 7.50x down to 1.78x — a 4.2x-per-axis
+improvement in original pixels per forward pass, inside a rally the owner labelled as live play.
+
+**2. The resolution hypothesis that motivated C is refuted, not merely unconfirmed.** Going
+*finer* made it *worse*: raw detections fell 292 -> 172 and accepted frames 48 -> 28 when moving
+from 2.80x to 1.78x. If small shuttle size were the binding constraint, B had to beat A. It lost.
+More tiles also means more independent chances to fire, so the drop cannot be explained by
+reduced sampling. The coherent reading is that these detections are **large-scale background
+structure whose ball-likeness depends on the downscale** — zoom in and it stops resembling a
+ball — rather than a shuttle that was previously too small to see.
+
+**3. The detections are provably not this court's shuttle, and this settles the gate-vs-track
+question** the distance diagnostic was added for. Across config A's 48 accepted frames:
+**0 fall within `contact_px = 80`**, exactly **1 falls within 300 px**, and the distribution is
+p25 509 / median 1498 / max 2100 px. Config B is worse still (min 301, none within 300). In a
+5-second rally with several strokes, a genuine shuttle track *must* repeatedly pass within
+contact range of a racket. It never does. So the blocker is **the track, not the
+`contact_px`/dir-change gate** — no amount of loosening the perspective-blind 80 px constant
+would produce contacts here, because there is nothing near the rackets to gate.
+
+**4. Cost was never the objection.** 2.19 and 2.26 s/frame against full-frame's 2.33 — tiling is
+cost-neutral. C fails on capability, not budget.
+
+**One thing not to overclaim.** Detections were near-absent from the lower tile rows (config B's
+entire bottom row returned 0). That is *suggestive* of domain failure but is not evidence: the
+shuttle spends most of its flight high in the frame, so the near-floor band may legitimately
+contain no shuttle. It is recorded as an observation, not an argument.
+
+**Verdict: option C is exhausted.** TrackNetV3 does not detect this court's shuttle at any scale
+from 7.50x to 1.78x, and the failure is not one that more resolution fixes. Combined with §0.14
+(the discarded candidates do not contain it either), TrackNetV3 is finished as a candidate for
+this footage class. This does not overturn §0.17 — it strengthens it.
+
+**Next, per the owner's "try C then A if doesn't work": A's feasibility gate runs first.** §0.19
+flagged that A (hand-label + fine-tune) presupposes the shuttle is *visible*, and that it could
+not be found by eye at 3x zoom on a native 4K frame. That gate is now the cheapest decisive test
+available, and it is detector-independent: **is the shuttle present in the pixels at all?** With
+a static camera, median-subtracted native-resolution differencing over the play band should
+reveal a small object on a ballistic path if the information is there. If a coherent ballistic
+track exists, A is feasible (and a classical tracker may even be the cheaper answer). If nothing
+coherent exists, then A cannot be labelled, and the honest conclusion is D (tighter framing at
+capture) or accepting that this footage class does not support shuttle-based rally detection —
+which is what §0.17 already concluded on independent grounds.
+
+### 0.22 A's gate PASSES (2026-08-03): the shuttle IS in the pixels, was recovered classically, and is physically verified
+
+**Two corrections first, both mine, both made during this work.**
+
+1. **A wide 0.35x survey render led me to read the analysed court as having only one player
+   ("solo drill, far half empty"). That was wrong.** At native resolution there is plainly an
+   opponent at the far end, and the pipeline's `UPPER` point sits on her feet — the expected
+   ground-contact point. Both tracked subjects are correct and this is a two-player match, as
+   the owner stated. The misreading came from judging a downscaled montage; it is recorded
+   because it briefly threatened §0.21's premise.
+2. **The first instrument (`shuttle_visibility.py`) is void, not merely unconvincing.** It
+   reported ~8.6M "ballistic chains" on the DJI clip and ~20M on the broadcast control, so it
+   had no discriminating power in either direction. Causes: the chain-extension loop never
+   re-checked `min_speed`, so stationary noise chained across the whole window (hence "longest
+   180, speed 0"); 339-909 candidate blobs/frame put mean spacing near the matching tolerance,
+   making chance matches near-certain; and every seeding triple was counted as its own chain.
+   Two time-coded "motion trail" renderings failed the same way, swamped by genuine background
+   motion. Recorded as **inconclusive** per the interpretation fixed before running them.
+
+**§0.21's premise is confirmed, so the C verdict stands.** A rally IS in progress during the
+window every C test used: the near player is mid-overhead-swing at t=68.0 s and lunging at
+69.5 s and 71.0 s.
+
+**The finding.** With the `min_speed` bug fixed, the search restricted to the analysed court and
+its airspace, and both players' own neighbourhoods excluded, a 30-frame chain emerged spanning
+t = 68.485-68.969 s. Its native crops show an unmistakable shuttlecock, and the numbers are
+decisive:
+
+| | f89 | f98 | f108 | f118 |
+|---|---|---|---|---|
+| position (px) | (2493,758) | (2053,856) | (1914,925) | (1850,995) |
+| speed (px/frame) | 96 | 23 | 8 | 7 |
+| blob area (px^2) | 1053 | 245 | 151 | 76 |
+
+- **Strictly monotonic** in x (2493→1850) and y (758→995) across all 30 frames.
+- **Speed decays 96 → 7 px/frame** — the extreme drag deceleration characteristic of a
+  shuttlecock and of almost nothing else.
+- **Area tracks speed almost exactly proportionally** (speed ratio 13.7, area ratio 13.9). So
+  the blob's size is *motion-blur length*, not object size — which is only true of a genuinely
+  small, fast-moving object. The shuttle's true extent is ~10 px, inflated to ~36 px when fast.
+- **The path is in the right place**: it rises from the near player's side and descends to
+  terminate just above the far player, who is standing ready to receive. It is a clear/lob
+  from near to far, following her overhead swing at t~68.1 s.
+
+**Consequences.**
+
+1. **Option A's feasibility gate PASSES.** The shuttle is visible at native resolution and
+   trivially labellable where it was found. §0.19's "could not find it by eye at 3x zoom" was a
+   single unlucky observation, now superseded.
+2. **A cheaper option than A appears: a classical detector.** Background subtraction plus
+   ballistic chaining *already* recovered this trajectory with no training and no labels. That
+   may beat fine-tuning on cost — it is now the option to cost out first.
+3. **§0.21 is reinforced, not weakened.** The shuttle's true size is ~10 px at 4K, so at config
+   A's 2.80x it lands at ~3.6 px — within TrackNet's firing range — and TrackNet *still* found
+   nothing near the players. That is domain/appearance mismatch, exactly as §0.21 concluded from
+   the resolution inversion. Resolution was never the binding constraint.
+4. **Near-court resolution is excellent** — the near player's racket *mesh* is resolvable — so
+   labelling or detecting a near-half shuttle is easy. The far half is the hard case.
+
+**Limits, so this is not over-read.**
+
+- **One trajectory, in one rally.** This proves the signal exists and is recoverable; it does not
+  establish per-frame coverage, and coverage is what C2 needs.
+- **It was found against the dark banner**, a clean high-contrast background. Against the
+  cluttered mid-frame band (benches, spectators, adjacent courts) it will be much harder, and the
+  low-flight portion near the floor was not recovered here at all.
+- **Precision is presently terrible**: the same search produced 89,683 chains at 168
+  candidates/frame. The shuttle was the *longest* chain, but "longest" is not a usable selector
+  in production. Suppressing that clutter is the actual engineering work.
+- The contact-count harness caveat from §0.20 still applies to any figure derived from
+  `detections.jsonl` wrists as a racket stand-in.
+
+Evidence images and the two scripts are kept under `outputs/b11-shuttle-visibility/`
+(gitignored, local only): `shuttle_hunt.png` (native crops along the chain), `confirm_arc.png`
+(full-frame path with tracked players), `court_geometry.png`, `find_shuttle_hi.png`.
+
+**Next action for the owner's decision:** cost out the classical shuttle detector (background
+subtraction + ballistic chaining + clutter suppression, evaluated for per-frame coverage against
+the 11 labelled rallies) *before* committing to A's hand-labelling and fine-tuning, since the
+classical route has already demonstrated recovery at zero training cost.
+
+### 0.23 Classical detector COSTED (2026-08-03): clears the bar TrackNet failed, 25x cheaper, zero training data — but precision is the open work
+
+A costing spike ran over **all 11 labelled rallies** (4,735 frames, 79 s of rally time). The
+selector uses the §0.22 discovery as its discriminator: a real shuttle's blob **area tracks its
+speed** proportionally, because apparent size is motion-blur length. Clutter has no such
+relation. Chains are scored on that correlation plus brightness and length, replacing "longest
+chain", which §0.22 recorded as unusable.
+
+| Metric | Classical prototype | TrackNetV3 (§0.21) |
+|---|---|---|
+| Compute | **86 ms/frame** (two-pass) | 2,190-2,330 ms/frame |
+| Frames within `contact_px = 80` | **43** | **0 of 48** |
+| Min shuttle-to-racket distance | **10 px** | 119 px |
+| Contacts fired (real `detect_contacts_multi`) | **17** | **0** |
+| Precision vs the §0.22 verified arc | **30/30 within 25 px** | n/a |
+| Training data required | **none** | none (but unusable here) |
+
+**Compute, with the cost split measured rather than assumed.** Decode+crop is 25.1 ms/frame and
+the OpenCV stage (absdiff, threshold, open, connected components) is 13.9 ms/frame, so **decode
+is 64 %** of per-frame cost. The spike's two passes (median, then detect) pay decode twice; a
+single-pass design with a running background estimate would cost **~46 ms/frame**, i.e. about
+**2.8 h of compute per hour of 60 fps footage** against the spike's 5.16 h. That fits decision 1
+(deep analysis as a background job with UI-tracked status). TrackNetV3 at 2.2 s/frame would be
+~130 h per footage-hour — infeasible regardless of accuracy.
+
+**What is NOT established, stated plainly.**
+
+1. **The candidate cap binds on 100 % of frames.** Every rally reports exactly 60.0
+   candidates/frame and **533,718 candidates were dropped** by the `MAX_CAND_PER_FRAME = 60`
+   truncation. The "keep the brightest 60" rule can discard a dim far-court shuttle, so **every
+   recall figure above is affected by an arbitrary truncation** and must not be trusted until
+   candidate suppression makes the cap non-binding. This is the single biggest caveat.
+2. **The 83.7 % coverage figure is not a quality measure.** `MIN_LEN = 4` guarantees every
+   selected point sits inside a >=3 run, so `inruns == cov` is an artifact of construction, not
+   evidence. And 421 runs for 11 shuttles is ~38 fragments per rally when there is exactly one
+   shuttle — so a large share of selections are wrong.
+3. **Precision is verified on one trajectory only, with shared-method bias.** The §0.22 arc was
+   found using background subtraction + compact-blob + chaining, and this detector shares that
+   preprocessing. The 30/30 validates the *new* part (area~speed scoring, greedy non-overlapping
+   selection) at a tight 25 px tolerance; it is not an end-to-end independent check.
+4. **Contact recall is low:** 17 contacts over 11 rallies (~1.5/rally) against perhaps 6-12
+   strokes per rally. **Rally 4 fired zero contacts**, so 1 of 11 rallies currently has no
+   signal at all. That is the concrete gap to close.
+5. The §0.20 wrist-as-racket-proxy caveat still applies to every contact count here.
+
+**Architectural finding that changes the shape of the work.** This method depends on a **static
+camera** for its median background, so it serves the fixed-camera and DJI hall classes but
+**cannot serve broadcast footage**, which has camera motion — and broadcast is explicitly in
+scope (owner decision 2, "both"). TrackNetV3 *is* trained for broadcast. So the classical
+detector does not replace TrackNetV3; the two are **complementary**, and the design needs a
+footage-class router (static vs moving camera) choosing between them. That is additional scope
+not previously identified.
+
+**Work items, and why this is structurally cheaper than option A.**
+
+| # | Item | Notes |
+|---|---|---|
+| 1 | Candidate suppression: court mask, static-structure exclusion, per-region budgets, illumination/shadow handling — until the cap stops binding | The main precision work and the **largest unknown** |
+| 2 | Single-target tracker: one-shuttle prior, gap tolerance through occlusion, track birth/death — replaces greedy chain selection, fixes fragmentation | Standard, well-understood |
+| 3 | Perspective-correct contact gating (`contact_px = 80` is depth-blind: 13 cm near, 75 cm far) | Needed regardless of detector; already flagged §0.15/§0.20 |
+| 4 | Single-pass restructure with running background estimate | Halves decode; ~86 -> ~46 ms/frame |
+| 5 | Footage-class router (static -> classical, broadcast -> TrackNetV3) | Newly identified above |
+| 6 | Evaluation ground truth: ~200-500 hand-clicked shuttle positions across several rallies | **For evaluation only, not training** |
+| 7 | Pipeline integration, config, tests following existing patterns | — |
+
+Items **2, 3, 6 and 7 are required for option A as well** — a per-frame detector gives neither a
+track, nor correct gating, nor integration, nor an evaluation set. So the classical route's work
+is close to a **subset** of A's, and A adds on top of it a training set (thousands of labels, not
+hundreds) plus training and model-management infrastructure. Effort figures are deliberately not
+quoted here: item 1 is the unknown, and any day-count before it is attempted would be invention
+rather than estimate.
+
+**Recommendation.** Proceed with the classical detector. The decision point is **after items 1
+and 2**, measured against the expanded evaluation set from item 6, with the bar being *enough
+contacts to identify the first and last contact of each rally* (today 1 of 11 rallies yields
+none). If precision plateaus below that bar, fall back to A with the tracker, gating, router and
+integration already built — none of that work is wasted.
+
+### 0.24 Classical detector FAILS the gate (2026-08-04): coverage is anti-correlated with ground truth
+
+Tasks 1-5 of the implementation plan are built and tested (501 tests pass). Measured on real
+footage, the detector does not work, and the failure is not marginal.
+
+**The decisive measurement.** Matched 420-frame windows, inside labelled rallies versus between
+them, using the owner's own rally labels:
+
+| window | frames | candidates/frame | covered | coverage | top chain score |
+|---|---|---|---|---|---|
+| **IN** rally 1 (66-73 s) | 420 | 119.0 | 84 | **20.0 %** | 39.58 |
+| **BETWEEN** rallies (76-83 s) | 420 | 143.8 | 123 | **29.3 %** | 15.85 |
+| **IN** rally 2 (88-95 s) | 420 | 131.9 | 19 | **4.5 %** | 18.01 |
+| **BETWEEN** rallies (96-101 s) | 300 | 120.5 | 68 | **22.7 %** | 29.41 |
+
+**Coverage is higher where there is no shuttle than where there is one.** This is the same
+failure signature recorded in §0.15's far-player cross-check: a measurement that anti-correlates
+with ground truth is measuring something other than what it claims. It is not a tuning problem.
+
+**A confidence floor cannot rescue it.** The score ranges overlap in the wrong direction — rally
+2's genuine shuttle tops out at 18.01 while between-rally clutter reaches 29.41. Any threshold
+that admits the real shuttle admits more clutter than shuttle.
+
+**Why §0.22's 30/30 result did not generalise.** That arc was recovered exactly, twice
+(hand-verified, then through the real pipeline). But it was a bright, high-contrast clear
+silhouetted against a dark banner — the easiest possible case, and §0.22 explicitly flagged it as
+"one trajectory, in one rally… found against the clean dark banner". Rally 2's shuttle is not
+found at all (4.5 % coverage). The single verified trajectory was not representative, exactly as
+that caveat warned.
+
+**Two of my own earlier measurements were biased, and both flattered the result.**
+
+1. **§0.23's candidate load and Task 4's 0.19 % drop rate were measured only INSIDE rally
+   windows.** Across the wider video raw load is ~520/frame rather than ~130, and the band budget
+   drops 44 % of candidates (1,007,130 of 2,274,715). Sampling only rallies understated clutter
+   roughly fourfold.
+2. **Task 3's clutter robustness used uniform-random clutter**, which rarely forms a ballistic
+   chain. Its own docstring flagged that real clutter is structured and therefore harder; real
+   data confirms it. Structured clutter *does* form long chains satisfying the area~speed
+   signature, so that signature is far less discriminating than §0.22's single arc implied.
+
+**Compute also regressed rather than improved:** 300 ms/frame (18.0 h per footage-hour) against
+152 ms (9.1 h) before Task 5, because candidate load quadrupled outside rallies. `frame_candidates`
+itself did improve, 80 -> 29.8 ms/frame, via an 8-bit LUT for gain correction and a court-bbox
+crop. Two profiling results worth keeping: gain correction was a third of the per-frame cost, and
+`scipy.ndimage.maximum` would have been a **200x regression** against the per-component Python
+loop (288 ms vs 1.43 ms), because the loop touches only each component's bounding box.
+
+**Defects found and fixed along the way (all retained, all tested):**
+
+- `is_static_camera` lacked a Hanning window, so edge leakage produced spurious peaks at half
+  the working width and **inverted the verdict** — a static clip read as moving more than a
+  panning one.
+- Its threshold had inconsistent units across input resolutions; it is now expressed in original
+  frame pixels.
+- **§0.23's claim that broadcast footage "has camera motion" is wrong for this corpus.** The
+  broadcast clip measures a median 1.37 px/frame of fixed-camera jitter with high correlation
+  responses — an elevated static camera, not a pan. The threshold is now 3.0 px/frame so both
+  real clips clear it with margin instead of the broadcast clip sitting knife-edge.
+- `select_track`'s one-shuttle prior applied whole-video can return only one trajectory plus its
+  neighbours, while a match holds hundreds of flights; and chain search did not scale (420 frames
+  in 8 s, 4,376 frames unfinished after ~400 s). Both fixed by windowed tracking (300-frame
+  windows, 30-frame overlap, centrality-based merge). But windowing then guarantees *every*
+  window yields a track, which is what makes the between-rally fabrication above so large.
+
+**Status and recommendation.** The classical detector is **not wired into the pipeline** — the
+Task 6 router and Task 7 evaluation harness were not built, because routing footage to a detector
+whose coverage anti-correlates with ground truth would degrade the shipped product. Tasks 1 and 2
+(perspective scale, perspective-correct contact gate) stand on their own merits and are already
+committed; they are correct, tested against the real court quad, and useful to any future
+detector.
+
+The §0.23 gate — *enough contacts to identify each rally's first and last contact* — cannot be met
+by this approach on this footage. That leaves the owner a decision between option A
+(hand-label and fine-tune, whose feasibility gate §0.22 passed: the shuttle IS visible at native
+resolution) and option D (tighter framing at capture, which fixes signal quality at source and
+would make both detectors' jobs far easier). §0.17's original conclusion — that this footage class
+does not support shuttle-based rally detection without a change at capture time — now has direct
+supporting evidence rather than only inference.
+
+### 0.25 OWNER DECISION (2026-08-04): option D — fix it at capture. Requirements derived and a validator shipped
+
+The owner chose D. The deliverables are a capture specification derived from measurement and
+`scripts/check_capture_quality.py`, which validates a new camera setup in minutes rather than
+after a full analysis run.
+
+**The finding that reframes D: the problem is camera POSITION, not camera quality.**
+
+Running the checker on the DJI clip:
+
+| check | result | verdict | provenance |
+|---|---|---|---|
+| perspective span | **5.68x** (far 106 px/m, near 604 px/m) | **FAIL** (limit 2.0x) | derived |
+| minimum scale on court | 106 px/m → shuttle 3.5 px at 2x tiling | **PASS** (floor 92 px/m) | derived |
+| competing movers | **117/frame** (max 165) | **FAIL** (target 25) | target, unvalidated |
+| camera stability | static | PASS | calibrated |
+
+**Resolution is adequate.** 106 px/m clears the 92 px/m floor, so a better sensor would not have
+helped — which is the same conclusion §0.21 reached when going finer made detection *worse*. What
+fails is the 5.68x perspective span and the clutter. Buying a sharper camera is the wrong
+purchase; moving the one you have is the right one.
+
+**Thresholds and where each comes from.** Two are derived from geometry, one calibrated, one an
+honest target:
+
+- `MAX_SPAN = 2.0` — **derived.** Above 2x no single absolute-pixel constant serves both ends of
+  the court, and the far shuttle drops below the detector floor while the near one is comfortable.
+  This is the defect that made an 80 px contact gate mean 0.13 m near and 0.75 m far.
+- `MIN_PX_PER_M = 92` — **derived** as `3 px floor x 2x tiling / 0.065 m shuttle`.
+- `MAX_CANDIDATES_PER_FRAME = 25` — **a target with no measured success case behind it.** The DJI
+  clip measures 117/frame and fails; no footage that *succeeds* has been measured, so a pass here
+  is necessary, not sufficient. The script and its tests both say so, and a test asserts the
+  wording stays.
+- `MAX_CAMERA_SHIFT_PX = 3.0` — **calibrated:** DJI tripod 0.0, this project's broadcast clip 1.37.
+
+**The framing requirement, derived rather than asserted.** End-on span is `(L + d0)/d0` for a
+camera `d0` behind the baseline, so with `L = 13.4 m`:
+
+| target span | end-on camera distance behind the baseline |
+|---|---|
+| 3.0x | 6.7 m |
+| 2.0x | **13.4 m** |
+| 1.5x | 26.8 m |
+
+No practical indoor distance reaches 2.0x end-on. Side-on span is
+`sqrt(D^2 + (L/2)^2)/D` at perpendicular distance `D`:
+
+| D | span | scale with court length across 3840 px | shuttle at 2x tiling |
+|---|---|---|---|
+| 4 m | 1.95x | 287 px/m uniform | 9 px |
+| 6 m | **1.50x** | 287 px/m uniform | 9 px |
+| 8 m | **1.30x** | 287 px/m uniform | 9 px |
+
+**So side-on at 6-8 m satisfies both geometry checks, and no practical end-on setup does.** It
+also raises the far-end scale from 106 to ~287 px/m, making the shuttle 9 px after tiling instead
+of 3.5.
+
+**Elevate and angle down** to address competing movers: the current camera looks along the court
+into the rest of the hall, which is why spectators and adjacent courts sit inside the shuttle's
+own flight band (measured: 44.5 and 66.2 candidates/frame in the two bands the verified arc flies
+through). Looking downward puts floor behind the shuttle instead of people. Note the mechanism
+that does *not* help here — per-band budgeting — because the clutter shares the shuttle's bands
+rather than sitting nearer the camera (§0.24).
+
+**A correction to how the clutter should be measured.** An earlier attempt scored "structurally
+active pixels" inside the flight band and got 0.2 %, which looks excellent and is misleading: the
+static mask removes *persistent* motion, while the real competitors are transient passers-by whose
+pixels are active in too few frames to be masked. Competing candidates per frame is the metric
+that tracks the failure; the validator uses that.
+
+**Open risk carried forward.** Side-on framing changes the viewpoint that BST and the pose models
+see. BST is a singles-match model whose training distribution is broadcast-style end-on; a side-on
+view may degrade stroke classification even as it fixes shuttle detection. That trade-off is
+unmeasured and should be checked on a short side-on test clip before committing to a rebuild of
+the capture setup.
 
 ---
 
