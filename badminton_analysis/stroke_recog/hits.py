@@ -1,45 +1,29 @@
-"""Hit/hitter extraction from the match pipeline's contact-detection track.
+"""Hit/hitter extraction from the match pipeline's both-player contact track.
 
-Pure function: turns the match pipeline's ``_analysis_track`` (list of
-``{frame, racket_head, shuttle}`` records, see
-``badminton_analysis.system.BadmintonAnalysisSystem._capture_analysis_frame``)
-into the ordered list of hit events the Task 5 recognizer iterates over. Hit
-*frames* come straight from the existing
-``badminton_analysis.stroke.events.detect_contacts`` contact detector (no new
-detection logic here); this module only attaches the hitter's side.
+Pure function: turns badminton_analysis.system.BadmintonAnalysisSystem's
+``_analysis_track_both`` (list of ``{frame, racket_lower, racket_upper,
+shuttle}`` records) into the ordered list of hit events the recognizer
+iterates over. Both the hit *frames* and the *hitter* attribution come
+straight from ``stroke.events.detect_contacts_multi`` -- this module only
+sorts and reshapes its output.
+
+Pre-B1, hitter was read from a frame_lookup's cached "player_side", which is
+~always "lower" in a real two-player match (the documented hitter/opponent
+bug). Post-B1, detect_contacts_multi already knows which racket triggered
+each contact, so hitter is correct by construction and no longer depends on
+frame_lookup / pose availability at all.
 """
 
-from ..stroke.events import detect_contacts
+from ..stroke.events import detect_contacts_multi
 
 
-def hit_events(track, frame_lookup=None):
-    """Derive ``[{"frame": int, "hitter": str}, ...]`` from a contact track.
-
-    Parameters
-    ----------
-    track : list of {"frame", "racket_head", "shuttle"}
-        The match pipeline's ``_analysis_track``.
-    frame_lookup : callable[int] -> dict | None, optional
-        Match-pipeline per-frame record lookup (e.g.
-        ``_analysis_frames.get``). Its ``"player_side"`` value
-        (``"lower"``/``"upper"``) becomes the hit's ``"hitter"``; when
-        ``frame_lookup`` is ``None``, returns ``None``, or the record has no
-        ``"player_side"``, the hitter falls back to ``"unknown"``.
-
-    Returns
-    -------
-    list of {"frame": int, "hitter": str}
-        Sorted by frame ascending (sorted explicitly rather than relying on
-        ``detect_contacts`` / the input track already being in frame order).
+def hit_events(track):
+    """Derive ``[{"frame": int, "hitter": "lower"|"upper"}, ...]`` from a
+    both-player contact track (see module docstring), sorted by frame
+    ascending (sorted explicitly rather than relying on
+    ``detect_contacts_multi`` / the input track already being in frame
+    order).
     """
-    contacts = detect_contacts(track)
-    events = []
-    for contact in contacts:
-        frame = contact["contact_frame"]
-        hitter = "unknown"
-        if frame_lookup is not None:
-            rec = frame_lookup(frame)
-            if rec is not None:
-                hitter = rec.get("player_side", "unknown")
-        events.append({"frame": frame, "hitter": hitter})
+    contacts = detect_contacts_multi(track)
+    events = [{"frame": c["contact_frame"], "hitter": c["hitter"]} for c in contacts]
     return sorted(events, key=lambda e: e["frame"])

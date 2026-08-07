@@ -67,3 +67,66 @@ def detect_contacts(track, contact_px=80.0, lookahead=3, dir_change_deg=45.0,
         })
         last_contact_frame = frame
     return contacts
+
+
+def detect_contacts_multi(track, contact_px=80.0, lookahead=3, dir_change_deg=45.0,
+                          window_pre=20, window_post=15, min_gap=15):
+    """Find racket-shuttle impacts by EITHER player.
+
+    Generalizes detect_contacts (which stays single-racket and is still the
+    sole detector wired to TechniqueAnalysisRunner's existing, unchanged
+    path) to a per-frame record carrying BOTH players' racket points -- see
+    badminton_analysis.system.BadmintonAnalysisSystem._analysis_track_both:
+    {"frame", "racket_lower", "racket_upper", "shuttle"}.
+
+    A contact fires when EITHER player's racket point is within contact_px of
+    the shuttle AND the shuttle changes direction by >= dir_change_deg soon
+    after (the same physical test as detect_contacts, evaluated against two
+    racket points instead of one). "hitter" is the side whose racket point is
+    nearer the shuttle at the contact frame (this is the fix for the known
+    hitter/opponent bug: attribution comes from proximity here, never from a
+    frame's cached "currently tracked" player_side). Ties are broken toward
+    "lower" (arbitrary; noted, not tuned).
+
+    ``min_gap`` is tracked PER SIDE, keeping the exact meaning it has in
+    detect_contacts: a same-racket dedup guard that suppresses one player's
+    racket re-triggering a contact a few frames after its own previous
+    contact. It deliberately does NOT suppress across sides -- a genuine reply
+    by the OTHER player is always kept, however soon it lands. (A single
+    shared gap would silently discard replies inside min_gap frames, i.e. 0.5s
+    at min_gap=15 / 30fps, which is well inside a fast net exchange or drive
+    rally and would produce implausible runs of the same hitter.)
+
+    Returns list of {contact_frame, window_start, window_end, hitter}.
+    """
+    contacts = []
+    last_contact_frame = {"lower": None, "upper": None}
+    for i, rec in enumerate(track):
+        shuttle = rec.get("shuttle")
+        if shuttle is None:
+            continue
+        best_side, best_dist = None, None
+        for side in ("lower", "upper"):
+            racket = rec.get("racket_" + side)
+            if racket is None:
+                continue
+            d = _dist(racket, shuttle)
+            if d < contact_px and (best_dist is None or d < best_dist):
+                best_dist, best_side = d, side
+        if best_side is None:
+            continue
+        change = _shuttle_dir_change(track, i, lookahead)
+        if change is None or change < dir_change_deg:
+            continue
+        frame = rec["frame"]
+        prev = last_contact_frame[best_side]
+        if prev is not None and (frame - prev) < min_gap:
+            continue
+        contacts.append({
+            "contact_frame": frame,
+            "window_start": max(0, frame - window_pre),
+            "window_end": frame + window_post,
+            "hitter": best_side,
+        })
+        last_contact_frame[best_side] = frame
+    return contacts

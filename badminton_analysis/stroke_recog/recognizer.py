@@ -51,23 +51,26 @@ class StrokeRecognizer:
     def label_rally(self, track, frame_lookup, court_corners, video_wh):
         """Label every hit in ``track`` with a coarse stroke, frame-sorted.
 
-        Returns ``[]`` when the model is unavailable (no/failed load) --
-        stroke recognition is an optional enrichment, not a hard pipeline
-        dependency. Otherwise returns one dict per hit from ``hit_events``:
-        ``{"frame", "hitter", "stroke", "confidence", "uncertain"}``. Hits
-        whose window has too little pose signal (``build_inputs`` returns
-        ``None``) are labeled ``"uncertain"`` with ``confidence`` 0.0 rather
-        than skipped, so every hit still gets a result.
+        ``track`` is the both-player contact track (see hits.hit_events /
+        stroke.events.detect_contacts_multi). ``hitter`` for each hit comes
+        from contact detection itself (shuttle-proximity, correct for both
+        players) and is threaded into build_inputs so BST's person-0 slot is
+        the actual hitter and person-1 the actual opponent -- no longer
+        permanently zero-filled.
+
+        Returns ``[]`` when the model is unavailable. Hits whose window has
+        too little pose signal are labeled ``"uncertain"`` with confidence
+        0.0 rather than skipped.
         """
         model = self._get_model()
         if model is None:
             return []
 
         results = []
-        for hit in hit_events(track, frame_lookup):
+        for hit in hit_events(track):
             frame = hit["frame"]
             hitter = hit["hitter"]
-            built = build_inputs(frame, frame_lookup, court_corners, video_wh)
+            built = build_inputs(frame, frame_lookup, court_corners, video_wh, hitter=hitter)
             if built is None:
                 results.append({
                     "frame": frame,

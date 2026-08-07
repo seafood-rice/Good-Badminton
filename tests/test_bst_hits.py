@@ -1,17 +1,17 @@
-"""Tests for hit/hitter extraction from contact detection.
+"""Tests for hit/hitter extraction from the both-player contact track.
 
 See badminton_analysis/stroke_recog/hits.py and
-badminton_analysis/stroke/events.py::detect_contacts (mirrors the track
-fixture shape used by tests/test_stroke_events.py).
+badminton_analysis/stroke/events.py::detect_contacts_multi. Pre-B1, hitter
+came from a frame_lookup's cached "player_side" (~always "lower" in a real
+match -- the known bug). Post-B1, hitter comes directly from
+detect_contacts_multi's own shuttle-proximity attribution, so it no longer
+depends on frame_lookup / pose data being available at all.
 """
 
 from badminton_analysis.stroke_recog import hits
 
 
 def _shuttle_pos(f, first, second):
-    """Piecewise-linear shuttle path: up-left to `first`, reverses to
-    down-right until `second`, reverses again -- two direction-change
-    "bounces", one at each contact frame."""
     if f <= first:
         return (200 - f * 2, 200 - f * 2)
     p1 = 200 - first * 2
@@ -23,56 +23,32 @@ def _shuttle_pos(f, first, second):
     return (p2 - d2 * 2, p2 - d2 * 2)
 
 
-def _track_with_two_contacts(first=30, second=90, n=120):
-    """Two shuttle direction-changes ("bounces") near the racket, far enough
-    apart that detect_contacts's min_gap doesn't merge them."""
+def _track_with_two_contacts(first=30, second=90, n=120, first_side="lower", second_side="upper"):
     track = []
     for f in range(n):
         shuttle = _shuttle_pos(f, first, second)
-        racket = shuttle if f in (first, second) else (5000, 5000)
-        track.append({"frame": f, "racket_head": racket, "shuttle": shuttle})
+        racket_lower = shuttle if (f == first and first_side == "lower") or (f == second and second_side == "lower") else (5000, 5000)
+        racket_upper = shuttle if (f == first and first_side == "upper") or (f == second and second_side == "upper") else (5000, 5000)
+        track.append({"frame": f, "racket_lower": racket_lower, "racket_upper": racket_upper, "shuttle": shuttle})
     return track
 
 
-def test_hit_events_finds_two_hits_with_hitter_from_frame_lookup():
-    track = _track_with_two_contacts(30, 90)
-    frame_lookup = {
-        30: {"player_side": "lower"},
-        90: {"player_side": "upper"},
-    }.get
-
-    events = hits.hit_events(track, frame_lookup)
-
-    assert len(events) == 2
-    assert [e["frame"] for e in events] == sorted(e["frame"] for e in events)
-    assert events[0]["frame"] == 30
-    assert events[0]["hitter"] == "lower"
-    assert events[1]["frame"] == 90
-    assert events[1]["hitter"] == "upper"
-    for e in events:
-        assert e["hitter"] in {"lower", "upper", "unknown"}
-
-
-def test_hit_events_hitter_unknown_without_frame_lookup():
-    track = _track_with_two_contacts(30, 90)
+def test_hit_events_attributes_hitter_from_contact_track_not_lookup():
+    track = _track_with_two_contacts(30, 90, first_side="lower", second_side="upper")
     events = hits.hit_events(track)
     assert len(events) == 2
-    assert all(e["hitter"] == "unknown" for e in events)
+    assert [e["frame"] for e in events] == sorted(e["frame"] for e in events)
+    assert events[0]["frame"] == 30 and events[0]["hitter"] == "lower"
+    assert events[1]["frame"] == 90 and events[1]["hitter"] == "upper"
 
 
-def test_hit_events_hitter_unknown_when_lookup_lacks_player_side():
-    track = _track_with_two_contacts(30, 90)
-    frame_lookup = {30: {}, 90: {"other_key": 1}}.get
-    events = hits.hit_events(track, frame_lookup)
+def test_hit_events_upper_only_hits_now_register():
+    """The pre-B1 regression target: an upper-court-only rally must yield
+    hitter == "upper", not be silently dropped or misattributed to "lower"."""
+    track = _track_with_two_contacts(30, 90, first_side="upper", second_side="upper")
+    events = hits.hit_events(track)
     assert len(events) == 2
-    assert all(e["hitter"] == "unknown" for e in events)
-
-
-def test_hit_events_hitter_unknown_when_lookup_returns_none():
-    track = _track_with_two_contacts(30, 90)
-    events = hits.hit_events(track, lambda frame: None)
-    assert len(events) == 2
-    assert all(e["hitter"] == "unknown" for e in events)
+    assert all(e["hitter"] == "upper" for e in events)
 
 
 def test_hit_events_empty_track_returns_empty_list():
@@ -80,10 +56,13 @@ def test_hit_events_empty_track_returns_empty_list():
 
 
 def test_hit_events_sorted_by_frame_even_if_contacts_unordered(monkeypatch):
-    # hit_events must sort explicitly, not rely on detect_contacts / track order.
     monkeypatch.setattr(
-        hits, "detect_contacts",
-        lambda track: [{"contact_frame": 90}, {"contact_frame": 30}, {"contact_frame": 60}],
+        hits, "detect_contacts_multi",
+        lambda track: [
+            {"contact_frame": 90, "hitter": "upper"},
+            {"contact_frame": 30, "hitter": "lower"},
+            {"contact_frame": 60, "hitter": "lower"},
+        ],
     )
     events = hits.hit_events([])
     assert [e["frame"] for e in events] == [30, 60, 90]
