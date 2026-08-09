@@ -738,8 +738,18 @@ window.Kestrel = (function () {
     }
     var reps = (meta.reps && typeof meta.reps === 'object') ? meta.reps : null;
     if (reps && reps.gated && reps.filtered_non_overhead > 0) {
-      lines.push(zh ? ('已排除 ' + reps.filtered_non_overhead + ' 个非头顶挥拍（仅统计高远球头顶动作）')
-                    : (reps.filtered_non_overhead + ' non-overhead swing(s) excluded (only full overhead clears counted)'));
+      // Floor case: an overhead drill (high clear / smash / drop shot) excluded a
+      // swing that never got above the shoulder. The old copy said "only full
+      // overhead clears counted", which stopped being true once smash and drop
+      // shot were gated too.
+      lines.push(zh ? ('已排除 ' + reps.filtered_non_overhead + ' 个非头顶挥拍（本项仅统计头顶动作）')
+        : (reps.filtered_non_overhead + ' non-overhead swing(s) excluded (this drill counts overhead swings only)'));
+    }
+    if (reps && reps.gated && reps.filtered_overhead > 0) {
+      // Ceiling case: a serve drill excluded a swing for BEING overhead -- the
+      // opposite of the message above.
+      lines.push(zh ? ('已排除 ' + reps.filtered_overhead + ' 个头顶挥拍（本项仅统计低手动作）')
+        : (reps.filtered_overhead + ' overhead swing(s) excluded (this drill counts underarm swings only)'));
     }
     return '<div class="provenance muted mono">' + lines.map(function (l) { return '<div>' + l + '</div>'; }).join('') + '</div>';
   }

@@ -280,6 +280,7 @@ class PostureRunner:
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
             report["overhead_elevation"] = None if elev is None else round(elev, 3)
+            report["contact_anchor"] = rep.contact_anchor
             if report.get("feature_space") == "3d":
                 scored_3d += 1
 
