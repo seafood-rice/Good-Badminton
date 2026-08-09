@@ -167,8 +167,8 @@ def test_apex_elevation_left_dominant_uses_left_indices():
 # ── Overhead-swing gate inside PostureRunner.run() ──────────────────────────
 # Empirically established discriminator (see rep-overhead-gate-brief.md): a full
 # overhead swing lifts the dominant wrist above the dominant shoulder at the
-# swing apex; a soft/low return keeps it at or below. Only OVERHEAD_GATED_STROKES
-# ("high_clear") are gated; elev=None (can't judge) always keeps the rep.
+# swing apex; a soft/low return keeps it at or below. Only stroke types in
+# OVERHEAD_GATED_STROKES are gated; elev=None (can't judge) always keeps the rep.
 
 def _gate_kp(elevated):
     """Right-dominant pose; elevated=True lifts the wrist above the shoulder,
