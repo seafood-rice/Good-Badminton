@@ -143,7 +143,8 @@ def segment_reps(track, fps, pre=20, post=15, smooth=3, min_speed_px=5.0,
 - `positional_fallback=None` — no positional refinement; the rep keeps the wrist-speed peak the
   candidate scan already produced. Used for `serve`.
 
-The caller in `PostureRepRunner` chooses the value from `stroke_type`. **`rep_segmenter` gains no
+The caller — `PostureRunner.run` (`badminton_analysis/posture/system.py:211`) — chooses the value
+from `stroke_type`. **`rep_segmenter` gains no
 knowledge of stroke types** — it stays a signal-processing module whose behaviour is set by its
 arguments, which keeps it independently testable.
 
