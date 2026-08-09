@@ -108,7 +108,7 @@ def test_window_frames_defaults_racket_head_detected_to_false_when_absent():
 
 
 def test_runner_empty_track_no_reports():
-    runner = PostureRunner(BiomechanicalAnalyzer(), stroke_type="smash")
+    runner = PostureRunner(BiomechanicalAnalyzer(), stroke_type="serve")
     reports, reps, gate_info = runner.run([], lambda i: None, fps=30)
     assert reports == [] and reps == []
     assert gate_info == {"counted": 0, "filtered_non_overhead": 0, "gated": False,

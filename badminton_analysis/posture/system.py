@@ -56,7 +56,14 @@ OVERHEAD_MIN_ELEVATION = 0.35    # min (shoulder_y - wrist_y)/torso at apex to c
                                  # before that footage was available.) View-dependent
                                  # (foreshortened front/far-view cameras read lower) and
                                  # tunable.
-OVERHEAD_GATED_STROKES = ("high_clear",)  # only these stroke types are gated
+# Overhead strokes subject to the elevation FLOOR above. The gate measurement
+# (apex_overhead_elevation) is pure geometry with nothing clear-specific in it, so
+# it transfers to any stroke contacted above the shoulder. NOTE the 0.35 threshold
+# was calibrated on high_clear footage (IMG_1270) only: a soft drop shot could sit
+# near the boundary and be filtered. Unvalidated for drop_shot until drop-shot
+# footage exists; over-filtering shows up in filtered_non_overhead rather than
+# silently losing reps.
+OVERHEAD_GATED_STROKES = ("high_clear", "smash", "drop_shot")
 
 
 def person_roi(kp):
