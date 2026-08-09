@@ -6,10 +6,12 @@ contact is well anchored, without one it falls back to a coarser signal. Without
 this field a clip where the shuttle was rarely detected looks identical to one where
 it was always detected.
 """
+import json
 import numpy as np
 from badminton_analysis.analysis import joint_angles as ja
 from badminton_analysis.analysis.biomechanics import BiomechanicalAnalyzer
-from badminton_analysis.posture.system import PostureRunner
+from badminton_analysis.data.writer import write_json
+from badminton_analysis.posture.system import PostureAnalysisSystem, PostureRunner
 
 
 def _kp(wrist_y):
@@ -66,3 +68,43 @@ def test_report_records_speed_peak_for_serve_without_shuttle():
     reports, _reps, _gate = _run("serve", with_shuttle=False)
     assert reports
     assert reports[0]["contact_anchor"] == "speed_peak"
+
+
+def test_metadata_json_carries_filtered_overhead(tmp_path):
+    """The web UI's serve-drill ceiling message reads meta.reps.filtered_overhead
+    from the on-disk metadata.json, not from gate_info directly. A dict literal that
+    forwards gate_info["counted"] and ["filtered_non_overhead"] but drops
+    ["filtered_overhead"] passes every gate_info-level assertion while silently
+    making a serve drill's ceiling exclusions unreportable in production. Assert
+    against the round-tripped, actually-serialised file to catch exactly that.
+    """
+    # An overhead wrist (wrist_y=40, elevation ~0.40) run as a "serve" survives the
+    # 3D lift/analysis stage but is excluded by the ceiling gate -- this is what
+    # populates gate_info["filtered_overhead"] with a nonzero count to serialise.
+    kp = _kp(40)
+    racket = ja.infer_racket_head(kp, dominant="right")
+    track = []
+    for i in range(160):
+        wrist = (260.0, 100.0) if i in (40, 110) else (100.0, 100.0)
+        track.append({"frame": i, "wrist": wrist, "shuttle": None})
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": racket, "centroid": (100 + (idx % 5), 300)}
+
+    runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                           stroke_type="serve", dominant="right")
+    reports, _reps, gate_info = runner.run(track, frame_lookup, fps=30)
+    assert gate_info["filtered_overhead"] > 0  # sanity: fixture exercises the ceiling gate
+
+    vid = tmp_path / "clip.mp4"
+    vid.write_bytes(b"x")
+    sys = PostureAnalysisSystem(str(vid), stroke_type="serve", output_dir=str(tmp_path / "out"))
+    metadata = sys._build_metadata(fps=30.0, width=640, height=480,
+                                    reports=reports, gate_info=gate_info)
+
+    metadata_path = tmp_path / "metadata.json"
+    write_json(str(metadata_path), metadata)
+    on_disk = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+    assert on_disk["reps"]["filtered_overhead"] == gate_info["filtered_overhead"]

@@ -388,6 +388,32 @@ class PostureAnalysisSystem:
         elif os.path.exists(reps_3d_path):
             os.remove(reps_3d_path)
 
+    def _build_metadata(self, fps, width, height, reports, gate_info):
+        """Build the dict written to metadata.json. Kept as its own method (mirrors
+        _write_reports/_write_reps_3d_sidecar) so the exact keys reaching the
+        serialised file -- including gate_info["filtered_overhead"], the ceiling-gate
+        counter the web UI needs to report a serve drill's exclusions -- are directly
+        unit-testable without running the full video pipeline."""
+        return {
+            "video": {"path": self.video_path, "name": self.video_name,
+                      "fps": float(fps), "width": width, "height": height},
+            "mode": "posture", "stroke_type": self.stroke_type,
+            "dominant_hand": self.dominant_hand,
+            "pose_family": self.pose_family,
+            "racket": {"detected_frames": self._racket_stats["detected"],
+                       "inferred_frames": self._racket_stats["inferred"],
+                       "model": self.racket_model_path},
+            "quality": {"model": self.quality_model_path if self._quality_scorer else None,
+                        "scored_reps": sum(1 for r in reports if "ai_score" in r)},
+            "lift": {"model": self.lift_model_path if self._pose_lifter else None,
+                     "scored_3d": gate_info.get("scored_3d", 0)},
+            "reps": {"counted": gate_info["counted"],
+                     "filtered_non_overhead": gate_info["filtered_non_overhead"],
+                     "filtered_overhead": gate_info["filtered_overhead"],
+                     "gated": gate_info["gated"],
+                     "scored_3d": gate_info.get("scored_3d", 0)},
+        }
+
     def _write_reports(self, reports, summary, date=None):
         from .report_builder import build_coach_report
         from .report_render import render_html, render_pdf
@@ -492,24 +518,8 @@ class PostureAnalysisSystem:
         summary = build_drill_summary(reports, self.stroke_type)
         write_json(os.path.join(self.save_dir, "drill_summary.json"), summary)
         self._write_reps_3d_sidecar(gate_info)
-        write_json(os.path.join(self.save_dir, "metadata.json"), {
-            "video": {"path": self.video_path, "name": self.video_name,
-                      "fps": float(fps), "width": width, "height": height},
-            "mode": "posture", "stroke_type": self.stroke_type,
-            "dominant_hand": self.dominant_hand,
-            "pose_family": self.pose_family,
-            "racket": {"detected_frames": self._racket_stats["detected"],
-                       "inferred_frames": self._racket_stats["inferred"],
-                       "model": self.racket_model_path},
-            "quality": {"model": self.quality_model_path if self._quality_scorer else None,
-                        "scored_reps": sum(1 for r in reports if "ai_score" in r)},
-            "lift": {"model": self.lift_model_path if self._pose_lifter else None,
-                     "scored_3d": gate_info.get("scored_3d", 0)},
-            "reps": {"counted": gate_info["counted"],
-                     "filtered_non_overhead": gate_info["filtered_non_overhead"],
-                     "gated": gate_info["gated"],
-                     "scored_3d": gate_info.get("scored_3d", 0)},
-        })
+        write_json(os.path.join(self.save_dir, "metadata.json"),
+                   self._build_metadata(fps, width, height, reports, gate_info))
         print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
         print("Posture analysis: " + str(len(reports)) + " reps -> " + self.save_dir)
