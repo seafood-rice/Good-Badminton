@@ -106,17 +106,25 @@ field would make its name mean the opposite of what happened.
 res = ball_model(frame, conf=0.18, verbose=False)[0]
 boxes = getattr(res, "boxes", None)
 if boxes is not None and boxes.xywh.shape[0] > 0:
-    b = boxes.xywh.detach().cpu().numpy()[0]      # <- first box, arbitrary
+    b = boxes.xywh.detach().cpu().numpy()[0]      # <- index 0, highest-confidence
     shuttle = (float(b[0]), float(b[1]))
 ```
 
 Take the box whose centre is nearest the dominant wrist when a wrist is available, else keep the
-current first-box behaviour. `track["wrist"]` is the *dominant* wrist (`kp[dom_wrist]`), and it is
+current index-0 behaviour. `track["wrist"]` is the *dominant* wrist (`kp[dom_wrist]`), and it is
 assigned earlier in the same frame iteration than this block, so the wrist is already known here —
 no reordering is needed. This is the third instance of the same defect shape in this codebase
 — `predict_location` keeps only the max-area contour and `detect_racket_head` had the same
 single-candidate problem — so it is fixed the same way: consider all candidates, choose by a
 stated criterion.
+
+Note on the old behaviour: ultralytics returns NMS output ordered by DESCENDING CONFIDENCE, so
+index 0 was the *highest-confidence* detection, not an arbitrary one. Proximity-based picking is
+still the right fix — the true shuttle is not always the most confident detection when several are
+present — but it trades away that confidence signal: it has no confidence tie-break and no
+maximum-distance guard, so a low-confidence false positive near the wrist could outrank a
+high-confidence true shuttle detected further away. To be revisited when the shuttle path is
+enabled (§3.7) and real footage exists to check how often this occurs.
 
 Rationale: the shuttle is the *primary* contact anchor (`rep_segmenter.py:153-167` snaps the
 contact frame to the in-window frame where shuttle and wrist are closest). Feeding it an arbitrary
@@ -181,7 +189,8 @@ identical to one where it was always detected.
 | `filtered_non_overhead` | overhead-gated stroke, rep dropped for being *below* the floor |
 | `filtered_overhead` | underhand-gated stroke (serve), rep dropped for being *above* the ceiling |
 
-Both flow into `drill_summary.json` as today.
+Both flow into `metadata.json` as today (`build_drill_summary`/`drill_summary.json` carries only
+`rep_count` and score aggregates, not the gate counters).
 
 **The existing UI copy becomes incorrect and must change.** `static/kestrel.js:740-742` renders a
 hardcoded string:
@@ -199,6 +208,23 @@ languages.
 217, 246, 262, 306 and `test_posture_runner_3d.py:191`). Adding a key breaks all of them. That is
 expected and they are to be updated deliberately — this is called out so an implementer does not
 mistake it for a regression, and does not "fix" it by dropping the new counter.
+
+### 3.7 Known limitation: the shuttle path is inert as shipped
+
+No posture entry point passes a ball model: `PostureAnalysisSystem` defaults
+`ball_model_path` to `None`, `main_posture.py`'s `--ball-model` defaults to `None`, and
+`app.py`'s posture endpoint never sets one (only match mode does). As a result `pick_shuttle`
+never runs in production, the `"shuttle"` contact anchor never occurs, and `contact_anchor` is
+currently a per-stroke constant (`"apex"` for the overhead-gated strokes, `"speed_peak"` for
+`serve`) rather than the provenance signal §3.5 describes — every rep in a given run gets the
+same anchor value regardless of shuttle detection quality. §3.5's stated rationale ("a clip where
+the shuttle was rarely detected would look identical to one where it was always detected")
+therefore describes a distinction that cannot arise yet, because the shuttle is never detected at
+all in posture mode today. Enabling the ball model in posture mode (wiring `--ball-model` through
+`app.py`'s posture endpoint, analogous to `--racket-model`/`--quality-model`/`--lift-model`) is
+the prerequisite for `contact_anchor` to carry real information. The real-footage regression (§4,
+test 9) must be re-run after that change, since shuttle anchoring can move a contact frame and the
+existing `high_clear` counts were captured with the shuttle path inert.
 
 ## 4. Testing
 
@@ -257,10 +283,10 @@ Both new gate applications rest on a threshold calibrated only on `high_clear` f
 - **`serve`'s 0.35 ceiling.** Reuses the same boundary from the other side and is untested on
   serve footage.
 
-The mitigation is visibility, not confidence: `filtered_non_overhead` is already surfaced in the
-drill summary and printed per run, so over-filtering shows up in the output immediately rather
-than silently losing reps. Both numbers should be re-checked against a drop-shot clip and a serve
-clip when those exist, and this section updated with the measurement.
+The mitigation is visibility, not confidence: `filtered_non_overhead` is already surfaced in
+`metadata.json` and the web UI, and printed per run, so over-filtering shows up in the output
+immediately rather than silently losing reps. Both numbers should be re-checked against a
+drop-shot clip and a serve clip when those exist, and this section updated with the measurement.
 
 ## 7. Out of scope
 

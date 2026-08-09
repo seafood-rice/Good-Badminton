@@ -10,7 +10,6 @@ Usage:
 """
 import json
 import os
-import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -19,11 +18,13 @@ EXPECTED = {"highclear1": 16, "IMG_1270": 5, "IMG_9691": 7}
 
 def main():
     failures = []
+    checked = 0
     for name, want in sorted(EXPECTED.items()):
         path = os.path.join(ROOT, "outputs", name, "posture", "drill_summary.json")
         if not os.path.exists(path):
             print(f"  {name:<14} SKIP (no run at {path})")
             continue
+        checked += 1
         with open(path, encoding="utf-8") as fh:
             got = json.load(fh).get("rep_count")
         ok = got == want
@@ -31,6 +32,9 @@ def main():
               f"{'OK' if ok else 'CHANGED'}")
         if not ok:
             failures.append((name, want, got))
+    if checked == 0:
+        print("\nno runs found -- nothing verified.")
+        return 1
     if failures:
         print("\nhigh_clear rep counts CHANGED. Investigate before shipping -- none of")
         print("Tasks 1-5 should alter high_clear. Task 3 can legitimately move a")

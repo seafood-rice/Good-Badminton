@@ -41,7 +41,7 @@ QUALITY_WINDOW_POST_S = 2.0
 # frames frame_lookup actually has, so an over-large hi_bound is harmless.
 _NO_NEXT_NEIGHBOR_HI_SENTINEL = 10 ** 9
 
-# Overhead-swing gate: only count full overhead swings (high_clear) as reps.
+# Overhead-swing gate: only count full overhead swings (see OVERHEAD_GATED_STROKES) as reps.
 # Empirically established on 50 genuine Sub05 clears: a full overhead swing
 # lifts the dominant wrist above the dominant shoulder at the swing apex
 # (positive elevation ratio); a soft/low return keeps the wrist at or below
@@ -526,8 +526,9 @@ class PostureAnalysisSystem:
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
         print("Racket source: %d detected / %d inferred"
               % (self._racket_stats["detected"], self._racket_stats["inferred"]), flush=True)
-        print("Overhead gate: %d counted, %d non-overhead excluded (stroke=%s)"
-              % (gate_info["counted"], gate_info["filtered_non_overhead"], self.stroke_type), flush=True)
+        print("Rep gate: %d counted, %d non-overhead excluded, %d overhead excluded (stroke=%s)"
+              % (gate_info["counted"], gate_info["filtered_non_overhead"],
+                 gate_info["filtered_overhead"], self.stroke_type), flush=True)
         return reports
 
     def _build_racket_detector(self):

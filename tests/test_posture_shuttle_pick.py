@@ -5,7 +5,6 @@ first. The shuttle is the primary contact anchor, so an arbitrary pick can move 
 rep's contact frame off the stroke.
 """
 import numpy as np
-import pytest
 from badminton_analysis.posture.shuttle_pick import pick_shuttle
 
 

@@ -235,7 +235,7 @@ def _one_swing_track(n=90, spike_at=40):
     return track
 
 
-def test_gate_does_not_apply_to_non_gated_stroke_type():
+def test_serve_ceiling_keeps_a_low_swing():
     low_kp = _gate_kp(elevated=False)
 
     def frame_lookup(idx):
@@ -253,6 +253,45 @@ def test_gate_does_not_apply_to_non_gated_stroke_type():
     # "gated" is now True for this stroke type.
     assert gate_info == {"counted": 1, "filtered_non_overhead": 0,
                          "filtered_overhead": 0, "gated": True,
+                         "scored_3d": 0, "reps_3d": []}
+
+
+class _StubAnalyzer:
+    """Minimal stand-in for BiomechanicalAnalyzer that skips the REFERENCE_RANGES
+    lookup (keyed only on the four product stroke types), so this test can exercise
+    a stroke type outside that set without touching scoring at all -- the gate path
+    being tested here runs entirely before analyze() is called.
+    """
+    def analyze(self, stroke_event, window_frames):
+        return {"stroke_type": stroke_event.stroke_type,
+                "contact_frame": stroke_event.contact_frame,
+                "player_side": stroke_event.player_side,
+                "confidence": stroke_event.confidence,
+                "overall_score": None, "per_metric": {}, "weaknesses": [],
+                "strengths": [], "feature_space": "2d"}
+
+
+def test_gate_does_not_apply_to_ungated_stroke_type():
+    """Every product stroke type (high_clear/smash/drop_shot/serve) is gated now, so
+    this uses a stroke type outside the product set to keep coverage of the
+    gated=False code path -- without it, nothing anywhere asserts gated is False.
+    Uses a stub analyzer because REFERENCE_RANGES (consulted downstream of the gate)
+    is keyed only on the four product strokes; the gate itself runs before that.
+    """
+    low_kp = _gate_kp(elevated=False)
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": low_kp, "conf": None,
+                "racket_head": None, "centroid": (100, 300)}
+
+    runner = PostureRunner(_StubAnalyzer(),
+                           stroke_type="net_shot_forehand", dominant="right")
+    reports, reps, gate_info = runner.run(_one_swing_track(), frame_lookup, fps=30)
+
+    assert len(reps) == 1
+    assert len(reports) == 1
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 0,
+                         "filtered_overhead": 0, "gated": False,
                          "scored_3d": 0, "reps_3d": []}
 
 

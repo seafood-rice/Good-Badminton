@@ -78,6 +78,14 @@ def test_serve_is_underhand_gated_not_overhead_gated():
     assert "serve" not in OVERHEAD_GATED_STROKES
 
 
+def test_gated_stroke_tuples_are_disjoint():
+    """If a stroke type ever appeared in both tuples, the floor (overhead_gated) check
+    runs first and would `continue` before the ceiling (underhand_gated) check is
+    reached -- the floor would win silently and the ceiling would never fire. Guards
+    future additions (the spec names net_shot_forehand/net_shot_backhand as planned)."""
+    assert set(OVERHEAD_GATED_STROKES) & set(UNDERHAND_GATED_STROKES) == set()
+
+
 def test_serve_keeps_low_swings():
     """The whole point: overhead-gating a serve would filter every rep."""
     _reports, _reps, gate = _run("serve", wrist_y=120)
@@ -107,6 +115,8 @@ def test_unjudgeable_elevation_keeps_the_rep_in_both_directions():
     for stroke_type in ("serve", "smash"):
         runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
                                stroke_type=stroke_type, dominant="right")
-        _reports, _reps, gate = runner.run(_track(), frame_lookup, fps=30)
+        reports, _reps, gate = runner.run(_track(), frame_lookup, fps=30)
         assert gate["filtered_overhead"] == 0
         assert gate["filtered_non_overhead"] == 0
+        assert gate["counted"] == 2
+        assert len(reports) == 2
