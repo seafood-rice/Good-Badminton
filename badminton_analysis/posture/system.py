@@ -65,6 +65,13 @@ OVERHEAD_MIN_ELEVATION = 0.35    # min (shoulder_y - wrist_y)/torso at apex to c
 # silently losing reps.
 OVERHEAD_GATED_STROKES = ("high_clear", "smash", "drop_shot")
 
+# Underhand strokes subject to the same threshold as a CEILING: a rep that reaches
+# overhead elevation is an overhead stroke, so it does not belong in this drill.
+# Deliberately reuses OVERHEAD_MIN_ELEVATION rather than introducing a second
+# constant -- 0.35 separates "overhead" from "not overhead" regardless of which side
+# of it a given stroke is supposed to fall on. Unvalidated on serve footage.
+UNDERHAND_GATED_STROKES = ("serve",)
+
 
 def person_roi(kp):
     """Bounding box around valid keypoints, expanded by ROI_MARGIN of its larger side.
@@ -220,8 +227,11 @@ class PostureRunner:
         reps_3d = []
         survivor_rep_ids = []
         scored_3d = 0
-        gated = self.stroke_type in OVERHEAD_GATED_STROKES
+        overhead_gated = self.stroke_type in OVERHEAD_GATED_STROKES
+        underhand_gated = self.stroke_type in UNDERHAND_GATED_STROKES
+        gated = overhead_gated or underhand_gated
         filtered_non_overhead = 0
+        filtered_overhead = 0
         for i, rep in enumerate(reps):
             event = StrokeEvent(
                 stroke_type=self.stroke_type,
@@ -239,9 +249,15 @@ class PostureRunner:
             # never exceed gate_info["counted"] (the reports that actually survive).
             apex_frames = self._apex_window_frames(rep.peak_frame, fps, frame_lookup)
             elev = apex_overhead_elevation(apex_frames, self.dominant)
-            if gated and elev is not None and elev < OVERHEAD_MIN_ELEVATION:
-                filtered_non_overhead += 1
-                continue
+            # `elev is None` means the window yielded no valid shoulder/wrist/hip
+            # measurement: cannot judge -> keep the rep, in BOTH directions.
+            if elev is not None:
+                if overhead_gated and elev < OVERHEAD_MIN_ELEVATION:
+                    filtered_non_overhead += 1
+                    continue
+                if underhand_gated and elev >= OVERHEAD_MIN_ELEVATION:
+                    filtered_overhead += 1
+                    continue
 
             if self.pose_lifter is not None and getattr(self.pose_lifter, "available", False):
                 lifted = self.pose_lifter.lift(window_frames, self.image_size)
@@ -281,6 +297,7 @@ class PostureRunner:
             reports.append(report)
             survivor_rep_ids.append(rep.rep_id)
         gate_info = {"counted": len(reports), "filtered_non_overhead": filtered_non_overhead,
+                     "filtered_overhead": filtered_overhead,
                      "gated": gated, "scored_3d": scored_3d, "reps_3d": reps_3d}
         # Renumber survivors 1..N so downstream consumers (write_rep_reports,
         # build_drill_summary, the coach report table) never show gapped ids

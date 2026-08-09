@@ -9,7 +9,7 @@ import pytest
 from badminton_analysis.analysis import joint_angles as ja
 from badminton_analysis.analysis.biomechanics import BiomechanicalAnalyzer
 from badminton_analysis.posture.system import (
-    OVERHEAD_GATED_STROKES, PostureRunner,
+    OVERHEAD_GATED_STROKES, PostureRunner, UNDERHAND_GATED_STROKES,
 )
 
 
@@ -71,3 +71,42 @@ def test_genuine_overhead_swings_survive(stroke_type):
     _reports, _reps, gate = _run(stroke_type, wrist_y=40)
     assert gate["counted"] == 2
     assert gate["filtered_non_overhead"] == 0
+
+
+def test_serve_is_underhand_gated_not_overhead_gated():
+    assert UNDERHAND_GATED_STROKES == ("serve",)
+    assert "serve" not in OVERHEAD_GATED_STROKES
+
+
+def test_serve_keeps_low_swings():
+    """The whole point: overhead-gating a serve would filter every rep."""
+    _reports, _reps, gate = _run("serve", wrist_y=120)
+    assert gate["gated"] is True
+    assert gate["counted"] == 2
+    assert gate["filtered_overhead"] == 0
+    assert gate["filtered_non_overhead"] == 0
+
+
+def test_serve_filters_overhead_swings():
+    _reports, _reps, gate = _run("serve", wrist_y=40)
+    assert gate["counted"] == 0
+    assert gate["filtered_overhead"] == 2
+    assert gate["filtered_non_overhead"] == 0, (
+        "a serve rep dropped for BEING overhead must not be counted as non-overhead")
+
+
+def test_unjudgeable_elevation_keeps_the_rep_in_both_directions():
+    """None elevation means 'cannot judge -> keep', the existing convention."""
+    kp = np.zeros((17, 2))  # all-sentinel: no valid shoulder/wrist/hip
+    racket = None
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": kp, "conf": None,
+                "racket_head": racket, "centroid": (100, 300)}
+
+    for stroke_type in ("serve", "smash"):
+        runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
+                               stroke_type=stroke_type, dominant="right")
+        _reports, _reps, gate = runner.run(_track(), frame_lookup, fps=30)
+        assert gate["filtered_overhead"] == 0
+        assert gate["filtered_non_overhead"] == 0
