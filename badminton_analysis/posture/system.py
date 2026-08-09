@@ -223,7 +223,11 @@ class PostureRunner:
 
     def run(self, track, frame_lookup, fps):
         from ..stroke.events import StrokeEvent
-        reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post)
+        # An underhand stroke's contact is not at the wrist apex (rep_segmenter's
+        # apex fallback is an overhead heuristic), so serve keeps the speed peak.
+        fallback = None if self.stroke_type in UNDERHAND_GATED_STROKES else "apex"
+        reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post,
+                            positional_fallback=fallback)
         reports = []
         reps_3d = []
         survivor_rep_ids = []
