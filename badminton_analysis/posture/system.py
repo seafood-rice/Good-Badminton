@@ -5,6 +5,7 @@ import time
 import numpy as np
 
 from .rep_segmenter import segment_reps
+from .shuttle_pick import pick_shuttle
 from .writer import write_rep_reports, build_drill_summary
 
 # close-up drill footage: far-view-trained detector needs a lower threshold
@@ -626,8 +627,9 @@ class PostureAnalysisSystem:
                 res = ball_model(frame, conf=0.18, verbose=False)[0]
                 boxes = getattr(res, "boxes", None)
                 if boxes is not None and boxes.xywh.shape[0] > 0:
-                    b = boxes.xywh.detach().cpu().numpy()[0]
-                    shuttle = (float(b[0]), float(b[1]))
+                    # Nearest the dominant wrist, not whichever box came back first:
+                    # this detection is the primary contact anchor downstream.
+                    shuttle = pick_shuttle(boxes.xywh.detach().cpu().numpy(), wrist)
             except Exception:
                 shuttle = None
 
