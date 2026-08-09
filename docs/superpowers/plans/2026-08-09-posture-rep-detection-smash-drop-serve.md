@@ -491,9 +491,12 @@ def _track_with_late_apex(n=120):
 
     The apex must be reached GRADUALLY. A single jump to the high point would create
     its own speed spike larger than the intended one, and segment_reps would then
-    find two reps rather than one. The rise is 15 px/frame, comfortably under the
-    peak floor: the 160 px jump at frame 40 smooths to ~107, and PEAK_FLOOR_FRAC of
-    0.25 puts the floor at ~27.
+    find two reps rather than one.
+
+    The spike must ALSO stay under _wrist_speed's teleport floor, which is
+    max(TELEPORT_MIN_PX, 10 * median(positive speeds)). The 15 px/frame ramp makes
+    that median 15 and the floor 150, so a 160 px spike is discarded as a track break
+    and the speed peak vanishes entirely -- measured, not theorised. 120 px survives.
 
     Frame 40 is the speed peak; frame 55 is the wrist apex (min image y = 35). Both
     lie inside the rep window (peak 40, pre 20, post 15 at 30 fps -> frames 20..55).
@@ -506,7 +509,7 @@ def _track_with_late_apex(n=120):
             y = 35.0 + 15.0 * (i - 55)       # gradual fall back
         else:
             y = 200.0
-        x = 260.0 if i == 40 else 100.0      # displacement spike -> the speed peak
+        x = 220.0 if i == 40 else 100.0      # 120px spike -> the speed peak
         track.append({"frame": i, "wrist": (x, y), "shuttle": None})
     return track
 
