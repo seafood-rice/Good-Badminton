@@ -48,6 +48,18 @@ non-regression with no weights present; full committed suite green.
 - First implementation step, per owner direction: B1 (both-player capture + hitter-by-
   proximity selection), validated on the known-working 750-frame Axelsen clip segment where
   contacts already fire — not the full-match background-job/rally-detection work yet.
+- **2026-08-23 — owner resolved B11's open questions (B11 spec §12a).** A = **no** (true
+  multi-camera TV broadcast stays in scope, so B11 gains a shot-boundary component that no
+  on-disk footage can validate); C = **no** (the zero-rallies-with-a-reason outcome is
+  rejected and its replacement is still pending, which blocks done-means 7 and the
+  `signal = "none"` branch and nothing else); D = **yes** (completion-bar R10 amended, new
+  R11 added). B and E were settled by measurement in the PR #4 shuttle investigation rather
+  than by decision: there is no usable shuttle signal on the fixed-camera footage, so B11's
+  swing signal is primary rather than a fallback.
+- **B11 is the next milestone delivery**, chosen because it is the confirmed gate on all
+  further real-footage validation (B1's own validation was blocked by exactly this) and it
+  needs no new footage, unlike net-shot posture support, the two unvalidated posture
+  thresholds, and §0.25 option D.
 
 ## Changed paths
 
@@ -108,18 +120,33 @@ non-regression with no weights present; full committed suite green.
   invocation — directly relevant to B10, the planned background-job redesign — can hang
   indefinitely at this prompt. Not fixed as part of this correction; tracked here so B10
   planning accounts for it.
+  - **Root cause narrowed 2026-08-23, and it is worse than "the flag is ignored".**
+    `annotate_court` (`badminton_analysis/court/mapper.py:116`) takes **no** display or
+    headless parameter at all, opens a `cv2` window, and spins in `while True:
+    cv2.waitKey(1)` with no timeout; `system.py:924` calls it unconditionally. So
+    `--display false` *structurally cannot* suppress it — there is no code path that would
+    consult the flag. Recommend fixing this as a small prerequisite ahead of B11, since B11's
+    own validation needs unattended runs and B10's background job cannot exist while any
+    stage can block forever on a GUI keypress.
 
 ## Next action
 
-Owner decision needed: (a) accept B1 as done with synthetic/unit/end-to-end evidence plus an
-honestly-reported, upstream-blocked real-footage attempt, and move planning on to B11
-(rally/play detection) next since it's now confirmed as the actual gate on any further
-real-footage validation; or (b) spend another validation attempt on a different clip
-segment first — note the real analysis cost per attempt is on the order of minutes, not
-hours, once the stdin-blocking defect above is worked around (see the corrected Verification
-data point). Either way, B2-B10 (segment-scoped dense tracking, the background-job redesign,
-fps/resolution normalization) remain separate, not-yet-planned pieces of the broader Sub-project
-B effort per the completion-bar doc.
+**Superseded 2026-08-23.** The owner took path (a): B1 stands on its synthetic/unit/end-to-end
+evidence plus the honestly-reported upstream-blocked real-footage attempt, and B11 is the
+next milestone delivery.
+
+Write B11's implementation plan. One answer is still needed before the plan can be complete —
+the §12a-C replacement behaviour for "no usable rally signal" — but it blocks only
+done-means 7 and `segment_rallies`' `signal = "none"` branch, so the rest of the plan (the C1
+court-view gate rewrite, C2's shuttle/swing signals, density gating, static-artifact
+suppression, fps-normalised parameters, the `system.py` wiring, and decision A's new
+shot-boundary component) can be planned without it.
+
+Recommended sequencing inside B11: fix the `annotate_court` headless hang first (see the
+Blockers section), because B11's own validation needs unattended runs. B2-B10 (segment-scoped
+dense tracking, budgeted selection, the background-job redesign, fps/resolution
+normalization) remain separate, not-yet-planned pieces of the broader Sub-project B effort
+per the completion-bar doc.
 
 <!-- ai-continuity:milestones:start -->
 <!-- ai-continuity:milestones:end -->

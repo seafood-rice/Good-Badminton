@@ -1427,6 +1427,12 @@ Signal selection (`signal="auto"`):
 3. **`none`** — neither signal qualifies: emit **zero** rallies and say so. Emitting one
    whole-video "rally" is the current bug and must not be the fallback.
 
+   > **REJECTED by owner decision §12a-C (2026-08-23) — do not implement as written.** The
+   > zero-rally outcome is not accepted, and the replacement behaviour is still pending. Only
+   > the `none` *branch* is blocked; signals 1 and 2, the density gate, and the static-artifact
+   > suppression are unaffected and remain as specified. Also blocked by the same answer:
+   > done-means 7 in §9.
+
 `gap_sec`, `min_len_sec`, and the smoothing window are **seconds**, resolved to frames via
 `fps` at call time — B7's fps-normalisation requirement applies here from the start rather
 than being retrofitted.
@@ -1614,8 +1620,11 @@ here would pre-empt the ShuttleSet benchmark that remains the owner's measured-a
    rallies a human counts in that footage.
 6. Every `rally_segments.json` states which signal produced it, why that signal was chosen,
    and the parameters used.
-7. When no usable signal exists, the output is zero rallies with a stated reason — never one
-   whole-video rally.
+7. ~~When no usable signal exists, the output is zero rallies with a stated reason — never one
+   whole-video rally.~~ **Rejected by owner decision §12a-C (2026-08-23); replacement pending.**
+   B11 is not done-checkable on this criterion until the replacement behaviour is chosen. The
+   second half ("never one whole-video rally") is the part the owner's answer puts back in
+   question, since it was the reason the first half was the only alternative.
 8. Segment boundaries are expressed in seconds internally and are invariant to fps: the
    same footage at 30 and 60 fps yields the same boundaries in seconds.
 9. On at least one hand-checked stretch of real footage, emitted boundaries visibly
@@ -1686,6 +1695,21 @@ and on the domain-shift risk (R7) that remains unmeasured.
   load-bearing rather than a fallback. Measuring TrackNetV3 on a short DJI segment is cheap
   relative to a full run and should precede committing to this design's signal-selection
   logic.
+
+  **RESOLVED 2026-08-23 — the conditional came true.** The experiment this risk asked for was
+  run and then pushed well past it (§0.20-0.25, landed in PR #4). Resolution was **refuted**
+  as the cause of the failure rather than merely left unconfirmed (§0.20-0.21); the shuttle
+  was located and physically verified via its motion-blur signature (§0.22); and a
+  purpose-built classical detector was costed, built, and **failed**, with coverage
+  anti-correlated with ground truth (§0.23-0.24). So: **the fixed-camera class has no usable
+  shuttle signal, and the swing signal is load-bearing rather than a fallback.** Two design
+  consequences, both already provided for in §5: the shuttle-density gate
+  (`SHUTTLE_DENSITY_MIN`) is what keeps the broken signal out of segmentation, and the static-
+  artifact suppression is not optional — 86% of `yolo11s-ball`'s output on that footage is one
+  fixture. The remaining route to a real shuttle track is **capture-time, not code** (§0.25,
+  option D), and it waits on the owner shooting a side-on or elevated clip. R1 therefore
+  carries more weight than when it was written: the swing signal being unvalidated is now the
+  single largest unknown in the fixed-camera half of B11.
 - **R3 — Opening the gate multiplies run time.** Going from 0.66% to ~98% court frames on
   the broadcast video means ~150x more frames reach pose/racket/shuttle detection. Even with
   the RTX 4090 available (§0.10), the first post-B11 full-match run will be far slower than
@@ -1721,7 +1745,70 @@ and on the domain-shift risk (R7) that remains unmeasured.
 
 ---
 
+## 12a. Owner decisions (resolved 2026-08-23)
+
+Answers to §12 below. Where a decision **rejected** this spec's proposed default, that is
+recorded as such — the proposal is not quietly retained.
+
+**A — NO: true multi-camera TV broadcast stays in scope.** The proposed default (scope B11
+to the two footage classes on disk, defer real broadcast to a future workstream) is
+**rejected**. Consequences, none of them small:
+
+- A third footage class enters B11: real TV broadcast with hard cuts, replays, slow motion,
+  and score-bug overlays. §0.5's finding that the Axelsen file has none of these means that
+  file **cannot validate this class** — it contains no cuts to detect.
+- A shot-boundary component is now required, and R10 of the completion bar is amended to say
+  its original failure modes apply to *this* class rather than being retired (see that spec's
+  R10, amended under decision D).
+- B11 can design it and cover it with hermetic fixtures, but its real-footage validation must
+  be recorded as **not run, blocked on a genuine broadcast sample** — the same honesty
+  posture BST, TrackNetV3, and the B1 validation attempt each took. A sample with real cuts
+  is the cheapest thing that would change this.
+
+**B — resolved by measurement, not by decision.** §12-B asked whether TrackNetV3 should be
+measured on a short 4K fixed-camera segment before implementing. That experiment has been
+run and taken to a conclusion (§0.20-0.25, PR #4): there is **no usable shuttle signal** on
+the owner's fixed-camera footage, resolution was refuted as the cause, and a purpose-built
+classical detector failed with coverage anti-correlated with ground truth. The swing signal
+is therefore **primary, not a fallback**, on that footage. See the resolution note on R2.
+
+**C — NO: "zero rallies, stated reason" is not accepted.** Done-means 7 and §5's `signal =
+"none"` branch are **rejected as written**. This is the one decision that leaves a genuine
+hole rather than closing one: the design explicitly refuses the only other behaviour it
+currently describes (one whole-video "rally", which is today's bug), so rejecting the zero-
+rally outcome leaves **no specified behaviour** for footage with no usable signal — which,
+after decision B, is exactly the class the owner's own fixed-camera footage falls into
+whenever the swing signal also fails.
+
+- **Status: replacement behaviour pending the owner's choice.** Recorded here rather than
+  guessed, because the plausible replacements (a degraded fixed-window segmentation marked
+  unreliable; a hard actionable failure; accepting one whole-video rally after all) differ in
+  implementation, in test surface, and in what the UI claims — and one of them risks
+  presenting BST labels computed over non-rally windows as if they were real strokes.
+- Done-means 7, §5's `signal = "none"` branch, and the `rally_segments.json` provenance copy
+  are all blocked on this answer. Nothing else in B11 is.
+
+**D — YES: amend R10 of the completion bar, and add the shuttle blocker as a risk.** Done in
+`docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md`: R10 is split into
+(1) the court-view gate as a *self-calibration* problem on the footage on disk, where R10's
+original prediction was measurably **false**, (2) rally segmentation within continuous play
+as the genuinely-unscoped part that keeps R10's original weight, and (3) R10's original
+failure modes preserved — not retired — for the true-broadcast class that decision A keeps in
+scope. A new **R11** records the measured fixed-camera shuttle-detection failure.
+
+**E — not separately decided; superseded by B.** §12-E asked whether B11 owns diagnosing
+`yolo11s-ball` on 4K footage. It was diagnosed, outside B11, in the PR #4 investigation, and
+the answer is that no code-side fix was found. The remaining path is capture-time (§0.25,
+option D) and is the owner's to run, so there is no open engineering item here to assign.
+
+---
+
 ## 12. Open questions that genuinely need the owner's decision
+
+> **Resolved — see §12a above** (2026-08-23). A = no, C = no, D = yes; B and E were settled
+> by the PR #4 shuttle investigation rather than by decision. The proposed defaults in A, C,
+> and E below were **not** all accepted; read §12a for what was actually chosen. Kept
+> unedited as the historical record of what was asked.
 
 **A. Does the project actually need true multi-camera broadcast support?** §0.5 establishes
 that the file this project calls "broadcast" is a single-angle continuous recording with no
