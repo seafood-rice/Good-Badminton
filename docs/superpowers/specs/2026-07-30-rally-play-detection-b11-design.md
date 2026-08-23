@@ -1555,13 +1555,18 @@ redesign (B10) rather than on B11. Anyone planning B11 in isolation should expec
   (§5 C0). Never fatal, never silent.
 - **Calibration pre-scan fails** (unreadable video, zero samples) -> fall back to the
   shipped constant `0.75`, log it, record `calibration = "fallback_constant"`.
-- **No usable rally signal** -> zero rallies plus a stated reason. Downstream per-rally BST
-  (B6) then labels nothing and reports zero coverage, which is honest. It must not fall back
-  to one whole-video rally.
+- **No usable rally signal** -> ~~zero rallies plus a stated reason~~ **uniform coarse windows
+  marked `degraded`, with stroke recognition withheld on them** (owner decision §12a-C,
+  2026-08-23). Downstream per-rally BST (B6) skips degraded segments and reports zero label
+  coverage, which is honest; the segments still exist so coverage, heatmaps, and the timeline
+  are populated rather than empty. It must not fall back to one whole-video rally, and the UI
+  must not report a degraded segmentation as a rally count.
 - **Segmenter exception** -> caught, logged, `rally_segments.json` written with an empty
   `rallies` array and `detection.signal = "error"`. The match video and all other outputs
   survive, per the never-fatal convention the TrackNetV3 and BST specs both established.
-- **Zero rallies is a legitimate, reportable outcome**, not an error state.
+- ~~**Zero rallies is a legitimate, reportable outcome**, not an error state.~~ Superseded by
+  §12a-C: a **degraded** segmentation is the legitimate, reportable outcome, and it is not an
+  error state either. Genuinely zero segments now happens only for an empty track.
 
 ---
 
@@ -1575,7 +1580,11 @@ redesign (B10) rather than on B11. Anyone planning B11 in isolation should expec
   downscaled path and the full-resolution path on clearly-matching and clearly-non-matching
   input; the `threshold=` override still honoured (protects the existing tests).
 - C2 signal selection: dense synthetic shuttle track -> `shuttle`; sparse track ->
-  `swing`; neither -> `none` with zero rallies.
+  `swing`; neither -> `none` with **degraded coarse windows** (§12a-C), never zero rallies and
+  never one whole-video rally.
+- C2 court-volume gating: a point inside the quad survives; a point below the near baseline is
+  dropped; a point *above* the far baseline is **kept** (airborne shuttles), and the dropped
+  count reaches the provenance; `quad=None` gates nothing rather than discarding everything.
 - C2 segmentation: synthetic activity with two known bursts separated by a 3s gap -> exactly
   two segments; a 0.5s gap with `gap_sec=1.0` -> one segment; a 1s burst with
   `min_len_sec=2.0` -> zero segments.
