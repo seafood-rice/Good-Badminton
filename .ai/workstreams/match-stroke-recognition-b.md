@@ -50,10 +50,11 @@ non-regression with no weights present; full committed suite green.
   contacts already fire — not the full-match background-job/rally-detection work yet.
 - **2026-08-23 — owner resolved B11's open questions (B11 spec §12a).** A = **no** (true
   multi-camera TV broadcast stays in scope, so B11 gains a shot-boundary component that no
-  on-disk footage can validate); C = **no** (the zero-rallies-with-a-reason outcome is
-  rejected and its replacement is still pending, which blocks done-means 7 and the
-  `signal = "none"` branch and nothing else); D = **yes** (completion-bar R10 amended, new
-  R11 added). B and E were settled by measurement in the PR #4 shuttle investigation rather
+  on-disk footage can validate); C = **no**, replaced same day with **uniform coarse windows
+  over gate-passed court-view frames, marked degraded, with stroke recognition withheld on
+  them** — chosen over labelling them unreliable because BST labels over non-rally windows are
+  close to noise and a badge is weaker than the impression that strokes were detected;
+  D = **yes** (completion-bar R10 amended, new R11 added). B and E were settled by measurement in the PR #4 shuttle investigation rather
   than by decision: there is no usable shuttle signal on the fixed-camera footage, so B11's
   swing signal is primary rather than a fallback.
 - **B11 is the next milestone delivery**, chosen because it is the confirmed gate on all
@@ -135,12 +136,12 @@ non-regression with no weights present; full committed suite green.
 evidence plus the honestly-reported upstream-blocked real-footage attempt, and B11 is the
 next milestone delivery.
 
-Write B11's implementation plan. One answer is still needed before the plan can be complete —
-the §12a-C replacement behaviour for "no usable rally signal" — but it blocks only
-done-means 7 and `segment_rallies`' `signal = "none"` branch, so the rest of the plan (the C1
-court-view gate rewrite, C2's shuttle/swing signals, density gating, static-artifact
-suppression, fps-normalised parameters, the `system.py` wiring, and decision A's new
-shot-boundary component) can be planned without it.
+Write B11's implementation plan. All owner decisions are now in (B11 spec §12a, including
+C's replacement behaviour), so the plan covers the C1 court-view gate rewrite, C2's
+shuttle/swing signals with density gating and static-artifact suppression, the degraded
+coarse-window path with stroke recognition withheld, fps-normalised parameters, the
+`system.py` wiring, and decision A's new shot-boundary component (hermetic tests only, real-
+footage validation blocked on a genuine broadcast sample).
 
 Recommended sequencing inside B11: fix the `annotate_court` headless hang first (see the
 Blockers section), because B11's own validation needs unattended runs. B2-B10 (segment-scoped

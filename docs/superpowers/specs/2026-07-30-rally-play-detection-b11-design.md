@@ -1427,11 +1427,20 @@ Signal selection (`signal="auto"`):
 3. **`none`** — neither signal qualifies: emit **zero** rallies and say so. Emitting one
    whole-video "rally" is the current bug and must not be the fallback.
 
-   > **REJECTED by owner decision §12a-C (2026-08-23) — do not implement as written.** The
-   > zero-rally outcome is not accepted, and the replacement behaviour is still pending. Only
-   > the `none` *branch* is blocked; signals 1 and 2, the density gate, and the static-artifact
-   > suppression are unaffected and remain as specified. Also blocked by the same answer:
-   > done-means 7 in §9.
+   > **SUPERSEDED by owner decision §12a-C (2026-08-23).** The zero-rally outcome above is
+   > **not** what to build. Replacement: emit **uniform coarse windows** over the gate-passed
+   > court-view frames, each marked `signal: "none"`, `degraded: true`, with the reason and
+   > the window length in the provenance — and **withhold stroke recognition on degraded
+   > segments** (BST is not invoked on them; the results copy says labels were withheld
+   > because segmentation is unreliable, rather than reporting zero strokes found). Signals 1
+   > and 2, the density gate, and the static-artifact suppression are unaffected. The window
+   > length is a named, fps-resolved constant like every other parameter here; it is
+   > deliberately dumb in v1 and its value is not load-bearing, since nothing downstream
+   > consumes a degraded segment for labelling.
+   >
+   > The sentence "emitting one whole-video rally is the current bug and must not be the
+   > fallback" **still holds** — coarse windows are the alternative to it, not a softening of
+   > it.
 
 `gap_sec`, `min_len_sec`, and the smoothing window are **seconds**, resolved to frames via
 `fps` at call time — B7's fps-normalisation requirement applies here from the start rather
@@ -1620,11 +1629,13 @@ here would pre-empt the ShuttleSet benchmark that remains the owner's measured-a
    rallies a human counts in that footage.
 6. Every `rally_segments.json` states which signal produced it, why that signal was chosen,
    and the parameters used.
-7. ~~When no usable signal exists, the output is zero rallies with a stated reason — never one
-   whole-video rally.~~ **Rejected by owner decision §12a-C (2026-08-23); replacement pending.**
-   B11 is not done-checkable on this criterion until the replacement behaviour is chosen. The
-   second half ("never one whole-video rally") is the part the owner's answer puts back in
-   question, since it was the reason the first half was the only alternative.
+7. When no usable signal exists, the output is **uniform coarse windows over the gate-passed
+   court-view frames, marked degraded, with stroke recognition withheld on them** — never one
+   whole-video rally, and never an empty result (owner decision §12a-C, 2026-08-23, replacing
+   the original "zero rallies with a stated reason"). Done-checkable as: every such segment
+   carries `signal: "none"`, `degraded: true`, a reason, and the window length; **no**
+   `strokes.json` entry references a degraded segment; and the results copy says labels were
+   withheld rather than reporting zero strokes found.
 8. Segment boundaries are expressed in seconds internally and are invariant to fps: the
    same footage at 30 and 60 fps yields the same boundaries in seconds.
 9. On at least one hand-checked stretch of real footage, emitted boundaries visibly
@@ -1780,13 +1791,28 @@ rally outcome leaves **no specified behaviour** for footage with no usable signa
 after decision B, is exactly the class the owner's own fixed-camera footage falls into
 whenever the swing signal also fails.
 
-- **Status: replacement behaviour pending the owner's choice.** Recorded here rather than
-  guessed, because the plausible replacements (a degraded fixed-window segmentation marked
-  unreliable; a hard actionable failure; accepting one whole-video rally after all) differ in
-  implementation, in test surface, and in what the UI claims — and one of them risks
-  presenting BST labels computed over non-rally windows as if they were real strokes.
-- Done-means 7, §5's `signal = "none"` branch, and the `rally_segments.json` provenance copy
-  are all blocked on this answer. Nothing else in B11 is.
+**C (replacement) — RESOLVED same day: coarse windows, and no stroke labels on them.** When
+no signal qualifies, `segment_rallies` emits **uniform coarse windows** over the gate-passed
+court-view frames, and stroke recognition is **withheld** on those windows:
+
+- The segments exist, so coverage, heatmaps, and the timeline stay populated instead of
+  showing an empty result.
+- Every such segment is marked degraded in `rally_segments.json` provenance (`signal:
+  "none"`, `degraded: true`, plus the reason and the window length used), and **BST is not
+  invoked on a degraded segment**. The results copy states that stroke labels were withheld
+  because segmentation is unreliable — it does not show a stroke count of 0 as though
+  recognition had run and found nothing.
+- **The rationale is the failure mode this avoids:** BST labels computed over windows that do
+  not correspond to rallies are close to noise, and a badge on them is much weaker than the
+  impression that strokes were detected. Withholding is the honest version of "keep the
+  screen useful", and it is the one choice here that cannot fabricate a stroke.
+- Consequences for the rest of the spec: done-means 7 is rewritten (below); §5's `signal =
+  "none"` branch is rewritten (§5 C2); the per-rally BST invocation of completion-bar B6 must
+  learn to skip degraded segments; and `degraded` becomes part of the coverage metadata that
+  done-means 9 of the completion bar already requires `strokes.json` to state.
+- What this does **not** license: a degraded segmentation must never be described in the UI as
+  a rally count. "3 coarse windows, segmentation unreliable, stroke labels withheld" is the
+  claim; "3 rallies" is not.
 
 **D — YES: amend R10 of the completion bar, and add the shuttle blocker as a risk.** Done in
 `docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md`: R10 is split into
