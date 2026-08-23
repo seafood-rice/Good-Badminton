@@ -5,6 +5,7 @@ import time
 import numpy as np
 
 from .rep_segmenter import segment_reps
+from .shuttle_pick import pick_shuttle
 from .writer import write_rep_reports, build_drill_summary
 
 # close-up drill footage: far-view-trained detector needs a lower threshold
@@ -40,7 +41,7 @@ QUALITY_WINDOW_POST_S = 2.0
 # frames frame_lookup actually has, so an over-large hi_bound is harmless.
 _NO_NEXT_NEIGHBOR_HI_SENTINEL = 10 ** 9
 
-# Overhead-swing gate: only count full overhead swings (high_clear) as reps.
+# Overhead-swing gate: only count full overhead swings (see OVERHEAD_GATED_STROKES) as reps.
 # Empirically established on 50 genuine Sub05 clears: a full overhead swing
 # lifts the dominant wrist above the dominant shoulder at the swing apex
 # (positive elevation ratio); a soft/low return keeps the wrist at or below
@@ -56,7 +57,21 @@ OVERHEAD_MIN_ELEVATION = 0.35    # min (shoulder_y - wrist_y)/torso at apex to c
                                  # before that footage was available.) View-dependent
                                  # (foreshortened front/far-view cameras read lower) and
                                  # tunable.
-OVERHEAD_GATED_STROKES = ("high_clear",)  # only these stroke types are gated
+# Overhead strokes subject to the elevation FLOOR above. The gate measurement
+# (apex_overhead_elevation) is pure geometry with nothing clear-specific in it, so
+# it transfers to any stroke contacted above the shoulder. NOTE the 0.35 threshold
+# was calibrated on high_clear footage (IMG_1270) only: a soft drop shot could sit
+# near the boundary and be filtered. Unvalidated for drop_shot until drop-shot
+# footage exists; over-filtering shows up in filtered_non_overhead rather than
+# silently losing reps.
+OVERHEAD_GATED_STROKES = ("high_clear", "smash", "drop_shot")
+
+# Underhand strokes subject to the same threshold as a CEILING: a rep that reaches
+# overhead elevation is an overhead stroke, so it does not belong in this drill.
+# Deliberately reuses OVERHEAD_MIN_ELEVATION rather than introducing a second
+# constant -- 0.35 separates "overhead" from "not overhead" regardless of which side
+# of it a given stroke is supposed to fall on. Unvalidated on serve footage.
+UNDERHAND_GATED_STROKES = ("serve",)
 
 
 def person_roi(kp):
@@ -208,13 +223,20 @@ class PostureRunner:
 
     def run(self, track, frame_lookup, fps):
         from ..stroke.events import StrokeEvent
-        reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post)
+        # An underhand stroke's contact is not at the wrist apex (rep_segmenter's
+        # apex fallback is an overhead heuristic), so serve keeps the speed peak.
+        fallback = None if self.stroke_type in UNDERHAND_GATED_STROKES else "apex"
+        reps = segment_reps(track, fps, pre=self.window_pre, post=self.window_post,
+                            positional_fallback=fallback)
         reports = []
         reps_3d = []
         survivor_rep_ids = []
         scored_3d = 0
-        gated = self.stroke_type in OVERHEAD_GATED_STROKES
+        overhead_gated = self.stroke_type in OVERHEAD_GATED_STROKES
+        underhand_gated = self.stroke_type in UNDERHAND_GATED_STROKES
+        gated = overhead_gated or underhand_gated
         filtered_non_overhead = 0
+        filtered_overhead = 0
         for i, rep in enumerate(reps):
             event = StrokeEvent(
                 stroke_type=self.stroke_type,
@@ -232,9 +254,15 @@ class PostureRunner:
             # never exceed gate_info["counted"] (the reports that actually survive).
             apex_frames = self._apex_window_frames(rep.peak_frame, fps, frame_lookup)
             elev = apex_overhead_elevation(apex_frames, self.dominant)
-            if gated and elev is not None and elev < OVERHEAD_MIN_ELEVATION:
-                filtered_non_overhead += 1
-                continue
+            # `elev is None` means the window yielded no valid shoulder/wrist/hip
+            # measurement: cannot judge -> keep the rep, in BOTH directions.
+            if elev is not None:
+                if overhead_gated and elev < OVERHEAD_MIN_ELEVATION:
+                    filtered_non_overhead += 1
+                    continue
+                if underhand_gated and elev >= OVERHEAD_MIN_ELEVATION:
+                    filtered_overhead += 1
+                    continue
 
             if self.pose_lifter is not None and getattr(self.pose_lifter, "available", False):
                 lifted = self.pose_lifter.lift(window_frames, self.image_size)
@@ -252,6 +280,7 @@ class PostureRunner:
             report = self.analyzer.analyze(event, window_frames)
             report["rep_id"] = rep.rep_id
             report["overhead_elevation"] = None if elev is None else round(elev, 3)
+            report["contact_anchor"] = rep.contact_anchor
             if report.get("feature_space") == "3d":
                 scored_3d += 1
 
@@ -274,6 +303,7 @@ class PostureRunner:
             reports.append(report)
             survivor_rep_ids.append(rep.rep_id)
         gate_info = {"counted": len(reports), "filtered_non_overhead": filtered_non_overhead,
+                     "filtered_overhead": filtered_overhead,
                      "gated": gated, "scored_3d": scored_3d, "reps_3d": reps_3d}
         # Renumber survivors 1..N so downstream consumers (write_rep_reports,
         # build_drill_summary, the coach report table) never show gapped ids
@@ -357,6 +387,32 @@ class PostureAnalysisSystem:
             )
         elif os.path.exists(reps_3d_path):
             os.remove(reps_3d_path)
+
+    def _build_metadata(self, fps, width, height, reports, gate_info):
+        """Build the dict written to metadata.json. Kept as its own method (mirrors
+        _write_reports/_write_reps_3d_sidecar) so the exact keys reaching the
+        serialised file -- including gate_info["filtered_overhead"], the ceiling-gate
+        counter the web UI needs to report a serve drill's exclusions -- are directly
+        unit-testable without running the full video pipeline."""
+        return {
+            "video": {"path": self.video_path, "name": self.video_name,
+                      "fps": float(fps), "width": width, "height": height},
+            "mode": "posture", "stroke_type": self.stroke_type,
+            "dominant_hand": self.dominant_hand,
+            "pose_family": self.pose_family,
+            "racket": {"detected_frames": self._racket_stats["detected"],
+                       "inferred_frames": self._racket_stats["inferred"],
+                       "model": self.racket_model_path},
+            "quality": {"model": self.quality_model_path if self._quality_scorer else None,
+                        "scored_reps": sum(1 for r in reports if "ai_score" in r)},
+            "lift": {"model": self.lift_model_path if self._pose_lifter else None,
+                     "scored_3d": gate_info.get("scored_3d", 0)},
+            "reps": {"counted": gate_info["counted"],
+                     "filtered_non_overhead": gate_info["filtered_non_overhead"],
+                     "filtered_overhead": gate_info["filtered_overhead"],
+                     "gated": gate_info["gated"],
+                     "scored_3d": gate_info.get("scored_3d", 0)},
+        }
 
     def _write_reports(self, reports, summary, date=None):
         from .report_builder import build_coach_report
@@ -462,32 +518,17 @@ class PostureAnalysisSystem:
         summary = build_drill_summary(reports, self.stroke_type)
         write_json(os.path.join(self.save_dir, "drill_summary.json"), summary)
         self._write_reps_3d_sidecar(gate_info)
-        write_json(os.path.join(self.save_dir, "metadata.json"), {
-            "video": {"path": self.video_path, "name": self.video_name,
-                      "fps": float(fps), "width": width, "height": height},
-            "mode": "posture", "stroke_type": self.stroke_type,
-            "dominant_hand": self.dominant_hand,
-            "pose_family": self.pose_family,
-            "racket": {"detected_frames": self._racket_stats["detected"],
-                       "inferred_frames": self._racket_stats["inferred"],
-                       "model": self.racket_model_path},
-            "quality": {"model": self.quality_model_path if self._quality_scorer else None,
-                        "scored_reps": sum(1 for r in reports if "ai_score" in r)},
-            "lift": {"model": self.lift_model_path if self._pose_lifter else None,
-                     "scored_3d": gate_info.get("scored_3d", 0)},
-            "reps": {"counted": gate_info["counted"],
-                     "filtered_non_overhead": gate_info["filtered_non_overhead"],
-                     "gated": gate_info["gated"],
-                     "scored_3d": gate_info.get("scored_3d", 0)},
-        })
+        write_json(os.path.join(self.save_dir, "metadata.json"),
+                   self._build_metadata(fps, width, height, reports, gate_info))
         print(format_progress(94, "report"), flush=True)
         self._write_reports(reports, summary, date=_today())
         print("Posture analysis: " + str(len(reports)) + " reps -> " + self.save_dir)
         print("Elapsed: " + str(round(time.time() - start, 1)) + "s")
         print("Racket source: %d detected / %d inferred"
               % (self._racket_stats["detected"], self._racket_stats["inferred"]), flush=True)
-        print("Overhead gate: %d counted, %d non-overhead excluded (stroke=%s)"
-              % (gate_info["counted"], gate_info["filtered_non_overhead"], self.stroke_type), flush=True)
+        print("Rep gate: %d counted, %d non-overhead excluded, %d overhead excluded (stroke=%s)"
+              % (gate_info["counted"], gate_info["filtered_non_overhead"],
+                 gate_info["filtered_overhead"], self.stroke_type), flush=True)
         return reports
 
     def _build_racket_detector(self):
@@ -602,8 +643,9 @@ class PostureAnalysisSystem:
                 res = ball_model(frame, conf=0.18, verbose=False)[0]
                 boxes = getattr(res, "boxes", None)
                 if boxes is not None and boxes.xywh.shape[0] > 0:
-                    b = boxes.xywh.detach().cpu().numpy()[0]
-                    shuttle = (float(b[0]), float(b[1]))
+                    # Nearest the dominant wrist, not whichever box came back first:
+                    # this detection is the primary contact anchor downstream.
+                    shuttle = pick_shuttle(boxes.xywh.detach().cpu().numpy(), wrist)
             except Exception:
                 shuttle = None
 

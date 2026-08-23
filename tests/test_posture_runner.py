@@ -57,7 +57,8 @@ def test_runner_one_report_per_rep_with_rep_id():
     # Inferred (not detected) racket head -> wrist_flexion is unmeasurable (None),
     # not scored as 0 for the ~180 deg collinear fallback angle.
     assert reports[0]["per_metric"]["wrist_flexion"]["measured"] is None
-    assert gate_info == {"counted": 2, "filtered_non_overhead": 0, "gated": True,
+    assert gate_info == {"counted": 2, "filtered_non_overhead": 0,
+                         "filtered_overhead": 0, "gated": True,
                          "scored_3d": 0, "reps_3d": []}
 
 
@@ -108,10 +109,13 @@ def test_window_frames_defaults_racket_head_detected_to_false_when_absent():
 
 
 def test_runner_empty_track_no_reports():
-    runner = PostureRunner(BiomechanicalAnalyzer(), stroke_type="smash")
+    runner = PostureRunner(BiomechanicalAnalyzer(), stroke_type="serve")
     reports, reps, gate_info = runner.run([], lambda i: None, fps=30)
     assert reports == [] and reps == []
-    assert gate_info == {"counted": 0, "filtered_non_overhead": 0, "gated": False,
+    # stroke_type="serve" is now underhand-gated (UNDERHAND_GATED_STROKES), so
+    # "gated" reflects that regardless of there being zero reps to apply it to.
+    assert gate_info == {"counted": 0, "filtered_non_overhead": 0,
+                         "filtered_overhead": 0, "gated": True,
                          "scored_3d": 0, "reps_3d": []}
 
 
@@ -167,8 +171,8 @@ def test_apex_elevation_left_dominant_uses_left_indices():
 # ── Overhead-swing gate inside PostureRunner.run() ──────────────────────────
 # Empirically established discriminator (see rep-overhead-gate-brief.md): a full
 # overhead swing lifts the dominant wrist above the dominant shoulder at the
-# swing apex; a soft/low return keeps it at or below. Only OVERHEAD_GATED_STROKES
-# ("high_clear") are gated; elev=None (can't judge) always keeps the rep.
+# swing apex; a soft/low return keeps it at or below. Only stroke types in
+# OVERHEAD_GATED_STROKES are gated; elev=None (can't judge) always keeps the rep.
 
 def _gate_kp(elevated):
     """Right-dominant pose; elevated=True lifts the wrist above the shoulder,
@@ -214,7 +218,8 @@ def test_gate_drops_non_overhead_rep_and_keeps_overhead_rep():
     assert [r.rep_id for r in reps] == [1, 2]  # RepWindow list is left as-is (not renumbered)
     assert len(reports) == 1
     assert [r["rep_id"] for r in reports] == [1]
-    assert gate_info == {"counted": 1, "filtered_non_overhead": 1, "gated": True,
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 1,
+                         "filtered_overhead": 0, "gated": True,
                          "scored_3d": 0, "reps_3d": []}
     assert reports[0]["overhead_elevation"] is not None
     assert reports[0]["overhead_elevation"] >= OVERHEAD_MIN_ELEVATION
@@ -230,7 +235,7 @@ def _one_swing_track(n=90, spike_at=40):
     return track
 
 
-def test_gate_does_not_apply_to_non_gated_stroke_type():
+def test_serve_ceiling_keeps_a_low_swing():
     low_kp = _gate_kp(elevated=False)
 
     def frame_lookup(idx):
@@ -243,7 +248,50 @@ def test_gate_does_not_apply_to_non_gated_stroke_type():
 
     assert len(reps) == 1
     assert len(reports) == 1
-    assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": False,
+    # serve is underhand-gated (ceiling only): this rep's elevation (-0.333) is
+    # well below the OVERHEAD_MIN_ELEVATION ceiling, so it survives even though
+    # "gated" is now True for this stroke type.
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 0,
+                         "filtered_overhead": 0, "gated": True,
+                         "scored_3d": 0, "reps_3d": []}
+
+
+class _StubAnalyzer:
+    """Minimal stand-in for BiomechanicalAnalyzer that skips the REFERENCE_RANGES
+    lookup (keyed only on the four product stroke types), so this test can exercise
+    a stroke type outside that set without touching scoring at all -- the gate path
+    being tested here runs entirely before analyze() is called.
+    """
+    def analyze(self, stroke_event, window_frames):
+        return {"stroke_type": stroke_event.stroke_type,
+                "contact_frame": stroke_event.contact_frame,
+                "player_side": stroke_event.player_side,
+                "confidence": stroke_event.confidence,
+                "overall_score": None, "per_metric": {}, "weaknesses": [],
+                "strengths": [], "feature_space": "2d"}
+
+
+def test_gate_does_not_apply_to_ungated_stroke_type():
+    """Every product stroke type (high_clear/smash/drop_shot/serve) is gated now, so
+    this uses a stroke type outside the product set to keep coverage of the
+    gated=False code path -- without it, nothing anywhere asserts gated is False.
+    Uses a stub analyzer because REFERENCE_RANGES (consulted downstream of the gate)
+    is keyed only on the four product strokes; the gate itself runs before that.
+    """
+    low_kp = _gate_kp(elevated=False)
+
+    def frame_lookup(idx):
+        return {"frame": idx, "keypoints": low_kp, "conf": None,
+                "racket_head": None, "centroid": (100, 300)}
+
+    runner = PostureRunner(_StubAnalyzer(),
+                           stroke_type="net_shot_forehand", dominant="right")
+    reports, reps, gate_info = runner.run(_one_swing_track(), frame_lookup, fps=30)
+
+    assert len(reps) == 1
+    assert len(reports) == 1
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 0,
+                         "filtered_overhead": 0, "gated": False,
                          "scored_3d": 0, "reps_3d": []}
 
 
@@ -259,7 +307,8 @@ def test_gate_keeps_rep_when_elevation_cannot_be_judged():
     assert len(reps) == 1
     assert len(reports) == 1
     assert reports[0]["overhead_elevation"] is None
-    assert gate_info == {"counted": 1, "filtered_non_overhead": 0, "gated": True,
+    assert gate_info == {"counted": 1, "filtered_non_overhead": 0,
+                         "filtered_overhead": 0, "gated": True,
                          "scored_3d": 0, "reps_3d": []}
 
 
@@ -303,5 +352,6 @@ def test_gate_drop_of_middle_rep_renumbers_survivors_contiguously():
     assert [r.rep_id for r in reps] == [1, 2, 3]  # RepWindow list is left as-is (not renumbered)
     assert len(reports) == 2  # middle rep gated out
     assert [r["rep_id"] for r in reports] == [1, 2]  # contiguous, no gap left at the old id 3
-    assert gate_info == {"counted": 2, "filtered_non_overhead": 1, "gated": True,
+    assert gate_info == {"counted": 2, "filtered_non_overhead": 1,
+                         "filtered_overhead": 0, "gated": True,
                          "scored_3d": 0, "reps_3d": []}

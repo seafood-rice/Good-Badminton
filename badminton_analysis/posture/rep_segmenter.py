@@ -11,6 +11,7 @@ class RepWindow:
     window_start: int
     window_end: int
     prominence: float
+    contact_anchor: str = "speed_peak"
 
     def to_dict(self):
         return asdict(self)
@@ -89,7 +90,22 @@ PEAK_FLOOR_FRAC = 0.25
 
 
 def segment_reps(track, fps, pre=20, post=15,
-                 smooth=3, min_speed_px=5.0, max_reps=50):
+                 smooth=3, min_speed_px=5.0, max_reps=50,
+                 positional_fallback="apex"):
+    """Segment a drill clip into stroke reps from wrist swing motion.
+
+    ``positional_fallback`` selects what anchors a rep's contact frame when no
+    shuttle is found in its window:
+
+    * ``"apex"``  -- the wrist's highest point. Correct for overhead strokes, where
+      it sits at or near contact and avoids centring the rep on the faster
+      follow-through or backswing speed peak.
+    * ``None``    -- no positional refinement; keep the wrist-speed peak. Used for
+      underhand strokes, where the wrist is low throughout and no positional
+      extremum is known to be the contact.
+
+    The caller chooses; this module holds no stroke-type knowledge.
+    """
     if not track:
         return []
 
@@ -165,13 +181,14 @@ def segment_reps(track, fps, pre=20, post=15,
                     best_pos = p
         if best_pos is not None:
             peak_frame = track[best_pos]["frame"]
-        else:
+            anchor = "shuttle"
+        elif positional_fallback == "apex":
             # No shuttle to anchor contact: fall back to the wrist apex (highest
             # point = min image-y) in the window. For overhead strokes this sits at
             # or near contact and avoids centering the rep on the faster
             # follow-through/backswing speed peak. Overhead-oriented heuristic: for
-            # an underhand serve the apex is not the contact, but serves are
-            # typically shuttle-anchored so this fallback rarely applies to them.
+            # an underhand serve the apex is not the contact -- the caller opts out
+            # via positional_fallback=None for those strokes.
             apex_pos, apex_y = None, None
             for p in range(len(track)):
                 f = track[p]["frame"]
@@ -183,6 +200,11 @@ def segment_reps(track, fps, pre=20, post=15,
                     apex_pos = p
             if apex_pos is not None:
                 peak_frame = track[apex_pos]["frame"]
+                anchor = "apex"
+            else:
+                anchor = "speed_peak"
+        else:
+            anchor = "speed_peak"
 
         reps.append(RepWindow(
             rep_id=rep_id,
@@ -190,6 +212,7 @@ def segment_reps(track, fps, pre=20, post=15,
             window_start=max(0, peak_frame - pre_f),
             window_end=peak_frame + post_f,
             prominence=round(float(arr[idx]) / max_speed, 3),
+            contact_anchor=anchor,
         ))
 
     return reps

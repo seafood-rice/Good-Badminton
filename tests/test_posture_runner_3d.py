@@ -52,7 +52,7 @@ def _track_and_frames():
 def test_runner_attaches_3d_and_counts():
     track, frames, fps = _track_and_frames()
     runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
-                           stroke_type="smash", dominant="right",
+                           stroke_type="serve", dominant="right",
                            pose_lifter=_FakeLifter(), image_size=(200, 400))
     reports, reps, gate = runner.run(track, frames.get, fps)
     assert len(reports) >= 1
@@ -64,7 +64,7 @@ def test_runner_attaches_3d_and_counts():
 def test_runner_without_lifter_is_2d():
     track, frames, fps = _track_and_frames()
     runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
-                           stroke_type="smash", dominant="right")
+                           stroke_type="serve", dominant="right")
     reports, reps, gate = runner.run(track, frames.get, fps)
     assert reports[0]["feature_space"] == "2d"
     assert gate["scored_3d"] == 0
@@ -74,14 +74,14 @@ def test_runner_without_lifter_is_2d():
 def _run(lifter):
     track, frames, fps = _track_and_frames()
     runner = PostureRunner(BiomechanicalAnalyzer(dominant="right"),
-                           stroke_type="smash", dominant="right",
+                           stroke_type="serve", dominant="right",
                            pose_lifter=lifter, image_size=(200, 400))
     return runner.run(track, frames.get, fps)
 
 
 def _coach_report(reports, feature_space):
-    summary = build_drill_summary(reports, "smash")
-    meta = {"date": "2026-07-26", "stroke_type": "smash", "dominant_hand": "right",
+    summary = build_drill_summary(reports, "serve")
+    meta = {"date": "2026-07-26", "stroke_type": "serve", "dominant_hand": "right",
             "pose_family": "yolo-pose", "feature_space": feature_space}
     return build_coach_report(reports, summary, meta)["en"], summary
 
