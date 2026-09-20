@@ -23,14 +23,14 @@ def _feed(filt, positions, frames):
 
 
 def test_a_motionless_candidate_is_suppressed():
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     sitting = (1800.0, 1300.0)
     kept = _feed(filt, [sitting], range(0, 180))
     assert kept == []
 
 
 def test_a_moving_candidate_is_never_suppressed():
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     kept = None
     for f in range(0, 180):
         kept = filt.filter(f, [(1800.0 + 4.0 * f, 1300.0)])
@@ -38,7 +38,7 @@ def test_a_moving_candidate_is_never_suppressed():
 
 
 def test_a_moving_candidate_survives_beside_a_static_one():
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     kept = None
     for f in range(0, 180):
         kept = filt.filter(f, [(1800.0, 1300.0), (1950.0 + 3.0 * f, 1325.0)])
@@ -48,14 +48,14 @@ def test_a_moving_candidate_survives_beside_a_static_one():
 
 def test_nothing_is_suppressed_before_enough_evidence():
     """Early frames must not suppress: a rally can start with a still player."""
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     kept = _feed(filt, [(1800.0, 1300.0)], range(0, 10))
     assert len(kept) == 1
 
 
 def test_evidence_outside_the_window_is_forgotten():
     """A candidate static long ago but moving now must come back."""
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=60, min_hits=30)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=60, min_hit_frac=0.6, min_frames=30)
     for f in range(0, 60):
         filt.filter(f, [(1800.0, 1300.0)])
     assert filt.filter(60, [(1800.0, 1300.0)]) == []
@@ -67,7 +67,7 @@ def test_evidence_outside_the_window_is_forgotten():
 
 def test_tolerance_is_respected():
     """Jitter under tol_px is still static; drift beyond it is not."""
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     kept = None
     for f in range(0, 180):
         kept = filt.filter(f, [(1800.0 + (f % 3), 1300.0)])
@@ -75,13 +75,13 @@ def test_tolerance_is_respected():
 
 
 def test_empty_input_is_safe():
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     assert filt.filter(0, []) == []
 
 
 def test_candidates_are_returned_unchanged_not_copied_into_new_types():
     """Callers carry their own payload alongside the point; keep identity."""
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hits=60)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180, min_hit_frac=0.6, min_frames=60)
     c = (1234.5, 678.9)
     kept = filt.filter(0, [c])
     assert kept[0] is c
@@ -89,13 +89,37 @@ def test_candidates_are_returned_unchanged_not_copied_into_new_types():
 
 def test_from_fps_builds_second_based_settings():
     filt = StaticCandidateFilter.from_fps(60.0, tol_px=30.0,
-                                          window_sec=3.0, min_hit_frac=0.9)
+                                          window_sec=3.0, min_hit_frac=0.6)
     assert filt.window_frames == 180
-    assert filt.min_hits == pytest.approx(162, abs=1)
+    assert filt.min_hit_frac == pytest.approx(0.6)
 
 
 def test_from_fps_handles_a_missing_fps():
     filt = StaticCandidateFilter.from_fps(None, tol_px=30.0,
-                                          window_sec=3.0, min_hit_frac=0.9)
+                                          window_sec=3.0, min_hit_frac=0.6)
     assert filt.window_frames > 0
-    assert filt.min_hits > 0
+    assert filt.min_frames > 0
+
+
+def test_the_threshold_follows_observed_frames_not_window_length():
+    """The pipeline skips frames -- non-court frames, and fast-mode striding.
+    A threshold measured against the window's LENGTH is then unreachable and
+    silently disables the filter, which is what let the static decoy keep
+    winning 7.7% of selections on the 0007 clip."""
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180,
+                                 min_hit_frac=0.6, min_frames=30)
+    sitting = (1800.0, 1300.0)
+    kept = None
+    # Only every 4th frame is analysed: 45 observations in a 180 window.
+    for f in range(0, 180, 4):
+        kept = filt.filter(f, [sitting])
+    assert kept == [], "a threshold tied to window length would never fire here"
+
+
+def test_a_sparsely_observed_moving_candidate_still_survives():
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=180,
+                                 min_hit_frac=0.6, min_frames=30)
+    kept = None
+    for f in range(0, 180, 4):
+        kept = filt.filter(f, [(1800.0 + 10.0 * f, 1300.0)])
+    assert len(kept) == 1

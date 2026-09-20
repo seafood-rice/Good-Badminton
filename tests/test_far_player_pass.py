@@ -115,7 +115,8 @@ def test_hands_are_reported_in_full_frame_coordinates():
 
 def test_a_static_candidate_is_dropped_by_the_filter():
     vis, _stub = _vis([_person(*FAR_PLAYER_CROP)])
-    filt = StaticCandidateFilter(tol_px=30.0, window_frames=60, min_hits=30)
+    filt = StaticCandidateFilter(tol_px=30.0, window_frames=60,
+                                 min_hit_frac=0.6, min_frames=30)
     out = None
     for f in range(0, 61):
         out = vis.detect_far_players(_frame(), ROI, imgsz=1280,
