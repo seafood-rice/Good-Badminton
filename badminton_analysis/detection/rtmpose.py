@@ -191,8 +191,13 @@ class RTMPoseProcessor:
         self.init_rtmpose(mode)
         print(f"RTMPose processor updated to mode: {mode}")
     
-    def process_frame(self, frame):
+    def process_frame(self, frame, imgsz=None):
         """Process single frame for pose detection.
+
+        ``imgsz`` exists for signature parity with YOLOPoseProcessor and is
+        ignored: RTMPose resizes to its own model input, so there is no
+        equivalent knob to honour.
+
         Returns:
             keypoints: None or numpy.ndarray with shape (N, 17, 2) for N persons
             scores:    None or numpy.ndarray with shape (N, 17)

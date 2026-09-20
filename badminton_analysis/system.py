@@ -315,12 +315,14 @@ class BadmintonAnalysisSystem:
                                           detection_writer=self.detection_writer, fps=fps)
         
 
+        self._init_far_pose(corners, (self.frame_height, self.frame_width), fps)
+
         self.stats_visualizer = StatsVisualizer(
             frame_width=self.frame_width,
             frame_height=self.frame_height,
             language=self.language
         )
-        
+
         frame_count = 0
         detect_frame_count = 0
 
@@ -396,6 +398,59 @@ class BadmintonAnalysisSystem:
         }
         write_json(self.metadata_path, metadata)
 
+    FAR_POSE_IMGSZ = 1280
+    """Inference size for the far-court crop.
+
+    Measured on the 0007 clip's ~1400x580 far-half crop: 1280 found the far
+    player in 8 of 8 sampled frames at 19.3 ms/frame, against 0 of 8 for the
+    whole-frame default and 5 of 8 for a whole-frame 2560 pass costing
+    39.5 ms. Sized to the crop, not to the frame.
+    """
+
+    def _init_far_pose(self, corners, frame_shape, fps):
+        """Prepare the far-court second pose pass, or disable it.
+
+        Disabled (roi None) whenever the geometry is unusable, so a run
+        without a court quad behaves exactly as it did before this existed.
+        """
+        self._far_roi = None
+        self._far_static_filter = None
+        try:
+            from .court.far_roi import far_court_roi
+            from .tracking.static_filter import StaticCandidateFilter
+
+            mapper = getattr(self.player_tracker, "court_mapper", None)
+            self._far_roi = far_court_roi(corners, frame_shape, mapper)
+            if self._far_roi is not None:
+                self._far_static_filter = StaticCandidateFilter.from_fps(fps)
+                print(f"Far-court pose pass: roi={self._far_roi} "
+                      f"imgsz={self.FAR_POSE_IMGSZ}")
+            else:
+                print("Far-court pose pass disabled: unusable court geometry")
+        except Exception as exc:
+            self._far_roi = None
+            print(f"Far-court pose pass disabled: {exc}")
+
+    def _detect_far_players(self, frame, frame_count, main_offset):
+        """Run the far-court pass, never fatally.
+
+        Returns empty results when the pass is disabled, so the caller merges
+        nothing and the whole-frame path is untouched.
+        """
+        if getattr(self, "_far_roi", None) is None:
+            return [], {}, {}
+        try:
+            mapper = getattr(self.player_tracker, "court_mapper", None)
+            return self.player_pose_visualizer.detect_far_players(
+                frame, self._far_roi, court_mapper=mapper,
+                imgsz=self.FAR_POSE_IMGSZ,
+                static_filter=self._far_static_filter,
+                frame_index=frame_count, main_offset=main_offset)
+        except Exception as exc:
+            print(f"Far-court pose pass failed, disabling it: {exc}")
+            self._far_roi = None
+            return [], {}, {}
+
     def _analyze_this_frame(self, frame_count):
         """Gate for the heavy per-frame analysis (pose/ball/draw).
 
@@ -469,6 +524,12 @@ class BadmintonAnalysisSystem:
 
         pose_t0 = time.time()
         centroids, point_left_hands, point_right_hands = self.player_pose_visualizer.detect_players(roi, x1, y1)
+        far_centroids, far_left, far_right = self._detect_far_players(frame, frame_count, (x1, y1))
+        centroids = centroids + far_centroids
+        # Keyed by centroid y, which the far pass computes in the same
+        # full-frame coordinates, so these merge without collision.
+        point_left_hands.update(far_left)
+        point_right_hands.update(far_right)
         pose_elapsed = time.time() - pose_t0
 
         ball_t0 = time.time()
