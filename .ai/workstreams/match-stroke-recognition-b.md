@@ -130,7 +130,48 @@ non-regression with no weights present; full committed suite green.
     own validation needs unattended runs and B10's background job cannot exist while any
     stage can block forever on a GUI keypress.
 
+## Interruption: 2026-09-20 match-analysis defect fixes (branch `claude/b11-rally-detection`)
+
+Owner reported three symptoms on the new `Dji 20260919111119 0007 D` run: no playable
+analysed video, an empty upper-player heatmap, and no technique data. Diagnosed to three
+distinct root causes and fixed on this branch ahead of the B11 tasks.
+
+- **Unplayable video** (`ee2b5fa`). OpenCV could not initialise H.264 (openh264 DLL version
+  mismatch) and silently fell back to MPEG-4 Part 2, which no browser decodes. The ffmpeg
+  rescue transcode was then killed by a fixed 300 s timeout; measured, that video needs
+  ~425 s (20 s encodes in 12.5 s). It left a truncated 848 MB file with no moov atom and
+  the job still reported success. Budget now scales with duration, partial output is
+  deleted, and the failure is reported in the job, the result payload and the UI.
+- **Far player never detected** (`aafdc6e`, `bd25b9d`). `process_frame` passed no `imgsz`,
+  so Ultralytics letterboxed 3840x2160 to its 640 default and the far player's 100-155 px
+  body became 17-26 px. Fixed with a second pose pass over a far-court crop at
+  `imgsz=1280`: measured 8/8 sampled frames against 0/8 for the shipped path and 5/8 for a
+  whole-frame 2560 pass at twice the cost. Upper-half candidates only, plus a static
+  filter for courtside bystanders. Real-footage check on a 15 s cut: upper present in
+  **97.9%** of records (was **0 of 36,732**), lower unchanged at 61.9% (was 65.5%).
+- **Perspective contact gate wired into the technique path** (`664df2a`). It existed since
+  B11 but `TechniqueAnalysisRunner` still used the fixed 80 px, which is 0.13 m near and
+  0.65 m far on this footage.
+
+**Not fixed, and why.** The empty technique output is *not* a contact-gate problem:
+measured over the run's 36,732 records the shuttle appears in 4.9% of frames, comes within
+80 px of a hand in 6 frames and within the perspective radius in 3, and in neither case
+does any such frame also carry the shuttle at `i-1`, `i` and `i+3` that the
+direction-change test needs. Contacts are 0 under both radii. The binding constraint is
+shuttle detection — B11 §0.7/§0.11/§0.17 reproduced on new footage — whose remaining path
+is capture-side (§0.25 option D). Rally segmentation is also still wrong on this run (13
+segments, one of them 546.8 s covering 80% of the video); that is what the B11 plan's
+Tasks 4-9 address and was deliberately not attempted ad hoc.
+
+The owner's existing run was repaired in place: its video was transcoded to H.264
+(verified 40,697 frames and 678.96 s, matching the original) so it plays without
+re-analysis. Its *data* still has no upper player — that needs a re-run.
+
 ## Next action
+
+Resume the B11 plan (`docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`) from
+Task 1. Note that Task 1's `annotate_court` headless fix is still outstanding and is now
+more relevant, since re-analysing the 0007 video unattended would hit that hang.
 
 **Superseded 2026-08-23.** The owner took path (a): B1 stands on its synthetic/unit/end-to-end
 evidence plus the honestly-reported upstream-blocked real-footage attempt, and B11 is the
