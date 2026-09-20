@@ -860,6 +860,7 @@ class BadmintonAnalysisSystem:
             racket_detector=self._racket_detector,
             dominant=self.dominant_hand,
             fps=self.fps,
+            court_corners=getattr(self, "court_corners", None),
         )
         reports, _events = runner.run(self._analysis_track, self._analysis_frames.get)
         strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
@@ -1087,13 +1088,37 @@ class TechniqueAnalysisRunner:
     """Post-loop orchestration: contacts -> classification -> biomechanical reports."""
 
     def __init__(self, analyzer, racket_detector=None, dominant="right",
-                 window_pre=20, window_post=15, fps=30.0):
+                 window_pre=20, window_post=15, fps=30.0, court_corners=None):
         self.analyzer = analyzer
         self.racket_detector = racket_detector
         self.dominant = dominant
         self.window_pre = window_pre
         self.window_post = window_post
         self.fps = fps
+        self.scale = self._build_scale(court_corners)
+
+    @staticmethod
+    def _build_scale(court_corners):
+        """Perspective px-per-metre model for the contact gate, or None.
+
+        A contact radius in absolute pixels is wrong across a perspective
+        gradient: on this project's fixed-camera footage the scale runs from
+        122 px/m at the far baseline to 625 px/m at the near one, so the
+        inherited 80 px is 0.13 m near and 0.65 m far -- it accepts
+        non-contacts at distance and rejects real ones up close. The metre
+        radius has existed since the B11 work; this wires it into the
+        technique path, which was still on the fixed pixel value.
+
+        None (no court quad, or a degenerate one) keeps the fixed-pixel
+        behaviour exactly, so callers without geometry are unaffected.
+        """
+        if not court_corners:
+            return None
+        try:
+            from .court.scale import PerspectiveScale
+            return PerspectiveScale.from_quad(court_corners)
+        except Exception:
+            return None
 
     def _build_classifier_window(self, contact_frame, window_start, window_end, frame_lookup):
         racket_head, nose, shoulder, hip, elbow_angle, centroid = [], [], [], [], [], []
@@ -1130,10 +1155,12 @@ class TechniqueAnalysisRunner:
         return frames
 
     def run(self, track, frame_lookup):
-        from .stroke.events import detect_contacts, StrokeEvent
+        from .stroke.events import CONTACT_M, detect_contacts, StrokeEvent
         from .stroke.classifier import classify_stroke
         contacts = detect_contacts(
-            track, window_pre=self.window_pre, window_post=self.window_post)
+            track, window_pre=self.window_pre, window_post=self.window_post,
+            contact_m=CONTACT_M if self.scale is not None else None,
+            scale=self.scale)
         reports = []
         events = []
         for c in contacts:
