@@ -232,6 +232,94 @@ def _log_tail(path, n=40):
 # API Routes
 # ═══════════════════════════════════════════════════════════════════════════
 
+REENCODE_MIN_TIMEOUT_SEC = 900.0
+"""Floor for the browser-compat transcode budget.
+
+Even a short clip can encode slowly on a cold or busy machine, so the budget
+never drops below this regardless of duration.
+"""
+
+REENCODE_TIMEOUT_FACTOR = 6.0
+"""Transcode budget as a multiple of video duration.
+
+Measured on the 3840x2160 59.94 fps match that exposed this defect: ffmpeg
+-preset fast -crf 23 encoded 20 s of video in 12.5 s, so the full 679 s needed
+~425 s. The previous fixed 300 s budget killed it mid-write, leaving a
+truncated file with no moov atom. 6x duration leaves generous headroom for
+slower hardware while still bounding a genuinely hung ffmpeg.
+"""
+
+
+def _reencode_timeout_sec(duration_sec):
+    """Transcode budget for a video of this duration, in seconds."""
+    try:
+        duration = float(duration_sec)
+    except (TypeError, ValueError):
+        return REENCODE_MIN_TIMEOUT_SEC
+    if duration <= 0:
+        return REENCODE_MIN_TIMEOUT_SEC
+    return max(REENCODE_MIN_TIMEOUT_SEC, duration * REENCODE_TIMEOUT_FACTOR)
+
+
+def _run_duration_sec(save_dir):
+    """Analysed video's duration from a run's metadata.json, or None.
+
+    Distinct from _video_duration_sec, which probes a video file with cv2:
+    this reads the duration the analysis already recorded, with no decoding.
+    """
+    try:
+        with open(os.path.join(str(save_dir), 'metadata.json'), encoding='utf-8') as fh:
+            return float(json.load(fh)['video']['duration_sec'])
+    except Exception:
+        return None
+
+
+def _reencode_to_h264(raw_video, h264_video, ffmpeg_bin, duration_sec):
+    """Transcode ``raw_video`` to browser-playable H.264 in place.
+
+    OpenCV falls back to MPEG-4 Part 2 whenever it cannot initialise an H.264
+    encoder (on Windows, typically a mismatched openh264 DLL). No browser
+    decodes MPEG-4 Part 2 in a <video> element -- it loads the container, shows
+    the right duration, and renders black -- so this pass is what makes the
+    analysed video watchable at all, not a nicety.
+
+    Returns None on success, or a human-readable error string. On any failure
+    the partial output is deleted: a truncated .mp4 left on disk is worse than
+    none, because its plausible size is what made a broken run look finished.
+    """
+    error = None
+    try:
+        subprocess.run([
+            ffmpeg_bin, '-y', '-i', raw_video,
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-movflags', '+faststart', h264_video,
+        ], check=True, capture_output=True,
+            timeout=_reencode_timeout_sec(duration_sec))
+    except subprocess.TimeoutExpired:
+        error = (f'ffmpeg timed out after '
+                 f'{_reencode_timeout_sec(duration_sec):.0f}s')
+    except Exception as exc:
+        error = f'ffmpeg failed: {exc}'
+
+    if error is None:
+        # Size alone is not proof: the timeout left an 848 MB file that no
+        # player could open. It is only a guard against a zero-byte output
+        # from an ffmpeg that somehow exited cleanly.
+        if not os.path.exists(h264_video) or os.path.getsize(h264_video) <= 0:
+            error = 'ffmpeg produced no output'
+
+    if error is not None:
+        try:
+            if os.path.exists(h264_video):
+                os.remove(h264_video)
+        except OSError:
+            pass
+        return error
+
+    os.replace(h264_video, raw_video)
+    return None
+
+
 def _video_duration_sec(path):
     """Best-effort video duration in seconds; None if it can't be read."""
     try:
@@ -621,27 +709,25 @@ def api_analyze():
             h264_video = os.path.join(sd, f'detect_{vs}_h264.mp4')
             ffmpeg_bin = shutil.which('ffmpeg') or os.path.expanduser('~/.local/bin/ffmpeg')
 
-            try:
-                subprocess.run([
-                    ffmpeg_bin, '-y', '-i', raw_video,
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                    '-movflags', '+faststart', h264_video,
-                ], check=True, capture_output=True, timeout=300)
-                # 用 H.264 版本替换
-                if os.path.exists(h264_video) and os.path.getsize(h264_video) > 0:
-                    os.replace(h264_video, raw_video)
-            except Exception as e:
-                print(f'FFmpeg re-encode failed: {e}, using original video')
-                # 即使转码失败也继续，原始视频可能在某些播放器能播放
+            video_warning = _reencode_to_h264(
+                raw_video, h264_video, ffmpeg_bin, _run_duration_sec(sd))
+            if video_warning:
+                # Not fatal -- every other output of the run is still valid --
+                # but it must not be silent. Without the transcode the video is
+                # MPEG-4 Part 2, which plays as a black frame in the browser,
+                # and reporting plain success is what hid that for a whole run.
+                print(f'FFmpeg re-encode failed: {video_warning}; '
+                      f'the analysed video will not play in a browser')
 
             job['status'] = 'completed'
             job['stage'] = 'done'
             job['progress'] = 100
-            job['message'] = '分析完成!'
+            job['message'] = ('分析完成! (视频转码失败，浏览器可能无法播放) / '
+                              'Analysis complete, but the video could not be '
+                              'converted for browser playback'
+                              if video_warning else '分析完成!')
 
             # 收集结果
-            vs = video_path.stem
-            sd = str(save_dir)
             pos_dir = os.path.join(sd, 'position_visualizations')
             rally_file = os.path.join(sd, 'rally_segments.json')
             rally_count = 0
@@ -660,6 +746,10 @@ def api_analyze():
                 'scatter': f'/api/output/{vs}/position_visualizations/scatter_plots/match_scatter.png',
                 'preview': f'/api/output/{vs}/auto_court_preview.png',
                 'rally_count': rally_count,
+                # None on success. When set, the served video is still the
+                # OpenCV fallback codec and will not play in a browser; the UI
+                # says so rather than showing a black player.
+                'video_warning': video_warning,
             }
         else:
             job['status'] = 'error'
