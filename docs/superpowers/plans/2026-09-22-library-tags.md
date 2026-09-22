@@ -25,6 +25,26 @@ disagree, the plan wins and the disagreement is a bug in one of them worth repor
 
 ---
 
+> ## ⚠ Read before Task 2: the `app.py` line numbers in this plan are stale
+>
+> This plan was written against `origin/main` at `d4c69d4`. **PR #7**
+> (`claude/b11-rally-detection`) is open and adds ~88 lines to `app.py` above both regions
+> this plan edits:
+>
+> | Symbol | In this plan (pre-#7) | After #7 merges |
+> |---|---|---|
+> | `@app.route('/api/videos')` | `app.py:279` | `app.py:367` |
+> | `@app.route('/api/delete/<video_name>')` | `app.py:953` | `app.py:1043` |
+>
+> PRs on this repo are **squash-merged**, so once #7 lands this branch must be rebased onto
+> the new `main` before Task 2. **Re-grep every `app.py` line reference before editing** —
+> `git grep -n "^@app.route" -- app.py` — and trust the grep over the numbers printed here.
+> `static/kestrel.js` line numbers are unaffected: #7 only touches it around line 600, well
+> below everything this plan edits.
+>
+> Nothing else conflicts. This branch touches only its three doc files, so the rebase itself
+> is clean.
+
 ## Global Constraints
 
 - **Branch:** `claude/library-tags`, already cut from `origin/main` with upstream deliberately
@@ -490,7 +510,8 @@ Purely additive: the library gains a field and nothing changes behaviourally, so
 and be reviewed on its own.
 
 **Files:**
-- Modify: `app.py` — imports near `:4-9`, a constant near `:11-13`, and `api_videos` at `:279-319`
+- Modify: `app.py` — imports near `:4-9`, a constant near `:11-13`, and `api_videos`
+  (`:279` before PR #7, `:367` after — **re-grep**, see the warning at the top of this plan)
 - Test: `tests/test_app_tags.py` (new)
 
 **Interfaces:**
@@ -955,8 +976,9 @@ git commit -m "feat(api): rename and delete a tag library-wide"
 ### Task 5: Forget a deleted video's tags
 
 **Files:**
-- Modify: `app.py:953-985` (`api_delete`) — **re-grep before editing**, Tasks 2-4 have shifted
-  these line numbers
+- Modify: `api_delete` in `app.py` (`:953` before PR #7, `:1043` after, and Tasks 2-4 shift it
+  further still) — **always re-grep before editing:**
+  `git grep -n "^@app.route('/api/delete/<video_name>'" -- app.py`
 - Test: `tests/test_app_tags.py` (extend)
 
 **Interfaces:**
