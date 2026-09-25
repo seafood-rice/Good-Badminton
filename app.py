@@ -414,6 +414,35 @@ def api_videos():
     return jsonify(videos)
 
 
+@app.route('/api/videos/<video_name>/tags', methods=['PUT'])
+def api_set_video_tags(video_name):
+    """Replace one video's tags.
+
+    Whole-list replacement rather than add/remove deltas: the editor sends the
+    list it is showing, so there is no partial-failure state to reconcile and
+    the response is the truth.
+    """
+    stem = _safe_stem(video_name)
+    if stem is None:
+        return jsonify({'error': '未知的视频 / unknown video'}), 404
+    body = request.get_json(silent=True) or {}
+    raw = body.get('tags')
+    if not isinstance(raw, list):
+        return jsonify({'error': 'tags must be a list'}), 400
+    clean, rejected = libtags.normalise_all(raw)
+    if rejected:
+        # Refuse the whole request rather than saving the acceptable subset:
+        # a silent partial save is indistinguishable from a successful one.
+        return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag',
+                        'rejected': rejected}), 400
+    try:
+        data = libtags.set_tags(libtags.load(TAGS_PATH), stem, clean)
+        libtags.save(data, TAGS_PATH)
+    except OSError as exc:
+        return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
+    return jsonify({'ok': True, 'tags': clean})
+
+
 @app.route('/api/stats')
 def api_stats():
     """Dashboard tiles: counts + aggregate scores across all outputs."""
