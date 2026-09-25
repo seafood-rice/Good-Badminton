@@ -443,6 +443,39 @@ def api_set_video_tags(video_name):
     return jsonify({'ok': True, 'tags': clean})
 
 
+@app.route('/api/tags/rename', methods=['POST'])
+def api_rename_tag():
+    """Rename a tag across every video, merging if the target already exists."""
+    body = request.get_json(silent=True) or {}
+    old = libtags.normalise(body.get('from'))
+    new = libtags.normalise(body.get('to'))
+    if old is None or new is None:
+        return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag'}), 400
+    try:
+        data = libtags.load(TAGS_PATH)
+        affected = sum(1 for tags in data.values() if old in tags)
+        merged = any(new in tags for tags in data.values())
+        libtags.save(libtags.rename(data, old, new), TAGS_PATH)
+    except OSError as exc:
+        return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
+    return jsonify({'ok': True, 'merged': merged, 'affected': affected})
+
+
+@app.route('/api/tags/<tag>', methods=['DELETE'])
+def api_delete_tag(tag):
+    """Remove a tag from every video. The videos themselves are untouched."""
+    name = libtags.normalise(tag)
+    if name is None:
+        return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag'}), 400
+    try:
+        data = libtags.load(TAGS_PATH)
+        affected = sum(1 for tags in data.values() if name in tags)
+        libtags.save(libtags.delete(data, name), TAGS_PATH)
+    except OSError as exc:
+        return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
+    return jsonify({'ok': True, 'affected': affected})
+
+
 @app.route('/api/stats')
 def api_stats():
     """Dashboard tiles: counts + aggregate scores across all outputs."""

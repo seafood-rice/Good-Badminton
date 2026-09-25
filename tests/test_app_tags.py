@@ -140,3 +140,93 @@ def test_put_reports_a_write_failure_instead_of_claiming_success(client, monkeyp
     res = c.put("/api/videos/clip/tags", json={"tags": ["smash"]})
     assert res.status_code == 500
     assert "error" in res.get_json()
+
+
+def test_rename_applies_across_videos(client):
+    c, videos, _outputs, store = client
+    for n in ("a", "b"):
+        (videos / f"{n}.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["smash"], "b": ["smash", "net"]}, store)
+
+    res = c.post("/api/tags/rename", json={"from": "smash", "to": "smashes"})
+    assert res.status_code == 200
+    assert res.get_json()["affected"] == 2
+    assert res.get_json()["merged"] is False
+    assert libtags.load(store) == {"a": ["smashes"], "b": ["net", "smashes"]}
+
+
+def test_rename_onto_an_existing_tag_merges_and_says_so(client):
+    c, videos, _outputs, store = client
+    (videos / "a.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["smash", "net"]}, store)
+
+    res = c.post("/api/tags/rename", json={"from": "smash", "to": "net"})
+    assert res.status_code == 200
+    assert res.get_json()["merged"] is True
+    assert libtags.load(store) == {"a": ["net"]}
+
+
+def test_rename_normalises_both_ends(client):
+    c, videos, _outputs, store = client
+    (videos / "a.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["smash"]}, store)
+
+    c.post("/api/tags/rename", json={"from": " SMASH ", "to": " Smashes "})
+    assert libtags.load(store) == {"a": ["smashes"]}
+
+
+def test_rename_to_a_reserved_name_is_refused(client):
+    c, videos, _outputs, store = client
+    (videos / "a.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["smash"]}, store)
+
+    assert c.post("/api/tags/rename", json={"from": "smash", "to": "match"}).status_code == 400
+    assert libtags.load(store) == {"a": ["smash"]}
+
+
+def test_rename_from_a_reserved_name_is_refused(client):
+    c, _videos, _outputs, _store = client
+    assert c.post("/api/tags/rename", json={"from": "match", "to": "x"}).status_code == 400
+
+
+def test_rename_with_missing_fields_is_refused(client):
+    c, _videos, _outputs, _store = client
+    assert c.post("/api/tags/rename", json={"from": "smash"}).status_code == 400
+    assert c.post("/api/tags/rename", json={}).status_code == 400
+
+
+def test_delete_removes_the_tag_everywhere(client):
+    c, videos, _outputs, store = client
+    for n in ("a", "b"):
+        (videos / f"{n}.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["smash"], "b": ["smash", "net"]}, store)
+
+    res = c.delete("/api/tags/smash")
+    assert res.status_code == 200
+    assert res.get_json()["affected"] == 2
+    assert libtags.load(store) == {"b": ["net"]}
+
+
+def test_delete_of_a_reserved_name_is_refused(client):
+    c, _videos, _outputs, _store = client
+    assert c.delete("/api/tags/match").status_code == 400
+
+
+def test_delete_of_an_unused_tag_is_a_no_op_not_an_error(client):
+    c, videos, _outputs, store = client
+    (videos / "a.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["net"]}, store)
+
+    res = c.delete("/api/tags/ghost")
+    assert res.status_code == 200
+    assert res.get_json()["affected"] == 0
+    assert libtags.load(store) == {"a": ["net"]}
+
+
+def test_rename_reports_a_write_failure(client, monkeypatch):
+    c, videos, _outputs, store = client
+    (videos / "a.mp4").write_bytes(b"\x00")
+    libtags.save({"a": ["smash"]}, store)
+    monkeypatch.setattr(webapp.libtags, "save",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    assert c.post("/api/tags/rename", json={"from": "smash", "to": "x"}).status_code == 500
