@@ -7,10 +7,15 @@ from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
+from badminton_analysis.library import tags as libtags
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
 OUTPUTS = PROJECT_ROOT / 'outputs'
+# Library tags live outside outputs/: /api/delete scope "all" removes
+# outputs/<stem> whole, and clearing analysis results must not clear a
+# video's labels. data/ is already gitignored.
+TAGS_PATH = PROJECT_ROOT / 'data' / 'library_tags.json'
 TEMPLATES = PROJECT_ROOT / 'templates'
 WEIGHTS = PROJECT_ROOT / 'weights'
 
@@ -369,6 +374,7 @@ def api_videos():
     """列出所有视频和对应的分析结果"""
     import datetime
     videos = []
+    tag_data = libtags.load(TAGS_PATH)
     for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
         for p in sorted(VIDEOS.glob(ext)):
             name = p.stem
@@ -403,6 +409,7 @@ def api_videos():
                 'thumb': (f'/api/output/{quote(name, safe="")}/thumb.jpg'
                           if thumb_path.exists() else None),
                 'output_dir': str(out_dir) if has_match else None,
+                'tags': libtags.tags_for(tag_data, name),
             })
     return jsonify(videos)
 
