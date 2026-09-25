@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Good-Badminton Web 前端"""
 
-import os, sys, json, time, subprocess, glob, shutil
+import os, sys, json, time, subprocess, glob, shutil, threading
 from pathlib import Path
 from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file
@@ -16,6 +16,11 @@ OUTPUTS = PROJECT_ROOT / 'outputs'
 # outputs/<stem> whole, and clearing analysis results must not clear a
 # video's labels. data/ is already gitignored.
 TAGS_PATH = PROJECT_ROOT / 'data' / 'library_tags.json'
+# Flask serves requests on multiple threads; without this lock, two concurrent
+# tag writes race load -> mutate -> save and one can silently clobber the
+# other. One global lock rather than per-video: rename/delete touch the whole
+# file, so a per-stem lock would not prevent the cross-video race.
+_TAGS_LOCK = threading.Lock()
 TEMPLATES = PROJECT_ROOT / 'templates'
 WEIGHTS = PROJECT_ROOT / 'weights'
 
@@ -436,8 +441,9 @@ def api_set_video_tags(video_name):
         return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag',
                         'rejected': rejected}), 400
     try:
-        data = libtags.set_tags(libtags.load(TAGS_PATH), stem, clean)
-        libtags.save(data, TAGS_PATH)
+        with _TAGS_LOCK:
+            data = libtags.set_tags(libtags.load(TAGS_PATH), stem, clean)
+            libtags.save(data, TAGS_PATH)
     except OSError as exc:
         return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
     return jsonify({'ok': True, 'tags': clean})
@@ -452,10 +458,11 @@ def api_rename_tag():
     if old is None or new is None:
         return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag'}), 400
     try:
-        data = libtags.load(TAGS_PATH)
-        affected = sum(1 for tags in data.values() if old in tags)
-        merged = any(new in tags for tags in data.values())
-        libtags.save(libtags.rename(data, old, new), TAGS_PATH)
+        with _TAGS_LOCK:
+            data = libtags.load(TAGS_PATH)
+            affected = sum(1 for tags in data.values() if old in tags)
+            merged = any(new in tags for tags in data.values())
+            libtags.save(libtags.rename(data, old, new), TAGS_PATH)
     except OSError as exc:
         return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
     return jsonify({'ok': True, 'merged': merged, 'affected': affected})
@@ -468,9 +475,10 @@ def api_delete_tag(tag):
     if name is None:
         return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag'}), 400
     try:
-        data = libtags.load(TAGS_PATH)
-        affected = sum(1 for tags in data.values() if name in tags)
-        libtags.save(libtags.delete(data, name), TAGS_PATH)
+        with _TAGS_LOCK:
+            data = libtags.load(TAGS_PATH)
+            affected = sum(1 for tags in data.values() if name in tags)
+            libtags.save(libtags.delete(data, name), TAGS_PATH)
     except OSError as exc:
         return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
     return jsonify({'ok': True, 'affected': affected})
@@ -1144,10 +1152,11 @@ def api_delete(video_name):
             # reporting the delete as failed over a tag-store hiccup would be
             # worse than a stale entry, which is invisible anyway (a deleted
             # video has no /api/videos row to carry it).
-            try:
-                libtags.save(libtags.forget(libtags.load(TAGS_PATH), stem), TAGS_PATH)
-            except OSError as exc:
-                print(f'Tag cleanup skipped for {stem}: {exc}')
+            with _TAGS_LOCK:
+                try:
+                    libtags.save(libtags.forget(libtags.load(TAGS_PATH), stem), TAGS_PATH)
+                except OSError as exc:
+                    print(f'Tag cleanup skipped for {stem}: {exc}')
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})

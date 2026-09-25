@@ -1,4 +1,7 @@
 """Tag routes and the tags field on the library listing."""
+import threading
+import time
+
 import pytest
 
 import app as webapp
@@ -138,6 +141,50 @@ def test_put_reports_a_write_failure_instead_of_claiming_success(client, monkeyp
     res = c.put("/api/videos/clip/tags", json={"tags": ["smash"]})
     assert res.status_code == 500
     assert "error" in res.get_json()
+
+
+def test_concurrent_puts_to_different_videos_do_not_clobber_each_other(client, monkeypatch):
+    """Every tag write is load -> mutate -> save with no lock, and Flask serves
+    requests on threads: two overlapping writes can interleave as A loads, B
+    loads (before A saves), A saves, B saves -- B's save started from a
+    snapshot that predates A's write, so A's write is silently lost.
+
+    ``libtags.load`` is monkeypatched to sleep briefly so the overlapping
+    read-modify-write windows are guaranteed rather than merely likely, then N
+    concurrent PUTs to N different videos (each from its own thread, each
+    using its own ``test_client()`` per the fixture's existing pattern) must
+    all persist.
+    """
+    c, videos, _outputs, store = client
+    names = [f"v{i}" for i in range(8)]
+    for n in names:
+        (videos / f"{n}.mp4").write_bytes(b"\x00")
+
+    real_load = libtags.load
+
+    def slow_load(path):
+        time.sleep(0.02)
+        return real_load(path)
+
+    monkeypatch.setattr(webapp.libtags, "load", slow_load)
+
+    results = {}
+
+    def put_one(name):
+        thread_client = webapp.app.test_client()
+        res = thread_client.put(f"/api/videos/{name}/tags", json={"tags": [name]})
+        results[name] = res.status_code
+
+    threads = [threading.Thread(target=put_one, args=(n,)) for n in names]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert all(status == 200 for status in results.values()), results
+    saved = libtags.load(store)
+    lost = [n for n in names if saved.get(n) != [n]]
+    assert not lost, f"tag writes lost to an unlocked read-modify-write race: {lost}"
 
 
 def test_rename_applies_across_videos(client):
