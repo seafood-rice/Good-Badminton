@@ -179,6 +179,9 @@ window.Kestrel = (function () {
   // while the UI is bilingual. User tags are the owner's own text and are
   // never translated.
   var SYS_TAGS = { match: ['比赛', 'Match'], drill: ['训练', 'Drill'] };
+  // Inline SVG, not emoji: emoji render per-platform and cannot be themed.
+  var ICON_TAG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z"/><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/></svg>';
+  var ICON_DEL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
   function isSysTag(t) { return Object.prototype.hasOwnProperty.call(SYS_TAGS, t); }
   function tagLabel(t) { return isSysTag(t) ? _loc(SYS_TAGS[t], 0, 1) : t; }
   function sysTagsOf(v) {
@@ -244,7 +247,12 @@ window.Kestrel = (function () {
       }).join('') || '<span class="vtag-none">' + (state.lang==='zh'?'无标签':'no tags') + '</span>';
       return '<div class="vcard" role="button" tabindex="0" data-name="' + nm + '"><div class="vthumb" style="' + thumb + '">' +
         '<span class="vdur mono">' + dur + '</span>' +
-        '<button class="vdel" data-del="' + nm + '" aria-label="' + (state.lang==='zh'?'删除':'Delete') + '">🗑</button></div>' +
+        '<span class="vicons">' +
+          '<button class="vicon" data-tagbtn="' + nm + '" aria-label="' +
+            (state.lang==='zh'?'编辑标签':'Edit tags') + '">' + ICON_TAG + '</button>' +
+          '<button class="vicon" data-del="' + nm + '" aria-label="' +
+            (state.lang==='zh'?'删除':'Delete') + '">' + ICON_DEL + '</button>' +
+        '</span></div>' +
         '<div class="vbody"><div class="vname">' + escHTML(v.name || '') + '</div>' +
         '<div class="vdate mono">' + (v.date||'') + '</div>' +
         '<div class="vfoot">' + statusChip(v) + '</div>' +
@@ -263,7 +271,7 @@ window.Kestrel = (function () {
         } else { setScreen('new'); }
       };
     });
-    wrap.querySelectorAll('.vdel').forEach(function (b) {
+    wrap.querySelectorAll('[data-del]').forEach(function (b) {
       b.onclick = function (e) {
         e.stopPropagation();
         var name = b.getAttribute('data-del');
@@ -273,6 +281,116 @@ window.Kestrel = (function () {
         });
       };
     });
+    wrap.querySelectorAll('[data-tagbtn]').forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();   // the card itself opens the video
+        var name = b.getAttribute('data-tagbtn');
+        var v = lib.videos.filter(function (x) { return x.name === name; })[0];
+        if (v) openTagEditor(v, b);
+      };
+    });
+  }
+  var openPop = null;
+  function closePop() {
+    if (!openPop) return;
+    openPop.backdrop.remove(); openPop.el.remove(); openPop = null;
+    document.removeEventListener('keydown', popKey);
+  }
+  function popKey(e) { if (e.key === 'Escape') closePop(); }
+
+  function openTagEditor(video, anchor) {
+    closePop();
+    var zh = state.lang === 'zh';
+    var backdrop = document.createElement('div');
+    backdrop.className = 'pop-backdrop'; backdrop.onclick = closePop;
+    var el = document.createElement('div'); el.className = 'pop';
+    document.body.appendChild(backdrop); document.body.appendChild(el);
+    openPop = { el: el, backdrop: backdrop };
+    document.addEventListener('keydown', popKey);
+    var r = anchor.getBoundingClientRect();
+    el.style.top = (window.scrollY + r.bottom + 8) + 'px';
+    el.style.left = Math.max(8, Math.min(window.scrollX + r.left - 130, window.innerWidth - 306)) + 'px';
+
+    // The editor works on a copy and PUTs the whole list. On failure the copy
+    // is discarded and the popover stays open, so a save error can never look
+    // like a save.
+    var draft = (video.tags || []).slice();
+
+    function persist(next, onFail) {
+      fetch('/api/videos/' + encodeURIComponent(video.name) + '/tags', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: next })
+      }).then(function (res) { return res.json().then(function (d) { return { ok: res.ok, d: d }; }); })
+        .then(function (out) {
+          if (!out.ok) { onFail((out.d && out.d.error) || (zh ? '保存失败' : 'Save failed')); return; }
+          draft = out.d.tags; video.tags = out.d.tags;
+          draw(); renderCards(); renderTagBar(); renderResultLine();
+        })
+        .catch(function () { onFail(zh ? '保存失败' : 'Save failed'); });
+    }
+
+    function draw(warning) {
+      var sys = sysTagsOf(video);
+      el.innerHTML =
+        '<h3>' + (zh ? '标签' : 'Tags') + '</h3><p class="sub">' + escHTML(video.name) + '</p>' +
+        (sys.length ? '<div class="pop-sys">' + sys.map(function (t) {
+            return '<span class="vtag sys">' + escHTML(tagLabel(t)) + '</span>'; }).join('') + '</div>' +
+          '<p class="pop-sys-note">' + (zh ? '来自分析结果，不可编辑。' : 'From analysis results — not editable.') + '</p>' : '') +
+        '<div class="pop-tags">' + (draft.length
+          ? draft.map(function (t) {
+              return '<span class="ptag">' + escHTML(t) + '<button data-rm="' + escHTML(t) + '" aria-label="' +
+                (zh ? '移除 ' : 'Remove ') + escHTML(t) + '">×</button></span>'; }).join('')
+          : '<span class="vtag-none">' + (zh ? '暂无' : 'none yet') + '</span>') + '</div>' +
+        '<input id="tag-in" autocomplete="off" placeholder="' + (zh ? '添加标签…' : 'Add a tag…') +
+          '" aria-label="' + (zh ? '添加标签' : 'Add a tag') + '">' +
+        (warning ? '<p class="warn" role="alert">' + warning + '</p>' : '') +
+        '<div id="sugg"></div>' +
+        '<p class="pop-hint">' + (zh ? '回车添加 · Esc 关闭 · 立即保存' : 'Enter to add · Esc to close · saves immediately') + '</p>';
+
+      el.querySelectorAll('[data-rm]').forEach(function (b) {
+        b.onclick = function () {
+          var t = b.getAttribute('data-rm');
+          persist(draft.filter(function (x) { return x !== t; }),
+                  function (msg) { draw(msg); });
+        };
+      });
+
+      var input = el.querySelector('#tag-in'), sugg = el.querySelector('#sugg'), cursor = -1;
+      function drawSugg() {
+        var val = input.value.trim().toLowerCase();
+        var pool = knownTags().filter(function (t) { return !isSysTag(t); })
+          .filter(function (t) { return draft.indexOf(t) === -1; })
+          .filter(function (t) { return !val || t.indexOf(val) !== -1; });
+        var rows = pool.slice(0, 5).map(function (t, i) {
+          return '<button data-add="' + escHTML(t) + '" class="' + (i === cursor ? 'cursor' : '') + '">' + escHTML(t) + '</button>'; });
+        if (val && pool.indexOf(val) === -1 && !isSysTag(val)) {
+          rows.push('<button data-add="' + escHTML(val) + '" class="new">' +
+            (zh ? '新建 “' : 'Create “') + escHTML(val) + '”</button>');
+        }
+        sugg.innerHTML = rows.join(''); sugg.className = rows.length ? 'sugg' : '';
+        sugg.querySelectorAll('[data-add]').forEach(function (b) {
+          b.onclick = function () { add(b.getAttribute('data-add')); }; });
+      }
+      function add(t) {
+        t = (t || '').trim().toLowerCase(); if (!t) return;
+        if (isSysTag(t)) { draw(zh ? '保留名称：由分析结果决定。' : 'Reserved — this name is set by the analysis.'); el.querySelector('#tag-in').focus(); return; }
+        if (draft.indexOf(t) !== -1) { input.value = ''; drawSugg(); return; }
+        persist(draft.concat([t]), function (msg) { draw(msg); });
+      }
+      input.oninput = function () { cursor = -1; drawSugg(); };
+      input.onkeydown = function (e) {
+        var opts = sugg.querySelectorAll('[data-add]');
+        if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, opts.length - 1); drawSugg(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(cursor - 1, -1); drawSugg(); }
+        else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (cursor >= 0 && opts[cursor]) add(opts[cursor].getAttribute('data-add'));
+          else add(input.value);
+        }
+      };
+      drawSugg(); input.focus();
+    }
+    draw();
   }
   function renderSidebar() {
     var s = document.getElementById('sidebar');
