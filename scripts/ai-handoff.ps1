@@ -1,4 +1,7 @@
 #Requires -Version 7.0
+# (The blank line below is required: a comment line directly above `<#`
+# stops Get-Help from recognizing the comment-based help block.)
+
 <#
 .SYNOPSIS
     Claude-Codex continuity helper for Good Badminton.
@@ -34,7 +37,36 @@
     `<git-common-dir>/ai-continuity`. Missing continuity directories mean
     empty state, not an error.
 
+.PARAMETER Scope
+    Repository-relative path prefixes for `start`/`takeover`. See
+    PATH ARRAYS AND -File in NOTES.
+
+.PARAMETER ChangedPath
+    Repository-relative changed paths for `update`. See PATH ARRAYS AND -File.
+
+.PARAMETER VerificationDirtyPath
+    Repository-relative dirty paths for `update`. See PATH ARRAYS AND -File.
+
+.EXAMPLE
+    pwsh -NoProfile -Command "& ./scripts/ai-handoff.ps1 start -Agent claude -SessionId s1 -Workstream my-ws -Scope @('.ai/workstreams/my-ws.md','src/feature')"
+
 .NOTES
+    PATH ARRAYS AND -File: `-Scope`, `-ChangedPath`, and
+    `-VerificationDirtyPath` are `[string[]]`. The design's Helper Contract
+    says they "accept a normal comma-separated array" -- an array PowerShell
+    builds, which happens under `pwsh -Command` or an in-process `&` call.
+    Under `pwsh -File`, `-Scope a,b` binds as ONE literal string 'a,b'. The
+    helper rejects any element containing a comma with exit 2 and no
+    mutation instead of splitting it: path validation is fail-closed and the
+    helper never guesses at caller intent, and splitting would make `-File`
+    and `-Command` interpret the same text differently. Consequently a
+    repository path that literally contains a comma cannot be claimed or
+    recorded; because `handoff` requires every committed in-scope change to
+    be listed in `-ChangedPath`, committing such a file inside a claimed
+    scope blocks handoff until it is renamed. Pass
+    multiple paths with `pwsh -Command` and `@('a','b')`; `-File` remains
+    fine for a single comma-free path.
+
     Default output is concise human-readable text. `-Json` serializes exactly
     one JSON object to stdout; all diagnostics are kept off stdout so JSON
     output stays parseable.
@@ -643,6 +675,33 @@ function Assert-LeaseHoursInRange {
         throw [ContinuityValidationException]::new(
             "LeaseHours '$LeaseHours' is out of range; expected an integer between 1 and 24."
         )
+    }
+}
+
+function Assert-NoCommaJoinedPath {
+    <#
+    .SYNOPSIS
+        Rejects a path-array element that contains a comma. Under
+        `pwsh -File`, `-Scope a,b` binds as ONE literal string 'a,b'; recorded
+        as-is it guards no real path. The helper refuses it (exit 2) rather
+        than splitting it, because it never guesses at caller intent (see
+        "PATH ARRAYS AND -File" in the script help).
+    #>
+    param(
+        [AllowNull()]
+        [string[]] $Paths,
+        [Parameter(Mandatory = $true)]
+        [string] $Name
+    )
+
+    foreach ($path in @($Paths)) {
+        if ($null -ne $path -and $path.Contains(',')) {
+            throw [ContinuityValidationException]::new(
+                "-$Name path '$path' contains a comma. Under 'pwsh -File' a comma list is " +
+                "passed as one string, not an array. Invoke via 'pwsh -Command' with an " +
+                "array, for example: -$Name @('a','b')."
+            )
+        }
     }
 }
 
@@ -4559,6 +4618,9 @@ function Get-KnownGitCommonDirForResult {
 try {
     Assert-ValidOperation -Operation $Operation
     Assert-LeaseHoursInRange -LeaseHours $LeaseHours -WasSupplied $PSBoundParameters.ContainsKey('LeaseHours')
+    Assert-NoCommaJoinedPath -Paths $Scope -Name 'Scope'
+    Assert-NoCommaJoinedPath -Paths $ChangedPath -Name 'ChangedPath'
+    Assert-NoCommaJoinedPath -Paths $VerificationDirtyPath -Name 'VerificationDirtyPath'
     Assert-KnownTestFault
 
     $repositoryContext = Get-RepositoryContext

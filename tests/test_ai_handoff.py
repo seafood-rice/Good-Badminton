@@ -952,6 +952,108 @@ def test_start_rejects_out_of_range_lease_hours(continuity_repo):
     assert not (_git_common_dir_for(continuity_repo) / "ai-continuity").exists()
 
 
+def run_helper_file(cwd: Path, argv: Sequence[str]) -> HelperResult:
+    """Invoke the helper through `pwsh -File`, the other real entry point.
+
+    Unlike `-Command`, `-File` binds every argument as a literal string, so
+    `-Scope a,b` reaches `[string[]] $Scope` as ONE element `'a,b'`. The
+    arguments travel as a subprocess argv list; no PowerShell source is
+    built from them."""
+    pwsh = _find_pwsh()
+    completed = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(SCRIPT_PATH), *argv],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return HelperResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+_IDENTITY_ARGV = ["-Agent", "codex", "-SessionId", "session-1"]
+_CLAIM_ID_ARGV = ["-ClaimId", "00000000-0000-0000-0000-000000000000"]
+
+COMMA_JOINED_FILE_INVOCATIONS = {
+    "start-Scope": [
+        "start", *_IDENTITY_ARGV, "-Workstream", "continuity-pilot",
+        "-Scope", ".ai/workstreams/continuity-pilot.md,shared",
+    ],
+    "takeover-Scope": [
+        "takeover", *_IDENTITY_ARGV, "-Workstream", "continuity-pilot",
+        "-PreviousClaimId", "00000000-0000-0000-0000-000000000000", "-Reason", "expired",
+        "-Scope", ".ai/workstreams/continuity-pilot.md,shared",
+    ],
+    "update-ChangedPath": [
+        "update", *_CLAIM_ID_ARGV, *_IDENTITY_ARGV, "-Summary", "milestone",
+        "-ChangedPath", "shared/a.txt,shared/b.txt",
+        "-VerificationResult", "not-run", "-NotRunReason", "n/a",
+    ],
+    "update-VerificationDirtyPath": [
+        "update", *_CLAIM_ID_ARGV, *_IDENTITY_ARGV, "-Summary", "milestone",
+        "-VerificationResult", "passed", "-VerificationCommand", "pytest",
+        "-VerificationCommit", "0" * 40,
+        "-VerificationDirtyPath", "shared/a.txt,shared/b.txt",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "argv", COMMA_JOINED_FILE_INVOCATIONS.values(), ids=COMMA_JOINED_FILE_INVOCATIONS.keys()
+)
+def test_file_invocation_rejects_comma_joined_path_list(continuity_repo, argv):
+    """Under `pwsh -File`, a comma list arrives as one comma-joined string.
+    The helper must reject it with exit `2` and a hint to use `-Command`
+    with `@('a','b')` -- never record it as a single scope path that guards
+    no real file (observed on a live claim 2026-09-25) -- and must not
+    create any continuity state."""
+    result = run_helper_file(continuity_repo, [*argv, "-Json"])
+
+    assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    parsed = parse_json_stdout(result)
+    assert parsed["ok"] is False
+    messages = [error["message"] for error in parsed["errors"] if error["code"] == "validation"]
+    assert any("comma" in message and "@(" in message and "-Command" in message for message in messages), (
+        f"expected a comma-list validation hint, got {parsed['errors']!r}"
+    )
+    assert not (_git_common_dir_for(continuity_repo) / "ai-continuity").exists()
+
+
+def test_get_help_documents_comma_list_rejection():
+    """The comma-list decision is discoverable through `Get-Help`, not only
+    by reading the source: the comment-based help block must be recognized
+    and its Scope parameter help must point at the `-File` caveat."""
+    pwsh = _find_pwsh()
+    completed = subprocess.run(
+        [
+            pwsh, "-NoProfile", "-NonInteractive", "-Command",
+            "Get-Help -Name ([Console]::In.ReadToEnd().Trim()) -Full | Out-String -Width 200",
+        ],
+        input=str(SCRIPT_PATH),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    help_text = completed.stdout
+    assert "Claude-Codex continuity helper" in help_text
+    assert "PATH ARRAYS AND -File" in help_text
+    assert "@('a','b')" in help_text
+
+
+def test_file_invocation_accepts_single_scope_path(continuity_repo):
+    """`pwsh -File` stays usable for a single comma-free scope path; only
+    the comma-joined form is refused."""
+    result = run_helper_file(
+        continuity_repo,
+        ["start", *_IDENTITY_ARGV, "-Workstream", "continuity-pilot", "-Scope", "shared", "-Json"],
+    )
+
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    claim = json.loads(_claim_file_for(continuity_repo, "continuity-pilot").read_text(encoding="utf-8"))
+    assert claim["scope_paths"] == ["shared"]
+
+
 def _create_junction(link_path: Path, target_path: Path) -> None:
     """Create an unprivileged directory junction with `New-Item -ItemType
     Junction` (Task 3 brief, Step 1). Junctions never require elevation or
