@@ -57,7 +57,9 @@ window.Kestrel = (function () {
     });
     return out;
   }
-  function applyFilters(patch) { Object.assign(lib.filter, patch); renderCards(); }
+  function applyFilters(patch) {
+    Object.assign(lib.filter, patch); renderCards(); renderTagBar(); renderResultLine();
+  }
   // Localized filter options: [value, zh, en]. Labels stay consistent with the
   // card badges (tagLabel / statusChip) so the same term names the same thing.
   var FILTER_DEFS = {
@@ -99,6 +101,76 @@ window.Kestrel = (function () {
         applyFilters(patch); renderFilterBar();
       };
     });
+  }
+  // Count shown on a chip is PROJECTED: how many videos would remain if this
+  // tag were also applied. With AND semantics a plain total invites clicking
+  // into an empty list; a projected count makes the dead end visible, and a
+  // chip that would yield zero disables itself.
+  function projectedCount(tag) {
+    var f = lib.filter;
+    return lib.videos.filter(function (v) {
+      if (f.status !== 'all' && v.status !== f.status) return false;
+      if (!f.tags.every(function (t) { return tagsOf(v).indexOf(t) !== -1; })) return false;
+      return f.tags.indexOf(tag) !== -1 || tagsOf(v).indexOf(tag) !== -1;
+    }).length;
+  }
+  function knownTags() {
+    var counts = {};
+    lib.videos.forEach(function (v) {
+      tagsOf(v).forEach(function (t) { counts[t] = (counts[t] || 0) + 1; });
+    });
+    var keys = Object.keys(counts);
+    return keys.filter(isSysTag).sort().concat(keys.filter(function (t) { return !isSysTag(t); }).sort());
+  }
+  function renderTagBar() {
+    var bar = document.getElementById('tag-bar'); if (!bar) return;
+    var zh = state.lang === 'zh';
+    var tags = knownTags();
+    var chips = '', sepDone = false;
+    tags.forEach(function (t) {
+      if (!isSysTag(t) && !sepDone && tags.some(isSysTag)) {
+        chips += '<span class="tag-sep" aria-hidden="true"></span>'; sepDone = true;
+      }
+      var on = lib.filter.tags.indexOf(t) !== -1;
+      var n = projectedCount(t);
+      // aria-label is explicit: with a title attribute present the chip
+      // announces the tooltip instead of its own name.
+      var aria = escHTML(tagLabel(t) + ', ' + n + ' ' + (zh ? '个视频' : (n === 1 ? 'video' : 'videos')) +
+        (isSysTag(t) ? ', ' + (zh ? '来自分析结果' : 'from analysis results') : ''));
+      chips += '<button class="tchip' + (isSysTag(t) ? ' sys' : '') + (on ? ' on' : '') +
+        (!on && n === 0 ? ' zero' : '') + '" data-tag="' + escHTML(t) + '" role="switch" aria-checked="' + on +
+        '" aria-label="' + aria + '"' + (!on && n === 0 ? ' disabled' : '') + '>' +
+        escHTML(tagLabel(t)) + '<span class="n">' + n + '</span></button>';
+    });
+    bar.innerHTML = (tags.length
+      ? '<span class="tag-bar-label">' + (zh ? '标签' : 'Tags') + '</span>' +
+        '<div class="tag-chips" role="group" aria-label="' + (zh ? '按标签筛选' : 'Filter by tags') + '">' + chips + '</div>'
+      : '') +
+      '<div class="tag-bar-actions">' +
+        (lib.filter.tags.length ? '<button class="linkish" id="t-clear">' + (zh ? '清除标签' : 'Clear tags') + '</button>' : '') +
+        '<button class="linkish" id="t-manage">' + (zh ? '管理…' : 'Manage…') + '</button></div>';
+
+    bar.querySelectorAll('.tchip').forEach(function (b) {
+      b.onclick = function () {
+        var t = b.getAttribute('data-tag'), i = lib.filter.tags.indexOf(t);
+        if (i === -1) lib.filter.tags.push(t); else lib.filter.tags.splice(i, 1);
+        renderTagBar(); renderCards(); renderResultLine();
+      };
+    });
+    var clr = bar.querySelector('#t-clear');
+    if (clr) clr.onclick = function () {
+      lib.filter.tags = []; renderTagBar(); renderCards(); renderResultLine();
+    };
+  }
+  function renderResultLine() {
+    var el = document.getElementById('result-line'); if (!el) return;
+    var zh = state.lang === 'zh', f = lib.filter, n = filteredVideos().length;
+    if (!f.tags.length && !f.q) { el.innerHTML = '<b>' + n + '</b> ' + (zh ? '个视频' : 'videos'); return; }
+    var bits = [];
+    if (f.tags.length) bits.push((zh ? '同时包含 ' : 'all of ') +
+      f.tags.map(function (t) { return '“' + escHTML(tagLabel(t)) + '”'; }).join(' + '));
+    if (f.q) bits.push((zh ? '匹配 ' : 'matching ') + '“' + escHTML(f.q) + '”');
+    el.innerHTML = '<b>' + n + '</b> / ' + lib.videos.length + ' — ' + bits.join(', ');
   }
   // Match/Drill are DERIVED from what analysis produced, so they are computed
   // here rather than stored as user tags: a stored copy would go stale, and a
@@ -143,8 +215,12 @@ window.Kestrel = (function () {
                '</div><div class="stat-val mono">' + val + '</div></div>';
       }).join('') + '</div>' +
       '<div class="filter-bar" id="filter-bar"></div>' +
+      '<div class="tag-bar" id="tag-bar"></div>' +
+      '<p class="result-line" id="result-line"></p>' +
       '<div id="cards" class="card-grid"></div>';
     renderFilterBar();
+    renderTagBar();
+    renderResultLine();
     renderCards();
     var gn = document.getElementById('go-new'); if (gn) gn.onclick = function () { setScreen('new'); };
   }

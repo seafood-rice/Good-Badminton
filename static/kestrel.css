@@ -284,3 +284,27 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
 .vcard:hover .vdel,.vdel:focus-visible{opacity:1;}
 .danger-link{color:var(--bad);border-color:var(--bad);}
 .danger-link:hover{color:#fff;background:var(--bad);border-color:var(--bad);}
+.tag-bar{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;flex-wrap:wrap;}
+.tag-bar-label{font-size:12px;color:var(--faint);padding-top:8px;white-space:nowrap;}
+.tag-chips{display:flex;flex-wrap:wrap;gap:6px;flex:1 1 300px;align-items:center;}
+.tchip{display:inline-flex;align-items:center;gap:6px;font:600 12px inherit;padding:6px 11px;
+  min-height:32px;border-radius:var(--radius-pill);background:var(--fill);color:var(--muted);
+  border:1px solid transparent;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
+.tchip:hover{color:var(--ink);border-color:var(--border);}
+.tchip:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.tchip .n{font-weight:500;color:var(--faint);font-size:11px;}
+.tchip.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);}
+.tchip.on .n{color:var(--accent);}
+.tchip.zero{opacity:.4;cursor:not-allowed;}
+.tchip.sys{background:transparent;border:1px dashed var(--border);}
+.tchip.sys::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none;}
+.tchip.sys.on{background:var(--accent-soft);border-style:solid;border-color:var(--accent);}
+.tchip.sys.on::before{background:var(--accent);}
+.tag-sep{width:1px;align-self:stretch;background:var(--border);margin:2px 4px;}
+.tag-bar-actions{display:flex;gap:8px;align-items:center;}
+.linkish{background:none;border:none;color:var(--muted);font:600 12px inherit;cursor:pointer;
+  padding:6px 8px;border-radius:var(--radius-sm);}
+.linkish:hover{color:var(--accent);background:var(--accent-soft);}
+.result-line{font-size:12px;color:var(--faint);margin:0 0 18px;min-height:18px;}
+.result-line b{color:var(--ink);}
+@media (max-width:560px){ .tag-bar-label{display:none;} }
