@@ -161,6 +161,8 @@ window.Kestrel = (function () {
     if (clr) clr.onclick = function () {
       lib.filter.tags = []; renderTagBar(); renderCards(); renderResultLine();
     };
+    var mng = bar.querySelector('#t-manage');
+    if (mng) mng.onclick = openTagManager;
   }
   function renderResultLine() {
     var el = document.getElementById('result-line'); if (!el) return;
@@ -391,6 +393,135 @@ window.Kestrel = (function () {
       drawSugg(); input.focus();
     }
     draw();
+  }
+  function reloadLibrary() {
+    return fetch('/api/videos').then(function (r) { return r.json(); }).then(function (rows) {
+      lib.videos = rows || [];
+      // Drop filters for tags that no longer exist anywhere.
+      var live = knownTags();
+      lib.filter.tags = lib.filter.tags.filter(function (t) { return live.indexOf(t) !== -1; });
+      renderCards(); renderTagBar(); renderResultLine();
+    });
+  }
+
+  function openTagManager() {
+    closePop();
+    var zh = state.lang === 'zh';
+    var backdrop = document.createElement('div'); backdrop.className = 'pop-backdrop';
+    backdrop.onclick = closePop;
+    var el = document.createElement('div'); el.className = 'modal';
+    document.body.appendChild(backdrop); document.body.appendChild(el);
+    openPop = { el: el, backdrop: backdrop };
+    document.addEventListener('keydown', popKey);
+    var editing = null, confirming = null, problem = null;
+
+    function counts() {
+      var c = {};
+      lib.videos.forEach(function (v) { tagsOf(v).forEach(function (t) { c[t] = (c[t] || 0) + 1; }); });
+      return c;
+    }
+    function draw() {
+      var c = counts(), tags = knownTags();
+      var sys = tags.filter(isSysTag), usr = tags.filter(function (t) { return !isSysTag(t); });
+      function row(t) {
+        if (editing === t) {
+          return '<div class="trow"><input id="ren" value="' + escHTML(t) + '" aria-label="' +
+            (zh ? '重命名 ' : 'Rename ') + escHTML(t) + '">' +
+            '<button class="tbtn" data-save="' + escHTML(t) + '">' + (zh ? '保存' : 'Save') + '</button>' +
+            '<button class="tbtn" data-cancel="1">' + (zh ? '取消' : 'Cancel') + '</button></div>';
+        }
+        if (isSysTag(t)) {
+          return '<div class="trow sys"><span class="nm">' + escHTML(tagLabel(t)) + '</span>' +
+            '<span class="ct">' + c[t] + '</span>' +
+            '<span class="why">' + (zh ? '自动' : 'derived') + '</span></div>';
+        }
+        return '<div class="trow"><span class="nm">' + escHTML(t) + '</span><span class="ct">' + c[t] + '</span>' +
+          '<button class="tbtn" data-ren="' + escHTML(t) + '">' + (zh ? '重命名' : 'Rename') + '</button>' +
+          '<button class="tbtn danger" data-del="' + escHTML(t) + '">' + (zh ? '删除' : 'Delete') + '</button></div>';
+      }
+      el.innerHTML = '<h2>' + (zh ? '管理标签' : 'Manage tags') + '</h2>' +
+        '<p class="sub">' + (zh ? '重命名或删除会应用到所有使用该标签的视频。'
+                                : 'Renaming or deleting applies to every video that uses the tag.') + '</p>' +
+        (sys.length ? '<div class="grp">' + (zh ? '来自分析' : 'From analysis') + '</div>' + sys.map(row).join('') : '') +
+        (usr.length ? '<div class="grp">' + (zh ? '自定义标签' : 'Your tags') + '</div>' + usr.map(row).join('')
+                    : '<p class="muted">' + (zh ? '暂无自定义标签' : 'No tags yet') + '</p>') +
+        (problem ? '<p class="warn" role="alert">' + problem + '</p>' : '') +
+        (confirming ? '<div class="confirm">' + (zh ? '删除 ' : 'Delete ') + '<b>' + escHTML(confirming) + '</b>' +
+          (zh ? '？视频本身不受影响。' : '? The videos themselves are not touched.') +
+          '<div class="modal-foot"><button class="btn-ghost" data-cancel="1">' + (zh ? '取消' : 'Cancel') + '</button>' +
+          '<button class="btn-primary" data-confirm="' + escHTML(confirming) + '">' + (zh ? '删除' : 'Delete') + '</button></div></div>' : '') +
+        '<div class="modal-foot"><button class="btn-ghost" data-close="1">' + (zh ? '完成' : 'Done') + '</button></div>';
+
+      el.querySelectorAll('[data-ren]').forEach(function (b) {
+        b.onclick = function () {
+          editing = b.getAttribute('data-ren'); confirming = null; problem = null; draw();
+          var i = el.querySelector('#ren'); if (i) { i.focus(); i.select(); }
+        };
+      });
+      el.querySelectorAll('[data-save]').forEach(function (b) {
+        b.onclick = function () {
+          var from = b.getAttribute('data-save');
+          var to = (el.querySelector('#ren').value || '').trim().toLowerCase();
+          if (!to || to === from) { editing = null; draw(); return; }
+          fetch('/api/tags/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: from, to: to }) })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (o) {
+              if (!o.ok) { problem = (o.d && o.d.error) || (zh ? '重命名失败' : 'Rename failed'); draw(); return; }
+              editing = null; problem = null;
+              lib.filter.tags = lib.filter.tags.map(function (t) { return t === from ? to : t; })
+                .filter(function (t, i, a) { return a.indexOf(t) === i; });
+              reloadLibrary().then(draw);
+            })
+            .catch(function () { problem = zh ? '重命名失败' : 'Rename failed'; draw(); });
+        };
+      });
+      el.querySelectorAll('[data-del]').forEach(function (b) {
+        b.onclick = function () { confirming = b.getAttribute('data-del'); editing = null; problem = null; draw(); };
+      });
+      el.querySelectorAll('[data-confirm]').forEach(function (b) {
+        b.onclick = function () {
+          var t = b.getAttribute('data-confirm');
+          // Snapshot for undo BEFORE the request: restoring means re-PUTting
+          // the tag onto exactly the videos that had it.
+          var had = lib.videos.filter(function (v) { return (v.tags || []).indexOf(t) !== -1; })
+            .map(function (v) { return { name: v.name, tags: (v.tags || []).slice() }; });
+          fetch('/api/tags/' + encodeURIComponent(t), { method: 'DELETE' })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (o) {
+              if (!o.ok) { problem = (o.d && o.d.error) || (zh ? '删除失败' : 'Delete failed'); draw(); return; }
+              confirming = null; problem = null;
+              lib.filter.tags = lib.filter.tags.filter(function (x) { return x !== t; });
+              reloadLibrary().then(draw);
+              showToast('“' + t + '” ' + (zh ? '已删除' : 'deleted'), function () {
+                Promise.all(had.map(function (s) {
+                  return fetch('/api/videos/' + encodeURIComponent(s.name) + '/tags',
+                    { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ tags: s.tags }) });
+                })).then(reloadLibrary);
+              });
+            })
+            .catch(function () { problem = zh ? '删除失败' : 'Delete failed'; draw(); });
+        };
+      });
+      el.querySelectorAll('[data-cancel]').forEach(function (b) {
+        b.onclick = function () { editing = null; confirming = null; problem = null; draw(); }; });
+      el.querySelectorAll('[data-close]').forEach(function (b) { b.onclick = closePop; });
+    }
+    draw();
+  }
+
+  var toastTimer = null;
+  function showToast(msg, undoFn) {
+    clearTimeout(toastTimer);
+    var old = document.querySelector('.toast'); if (old) old.remove();
+    var t = document.createElement('div');
+    t.className = 'toast'; t.setAttribute('role', 'status');
+    t.innerHTML = '<span></span><button>' + (state.lang === 'zh' ? '撤销' : 'Undo') + '</button>';
+    t.querySelector('span').textContent = msg;   // textContent: a tag is user input
+    document.body.appendChild(t);
+    t.querySelector('button').onclick = function () { t.remove(); if (undoFn) undoFn(); };
+    toastTimer = setTimeout(function () { t.remove(); }, 6000);
   }
   function renderSidebar() {
     var s = document.getElementById('sidebar');
