@@ -305,8 +305,12 @@ popover, Escape out).
   file as empty without overwriting it, but a lost `data/library_tags.json` loses all tags.
   There is no backup mechanism and none is proposed; the file is small and easy to copy.
 - **R2 — Concurrent writes.** Two browser tabs editing different videos could interleave
-  read-modify-write and lose one edit. Single-user local app, so accepted rather than locked;
-  each write is a full-file replace so the loss would be one edit, not corruption.
+  read-modify-write and lose one edit. **Superseded by what shipped:** a lost-update race
+  found during browser verification silently reverted an Undo, so every write path
+  (`PUT` tags, rename, delete-tag, the video-delete cleanup, and the `/api/videos` read) now
+  holds a single process-wide `app._TAGS_LOCK` for the whole load-mutate-save (or load-only)
+  span. This still does not survive two separate OS processes or machines sharing the file —
+  the lock is in-process — but that is not this app's deployment shape.
 - **R3 — Normalising to lowercase is lossy.** `Court-A` becomes `court-a` permanently. Chosen
   over case-insensitive matching with preserved display because the latter needs a canonical
   form anyway and makes rename ambiguous.
@@ -329,3 +333,39 @@ popover, Escape out).
 - **Windows env:** `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider`.
 - `tests/test_ai_handoff.py` is known-flaky under long full-suite runs and unrelated to this
   work.
+
+---
+
+## 14. Implementation notes
+
+Recorded after a whole-branch review, so this section describes what shipped rather than
+what was planned — see R2 above for the concurrency change in particular.
+
+- **Every user-derived string that reaches `innerHTML` or an HTML attribute goes through
+  `escHTML`** (`static/kestrel.js`). Tags are free-form text and can contain `< > " & '`;
+  nothing bypasses this on the way into a card, chip, popover, or manage-modal row.
+- **Corrupt or unreadable store, in the form it actually shipped in** (supersedes the table
+  in §9 for a write path):
+  - A **read** (`GET /api/videos`, or any other caller of `tags.load`) never raises and
+    never writes, exactly as §9 says. A corrupt or unreadable file is logged once per
+    process per path and treated as `{}`.
+  - A **user's tag edit** (`PUT` tags, rename, delete-tag) uses the stricter
+    `tags.load_for_update`, which raises instead of guessing:
+    - Missing file -> `{}` (a first edit may create the store).
+    - Corrupt (unparseable, or the wrong shape) -> the route backs the file up
+      byte-for-byte to `library_tags.json.corrupt-<UTC timestamp>` next to it, then treats
+      the store as `{}` and saves the edit. The edit wins; nothing already on disk is
+      silently lost, because it is still sitting in the backup file.
+    - Unreadable (any other `OSError`, e.g. a permission error) -> the route refuses to
+      write at all and returns `500` with a static bilingual message. The file might hold
+      tags this request never saw, so guessing `{}` here could throw them away for real.
+  - A **video delete**'s tag cleanup (`forget`) also uses `load_for_update`, but on either
+    `StoreCorrupt` or `StoreUnreadable` it skips the cleanup entirely — no write, no
+    backup — and the delete still returns `200`. A delete carries no new tag data worth
+    trading the old file away for, unlike a user's own edit.
+  - `forget` never creates the store file for an untagged video and never rewrites an
+    unchanged store: the cleanup is skipped up front when the stem has no entry.
+- **Dot-only tags are rejected** (`tags.normalise`). `.`/`..`/`...` used to normalise
+  successfully, so they could be created but not deleted: a browser collapses
+  `DELETE /api/tags/..` as a path-traversal segment before the request leaves, so the tag
+  had no way to be removed again through the API.

@@ -1904,5 +1904,10 @@ Stated so no status line overclaims:
 4. **No bulk tagging, colours, groups, or hierarchies** (spec §11).
 5. **Tags do not survive a fresh clone** — `data/` is gitignored, like `videos/` and
    `outputs/`. They are local to this machine and there is no backup mechanism.
-6. **Concurrent edits in two browser tabs can lose one edit** (spec R2). Single-user local
-   app; accepted, not locked.
+6. **Concurrent edits in two browser tabs.** Originally planned as accepted-not-locked
+   (spec R2, single-user local app). A lost-update race found during browser verification
+   silently reverted an Undo, so this shipped with a lock instead: every tag write (`PUT`
+   tags, rename, delete-tag, the video-delete cleanup) and the `/api/videos` read now holds
+   `app._TAGS_LOCK` for its whole load-mutate-save span. Two tabs no longer lose an edit to
+   each other; two separate OS processes or machines sharing the file still could, but that
+   is not this app's deployment shape.
