@@ -1,6 +1,4 @@
 """Tag routes and the tags field on the library listing."""
-import json
-
 import pytest
 
 import app as webapp
@@ -266,3 +264,41 @@ def test_a_failed_tag_forget_does_not_fail_the_delete(client, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
 
     assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+
+
+def test_the_real_tag_store_is_never_touched_by_a_fixture_that_forgets_to_patch_it(
+        tmp_path, monkeypatch):
+    """Regression for the suite writing the developer's real data/library_tags.json.
+
+    This deliberately mirrors tests/test_app_delete.py's `_tree` fixture, which
+    patches VIDEOS/OUTPUTS/TEMPLATES but not TAGS_PATH: without a suite-wide
+    safety net, api_delete's scope="all" branch would call libtags.save(...,
+    TAGS_PATH) against the real on-disk store. The safety net is the autouse
+    fixture in tests/conftest.py, not this test's own setup -- this test's
+    fixture intentionally does NOT patch TAGS_PATH itself.
+    """
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    monkeypatch.setattr(webapp, "VIDEOS", videos)
+    monkeypatch.setattr(webapp, "OUTPUTS", outputs)
+    monkeypatch.setattr(webapp, "_video_duration_sec", lambda p: None)
+    webapp.app.config["TESTING"] = True
+    c = webapp.app.test_client()
+
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    (outputs / "clip").mkdir(parents=True)
+
+    real_store = webapp.PROJECT_ROOT / "data" / "library_tags.json"
+    before = real_store.read_bytes() if real_store.exists() else None
+    before_mtime = real_store.stat().st_mtime_ns if real_store.exists() else None
+
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+
+    assert webapp.TAGS_PATH != real_store, (
+        "TAGS_PATH must be redirected even when a test fixture forgets to do it")
+    after = real_store.read_bytes() if real_store.exists() else None
+    after_mtime = real_store.stat().st_mtime_ns if real_store.exists() else None
+    assert after == before
+    assert after_mtime == before_mtime

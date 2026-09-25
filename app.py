@@ -428,7 +428,7 @@ def api_set_video_tags(video_name):
     body = request.get_json(silent=True) or {}
     raw = body.get('tags')
     if not isinstance(raw, list):
-        return jsonify({'error': 'tags must be a list'}), 400
+        return jsonify({'error': '标签必须是列表 / tags must be a list'}), 400
     clean, rejected = libtags.normalise_all(raw)
     if rejected:
         # Refuse the whole request rather than saving the acceptable subset:
