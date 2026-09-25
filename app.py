@@ -1139,6 +1139,15 @@ def api_delete(video_name):
                 job = jobs.get(stale_id)
                 if job and job.get('status') not in ('pending', 'running', 'reencoding'):
                     jobs.pop(stale_id, None)
+            # Tags belong to the video, so they go only when the video does.
+            # Never fatal: the files are already deleted by this point, and
+            # reporting the delete as failed over a tag-store hiccup would be
+            # worse than a stale entry, which is invisible anyway (a deleted
+            # video has no /api/videos row to carry it).
+            try:
+                libtags.save(libtags.forget(libtags.load(TAGS_PATH), stem), TAGS_PATH)
+            except OSError as exc:
+                print(f'Tag cleanup skipped for {stem}: {exc}')
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})

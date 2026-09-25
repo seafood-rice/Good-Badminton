@@ -230,3 +230,39 @@ def test_rename_reports_a_write_failure(client, monkeypatch):
     monkeypatch.setattr(webapp.libtags, "save",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     assert c.post("/api/tags/rename", json={"from": "smash", "to": "x"}).status_code == 500
+
+
+def test_deleting_a_video_entirely_drops_its_tags(client):
+    c, videos, outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    (outputs / "clip").mkdir(parents=True)
+    libtags.save({"clip": ["smash"], "other": ["net"]}, store)
+
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert libtags.load(store) == {"other": ["net"]}
+
+
+def test_deleting_only_analysis_results_keeps_the_tags(client):
+    """Tags describe the video. Clearing results must not clear its labels."""
+    c, videos, outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    out = outputs / "clip"
+    out.mkdir(parents=True)
+    (out / "detections.jsonl").write_text("{}\n", encoding="utf-8")
+    libtags.save({"clip": ["smash"]}, store)
+
+    assert c.post("/api/delete/clip", json={"scope": "match"}).status_code == 200
+    assert libtags.load(store) == {"clip": ["smash"]}
+
+
+def test_a_failed_tag_forget_does_not_fail_the_delete(client, monkeypatch):
+    """The files are already gone by then; a tag-store hiccup must not report
+    the delete as failed."""
+    c, videos, outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    (outputs / "clip").mkdir(parents=True)
+    libtags.save({"clip": ["smash"]}, store)
+    monkeypatch.setattr(webapp.libtags, "save",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
