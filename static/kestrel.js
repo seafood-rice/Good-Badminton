@@ -20,7 +20,7 @@ window.Kestrel = (function () {
     document.documentElement.lang = lang; render(); }
   function setTheme(theme) { state.theme = theme; localStorage.setItem('kestrel_theme', theme);
     applyTheme(); renderSidebar(); }
-  var lib = { videos: [], filter: { q: '', mode: 'all', status: 'all', sort: 'date' } };
+  var lib = { videos: [], filter: { q: '', tags: [], status: 'all', sort: 'date' } };
   var wiz = { mode: 'match', video: null, step: 'mode', jobId: null, pollIv: null };
   var postureCtx = { stem: null, reps: [], fps: 30, sel: -1 };
   function loadDashboard() {
@@ -37,11 +37,19 @@ window.Kestrel = (function () {
   function filteredVideos() {
     var f = lib.filter;
     var out = lib.videos.filter(function (v) {
-      if (f.q && v.name.toLowerCase().indexOf(f.q.toLowerCase()) === -1) return false;
-      if (f.mode === 'match' && !v.has_match) return false;
-      if (f.mode === 'posture' && !v.has_posture) return false;
+      if (f.q) {
+        var q = f.q.toLowerCase();
+        var inName = v.name.toLowerCase().indexOf(q) !== -1;
+        // Match the key AND the localised label, so "比赛" finds Match videos
+        // while the UI is in Chinese and "match" still finds them in English.
+        var inTags = tagsOf(v).some(function (t) {
+          return t.indexOf(q) !== -1 || tagLabel(t).toLowerCase().indexOf(q) !== -1;
+        });
+        if (!inName && !inTags) return false;
+      }
       if (f.status !== 'all' && v.status !== f.status) return false;
-      return true;
+      // AND: every selected tag must be present.
+      return f.tags.every(function (t) { return tagsOf(v).indexOf(t) !== -1; });
     });
     out.sort(function (a, b) {
       return f.sort === 'name' ? a.name.localeCompare(b.name)
@@ -51,14 +59,13 @@ window.Kestrel = (function () {
   }
   function applyFilters(patch) { Object.assign(lib.filter, patch); renderCards(); }
   // Localized filter options: [value, zh, en]. Labels stay consistent with the
-  // card badges (modeLabel / statusChip) so the same term names the same thing.
+  // card badges (tagLabel / statusChip) so the same term names the same thing.
   var FILTER_DEFS = {
-    mode:   [['all', '全部', 'All'], ['match', '比赛', 'Match'], ['posture', '训练', 'Drill']],
     status: [['all', '全部', 'All'], ['analyzed', '已完成', 'Analyzed'],
              ['court_set', '已标注', 'Court set'], ['new', '未分析', 'New']],
     sort:   [['date', '日期', 'Date'], ['name', '名称', 'Name']]
   };
-  var FILTER_GROUP_LABEL = { mode: ['类型', 'Type'], status: ['状态', 'Status'], sort: ['排序', 'Sort'] };
+  var FILTER_GROUP_LABEL = { status: ['状态', 'Status'], sort: ['排序', 'Sort'] };
   function _loc(pair, zhIdx, enIdx) { return state.lang === 'zh' ? pair[zhIdx] : pair[enIdx]; }
   function segGroup(key) {
     var cur = lib.filter[key];
@@ -82,7 +89,7 @@ window.Kestrel = (function () {
   }
   function renderFilterBar() {
     var bar = document.getElementById('filter-bar'); if (!bar) return;
-    bar.innerHTML = searchHTML() + segGroup('mode') + segGroup('status') + segGroup('sort');
+    bar.innerHTML = searchHTML() + segGroup('status') + segGroup('sort');
     var q = bar.querySelector('#f-q'), clr = bar.querySelector('#f-clear');
     q.oninput = function (e) { clr.classList.toggle('hide', !e.target.value); applyFilters({ q: e.target.value }); };
     clr.onclick = function () { applyFilters({ q: '' }); renderFilterBar(); bar.querySelector('#f-q').focus(); };
@@ -93,8 +100,26 @@ window.Kestrel = (function () {
       };
     });
   }
-  function modeLabel(v) { return v.has_posture && !v.has_match ? (state.lang==='zh'?'训练':'Drill')
-                                                               : (state.lang==='zh'?'比赛':'Match'); }
+  // Match/Drill are DERIVED from what analysis produced, so they are computed
+  // here rather than stored as user tags: a stored copy would go stale, and a
+  // user could delete a tag the system still believes. They carry a stable key
+  // plus a localised label, because the key is what filtering and storage use
+  // while the UI is bilingual. User tags are the owner's own text and are
+  // never translated.
+  var SYS_TAGS = { match: ['比赛', 'Match'], drill: ['训练', 'Drill'] };
+  function isSysTag(t) { return Object.prototype.hasOwnProperty.call(SYS_TAGS, t); }
+  function tagLabel(t) { return isSysTag(t) ? _loc(SYS_TAGS[t], 0, 1) : t; }
+  function sysTagsOf(v) {
+    var out = [];
+    if (v.has_match) out.push('match');
+    if (v.has_posture) out.push('drill');
+    return out;
+  }
+  function tagsOf(v) { return sysTagsOf(v).concat(v.tags || []); }
+  // Tags are free-form user text, and the store permits characters that are
+  // meaningful in HTML (< > " & '). Every user-derived string that lands in
+  // innerHTML or an attribute value must be routed through this first.
+  function escHTML(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
   function statusChip(v) {
     var map = { analyzed:['已完成','Analyzed','var(--good)'],
                 court_set:['已标注','Court set','var(--mid)'],
@@ -129,7 +154,7 @@ window.Kestrel = (function () {
     if (!vids.length) { wrap.innerHTML = '<p class="muted">' +
       (state.lang==='zh'?'暂无视频':'No videos') + '</p>'; return; }
     wrap.innerHTML = vids.map(function (v) {
-      var nm = (v.name || '').replace(/"/g, '&quot;');
+      var nm = escHTML(v.name || '');
       // Single-quote the CSS url(): an UNQUOTED url() cannot contain spaces, so a
       // stem like "Dji 2026 0010 D" made the whole declaration invalid and the
       // parser dropped it, leaving a blank thumbnail. The server now percent-encodes
@@ -137,13 +162,17 @@ window.Kestrel = (function () {
       // attribute below (double quotes would terminate the attribute).
       var thumb = v.thumb ? "background-image:url('" + v.thumb + "')" : '';
       var dur = v.duration_sec ? Math.floor(v.duration_sec/60)+':'+('0'+Math.round(v.duration_sec%60)).slice(-2) : '';
+      var tagHTML = tagsOf(v).map(function (t) {
+        return '<span class="vtag' + (isSysTag(t) ? ' sys' : '') +
+          (lib.filter.tags.indexOf(t) !== -1 ? ' hit' : '') + '">' + escHTML(tagLabel(t)) + '</span>';
+      }).join('') || '<span class="vtag-none">' + (state.lang==='zh'?'无标签':'no tags') + '</span>';
       return '<div class="vcard" role="button" tabindex="0" data-name="' + nm + '"><div class="vthumb" style="' + thumb + '">' +
-        '<span class="vmode mono">' + modeLabel(v) + '</span>' +
         '<span class="vdur mono">' + dur + '</span>' +
         '<button class="vdel" data-del="' + nm + '" aria-label="' + (state.lang==='zh'?'删除':'Delete') + '">🗑</button></div>' +
-        '<div class="vbody"><div class="vname">' + v.name + '</div>' +
+        '<div class="vbody"><div class="vname">' + escHTML(v.name || '') + '</div>' +
         '<div class="vdate mono">' + (v.date||'') + '</div>' +
-        '<div class="vfoot">' + statusChip(v) + '</div></div></div>';
+        '<div class="vfoot">' + statusChip(v) + '</div>' +
+        '<div class="vtags">' + tagHTML + '</div></div></div>';
     }).join('');
     wrap.querySelectorAll('.vcard').forEach(function (el) {
       el.onclick = function () {
