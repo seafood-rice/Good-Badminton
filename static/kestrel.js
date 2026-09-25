@@ -597,7 +597,7 @@ window.Kestrel = (function () {
     var heat = '/api/output/' + stem + '/position_visualizations/heatmaps/match_heatmap.png';
     var scat = '/api/output/' + stem + '/position_visualizations/scatter_plots/match_scatter.png';
     body.innerHTML =
-      '<div class="res-grid"><div><video class="res-video" controls src="' + vurl + '"></video></div>' +
+      '<div class="res-grid"><div id="res-video-cell"><video class="res-video" id="res-video" controls src="' + vurl + '"></video></div>' +
         '<div><div class="res-section" id="rally-box"><h2>' + (zh?'回合':'Rallies') + '</h2>' +
           '<p class="muted" id="rally-info">' + (zh?'加载中…':'Loading…') + '</p>' +
           '<button class="btn-primary" id="clip-btn" disabled>' + (zh?'生成回合剪辑':'Generate clips') + '</button> ' +
@@ -622,6 +622,22 @@ window.Kestrel = (function () {
     document.getElementById('clips-del').onclick = function () {
       openDeleteModal(stem, 'clips', function () { renderResults(); });
     };
+
+    // An undecodable video renders as a silent black frame with a correct
+    // duration, which reads as "the analysis produced nothing". It happens when
+    // the browser-compat transcode did not run, leaving OpenCV's MPEG-4 Part 2
+    // fallback, which no browser decodes. Say that instead of showing black.
+    var resVideo = document.getElementById('res-video');
+    if (resVideo) {
+      resVideo.onerror = function () {
+        document.getElementById('res-video-cell').innerHTML =
+          '<div class="viz-missing">' +
+          (zh ? '视频无法在浏览器中播放：转码未完成，当前为 MPEG-4 Part 2 编码。'
+              : 'This video cannot play in the browser: the H.264 conversion did not ' +
+                'complete, so it is still MPEG-4 Part 2.') +
+          '</div>';
+      };
+    }
 
     // Heatmap/scatter: hide the cell and show a note if the image is missing.
     ['viz-heat','viz-scat'].forEach(function (id) {

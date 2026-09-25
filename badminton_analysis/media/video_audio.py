@@ -132,10 +132,38 @@ def process_video_without_audio(temp_video_path, output_path):
         return False
 
 
+VIDEO_FOURCC_ORDER = ("mp4v", "avc1", "h264")
+"""Codecs to try for the intermediate video, best first.
+
+mp4v leads because asking OpenCV for H.264 is a gamble that this project does
+not need to take. Where openh264 cannot be loaded -- "Incorrect library
+version loaded", which is the state on the development machine -- constructing
+a 3840x2160 avc1 writer does not fail, it HANGS: measured, it printed that
+error at t=0.003 s and had still not returned from the constructor minutes
+later, leaving the analysis stuck at "initializing" with a 0-byte temp video
+and a saturated core. mp4v opens the same writer in 0.011 s.
+
+Nothing is lost by not producing H.264 here: the browser-compatible copy is
+made by the ffmpeg transcode after the run, which is bounded and reports its
+failures. The H.264 entries stay as fallbacks for a platform where mp4v itself
+is unavailable.
+
+Override with BADMINTON_VIDEO_FOURCC (comma-separated) to prefer a different
+order -- for example on a machine whose OpenCV really can encode H.264, where
+leading with avc1 saves the transcode.
+"""
+
+
+def fourcc_order():
+    """Codecs to try, honouring the BADMINTON_VIDEO_FOURCC override."""
+    raw = os.environ.get("BADMINTON_VIDEO_FOURCC", "")
+    codecs = [c.strip() for c in raw.split(",") if c.strip()]
+    return codecs or list(VIDEO_FOURCC_ORDER)
+
+
 def setup_video_writer(frame_width, frame_height, fps, temp_output_path):
     os.makedirs(os.path.dirname(temp_output_path), exist_ok=True)
-    # 尝试 H.264 编码（浏览器兼容），失败则回退 mp4v
-    for codec in ("avc1", "h264", "mp4v"):
+    for codec in fourcc_order():
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(temp_output_path, fourcc, fps, (frame_width, frame_height))
         if writer.isOpened():

@@ -1427,6 +1427,21 @@ Signal selection (`signal="auto"`):
 3. **`none`** — neither signal qualifies: emit **zero** rallies and say so. Emitting one
    whole-video "rally" is the current bug and must not be the fallback.
 
+   > **SUPERSEDED by owner decision §12a-C (2026-08-23).** The zero-rally outcome above is
+   > **not** what to build. Replacement: emit **uniform coarse windows** over the gate-passed
+   > court-view frames, each marked `signal: "none"`, `degraded: true`, with the reason and
+   > the window length in the provenance — and **withhold stroke recognition on degraded
+   > segments** (BST is not invoked on them; the results copy says labels were withheld
+   > because segmentation is unreliable, rather than reporting zero strokes found). Signals 1
+   > and 2, the density gate, and the static-artifact suppression are unaffected. The window
+   > length is a named, fps-resolved constant like every other parameter here; it is
+   > deliberately dumb in v1 and its value is not load-bearing, since nothing downstream
+   > consumes a degraded segment for labelling.
+   >
+   > The sentence "emitting one whole-video rally is the current bug and must not be the
+   > fallback" **still holds** — coarse windows are the alternative to it, not a softening of
+   > it.
+
 `gap_sec`, `min_len_sec`, and the smoothing window are **seconds**, resolved to frames via
 `fps` at call time — B7's fps-normalisation requirement applies here from the start rather
 than being retrofitted.
@@ -1540,13 +1555,18 @@ redesign (B10) rather than on B11. Anyone planning B11 in isolation should expec
   (§5 C0). Never fatal, never silent.
 - **Calibration pre-scan fails** (unreadable video, zero samples) -> fall back to the
   shipped constant `0.75`, log it, record `calibration = "fallback_constant"`.
-- **No usable rally signal** -> zero rallies plus a stated reason. Downstream per-rally BST
-  (B6) then labels nothing and reports zero coverage, which is honest. It must not fall back
-  to one whole-video rally.
+- **No usable rally signal** -> ~~zero rallies plus a stated reason~~ **uniform coarse windows
+  marked `degraded`, with stroke recognition withheld on them** (owner decision §12a-C,
+  2026-08-23). Downstream per-rally BST (B6) skips degraded segments and reports zero label
+  coverage, which is honest; the segments still exist so coverage, heatmaps, and the timeline
+  are populated rather than empty. It must not fall back to one whole-video rally, and the UI
+  must not report a degraded segmentation as a rally count.
 - **Segmenter exception** -> caught, logged, `rally_segments.json` written with an empty
   `rallies` array and `detection.signal = "error"`. The match video and all other outputs
   survive, per the never-fatal convention the TrackNetV3 and BST specs both established.
-- **Zero rallies is a legitimate, reportable outcome**, not an error state.
+- ~~**Zero rallies is a legitimate, reportable outcome**, not an error state.~~ Superseded by
+  §12a-C: a **degraded** segmentation is the legitimate, reportable outcome, and it is not an
+  error state either. Genuinely zero segments now happens only for an empty track.
 
 ---
 
@@ -1560,7 +1580,11 @@ redesign (B10) rather than on B11. Anyone planning B11 in isolation should expec
   downscaled path and the full-resolution path on clearly-matching and clearly-non-matching
   input; the `threshold=` override still honoured (protects the existing tests).
 - C2 signal selection: dense synthetic shuttle track -> `shuttle`; sparse track ->
-  `swing`; neither -> `none` with zero rallies.
+  `swing`; neither -> `none` with **degraded coarse windows** (§12a-C), never zero rallies and
+  never one whole-video rally.
+- C2 court-volume gating: a point inside the quad survives; a point below the near baseline is
+  dropped; a point *above* the far baseline is **kept** (airborne shuttles), and the dropped
+  count reaches the provenance; `quad=None` gates nothing rather than discarding everything.
 - C2 segmentation: synthetic activity with two known bursts separated by a 3s gap -> exactly
   two segments; a 0.5s gap with `gap_sec=1.0` -> one segment; a 1s burst with
   `min_len_sec=2.0` -> zero segments.
@@ -1614,8 +1638,13 @@ here would pre-empt the ShuttleSet benchmark that remains the owner's measured-a
    rallies a human counts in that footage.
 6. Every `rally_segments.json` states which signal produced it, why that signal was chosen,
    and the parameters used.
-7. When no usable signal exists, the output is zero rallies with a stated reason — never one
-   whole-video rally.
+7. When no usable signal exists, the output is **uniform coarse windows over the gate-passed
+   court-view frames, marked degraded, with stroke recognition withheld on them** — never one
+   whole-video rally, and never an empty result (owner decision §12a-C, 2026-08-23, replacing
+   the original "zero rallies with a stated reason"). Done-checkable as: every such segment
+   carries `signal: "none"`, `degraded: true`, a reason, and the window length; **no**
+   `strokes.json` entry references a degraded segment; and the results copy says labels were
+   withheld rather than reporting zero strokes found.
 8. Segment boundaries are expressed in seconds internally and are invariant to fps: the
    same footage at 30 and 60 fps yields the same boundaries in seconds.
 9. On at least one hand-checked stretch of real footage, emitted boundaries visibly
@@ -1686,6 +1715,21 @@ and on the domain-shift risk (R7) that remains unmeasured.
   load-bearing rather than a fallback. Measuring TrackNetV3 on a short DJI segment is cheap
   relative to a full run and should precede committing to this design's signal-selection
   logic.
+
+  **RESOLVED 2026-08-23 — the conditional came true.** The experiment this risk asked for was
+  run and then pushed well past it (§0.20-0.25, landed in PR #4). Resolution was **refuted**
+  as the cause of the failure rather than merely left unconfirmed (§0.20-0.21); the shuttle
+  was located and physically verified via its motion-blur signature (§0.22); and a
+  purpose-built classical detector was costed, built, and **failed**, with coverage
+  anti-correlated with ground truth (§0.23-0.24). So: **the fixed-camera class has no usable
+  shuttle signal, and the swing signal is load-bearing rather than a fallback.** Two design
+  consequences, both already provided for in §5: the shuttle-density gate
+  (`SHUTTLE_DENSITY_MIN`) is what keeps the broken signal out of segmentation, and the static-
+  artifact suppression is not optional — 86% of `yolo11s-ball`'s output on that footage is one
+  fixture. The remaining route to a real shuttle track is **capture-time, not code** (§0.25,
+  option D), and it waits on the owner shooting a side-on or elevated clip. R1 therefore
+  carries more weight than when it was written: the swing signal being unvalidated is now the
+  single largest unknown in the fixed-camera half of B11.
 - **R3 — Opening the gate multiplies run time.** Going from 0.66% to ~98% court frames on
   the broadcast video means ~150x more frames reach pose/racket/shuttle detection. Even with
   the RTX 4090 available (§0.10), the first post-B11 full-match run will be far slower than
@@ -1721,7 +1765,85 @@ and on the domain-shift risk (R7) that remains unmeasured.
 
 ---
 
+## 12a. Owner decisions (resolved 2026-08-23)
+
+Answers to §12 below. Where a decision **rejected** this spec's proposed default, that is
+recorded as such — the proposal is not quietly retained.
+
+**A — NO: true multi-camera TV broadcast stays in scope.** The proposed default (scope B11
+to the two footage classes on disk, defer real broadcast to a future workstream) is
+**rejected**. Consequences, none of them small:
+
+- A third footage class enters B11: real TV broadcast with hard cuts, replays, slow motion,
+  and score-bug overlays. §0.5's finding that the Axelsen file has none of these means that
+  file **cannot validate this class** — it contains no cuts to detect.
+- A shot-boundary component is now required, and R10 of the completion bar is amended to say
+  its original failure modes apply to *this* class rather than being retired (see that spec's
+  R10, amended under decision D).
+- B11 can design it and cover it with hermetic fixtures, but its real-footage validation must
+  be recorded as **not run, blocked on a genuine broadcast sample** — the same honesty
+  posture BST, TrackNetV3, and the B1 validation attempt each took. A sample with real cuts
+  is the cheapest thing that would change this.
+
+**B — resolved by measurement, not by decision.** §12-B asked whether TrackNetV3 should be
+measured on a short 4K fixed-camera segment before implementing. That experiment has been
+run and taken to a conclusion (§0.20-0.25, PR #4): there is **no usable shuttle signal** on
+the owner's fixed-camera footage, resolution was refuted as the cause, and a purpose-built
+classical detector failed with coverage anti-correlated with ground truth. The swing signal
+is therefore **primary, not a fallback**, on that footage. See the resolution note on R2.
+
+**C — NO: "zero rallies, stated reason" is not accepted.** Done-means 7 and §5's `signal =
+"none"` branch are **rejected as written**. This is the one decision that leaves a genuine
+hole rather than closing one: the design explicitly refuses the only other behaviour it
+currently describes (one whole-video "rally", which is today's bug), so rejecting the zero-
+rally outcome leaves **no specified behaviour** for footage with no usable signal — which,
+after decision B, is exactly the class the owner's own fixed-camera footage falls into
+whenever the swing signal also fails.
+
+**C (replacement) — RESOLVED same day: coarse windows, and no stroke labels on them.** When
+no signal qualifies, `segment_rallies` emits **uniform coarse windows** over the gate-passed
+court-view frames, and stroke recognition is **withheld** on those windows:
+
+- The segments exist, so coverage, heatmaps, and the timeline stay populated instead of
+  showing an empty result.
+- Every such segment is marked degraded in `rally_segments.json` provenance (`signal:
+  "none"`, `degraded: true`, plus the reason and the window length used), and **BST is not
+  invoked on a degraded segment**. The results copy states that stroke labels were withheld
+  because segmentation is unreliable — it does not show a stroke count of 0 as though
+  recognition had run and found nothing.
+- **The rationale is the failure mode this avoids:** BST labels computed over windows that do
+  not correspond to rallies are close to noise, and a badge on them is much weaker than the
+  impression that strokes were detected. Withholding is the honest version of "keep the
+  screen useful", and it is the one choice here that cannot fabricate a stroke.
+- Consequences for the rest of the spec: done-means 7 is rewritten (below); §5's `signal =
+  "none"` branch is rewritten (§5 C2); the per-rally BST invocation of completion-bar B6 must
+  learn to skip degraded segments; and `degraded` becomes part of the coverage metadata that
+  done-means 9 of the completion bar already requires `strokes.json` to state.
+- What this does **not** license: a degraded segmentation must never be described in the UI as
+  a rally count. "3 coarse windows, segmentation unreliable, stroke labels withheld" is the
+  claim; "3 rallies" is not.
+
+**D — YES: amend R10 of the completion bar, and add the shuttle blocker as a risk.** Done in
+`docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md`: R10 is split into
+(1) the court-view gate as a *self-calibration* problem on the footage on disk, where R10's
+original prediction was measurably **false**, (2) rally segmentation within continuous play
+as the genuinely-unscoped part that keeps R10's original weight, and (3) R10's original
+failure modes preserved — not retired — for the true-broadcast class that decision A keeps in
+scope. A new **R11** records the measured fixed-camera shuttle-detection failure.
+
+**E — not separately decided; superseded by B.** §12-E asked whether B11 owns diagnosing
+`yolo11s-ball` on 4K footage. It was diagnosed, outside B11, in the PR #4 investigation, and
+the answer is that no code-side fix was found. The remaining path is capture-time (§0.25,
+option D) and is the owner's to run, so there is no open engineering item here to assign.
+
+---
+
 ## 12. Open questions that genuinely need the owner's decision
+
+> **Resolved — see §12a above** (2026-08-23). A = no, C = no, D = yes; B and E were settled
+> by the PR #4 shuttle investigation rather than by decision. The proposed defaults in A, C,
+> and E below were **not** all accepted; read §12a for what was actually chosen. Kept
+> unedited as the historical record of what was asked.
 
 **A. Does the project actually need true multi-camera broadcast support?** §0.5 establishes
 that the file this project calls "broadcast" is a single-angle continuous recording with no

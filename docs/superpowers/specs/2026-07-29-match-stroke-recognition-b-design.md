@@ -226,8 +226,13 @@ Functional/qualitative gates in the BST/TrackNetV3 tradition — no numeric accu
     - Fixed-camera: detect rally start/stop *within* continuous court-view play (currently
       98% of the DJI clip is treated as one rally) so segments correspond to actual rallies,
       not the whole video.
+    - **True multi-camera TV broadcast** (added 2026-08-23 by owner decision B11 §12-A =
+      *no*): a third footage class, kept in scope rather than deferred. The single-angle
+      Axelsen file is not a substitute for it, so this needs a shot-boundary component that
+      B11 designs and tests hermetically while recording real-footage validation as **not
+      run, blocked on a genuine broadcast sample**.
     This is itself a nontrivial, previously-unscoped computer-vision problem on both ends —
-    treat it as its own design decision, not a small tuning pass (see R10 below).
+    treat it as its own design decision, not a small tuning pass (see the amended R10 below).
 
 **Deliberately dumb in v1:** the segment-selection heuristic, the budget default, and the
 coverage copy. All three are cheap to tune later and none of them need to be clever for B to
@@ -318,6 +323,40 @@ be useful.
   quick threshold recalibration — recalibrating `TM_CCOEFF_NORMED`'s `0.75` cutoff alone is
   unlikely to close a 0.66%→acceptable gap given the failure modes observed (cuts, overlays,
   zooms all defeat whole-frame template matching structurally, not just by threshold).
+
+  **Amended 2026-08-23 (owner-approved, B11 §12-D).** The paragraph above conflates two
+  different problems, and its central prediction is measurably wrong for one of them. Split:
+
+  1. **The court-view gate, on the footage actually on disk, is a self-calibration problem —
+     not a structural one.** B11 §0.5 establishes that the file this project calls
+     "broadcast" is a *single-angle continuous recording* with no cuts, no replays, and no
+     score bug, and §0.6 shows a per-video automatic cut (`median − k·MAD`) does close the
+     0.66%→large-majority gap on it. The prediction that threshold recalibration "is unlikely
+     to close" that gap was therefore **false for this file**: the failure modes it blamed
+     (cuts, overlays, zooms) are absent from it. What defeated the gate was a fixed global
+     `0.75` cutoff applied to a similarity score whose absolute scale is video-dependent.
+  2. **Rally segmentation *within* continuous play is the genuinely-unscoped part**, and it
+     keeps R10's original weight. Nothing in the existing pipeline distinguishes rally
+     boundaries inside an uninterrupted court view; today 98% of the fixed-camera clip is one
+     rally. This is where B11's real design risk lives (see B11's own R1-R2, and R11 below).
+  3. **R10's original failure modes are not retired — they are deferred to a footage class
+     that is now in scope but absent from disk.** Owner decision B11 §12-A (2026-08-23) is
+     **no**: true multi-camera TV broadcast, with cuts, replays and score-bug overlays,
+     stays in B's scope rather than being split off as a future workstream. For that class
+     the original paragraph stands as written, and a shot-boundary component is required.
+     It cannot be validated against anything currently on disk — the Axelsen file has no
+     cuts to detect — so B11 must design and hermetically test it while recording its
+     real-footage validation as **not run, blocked on a genuine broadcast sample**.
+- **R11 — The fixed-camera shuttle signal is measured, and it does not work (added
+  2026-08-23).** B11's §0.7 blocker has since been investigated to a conclusion rather than
+  routed around on suspicion: at 4K oblique, resolution was refuted as the cause (§0.20-0.21),
+  the shuttle was located and physically verified (§0.22), and a purpose-built classical
+  detector was costed, built, and **failed** — its coverage was anti-correlated with ground
+  truth (§0.23-0.24). 86% of `yolo11s-ball`'s output on that footage is a single static
+  fixture. Consequences: the swing signal is **load-bearing, not a fallback**, on the owner's
+  own footage; B11's shuttle-density gate is what keeps a broken signal out of segmentation;
+  and the remaining path to a working shuttle track is capture-time (§0.25, option D), which
+  depends on the owner shooting a side-on or elevated clip and is not a code change.
 
 ---
 
