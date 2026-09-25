@@ -379,7 +379,8 @@ def api_videos():
     """列出所有视频和对应的分析结果"""
     import datetime
     videos = []
-    tag_data = libtags.load(TAGS_PATH)
+    with _TAGS_LOCK:
+        tag_data = libtags.load(TAGS_PATH)
     for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
         for p in sorted(VIDEOS.glob(ext)):
             name = p.stem
@@ -419,6 +420,40 @@ def api_videos():
     return jsonify(videos)
 
 
+# Static, bilingual error bodies for the tag routes: an f-string with {exc} can
+# include an absolute filesystem path (e.g. a permission error names the
+# file), which a 500 response must never leak to the client. The exception
+# itself is still printed server-side for debugging.
+_TAG_SAVE_FAILED = {'error': '无法保存标签，请重试 / could not save tags, please retry'}
+_TAG_STORE_UNREADABLE = {
+    'error': '标签存储不可读，未被覆盖 / tag store unreadable, not overwritten'}
+
+
+def _tags_for_edit():
+    """Load the store for a mutation (PUT tags / rename / delete-tag).
+
+    Returns (data, error_response). ``error_response`` is None on success;
+    otherwise the caller must return it immediately without saving. Must be
+    called from inside ``_TAGS_LOCK``.
+
+    Spec Sec.9 permits a user's tag edit to replace a corrupt store, so a
+    StoreCorrupt backs the bad file up (untouched) and proceeds with data={}
+    -- the edit wins, nothing already on disk is lost. StoreUnreadable means
+    the file might hold tags this request never saw, so it refuses to write
+    at all.
+    """
+    try:
+        return libtags.load_for_update(TAGS_PATH), None
+    except libtags.StoreCorrupt:
+        backup = libtags.backup_corrupt(TAGS_PATH)
+        print(f'Tag store at {TAGS_PATH} was corrupt; backed up to {backup} '
+              'and replaced by this edit')
+        return {}, None
+    except libtags.StoreUnreadable as exc:
+        print(f'Tag store unreadable at {TAGS_PATH}: {exc}')
+        return None, (jsonify(_TAG_STORE_UNREADABLE), 500)
+
+
 @app.route('/api/videos/<video_name>/tags', methods=['PUT'])
 def api_set_video_tags(video_name):
     """Replace one video's tags.
@@ -442,10 +477,14 @@ def api_set_video_tags(video_name):
                         'rejected': rejected}), 400
     try:
         with _TAGS_LOCK:
-            data = libtags.set_tags(libtags.load(TAGS_PATH), stem, clean)
+            data, err = _tags_for_edit()
+            if err:
+                return err
+            data = libtags.set_tags(data, stem, clean)
             libtags.save(data, TAGS_PATH)
     except OSError as exc:
-        return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
+        print(f'Could not save tags for {stem}: {exc}')
+        return jsonify(_TAG_SAVE_FAILED), 500
     return jsonify({'ok': True, 'tags': clean})
 
 
@@ -459,12 +498,15 @@ def api_rename_tag():
         return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag'}), 400
     try:
         with _TAGS_LOCK:
-            data = libtags.load(TAGS_PATH)
+            data, err = _tags_for_edit()
+            if err:
+                return err
             affected = sum(1 for tags in data.values() if old in tags)
             merged = any(new in tags for tags in data.values())
             libtags.save(libtags.rename(data, old, new), TAGS_PATH)
     except OSError as exc:
-        return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
+        print(f'Could not save tag rename {old} -> {new}: {exc}')
+        return jsonify(_TAG_SAVE_FAILED), 500
     return jsonify({'ok': True, 'merged': merged, 'affected': affected})
 
 
@@ -476,11 +518,14 @@ def api_delete_tag(tag):
         return jsonify({'error': '标签无效或为保留名 / invalid or reserved tag'}), 400
     try:
         with _TAGS_LOCK:
-            data = libtags.load(TAGS_PATH)
+            data, err = _tags_for_edit()
+            if err:
+                return err
             affected = sum(1 for tags in data.values() if name in tags)
             libtags.save(libtags.delete(data, name), TAGS_PATH)
     except OSError as exc:
-        return jsonify({'error': f'无法保存标签 / could not save tags: {exc}'}), 500
+        print(f'Could not save tag delete {name}: {exc}')
+        return jsonify(_TAG_SAVE_FAILED), 500
     return jsonify({'ok': True, 'affected': affected})
 
 
@@ -1151,12 +1196,22 @@ def api_delete(video_name):
             # Never fatal: the files are already deleted by this point, and
             # reporting the delete as failed over a tag-store hiccup would be
             # worse than a stale entry, which is invisible anyway (a deleted
-            # video has no /api/videos row to carry it).
+            # video has no /api/videos row to carry it). A corrupt or
+            # unreadable store is skipped entirely -- no write, no backup --
+            # unlike a user's own tag edit (_tags_for_edit), which is allowed
+            # to replace a corrupt file: a video delete carries no new tag
+            # data worth trading the old file away for.
             with _TAGS_LOCK:
                 try:
-                    libtags.save(libtags.forget(libtags.load(TAGS_PATH), stem), TAGS_PATH)
-                except OSError as exc:
+                    data = libtags.load_for_update(TAGS_PATH)
+                except (libtags.StoreCorrupt, OSError) as exc:
                     print(f'Tag cleanup skipped for {stem}: {exc}')
+                else:
+                    if stem in data:
+                        try:
+                            libtags.save(libtags.forget(data, stem), TAGS_PATH)
+                        except OSError as exc:
+                            print(f'Tag cleanup skipped for {stem}: {exc}')
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})

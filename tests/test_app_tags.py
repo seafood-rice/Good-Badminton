@@ -143,6 +143,52 @@ def test_put_reports_a_write_failure_instead_of_claiming_success(client, monkeyp
     assert "error" in res.get_json()
 
 
+def test_put_error_responses_do_not_leak_the_store_path(client, monkeypatch):
+    """{exc} in a Flask error response can include an absolute filesystem
+    path -- print it server-side instead and return a static message."""
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+
+    def boom(*a, **k):
+        raise OSError(f"disk full: {store}")
+
+    monkeypatch.setattr(webapp.libtags, "save", boom)
+    res = c.put("/api/videos/clip/tags", json={"tags": ["smash"]})
+    assert res.status_code == 500
+    assert str(store) not in res.get_json()["error"]
+
+
+def test_put_against_a_corrupt_store_backs_it_up_then_saves(client):
+    """Spec Sec.9 permits a user tag edit to replace a corrupt store: back
+    the bad file up untouched, then save the edit onto a fresh {}."""
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    store.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_text = "{not json"
+    store.write_text(corrupt_text, encoding="utf-8")
+
+    res = c.put("/api/videos/clip/tags", json={"tags": ["smash"]})
+    assert res.status_code == 200
+    assert libtags.load(store) == {"clip": ["smash"]}
+
+    backups = list(store.parent.glob("library_tags.json.corrupt-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == corrupt_text
+
+
+def test_put_against_an_unreadable_store_refuses_and_does_not_write(client, monkeypatch):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+
+    def boom(*a, **k):
+        raise libtags.StoreUnreadable("locked")
+
+    monkeypatch.setattr(webapp.libtags, "load_for_update", boom)
+    res = c.put("/api/videos/clip/tags", json={"tags": ["smash"]})
+    assert res.status_code == 500
+    assert not store.exists()
+
+
 def test_concurrent_puts_to_different_videos_do_not_clobber_each_other(client, monkeypatch):
     """Every tag write is load -> mutate -> save with no lock, and Flask serves
     requests on threads: two overlapping writes can interleave as A loads, B
@@ -185,6 +231,56 @@ def test_concurrent_puts_to_different_videos_do_not_clobber_each_other(client, m
     saved = libtags.load(store)
     lost = [n for n in names if saved.get(n) != [n]]
     assert not lost, f"tag writes lost to an unlocked read-modify-write race: {lost}"
+
+
+def test_concurrent_rename_and_put_do_not_clobber(client, monkeypatch):
+    """A rename touches the whole file just like a PUT does: one rename plus
+    N concurrent PUTs to other videos must all persist, not just the PUTs."""
+    c, videos, _outputs, store = client
+    names = [f"v{i}" for i in range(6)]
+    for n in names:
+        (videos / f"{n}.mp4").write_bytes(b"\x00")
+    (videos / "renamed.mp4").write_bytes(b"\x00")
+    libtags.save({"renamed": ["old"]}, store)
+
+    real_load = libtags.load
+    real_load_for_update = libtags.load_for_update
+
+    def slow_load(path):
+        time.sleep(0.02)
+        return real_load(path)
+
+    def slow_load_for_update(path):
+        time.sleep(0.02)
+        return real_load_for_update(path)
+
+    monkeypatch.setattr(webapp.libtags, "load", slow_load)
+    monkeypatch.setattr(webapp.libtags, "load_for_update", slow_load_for_update)
+
+    results = {}
+
+    def put_one(name):
+        thread_client = webapp.app.test_client()
+        res = thread_client.put(f"/api/videos/{name}/tags", json={"tags": [name]})
+        results[name] = res.status_code
+
+    def rename_one():
+        thread_client = webapp.app.test_client()
+        res = thread_client.post("/api/tags/rename", json={"from": "old", "to": "new"})
+        results["rename"] = res.status_code
+
+    threads = [threading.Thread(target=put_one, args=(n,)) for n in names]
+    threads.append(threading.Thread(target=rename_one))
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    assert all(status == 200 for status in results.values()), results
+    saved = libtags.load(store)
+    lost = [n for n in names if saved.get(n) != [n]]
+    assert not lost, f"PUTs lost to an unlocked race with a concurrent rename: {lost}"
+    assert saved.get("renamed") == ["new"], "the rename itself must persist too"
 
 
 def test_rename_applies_across_videos(client):
@@ -298,6 +394,34 @@ def test_deleting_only_analysis_results_keeps_the_tags(client):
 
     assert c.post("/api/delete/clip", json={"scope": "match"}).status_code == 200
     assert libtags.load(store) == {"clip": ["smash"]}
+
+
+def test_delete_of_an_untagged_video_does_not_create_the_store(client):
+    """forget-on-delete must not write at all when the stem has no entry: no
+    store file for an untagged video, and no rewrite of an unchanged store."""
+    c, videos, outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    (outputs / "clip").mkdir(parents=True)
+    assert not store.exists()
+
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert not store.exists()
+
+
+def test_video_delete_leaves_a_corrupt_store_byte_identical(client):
+    """A video delete's tag cleanup must skip entirely on a corrupt store --
+    no write, no backup -- and the delete itself still succeeds."""
+    c, videos, outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    (outputs / "clip").mkdir(parents=True)
+    store.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_text = "{not json"
+    store.write_text(corrupt_text, encoding="utf-8")
+
+    res = c.post("/api/delete/clip", json={"scope": "all"})
+    assert res.status_code == 200
+    assert store.read_text(encoding="utf-8") == corrupt_text
+    assert list(store.parent.glob("*.corrupt-*")) == []
 
 
 def test_a_failed_tag_forget_does_not_fail_the_delete(client, monkeypatch):
