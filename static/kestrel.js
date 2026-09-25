@@ -122,6 +122,14 @@ window.Kestrel = (function () {
     var keys = Object.keys(counts);
     return keys.filter(isSysTag).sort().concat(keys.filter(function (t) { return !isSysTag(t); }).sort());
   }
+  // Any successful tag write can make a filter selection stale (its last tag
+  // just got removed/renamed/deleted out from under it): drop anything no
+  // longer in knownTags() so the grid can't go silently empty with no chip
+  // left to deselect it.
+  function pruneFilterTags() {
+    var live = knownTags();
+    lib.filter.tags = lib.filter.tags.filter(function (t) { return live.indexOf(t) !== -1; });
+  }
   function renderTagBar() {
     var bar = document.getElementById('tag-bar'); if (!bar) return;
     var zh = state.lang === 'zh';
@@ -155,14 +163,35 @@ window.Kestrel = (function () {
         var t = b.getAttribute('data-tag'), i = lib.filter.tags.indexOf(t);
         if (i === -1) lib.filter.tags.push(t); else lib.filter.tags.splice(i, 1);
         renderTagBar(); renderCards(); renderResultLine();
+        focusTagBarChip(t);
       };
     });
     var clr = bar.querySelector('#t-clear');
     if (clr) clr.onclick = function () {
       lib.filter.tags = []; renderTagBar(); renderCards(); renderResultLine();
+      focusTagBarChip(null);
     };
     var mng = bar.querySelector('#t-manage');
     if (mng) mng.onclick = openTagManager;
+  }
+  // renderTagBar() rebuilds the whole bar's innerHTML, which destroys whatever
+  // element had focus. Only the two handlers that toggle/clear chips call
+  // this afterward -- a render triggered by something else (typing in search,
+  // a rename/delete in the manager modal) must leave focus wherever it was.
+  function focusTagBarChip(tag) {
+    var bar = document.getElementById('tag-bar'); if (!bar) return;
+    if (tag != null) {
+      var chips = bar.querySelectorAll('.tchip');
+      for (var i = 0; i < chips.length; i++) {
+        // Compare via getAttribute, not a CSS selector built from the tag:
+        // tags can contain quotes, which would break an attribute selector.
+        if (chips[i].getAttribute('data-tag') === tag) { chips[i].focus(); return; }
+      }
+    }
+    var first = bar.querySelector('.tchip');
+    if (first) { first.focus(); return; }
+    var mng = bar.querySelector('#t-manage');
+    if (mng) mng.focus();
   }
   function renderResultLine() {
     var el = document.getElementById('result-line'); if (!el) return;
@@ -326,6 +355,7 @@ window.Kestrel = (function () {
         .then(function (out) {
           if (!out.ok) { onFail((out.d && out.d.error) || (zh ? '保存失败' : 'Save failed')); return; }
           draft = out.d.tags; video.tags = out.d.tags;
+          pruneFilterTags();
           draw(); renderCards(); renderTagBar(); renderResultLine();
         })
         .catch(function () { onFail(zh ? '保存失败' : 'Save failed'); });
@@ -345,7 +375,7 @@ window.Kestrel = (function () {
           : '<span class="vtag-none">' + (zh ? '暂无' : 'none yet') + '</span>') + '</div>' +
         '<input id="tag-in" autocomplete="off" placeholder="' + (zh ? '添加标签…' : 'Add a tag…') +
           '" aria-label="' + (zh ? '添加标签' : 'Add a tag') + '">' +
-        (warning ? '<p class="warn" role="alert">' + warning + '</p>' : '') +
+        (warning ? '<p class="warn" role="alert">' + escHTML(warning) + '</p>' : '') +
         '<div id="sugg"></div>' +
         '<p class="pop-hint">' + (zh ? '回车添加 · Esc 关闭 · 立即保存' : 'Enter to add · Esc to close · saves immediately') + '</p>';
 
@@ -397,9 +427,7 @@ window.Kestrel = (function () {
   function reloadLibrary() {
     return fetch('/api/videos').then(function (r) { return r.json(); }).then(function (rows) {
       lib.videos = rows || [];
-      // Drop filters for tags that no longer exist anywhere.
-      var live = knownTags();
-      lib.filter.tags = lib.filter.tags.filter(function (t) { return live.indexOf(t) !== -1; });
+      pruneFilterTags();
       renderCards(); renderTagBar(); renderResultLine();
     });
   }
@@ -445,7 +473,7 @@ window.Kestrel = (function () {
         (sys.length ? '<div class="grp">' + (zh ? '来自分析' : 'From analysis') + '</div>' + sys.map(row).join('') : '') +
         (usr.length ? '<div class="grp">' + (zh ? '自定义标签' : 'Your tags') + '</div>' + usr.map(row).join('')
                     : '<p class="muted">' + (zh ? '暂无自定义标签' : 'No tags yet') + '</p>') +
-        (problem ? '<p class="warn" role="alert">' + problem + '</p>' : '') +
+        (problem ? '<p class="warn" role="alert">' + escHTML(problem) + '</p>' : '') +
         (confirming ? '<div class="confirm">' + (zh ? '删除 ' : 'Delete ') + '<b>' + escHTML(confirming) + '</b>' +
           (zh ? '？视频本身不受影响。' : '? The videos themselves are not touched.') +
           '<div class="modal-foot"><button class="btn-ghost" data-cancel="1">' + (zh ? '取消' : 'Cancel') + '</button>' +
