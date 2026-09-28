@@ -14,9 +14,10 @@
 - **Branch:** `claude/library-tags`
 - **Worktree:** the primary local checkout (no linked worktree)
 - **Base commit:** `00acb5a3bb71ea80e768d496059eca0b13a25604` (`origin/main` after PR #7; the branch was rebased onto it)
-- **Head commit:** `d016cad90b3395635b2de4c671eaa8012eda473a`
-- **Claim id:** `7071572f-44c2-4925-adb0-8c993dc4a77b`
-- **Last milestone:** 2026-09-25 - All nine plan tasks implemented, task-reviewed, browser-verified, and passed a final whole-branch review plus one fix wave; full suite green at `d016cad`.
+- **Head commit:** `7103f3a1d8eca6b133fe1d733f9834cec2fee9a7`
+- **Claim id:** `346547d5-0b6a-4d37-a93e-b99fae9f7ac3` (took over expired `7071572f-44c2-4925-adb0-8c993dc4a77b`)
+- **Pull request:** https://github.com/seafood-rice/Good-Badminton/pull/9 (open, against `main`)
+- **Last milestone:** 2026-09-28T14:38:53Z - Branch pushed and PR #9 opened against main; malformed claim replaced by takeover with the correct array scope.
 
 ## Acceptance criteria
 
@@ -70,18 +71,19 @@ See the design spec's acceptance criteria and the per-task checklists in
 
 ## Blockers
 
-- **Claim `7071572f-44c2-4925-adb0-8c993dc4a77b` has a malformed scope.** It was started with
-  `pwsh -File scripts/ai-handoff.ps1 start -Scope a,b,...`; under `-File` the comma list
-  arrives as ONE string, and the helper recorded a single bogus scope path containing commas.
-  The claim protects no real path, and `update` refuses to run, so milestones were recorded by
-  hand here. `accept` keeps a predecessor's scope, so the fix is `takeover` once the lease
-  expires (`2026-09-25T21:34:18Z`), passing the scope as a real array via
-  `pwsh -Command "& ./scripts/ai-handoff.ps1 takeover ... -Scope @('...','...')"`. A separate
-  task was raised to make the helper reject comma-joined scope paths.
+None. (Resolved: the original claim `7071572f-44c2-4925-adb0-8c993dc4a77b` recorded its
+`-Scope` as one comma-joined string because it was started via `pwsh -File`; it was replaced by
+`takeover` after its lease expired, with the scope passed as a real array via `pwsh -Command`,
+producing claim `346547d5-0b6a-4d37-a93e-b99fae9f7ac3`. The helper fix is its own workstream,
+`handoff-file-scope`.)
 
 ## Next action
 
-Owner decides how to integrate `claude/library-tags` (push + PR against `main`, keep, or merge themselves; agents never update `main`). After 2026-09-25T21:34:18Z, `takeover` the malformed claim with the correct array scope and `handoff` it so the workstream can close.
+Owner reviews and merges PR #9 (https://github.com/seafood-rice/Good-Badminton/pull/9); address any review comments on claude/library-tags; after merge, handoff/close this workstream.
 
 <!-- ai-continuity:milestones:start -->
+- 2026-09-28T14:38:53Z - state: active - Branch pushed and PR #9 opened against main; malformed claim replaced by takeover with the correct array scope.
+  - Changed paths: `.ai/workstreams/library-tags.md`
+  - Verification: not-run - reason: HEAD 7103f3a differs from the last fully tested commit d016cad (976 passed, 3 skipped) only by a docs-only workstream-file commit; no code changed.
+  - Next action: Owner reviews and merges PR #9 (https://github.com/seafood-rice/Good-Badminton/pull/9); address any review comments on claude/library-tags; after merge, handoff/close this workstream.
 <!-- ai-continuity:milestones:end -->
