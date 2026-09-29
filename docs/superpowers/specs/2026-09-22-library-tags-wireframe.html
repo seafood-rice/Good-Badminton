@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tag management wireframe</title>
+<style>
+/* ---- Tokens copied verbatim from static/kestrel.css so this reads as the real app ---- */
+:root{
+  --accent:#FF5A36; --accent-dark:#E64A28; --accent-soft:rgba(255,90,54,0.12);
+  --paper:#FAFAF8; --card:#fff; --border:#EBE8E2; --fill:#F3F1EC;
+  --ink:#1A1D1F; --muted:#6B7280; --faint:#8A8F98;
+  --good:#3FAE6A; --mid:#E8A93B; --bad:#E5484D;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:18px; --radius-pill:999px;
+}
+[data-theme="dark"]{
+  --paper:#0F1114; --card:#1A1D1F; --border:#2A2D33; --fill:#22262B;
+  --ink:#F3F1EC; --muted:#9A9EA6; --faint:#787D85;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+.mono{font-family:ui-monospace,"IBM Plex Mono",Menlo,Consolas,monospace;}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 24px 80px;}
+.page-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;}
+h1{font-size:24px;margin:0;}
+.btn-primary{background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);
+  padding:10px 18px;font:700 14px inherit;cursor:pointer;transition:background .15s,transform .1s;}
+.btn-primary:hover{background:var(--accent-dark);} .btn-primary:active{transform:scale(.97);}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:9px 16px;font:600 14px inherit;cursor:pointer;}
+.btn-ghost:hover{color:var(--ink);border-color:var(--faint);}
+
+/* ---- Filter bar (Type segmented control REMOVED - absorbed into tags) ---- */
+.filter-bar{display:flex;gap:16px 20px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+.search{position:relative;flex:1 1 240px;min-width:200px;}
+.search-ic{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--faint);pointer-events:none;}
+.search input{width:100%;height:38px;padding:0 34px 0 36px;background:var(--card);
+  border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--ink);font:14px inherit;}
+.search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);outline:none;}
+.seg-group{display:flex;align-items:center;gap:8px;}
+.seg-label{font-size:12px;color:var(--faint);}
+.seg{display:flex;background:var(--fill);border-radius:var(--radius-pill);padding:3px;}
+.seg-btn{border:none;background:transparent;color:var(--muted);font:500 13px inherit;
+  padding:6px 13px;border-radius:var(--radius-pill);cursor:pointer;}
+.seg-btn:hover{color:var(--ink);}
+.seg-btn.on{background:var(--card);color:var(--accent);font-weight:600;box-shadow:0 1px 2px rgba(20,22,26,.12);}
+.seg-btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px;}
+
+/* ---- Tag filter row ---- */
+.tag-bar{display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;flex-wrap:wrap;}
+.tag-bar-label{font-size:12px;color:var(--faint);padding-top:8px;white-space:nowrap;}
+.tag-chips{display:flex;flex-wrap:wrap;gap:6px;flex:1 1 300px;align-items:center;}
+.tchip{display:inline-flex;align-items:center;gap:6px;font:600 12px inherit;
+  padding:6px 11px;min-height:32px;border-radius:var(--radius-pill);
+  background:var(--fill);color:var(--muted);border:1px solid transparent;cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s;}
+.tchip:hover{color:var(--ink);border-color:var(--border);}
+.tchip:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+.tchip .n{font-weight:500;color:var(--faint);font-size:11px;}
+.tchip.on{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);}
+.tchip.on .n{color:var(--accent);}
+.tchip.zero{opacity:.4;cursor:not-allowed;}
+/* System tags: derived from what is on disk, not user-owned. Dashed = "not yours to edit". */
+.tchip.sys{background:transparent;border:1px dashed var(--border);}
+.tchip.sys::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--faint);flex:none;}
+.tchip.sys.on{background:var(--accent-soft);border-style:solid;border-color:var(--accent);}
+.tchip.sys.on::before{background:var(--accent);}
+.tag-sep{width:1px;align-self:stretch;background:var(--border);margin:2px 4px;}
+.tag-bar-actions{display:flex;gap:8px;align-items:center;}
+.linkish{background:none;border:none;color:var(--muted);font:600 12px inherit;
+  cursor:pointer;padding:6px 8px;border-radius:var(--radius-sm);}
+.linkish:hover{color:var(--accent);background:var(--accent-soft);}
+.result-line{font-size:12px;color:var(--faint);margin:0 0 18px;min-height:18px;}
+.result-line b{color:var(--ink);}
+
+/* ---- Cards ---- */
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;}
+.vcard{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-md);
+  overflow:hidden;transition:box-shadow .2s,transform .2s;position:relative;}
+.vcard:hover{box-shadow:0 10px 26px rgba(20,22,26,.08);transform:translateY(-3px);}
+/* .vmode badge REMOVED from the thumbnail - the mode now shows as a system tag below. */
+.vthumb{height:130px;position:relative;display:flex;justify-content:flex-end;padding:10px 12px;
+  background:linear-gradient(135deg,#2c3238,#1b1f24);}
+.vdur{position:absolute;bottom:8px;right:10px;font-size:11px;color:#fff;}
+.vicons{display:flex;gap:6px;align-self:flex-start;opacity:0;transition:opacity .15s;}
+.vcard:hover .vicons,.vcard:focus-within .vicons{opacity:1;}
+.vicon{width:30px;height:30px;display:grid;place-items:center;border:none;cursor:pointer;
+  border-radius:var(--radius-sm);background:rgba(0,0,0,.45);color:#fff;}
+.vicon:hover{background:rgba(0,0,0,.7);}
+.vicon:focus-visible{outline:2px solid #fff;outline-offset:1px;opacity:1;}
+.vicon svg{width:15px;height:15px;}
+.vbody{padding:14px 16px;}
+.vname{font-size:14.5px;font-weight:700;}
+.vdate{font-size:12px;color:var(--faint);margin-top:2px;}
+.vfoot{margin-top:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.chip{font-size:11.5px;font-weight:700;padding:4px 10px;border-radius:var(--radius-pill);background:var(--fill);}
+.vtags{margin-top:8px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;}
+.vtag{display:inline-flex;align-items:center;gap:5px;font:600 11px inherit;padding:3px 9px;
+  border-radius:var(--radius-pill);background:var(--fill);color:var(--muted);}
+.vtag.sys{background:transparent;border:1px dashed var(--border);}
+.vtag.sys::before{content:'';width:4px;height:4px;border-radius:50%;background:var(--faint);flex:none;}
+.vtag.hit{background:var(--accent-soft);color:var(--accent);border-style:solid;border-color:var(--accent);}
+.vtag.hit::before{background:var(--accent);}
+.vtag-none{font-size:11.5px;color:var(--faint);font-style:italic;}
+
+/* ---- Tag editor popover ---- */
+.pop-backdrop{position:fixed;inset:0;background:rgba(10,12,14,.35);z-index:40;}
+.pop{position:absolute;z-index:50;width:290px;background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius-md);box-shadow:0 18px 44px rgba(20,22,26,.22);padding:14px;}
+.pop h3{margin:0 0 4px;font-size:13px;}
+.pop .sub{font-size:11.5px;color:var(--faint);margin:0 0 10px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.pop-sys{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;}
+.pop-sys-note{font-size:10.5px;color:var(--faint);margin:0 0 10px;}
+.pop-tags{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px;min-height:26px;}
+.ptag{display:inline-flex;align-items:center;gap:5px;font:600 11.5px inherit;padding:4px 6px 4px 10px;
+  border-radius:var(--radius-pill);background:var(--accent-soft);color:var(--accent);}
+.ptag button{border:none;background:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;
+  width:18px;height:18px;border-radius:50%;}
+.ptag button:hover{background:rgba(0,0,0,.12);}
+.pop input{width:100%;height:36px;padding:0 10px;background:var(--paper);
+  border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--ink);font:13px inherit;}
+.pop input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);outline:none;}
+.sugg{margin-top:6px;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;}
+.sugg button{display:block;width:100%;text-align:left;border:none;background:var(--card);
+  color:var(--ink);font:13px inherit;padding:8px 10px;cursor:pointer;}
+.sugg button:hover,.sugg button.cursor{background:var(--accent-soft);color:var(--accent);}
+.sugg .new{color:var(--muted);font-style:italic;}
+.warn{margin-top:6px;font-size:11px;color:var(--bad);}
+.pop-hint{font-size:11px;color:var(--faint);margin-top:8px;}
+
+/* ---- Manage modal ---- */
+.modal{position:fixed;z-index:50;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:min(460px,92vw);max-height:86vh;overflow:auto;background:var(--card);
+  border:1px solid var(--border);border-radius:var(--radius-lg);
+  box-shadow:0 24px 60px rgba(20,22,26,.3);padding:20px;}
+.modal h2{margin:0 0 4px;font-size:17px;}
+.modal .sub{font-size:12px;color:var(--faint);margin:0 0 14px;}
+.grp{font-size:11px;font-weight:700;color:var(--faint);text-transform:uppercase;
+  letter-spacing:.04em;margin:14px 0 2px;}
+.grp:first-of-type{margin-top:0;}
+.trow{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--border);}
+.trow .nm{flex:1;font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px;}
+.trow.sys .nm::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--faint);}
+.trow .ct{font-size:11.5px;color:var(--faint);}
+.trow .why{font-size:11px;color:var(--faint);font-style:italic;}
+.trow input{flex:1;height:32px;padding:0 9px;background:var(--paper);border:1px solid var(--accent);
+  border-radius:var(--radius-sm);color:var(--ink);font:13px inherit;}
+.tbtn{border:none;background:var(--fill);color:var(--muted);font:600 11.5px inherit;
+  padding:6px 10px;border-radius:var(--radius-sm);cursor:pointer;min-height:30px;}
+.tbtn:hover{color:var(--ink);}
+.tbtn.danger:hover{color:var(--bad);background:rgba(229,72,77,.12);}
+.modal-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:16px;}
+.confirm{background:rgba(229,72,77,.1);border:1px solid var(--bad);border-radius:var(--radius-sm);
+  padding:10px 12px;font-size:12.5px;margin-top:10px;}
+.confirm b{color:var(--bad);}
+
+/* ---- Toast ---- */
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:60;
+  background:var(--ink);color:var(--paper);border-radius:var(--radius-sm);
+  padding:11px 14px;font-size:13px;display:flex;align-items:center;gap:14px;
+  box-shadow:0 12px 30px rgba(0,0,0,.3);}
+.toast button{background:none;border:none;color:var(--accent);font:700 13px inherit;cursor:pointer;}
+
+/* ---- Wireframe-only chrome ---- */
+.wf-bar{background:var(--ink);color:var(--paper);padding:9px 24px;font-size:12.5px;
+  display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;}
+.wf-bar b{color:var(--accent);}
+.wf-bar .spacer{flex:1;}
+.wf-bar button{background:rgba(255,255,255,.14);border:none;color:inherit;
+  font:600 12px inherit;padding:6px 11px;border-radius:var(--radius-sm);cursor:pointer;}
+.wf-note{border-left:3px solid var(--accent);background:var(--fill);
+  padding:12px 14px;border-radius:0 var(--radius-sm) var(--radius-sm) 0;margin:26px 0 0;font-size:13px;}
+.wf-note h4{margin:0 0 6px;font-size:13px;}
+.wf-note ul{margin:0;padding-left:18px;} .wf-note li{margin:3px 0;color:var(--muted);}
+.empty{padding:34px;text-align:center;color:var(--muted);border:1px dashed var(--border);
+  border-radius:var(--radius-md);}
+@media (max-width:560px){ .tag-bar-label{display:none;} .wrap{padding:20px 16px 60px;} }
+</style>
+</head>
+<body>
+
+<div class="wf-bar">
+  <span><b>WIREFRAME</b> — library tags (Type absorbed)</span>
+  <span class="spacer"></span>
+  <button id="wf-lang">中文</button>
+  <button id="wf-theme">Toggle dark</button>
+  <button id="wf-reset">Reset</button>
+</div>
+
+<div class="wrap">
+  <div class="page-head">
+    <h1 id="h-title">Video Library</h1>
+    <button class="btn-primary" id="h-new">+ New Analysis</button>
+  </div>
+
+  <div class="filter-bar">
+    <div class="search">
+      <svg class="search-ic" width="16" height="16" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+      <input id="f-q" type="search" aria-label="Search">
+    </div>
+    <!-- Type segmented control deliberately gone. Status stays: it is a lifecycle
+         state, not a label, and its values are mutually exclusive by definition. -->
+    <div class="seg-group"><span class="seg-label" id="l-status">Status</span>
+      <div class="seg" role="tablist" id="seg-status"></div></div>
+  </div>
+
+  <div class="tag-bar">
+    <span class="tag-bar-label" id="l-tags">Tags</span>
+    <div class="tag-chips" id="tag-chips" role="group" aria-label="Filter by tags"></div>
+    <div class="tag-bar-actions">
+      <button class="linkish" id="clear-tags" hidden></button>
+      <button class="linkish" id="manage-tags"></button>
+    </div>
+  </div>
+  <p class="result-line" id="result-line"></p>
+
+  <div class="card-grid" id="cards"></div>
+
+  <div class="wf-note">
+    <h4 id="n-title">What changed, and what to try</h4>
+    <ul id="n-list"></ul>
+  </div>
+</div>
+
+<script>
+// ------------------------------------------------------------------ i18n
+var LANG = 'en';
+var STR = {
+  en:{title:'Video Library', neu:'+ New Analysis', status:'Status', tags:'Tags',
+      search:'Search videos or tags…', manage:'Manage…', clear:'Clear tags',
+      all:'All', analyzed:'Analyzed', courtset:'Court set', newv:'New',
+      videos:'videos', of:'of', allof:'all of', matching:'matching',
+      notags:'no tags', none:'none yet', add:'Add a tag…',
+      popTags:'Tags', sysNote:'From analysis results — not editable.',
+      hint:'Enter to add · Esc to close · saves immediately',
+      create:'Create', mtitle:'Manage tags', msub:'Renaming or deleting applies to every video that uses the tag.',
+      gsys:'From analysis', guser:'Your tags', rename:'Rename', del:'Delete',
+      save:'Save', cancel:'Cancel', done:'Done', derived:'derived',
+      video:'video', videosn:'videos', emptyA:'No videos match all',
+      emptyB:'selected tags.', clearf:'Clear tag filters',
+      reserved:'Reserved — this name is set by the analysis.',
+      delq:'Delete', delq2:'? The videos themselves are not touched.', deleted:'deleted', undo:'Undo'},
+  zh:{title:'视频库', neu:'+ 新建分析', status:'状态', tags:'标签',
+      search:'搜索视频或标签…', manage:'管理…', clear:'清除标签',
+      all:'全部', analyzed:'已完成', courtset:'已标注', newv:'未分析',
+      videos:'个视频', of:'/', allof:'同时包含', matching:'匹配',
+      notags:'无标签', none:'暂无', add:'添加标签…',
+      popTags:'标签', sysNote:'来自分析结果，不可编辑。',
+      hint:'回车添加 · Esc 关闭 · 立即保存',
+      create:'新建', mtitle:'管理标签', msub:'重命名或删除会应用到所有使用该标签的视频。',
+      gsys:'来自分析', guser:'自定义标签', rename:'重命名', del:'删除',
+      save:'保存', cancel:'取消', done:'完成', derived:'自动',
+      video:'个视频', videosn:'个视频', emptyA:'没有视频同时包含这',
+      emptyB:'个标签。', clearf:'清除标签筛选',
+      reserved:'保留名称：由分析结果决定。',
+      delq:'删除', delq2:'？视频本身不受影响。', deleted:'已删除', undo:'撤销'}
+};
+function S(k){ return STR[LANG][k]; }
+
+// System tags are DERIVED from what exists on disk, so they carry a stable key
+// plus a localised label. User tags are free text and display exactly as typed.
+var SYS = { match:{en:'Match', zh:'比赛'}, drill:{en:'Drill', zh:'训练'} };
+function sysLabel(k){ return SYS[k][LANG]; }
+function isSys(t){ return Object.prototype.hasOwnProperty.call(SYS, t); }
+
+// ------------------------------------------------------------------ data
+// has_match / has_posture are the real fields /api/videos already returns.
+var VIDEOS = [
+  {name:'Dji 20260919111119 0007 D', date:'2026-09-19', dur:'11:18', has_match:true,  has_posture:false, status:'analyzed', tags:['smash','court-a']},
+  {name:'Dji 20260919104815 0005 D', date:'2026-09-19', dur:'12:18', has_match:true,  has_posture:false, status:'analyzed', tags:['court-a','doubles']},
+  {name:'Dji 20260919095739 0002 D', date:'2026-09-19', dur:'09:42', has_match:false, has_posture:false, status:'new',       tags:['singles']},
+  {name:'highclear1',                date:'2026-07-22', dur:'00:48', has_match:true,  has_posture:true,  status:'analyzed', tags:['high-clear','smash']},
+  {name:'IMG_1270',                  date:'2026-07-22', dur:'00:31', has_match:false, has_posture:true,  status:'analyzed', tags:['footwork']},
+  {name:'IMG_9691',                  date:'2026-07-21', dur:'00:27', has_match:false, has_posture:true,  status:'analyzed', tags:['high-clear']},
+  {name:'Axelsen vs Kodai 1080p',    date:'2026-07-25', dur:'48:02', has_match:true,  has_posture:false, status:'analyzed', tags:['reference','singles']}
+];
+var ORIGINAL = JSON.parse(JSON.stringify(VIDEOS));
+var selected = [], query = '', statusF = 'all';
+var undoSnapshot = null, toastTimer = null;
+
+// The refactor in one function: the mode is no longer an either/or badge, it is a
+// derived tag set. A video with BOTH analyses now carries BOTH, which the old
+// `has_posture && !has_match ? Drill : Match` label could never express.
+function sysTagsOf(v){
+  var out = [];
+  if (v.has_match) out.push('match');
+  if (v.has_posture) out.push('drill');
+  return out;
+}
+function tagsOf(v){ return sysTagsOf(v).concat(v.tags); }
+
+function allTags(){
+  var counts = {};
+  VIDEOS.forEach(function(v){ tagsOf(v).forEach(function(t){ counts[t] = (counts[t]||0)+1; }); });
+  var keys = Object.keys(counts);
+  var sys  = keys.filter(isSys).sort();
+  var user = keys.filter(function(t){ return !isSys(t); }).sort();
+  return sys.concat(user).map(function(t){ return {tag:t, n:counts[t], sys:isSys(t)}; });
+}
+function label(t){ return isSys(t) ? sysLabel(t) : t; }
+
+function matches(v){
+  if (statusF !== 'all' && v.status !== statusF) return false;
+  if (query){
+    var q = query.toLowerCase();
+    if (v.name.toLowerCase().indexOf(q) === -1 &&
+        !tagsOf(v).some(function(t){ return label(t).toLowerCase().indexOf(q) !== -1 ||
+                                            t.indexOf(q) !== -1; })) return false;
+  }
+  return selected.every(function(t){ return tagsOf(v).indexOf(t) !== -1; });
+}
+function projectedCount(tag){
+  return VIDEOS.filter(function(v){
+    if (!matches(v)) return false;
+    return selected.indexOf(tag) !== -1 ? true : tagsOf(v).indexOf(tag) !== -1;
+  }).length;
+}
+
+// ------------------------------------------------------------------ render
+function renderStatus(){
+  var defs = [['all','all'],['analyzed','analyzed'],['court_set','courtset'],['new','newv']];
+  var el = document.getElementById('seg-status');
+  el.innerHTML = defs.map(function(d){
+    return '<button class="seg-btn' + (statusF === d[0] ? ' on' : '') + '" role="tab" data-s="' +
+           d[0] + '" aria-selected="' + (statusF === d[0]) + '">' + S(d[1]) + '</button>';
+  }).join('');
+  el.querySelectorAll('[data-s]').forEach(function(b){
+    b.onclick = function(){ statusF = b.getAttribute('data-s'); render(); };
+  });
+}
+function renderTagBar(){
+  var wrap = document.getElementById('tag-chips');
+  var list = allTags();
+  var html = '', sepDone = false;
+  list.forEach(function(o){
+    if (!o.sys && !sepDone && list.some(function(x){ return x.sys; })){
+      html += '<span class="tag-sep" aria-hidden="true"></span>'; sepDone = true;
+    }
+    var on = selected.indexOf(o.tag) !== -1;
+    var n = projectedCount(o.tag);
+    // aria-label is set explicitly: with a title attribute present, the chip was
+    // announcing the tooltip instead of the tag's own name.
+    var aria = label(o.tag) + ', ' + n + ' ' + (n === 1 ? S('video') : S('videosn')) +
+               (o.sys ? ', ' + S('sysNote') : '');
+    html += '<button class="tchip' + (o.sys ? ' sys' : '') + (on ? ' on' : '') +
+      (!on && n === 0 ? ' zero' : '') + '" data-tag="' + o.tag + '" role="switch" aria-checked="' + on + '"' +
+      ' aria-label="' + aria + '"' +
+      (o.sys ? ' title="' + S('sysNote') + '"' : '') +
+      (!on && n === 0 ? ' disabled' : '') + '>' + label(o.tag) +
+      '<span class="n">' + n + '</span></button>';
+  });
+  wrap.innerHTML = html;
+  wrap.querySelectorAll('.tchip').forEach(function(b){
+    b.onclick = function(){
+      var t = b.getAttribute('data-tag'), i = selected.indexOf(t);
+      if (i === -1) selected.push(t); else selected.splice(i,1);
+      render();
+    };
+  });
+  document.getElementById('clear-tags').hidden = selected.length === 0;
+}
+function renderResultLine(){
+  var n = VIDEOS.filter(matches).length;
+  var el = document.getElementById('result-line');
+  if (!selected.length && !query){ el.innerHTML = '<b>' + n + '</b> ' + S('videos'); return; }
+  var bits = [];
+  if (selected.length) bits.push(S('allof') + ' ' + selected.map(function(t){ return '“' + label(t) + '”'; }).join(' + '));
+  if (query) bits.push(S('matching') + ' “' + query + '”');
+  el.innerHTML = '<b>' + n + '</b> ' + S('of') + ' ' + VIDEOS.length + ' ' + S('videos') + ' — ' + bits.join(', ');
+}
+var ICON_TAG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z"/><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/></svg>';
+var ICON_DEL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
+function renderCards(){
+  var vids = VIDEOS.filter(matches);
+  var wrap = document.getElementById('cards');
+  if (!vids.length){
+    wrap.innerHTML = '<div class="empty" style="grid-column:1/-1">' + S('emptyA') + ' ' +
+      selected.length + ' ' + S('emptyB') + '<br><button class="btn-ghost" id="empty-clear">' +
+      S('clearf') + '</button></div>';
+    document.getElementById('empty-clear').onclick = function(){ selected = []; render(); };
+    return;
+  }
+  wrap.innerHTML = vids.map(function(v,i){
+    var ts = tagsOf(v);
+    var tags = ts.length ? ts.map(function(t){
+        return '<span class="vtag' + (isSys(t) ? ' sys' : '') +
+               (selected.indexOf(t) !== -1 ? ' hit' : '') + '">' + label(t) + '</span>';
+      }).join('') : '<span class="vtag-none">' + S('notags') + '</span>';
+    var st = {analyzed:['analyzed','var(--good)'],court_set:['courtset','var(--mid)'],new:['newv','var(--faint)']}[v.status];
+    return '<div class="vcard"><div class="vthumb">' +
+      '<span class="vdur mono">' + v.dur + '</span>' +
+      '<span class="vicons">' +
+        '<button class="vicon" data-tagbtn="' + i + '" aria-label="Edit tags">' + ICON_TAG + '</button>' +
+        '<button class="vicon" aria-label="Delete">' + ICON_DEL + '</button>' +
+      '</span></div>' +
+      '<div class="vbody"><div class="vname">' + v.name + '</div>' +
+      '<div class="vdate mono">' + v.date + '</div>' +
+      '<div class="vfoot"><span class="chip" style="color:' + st[1] + '">' + S(st[0]) + '</span></div>' +
+      '<div class="vtags">' + tags + '</div></div></div>';
+  }).join('');
+  wrap.querySelectorAll('[data-tagbtn]').forEach(function(b){
+    b.onclick = function(e){ e.stopPropagation(); openEditor(vids[+b.getAttribute('data-tagbtn')], b); };
+  });
+}
+function renderChrome(){
+  document.getElementById('h-title').textContent = S('title');
+  document.getElementById('h-new').textContent = S('neu');
+  document.getElementById('l-status').textContent = S('status');
+  document.getElementById('l-tags').textContent = S('tags');
+  document.getElementById('manage-tags').textContent = S('manage');
+  document.getElementById('clear-tags').textContent = S('clear');
+  var q = document.getElementById('f-q');
+  q.placeholder = S('search'); q.setAttribute('aria-label', S('search'));
+  document.getElementById('n-list').innerHTML = [
+    '<b>Type is gone from the filter bar.</b> Match / Drill are now chips in the tag row — dashed outline with a dot, meaning “derived, not yours to edit”.',
+    '<b>Match and Drill are no longer mutually exclusive</b>, and that is the point. Select <b>Match</b>: Drill stays at 1, because <code>highclear1</code> genuinely has both analyses. The old <code>has_posture &amp;&amp; !has_match</code> label forced an either/or and silently hid the drill half.',
+    'Tags that would lead nowhere still drop to 0 and disable — try <b>Match</b> then look at <b>footwork</b>. You cannot click your way into an empty list.',
+    'Open the tag editor (hover a card): system tags are listed but have no ×. Try typing <code>match</code> — it is refused as reserved.',
+    'Hit <b>中文</b> in the black bar: system tags become 比赛 / 训练 while your own tags stay exactly as typed. That is why they need a key, not just a label.',
+    '<b>Manage…</b> groups system tags separately and disables rename/delete on them.'
+  ].map(function(s){ return '<li>' + s + '</li>'; }).join('');
+}
+function render(){ renderChrome(); renderStatus(); renderTagBar(); renderResultLine(); renderCards(); }
+
+// ------------------------------------------------------------------ editor
+var openPop = null;
+function closePop(){
+  if (!openPop) return;
+  openPop.backdrop.remove(); openPop.el.remove(); openPop = null;
+  document.removeEventListener('keydown', popKey);
+}
+function popKey(e){ if (e.key === 'Escape') closePop(); }
+function openEditor(video, anchor){
+  closePop();
+  var backdrop = document.createElement('div');
+  backdrop.className = 'pop-backdrop'; backdrop.onclick = closePop;
+  var el = document.createElement('div'); el.className = 'pop';
+  document.body.appendChild(backdrop); document.body.appendChild(el);
+  openPop = {el:el, backdrop:backdrop};
+  document.addEventListener('keydown', popKey);
+  var r = anchor.getBoundingClientRect();
+  el.style.top = (window.scrollY + r.bottom + 8) + 'px';
+  el.style.left = Math.max(8, Math.min(window.scrollX + r.left - 130, window.innerWidth - 306)) + 'px';
+
+  function draw(warn){
+    var sys = sysTagsOf(video);
+    el.innerHTML = '<h3>' + S('popTags') + '</h3><p class="sub">' + video.name + '</p>' +
+      (sys.length ? '<div class="pop-sys">' + sys.map(function(t){
+          return '<span class="vtag sys">' + label(t) + '</span>'; }).join('') + '</div>' +
+        '<p class="pop-sys-note">' + S('sysNote') + '</p>' : '') +
+      '<div class="pop-tags">' + (video.tags.length
+        ? video.tags.map(function(t){
+            return '<span class="ptag">' + t + '<button data-rm="' + t + '" aria-label="Remove ' + t + '">×</button></span>';
+          }).join('')
+        : '<span class="vtag-none">' + S('none') + '</span>') + '</div>' +
+      '<input id="tag-in" placeholder="' + S('add') + '" autocomplete="off" aria-label="' + S('add') + '">' +
+      (warn ? '<p class="warn" role="alert">' + warn + '</p>' : '') +
+      '<div id="sugg"></div><p class="pop-hint">' + S('hint') + '</p>';
+
+    el.querySelectorAll('[data-rm]').forEach(function(b){
+      b.onclick = function(){
+        video.tags = video.tags.filter(function(x){ return x !== b.getAttribute('data-rm'); });
+        selected = selected.filter(function(t){ return allTags().some(function(o){ return o.tag === t; }); });
+        draw(); render();
+      };
+    });
+    var input = el.querySelector('#tag-in'), sugg = el.querySelector('#sugg'), cursor = -1;
+    function drawSugg(){
+      var val = input.value.trim().toLowerCase();
+      var pool = allTags().filter(function(o){ return !o.sys; }).map(function(o){ return o.tag; })
+        .filter(function(t){ return video.tags.indexOf(t) === -1; })
+        .filter(function(t){ return !val || t.indexOf(val) !== -1; });
+      var rows = pool.slice(0,5).map(function(t,i){
+        return '<button data-add="' + t + '" class="' + (i === cursor ? 'cursor' : '') + '">' + t + '</button>'; });
+      if (val && pool.indexOf(val) === -1 && !isSys(val))
+        rows.push('<button data-add="' + val + '" class="new">' + S('create') + ' “' + val + '”</button>');
+      sugg.innerHTML = rows.join(''); sugg.className = rows.length ? 'sugg' : '';
+      sugg.querySelectorAll('[data-add]').forEach(function(b){
+        b.onclick = function(){ add(b.getAttribute('data-add')); }; });
+    }
+    function add(t){
+      t = (t||'').trim().toLowerCase(); if (!t) return;
+      if (isSys(t)){ draw(S('reserved')); el.querySelector('#tag-in').focus(); return; }
+      if (video.tags.indexOf(t) === -1) video.tags.push(t);
+      video.tags.sort(); draw(); render(); el.querySelector('#tag-in').focus();
+    }
+    input.oninput = function(){ cursor = -1; drawSugg(); };
+    input.onkeydown = function(e){
+      var opts = sugg.querySelectorAll('[data-add]');
+      if (e.key === 'ArrowDown'){ e.preventDefault(); cursor = Math.min(cursor+1, opts.length-1); drawSugg(); }
+      else if (e.key === 'ArrowUp'){ e.preventDefault(); cursor = Math.max(cursor-1,-1); drawSugg(); }
+      else if (e.key === 'Enter'){ e.preventDefault();
+        if (cursor >= 0 && opts[cursor]) add(opts[cursor].getAttribute('data-add')); else add(input.value); }
+    };
+    drawSugg(); input.focus();
+  }
+  draw();
+}
+
+// ------------------------------------------------------------------ manage
+function openManage(){
+  closePop();
+  var backdrop = document.createElement('div'); backdrop.className = 'pop-backdrop';
+  var el = document.createElement('div'); el.className = 'modal';
+  document.body.appendChild(backdrop); document.body.appendChild(el);
+  openPop = {el:el, backdrop:backdrop};
+  document.addEventListener('keydown', popKey); backdrop.onclick = closePop;
+  var editing = null, confirming = null;
+  function draw(){
+    var list = allTags(), sys = list.filter(function(o){ return o.sys; }),
+        usr = list.filter(function(o){ return !o.sys; });
+    function row(o){
+      if (editing === o.tag){
+        return '<div class="trow"><input id="ren" value="' + o.tag + '" aria-label="Rename ' + o.tag + '">' +
+               '<button class="tbtn" data-save="' + o.tag + '">' + S('save') + '</button>' +
+               '<button class="tbtn" data-cancel="1">' + S('cancel') + '</button></div>';
+      }
+      if (o.sys){
+        return '<div class="trow sys"><span class="nm">' + label(o.tag) + '</span>' +
+               '<span class="ct">' + o.n + ' ' + S('videosn') + '</span>' +
+               '<span class="why">' + S('derived') + '</span></div>';
+      }
+      return '<div class="trow"><span class="nm">' + o.tag + '</span>' +
+             '<span class="ct">' + o.n + ' ' + S('videosn') + '</span>' +
+             '<button class="tbtn" data-ren="' + o.tag + '">' + S('rename') + '</button>' +
+             '<button class="tbtn danger" data-del="' + o.tag + '">' + S('del') + '</button></div>';
+    }
+    el.innerHTML = '<h2>' + S('mtitle') + '</h2><p class="sub">' + S('msub') + '</p>' +
+      (sys.length ? '<div class="grp">' + S('gsys') + '</div>' + sys.map(row).join('') : '') +
+      (usr.length ? '<div class="grp">' + S('guser') + '</div>' + usr.map(row).join('') : '') +
+      (confirming ? '<div class="confirm">' + S('delq') + ' <b>' + confirming + '</b>' + S('delq2') +
+        '<div class="modal-foot"><button class="btn-ghost" data-cancel="1">' + S('cancel') + '</button>' +
+        '<button class="btn-primary" data-confirm="' + confirming + '">' + S('del') + '</button></div></div>' : '') +
+      '<div class="modal-foot"><button class="btn-ghost" data-close="1">' + S('done') + '</button></div>';
+
+    el.querySelectorAll('[data-ren]').forEach(function(b){
+      b.onclick = function(){ editing = b.getAttribute('data-ren'); confirming = null; draw();
+        var i = el.querySelector('#ren'); if (i){ i.focus(); i.select(); } }; });
+    el.querySelectorAll('[data-save]').forEach(function(b){
+      b.onclick = function(){
+        var from = b.getAttribute('data-save');
+        var to = (el.querySelector('#ren').value || '').trim().toLowerCase();
+        if (to && to !== from && !isSys(to)){
+          VIDEOS.forEach(function(v){
+            if (v.tags.indexOf(from) !== -1){
+              v.tags = v.tags.filter(function(x){ return x !== from; });
+              if (v.tags.indexOf(to) === -1) v.tags.push(to);
+              v.tags.sort();
+            } });
+          selected = selected.map(function(t){ return t === from ? to : t; })
+                             .filter(function(t,i,a){ return a.indexOf(t) === i; });
+        }
+        editing = null; draw(); render(); }; });
+    el.querySelectorAll('[data-del]').forEach(function(b){
+      b.onclick = function(){ confirming = b.getAttribute('data-del'); editing = null; draw(); }; });
+    el.querySelectorAll('[data-confirm]').forEach(function(b){
+      b.onclick = function(){
+        var t = b.getAttribute('data-confirm');
+        undoSnapshot = JSON.parse(JSON.stringify(VIDEOS));
+        VIDEOS.forEach(function(v){ v.tags = v.tags.filter(function(x){ return x !== t; }); });
+        selected = selected.filter(function(x){ return x !== t; });
+        confirming = null; draw(); render();
+        showToast('“' + t + '” ' + S('deleted')); }; });
+    el.querySelectorAll('[data-cancel]').forEach(function(b){
+      b.onclick = function(){ editing = null; confirming = null; draw(); }; });
+    el.querySelectorAll('[data-close]').forEach(function(b){ b.onclick = closePop; });
+  }
+  draw();
+}
+function showToast(msg){
+  clearTimeout(toastTimer);
+  var old = document.querySelector('.toast'); if (old) old.remove();
+  var t = document.createElement('div');
+  t.className = 'toast'; t.setAttribute('role','status');
+  t.innerHTML = '<span>' + msg + '</span><button id="undo">' + S('undo') + '</button>';
+  document.body.appendChild(t);
+  t.querySelector('#undo').onclick = function(){
+    if (undoSnapshot){ VIDEOS = JSON.parse(JSON.stringify(undoSnapshot)); undoSnapshot = null; render(); }
+    t.remove(); };
+  toastTimer = setTimeout(function(){ t.remove(); }, 6000);
+}
+
+// ------------------------------------------------------------------ wiring
+document.getElementById('f-q').oninput = function(e){ query = e.target.value.trim(); render(); };
+document.getElementById('manage-tags').onclick = openManage;
+document.getElementById('clear-tags').onclick = function(){ selected = []; render(); };
+document.getElementById('wf-lang').onclick = function(){
+  LANG = LANG === 'en' ? 'zh' : 'en'; this.textContent = LANG === 'en' ? '中文' : 'EN';
+  document.documentElement.lang = LANG; closePop(); render(); };
+document.getElementById('wf-theme').onclick = function(){
+  var d = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.documentElement.setAttribute('data-theme', d ? 'light' : 'dark');
+  this.textContent = d ? 'Toggle dark' : 'Toggle light'; };
+document.getElementById('wf-reset').onclick = function(){
+  VIDEOS = JSON.parse(JSON.stringify(ORIGINAL)); selected = []; query = ''; statusF = 'all';
+  document.getElementById('f-q').value = ''; closePop(); render(); };
+render();
+</script>
+</body>
+</html>

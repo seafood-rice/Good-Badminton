@@ -20,7 +20,7 @@ window.Kestrel = (function () {
     document.documentElement.lang = lang; render(); }
   function setTheme(theme) { state.theme = theme; localStorage.setItem('kestrel_theme', theme);
     applyTheme(); renderSidebar(); }
-  var lib = { videos: [], filter: { q: '', mode: 'all', status: 'all', sort: 'date' } };
+  var lib = { videos: [], filter: { q: '', tags: [], status: 'all', sort: 'date' } };
   var wiz = { mode: 'match', video: null, step: 'mode', jobId: null, pollIv: null };
   var postureCtx = { stem: null, reps: [], fps: 30, sel: -1 };
   function loadDashboard() {
@@ -28,7 +28,9 @@ window.Kestrel = (function () {
       fetch('/api/stats').then(function (r) { return r.json(); }),
       fetch('/api/videos').then(function (r) { return r.json(); })
     ]).then(function (res) {
-      lib.stats = res[0]; lib.videos = res[1] || []; renderDashboard();
+      lib.stats = res[0]; lib.videos = res[1] || [];
+      pruneFilterTags();
+      renderDashboard();
     }).catch(function () {
       document.getElementById('main').innerHTML = '<p class="error">' +
         (state.lang === 'zh' ? '加载失败' : 'Failed to load') + '</p>';
@@ -37,11 +39,19 @@ window.Kestrel = (function () {
   function filteredVideos() {
     var f = lib.filter;
     var out = lib.videos.filter(function (v) {
-      if (f.q && v.name.toLowerCase().indexOf(f.q.toLowerCase()) === -1) return false;
-      if (f.mode === 'match' && !v.has_match) return false;
-      if (f.mode === 'posture' && !v.has_posture) return false;
+      if (f.q) {
+        var q = f.q.toLowerCase();
+        var inName = v.name.toLowerCase().indexOf(q) !== -1;
+        // Match the key AND the localised label, so "比赛" finds Match videos
+        // while the UI is in Chinese and "match" still finds them in English.
+        var inTags = tagsOf(v).some(function (t) {
+          return t.indexOf(q) !== -1 || tagLabel(t).toLowerCase().indexOf(q) !== -1;
+        });
+        if (!inName && !inTags) return false;
+      }
       if (f.status !== 'all' && v.status !== f.status) return false;
-      return true;
+      // AND: every selected tag must be present.
+      return f.tags.every(function (t) { return tagsOf(v).indexOf(t) !== -1; });
     });
     out.sort(function (a, b) {
       return f.sort === 'name' ? a.name.localeCompare(b.name)
@@ -49,16 +59,17 @@ window.Kestrel = (function () {
     });
     return out;
   }
-  function applyFilters(patch) { Object.assign(lib.filter, patch); renderCards(); }
+  function applyFilters(patch) {
+    Object.assign(lib.filter, patch); renderCards(); renderTagBar(); renderResultLine();
+  }
   // Localized filter options: [value, zh, en]. Labels stay consistent with the
-  // card badges (modeLabel / statusChip) so the same term names the same thing.
+  // card badges (tagLabel / statusChip) so the same term names the same thing.
   var FILTER_DEFS = {
-    mode:   [['all', '全部', 'All'], ['match', '比赛', 'Match'], ['posture', '训练', 'Drill']],
     status: [['all', '全部', 'All'], ['analyzed', '已完成', 'Analyzed'],
              ['court_set', '已标注', 'Court set'], ['new', '未分析', 'New']],
     sort:   [['date', '日期', 'Date'], ['name', '名称', 'Name']]
   };
-  var FILTER_GROUP_LABEL = { mode: ['类型', 'Type'], status: ['状态', 'Status'], sort: ['排序', 'Sort'] };
+  var FILTER_GROUP_LABEL = { status: ['状态', 'Status'], sort: ['排序', 'Sort'] };
   function _loc(pair, zhIdx, enIdx) { return state.lang === 'zh' ? pair[zhIdx] : pair[enIdx]; }
   function segGroup(key) {
     var cur = lib.filter[key];
@@ -82,7 +93,7 @@ window.Kestrel = (function () {
   }
   function renderFilterBar() {
     var bar = document.getElementById('filter-bar'); if (!bar) return;
-    bar.innerHTML = searchHTML() + segGroup('mode') + segGroup('status') + segGroup('sort');
+    bar.innerHTML = searchHTML() + segGroup('status') + segGroup('sort');
     var q = bar.querySelector('#f-q'), clr = bar.querySelector('#f-clear');
     q.oninput = function (e) { clr.classList.toggle('hide', !e.target.value); applyFilters({ q: e.target.value }); };
     clr.onclick = function () { applyFilters({ q: '' }); renderFilterBar(); bar.querySelector('#f-q').focus(); };
@@ -93,8 +104,135 @@ window.Kestrel = (function () {
       };
     });
   }
-  function modeLabel(v) { return v.has_posture && !v.has_match ? (state.lang==='zh'?'训练':'Drill')
-                                                               : (state.lang==='zh'?'比赛':'Match'); }
+  // Count shown on a chip is PROJECTED: how many videos would remain if this
+  // tag were also applied. With AND semantics a plain total invites clicking
+  // into an empty list; a projected count makes the dead end visible, and a
+  // chip that would yield zero disables itself.
+  function projectedCount(tag) {
+    var f = lib.filter;
+    return lib.videos.filter(function (v) {
+      if (f.status !== 'all' && v.status !== f.status) return false;
+      if (!f.tags.every(function (t) { return tagsOf(v).indexOf(t) !== -1; })) return false;
+      return f.tags.indexOf(tag) !== -1 || tagsOf(v).indexOf(tag) !== -1;
+    }).length;
+  }
+  function knownTags() {
+    var counts = {};
+    lib.videos.forEach(function (v) {
+      tagsOf(v).forEach(function (t) { counts[t] = (counts[t] || 0) + 1; });
+    });
+    var keys = Object.keys(counts);
+    // System tags in SYS_TAGS's own declared order (match, drill), not
+    // alphabetical -- alphabetical put drill before match here while the
+    // card (sysTagsOf: match then drill) and manager both used the other
+    // order, so the three disagreed on which came first.
+    var sysOrder = Object.keys(SYS_TAGS).filter(function (t) { return keys.indexOf(t) !== -1; });
+    return sysOrder.concat(keys.filter(function (t) { return !isSysTag(t); }).sort());
+  }
+  // Any successful tag write can make a filter selection stale (its last tag
+  // just got removed/renamed/deleted out from under it): drop anything no
+  // longer in knownTags() so the grid can't go silently empty with no chip
+  // left to deselect it.
+  function pruneFilterTags() {
+    var live = knownTags();
+    lib.filter.tags = lib.filter.tags.filter(function (t) { return live.indexOf(t) !== -1; });
+  }
+  function renderTagBar() {
+    var bar = document.getElementById('tag-bar'); if (!bar) return;
+    var zh = state.lang === 'zh';
+    var tags = knownTags();
+    var chips = '', sepDone = false;
+    tags.forEach(function (t) {
+      if (!isSysTag(t) && !sepDone && tags.some(isSysTag)) {
+        chips += '<span class="tag-sep" aria-hidden="true"></span>'; sepDone = true;
+      }
+      var on = lib.filter.tags.indexOf(t) !== -1;
+      var n = projectedCount(t);
+      // aria-label is explicit: with a title attribute present the chip
+      // announces the tooltip instead of its own name.
+      var aria = escHTML(tagLabel(t) + ', ' + n + ' ' + (zh ? '个视频' : (n === 1 ? 'video' : 'videos')) +
+        (isSysTag(t) ? ', ' + (zh ? '来自分析结果' : 'from analysis results') : ''));
+      chips += '<button class="tchip' + (isSysTag(t) ? ' sys' : '') + (on ? ' on' : '') +
+        (!on && n === 0 ? ' zero' : '') + '" data-tag="' + escHTML(t) + '" role="switch" aria-checked="' + on +
+        '" aria-label="' + aria + '"' + (!on && n === 0 ? ' disabled' : '') + '>' +
+        escHTML(tagLabel(t)) + '<span class="n">' + n + '</span></button>';
+    });
+    bar.innerHTML = (tags.length
+      ? '<span class="tag-bar-label">' + (zh ? '标签' : 'Tags') + '</span>' +
+        '<div class="tag-chips" role="group" aria-label="' + (zh ? '按标签筛选' : 'Filter by tags') + '">' + chips + '</div>'
+      : '') +
+      '<div class="tag-bar-actions">' +
+        (lib.filter.tags.length ? '<button class="linkish" id="t-clear">' + (zh ? '清除标签' : 'Clear tags') + '</button>' : '') +
+        '<button class="linkish" id="t-manage">' + (zh ? '管理…' : 'Manage…') + '</button></div>';
+
+    bar.querySelectorAll('.tchip').forEach(function (b) {
+      b.onclick = function () {
+        var t = b.getAttribute('data-tag'), i = lib.filter.tags.indexOf(t);
+        if (i === -1) lib.filter.tags.push(t); else lib.filter.tags.splice(i, 1);
+        renderTagBar(); renderCards(); renderResultLine();
+        focusTagBarChip(t);
+      };
+    });
+    var clr = bar.querySelector('#t-clear');
+    if (clr) clr.onclick = function () {
+      lib.filter.tags = []; renderTagBar(); renderCards(); renderResultLine();
+      focusTagBarChip(null);
+    };
+    var mng = bar.querySelector('#t-manage');
+    if (mng) mng.onclick = openTagManager;
+  }
+  // renderTagBar() rebuilds the whole bar's innerHTML, which destroys whatever
+  // element had focus. Only the two handlers that toggle/clear chips call
+  // this afterward -- a render triggered by something else (typing in search,
+  // a rename/delete in the manager modal) must leave focus wherever it was.
+  function focusTagBarChip(tag) {
+    var bar = document.getElementById('tag-bar'); if (!bar) return;
+    if (tag != null) {
+      var chips = bar.querySelectorAll('.tchip');
+      for (var i = 0; i < chips.length; i++) {
+        // Compare via getAttribute, not a CSS selector built from the tag:
+        // tags can contain quotes, which would break an attribute selector.
+        if (chips[i].getAttribute('data-tag') === tag) { chips[i].focus(); return; }
+      }
+    }
+    var first = bar.querySelector('.tchip');
+    if (first) { first.focus(); return; }
+    var mng = bar.querySelector('#t-manage');
+    if (mng) mng.focus();
+  }
+  function renderResultLine() {
+    var el = document.getElementById('result-line'); if (!el) return;
+    var zh = state.lang === 'zh', f = lib.filter, n = filteredVideos().length;
+    if (!f.tags.length && !f.q) { el.innerHTML = '<b>' + n + '</b> ' + (zh ? '个视频' : 'videos'); return; }
+    var bits = [];
+    if (f.tags.length) bits.push((zh ? '同时包含 ' : 'all of ') +
+      f.tags.map(function (t) { return '“' + escHTML(tagLabel(t)) + '”'; }).join(' + '));
+    if (f.q) bits.push((zh ? '匹配 ' : 'matching ') + '“' + escHTML(f.q) + '”');
+    el.innerHTML = '<b>' + n + '</b> / ' + lib.videos.length + ' — ' + bits.join(', ');
+  }
+  // Match/Drill are DERIVED from what analysis produced, so they are computed
+  // here rather than stored as user tags: a stored copy would go stale, and a
+  // user could delete a tag the system still believes. They carry a stable key
+  // plus a localised label, because the key is what filtering and storage use
+  // while the UI is bilingual. User tags are the owner's own text and are
+  // never translated.
+  var SYS_TAGS = { match: ['比赛', 'Match'], drill: ['训练', 'Drill'] };
+  // Inline SVG, not emoji: emoji render per-platform and cannot be themed.
+  var ICON_TAG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z"/><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/></svg>';
+  var ICON_DEL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
+  function isSysTag(t) { return Object.prototype.hasOwnProperty.call(SYS_TAGS, t); }
+  function tagLabel(t) { return isSysTag(t) ? _loc(SYS_TAGS[t], 0, 1) : t; }
+  function sysTagsOf(v) {
+    var out = [];
+    if (v.has_match) out.push('match');
+    if (v.has_posture) out.push('drill');
+    return out;
+  }
+  function tagsOf(v) { return sysTagsOf(v).concat(v.tags || []); }
+  // Tags are free-form user text, and the store permits characters that are
+  // meaningful in HTML (< > " & '). Every user-derived string that lands in
+  // innerHTML or an attribute value must be routed through this first.
+  function escHTML(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
   function statusChip(v) {
     var map = { analyzed:['已完成','Analyzed','var(--good)'],
                 court_set:['已标注','Court set','var(--mid)'],
@@ -118,18 +256,46 @@ window.Kestrel = (function () {
                '</div><div class="stat-val mono">' + val + '</div></div>';
       }).join('') + '</div>' +
       '<div class="filter-bar" id="filter-bar"></div>' +
+      '<div class="tag-bar" id="tag-bar"></div>' +
+      '<p class="result-line" id="result-line"></p>' +
       '<div id="cards" class="card-grid"></div>';
     renderFilterBar();
+    renderTagBar();
+    renderResultLine();
     renderCards();
     var gn = document.getElementById('go-new'); if (gn) gn.onclick = function () { setScreen('new'); };
   }
   function renderCards() {
     var wrap = document.getElementById('cards'); if (!wrap) return;
     var vids = filteredVideos();
-    if (!vids.length) { wrap.innerHTML = '<p class="muted">' +
-      (state.lang==='zh'?'暂无视频':'No videos') + '</p>'; return; }
+    var zh = state.lang === 'zh';
+    if (!vids.length) {
+      // Projected counts mean a chip that would yield zero disables itself,
+      // so this dead end is reachable only via search plus tags, never by
+      // clicking chips alone (spec §7) -- but it is still reachable, and
+      // "No videos" would look like an empty library rather than an
+      // over-narrow filter.
+      if (lib.videos.length > 0 && (lib.filter.tags.length || lib.filter.q)) {
+        var n = lib.filter.tags.length;
+        wrap.innerHTML = '<div class="empty">' +
+          (zh ? ('没有视频同时包含这 ' + n + ' 个标签。')
+              : ('No videos match all ' + n + (n === 1 ? ' tag.' : ' tags.'))) +
+          '<br><button class="btn-ghost" id="empty-clear">' +
+          (zh ? '清除标签筛选' : 'Clear tag filters') + '</button></div>';
+        var eclr = wrap.querySelector('#empty-clear');
+        // Exactly #t-clear's own handler: only the tag selection clears, not
+        // the search text (spec §7 names only "selected tags").
+        if (eclr) eclr.onclick = function () {
+          lib.filter.tags = []; renderTagBar(); renderCards(); renderResultLine();
+          focusTagBarChip(null);
+        };
+      } else {
+        wrap.innerHTML = '<p class="muted">' + (zh ? '暂无视频' : 'No videos') + '</p>';
+      }
+      return;
+    }
     wrap.innerHTML = vids.map(function (v) {
-      var nm = (v.name || '').replace(/"/g, '&quot;');
+      var nm = escHTML(v.name || '');
       // Single-quote the CSS url(): an UNQUOTED url() cannot contain spaces, so a
       // stem like "Dji 2026 0010 D" made the whole declaration invalid and the
       // parser dropped it, leaving a blank thumbnail. The server now percent-encodes
@@ -137,13 +303,22 @@ window.Kestrel = (function () {
       // attribute below (double quotes would terminate the attribute).
       var thumb = v.thumb ? "background-image:url('" + v.thumb + "')" : '';
       var dur = v.duration_sec ? Math.floor(v.duration_sec/60)+':'+('0'+Math.round(v.duration_sec%60)).slice(-2) : '';
+      var tagHTML = tagsOf(v).map(function (t) {
+        return '<span class="vtag' + (isSysTag(t) ? ' sys' : '') +
+          (lib.filter.tags.indexOf(t) !== -1 ? ' hit' : '') + '">' + escHTML(tagLabel(t)) + '</span>';
+      }).join('') || '<span class="vtag-none">' + (state.lang==='zh'?'无标签':'no tags') + '</span>';
       return '<div class="vcard" role="button" tabindex="0" data-name="' + nm + '"><div class="vthumb" style="' + thumb + '">' +
-        '<span class="vmode mono">' + modeLabel(v) + '</span>' +
         '<span class="vdur mono">' + dur + '</span>' +
-        '<button class="vdel" data-del="' + nm + '" aria-label="' + (state.lang==='zh'?'删除':'Delete') + '">🗑</button></div>' +
-        '<div class="vbody"><div class="vname">' + v.name + '</div>' +
+        '<span class="vicons">' +
+          '<button class="vicon" data-tagbtn="' + nm + '" aria-label="' +
+            (state.lang==='zh'?'编辑标签':'Edit tags') + '">' + ICON_TAG + '</button>' +
+          '<button class="vicon" data-del="' + nm + '" aria-label="' +
+            (state.lang==='zh'?'删除':'Delete') + '">' + ICON_DEL + '</button>' +
+        '</span></div>' +
+        '<div class="vbody"><div class="vname">' + escHTML(v.name || '') + '</div>' +
         '<div class="vdate mono">' + (v.date||'') + '</div>' +
-        '<div class="vfoot">' + statusChip(v) + '</div></div></div>';
+        '<div class="vfoot">' + statusChip(v) + '</div>' +
+        '<div class="vtags">' + tagHTML + '</div></div></div>';
     }).join('');
     wrap.querySelectorAll('.vcard').forEach(function (el) {
       el.onclick = function () {
@@ -158,7 +333,7 @@ window.Kestrel = (function () {
         } else { setScreen('new'); }
       };
     });
-    wrap.querySelectorAll('.vdel').forEach(function (b) {
+    wrap.querySelectorAll('[data-del]').forEach(function (b) {
       b.onclick = function (e) {
         e.stopPropagation();
         var name = b.getAttribute('data-del');
@@ -168,6 +343,349 @@ window.Kestrel = (function () {
         });
       };
     });
+    wrap.querySelectorAll('[data-tagbtn]').forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();   // the card itself opens the video
+        var name = b.getAttribute('data-tagbtn');
+        var v = lib.videos.filter(function (x) { return x.name === name; })[0];
+        if (v) openTagEditor(v, b);
+      };
+    });
+  }
+  var openPop = null;
+  // Both dialogs (popover and modal) close through here regardless of trigger
+  // (Escape, backdrop click, or a Done/rename-save button), so returning
+  // focus is implemented once: whichever opener set openPop.onClose decides
+  // where focus goes back to.
+  function closePop() {
+    if (!openPop) return;
+    var onClose = openPop.onClose;
+    openPop.backdrop.remove(); openPop.el.remove(); openPop = null;
+    document.removeEventListener('keydown', popKey);
+    if (onClose) onClose();
+  }
+  function popKey(e) { if (e.key === 'Escape') closePop(); }
+
+  function openTagEditor(video, anchor) {
+    closePop();
+    var zh = state.lang === 'zh';
+    var backdrop = document.createElement('div');
+    backdrop.className = 'pop-backdrop'; backdrop.onclick = closePop;
+    var el = document.createElement('div'); el.className = 'pop';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-labelledby', 'tag-pop-h');
+    document.body.appendChild(backdrop); document.body.appendChild(el);
+    openPop = { el: el, backdrop: backdrop, onClose: function () {
+      // The card grid may have been re-rendered since this popover opened
+      // (e.g. by reloadLibrary), so the original anchor element may no
+      // longer be in the document -- find the current one by comparing the
+      // attribute, not a CSS selector built from the name (a tag/video name
+      // can contain quotes, which would break one).
+      var btns = document.querySelectorAll('[data-tagbtn]');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-tagbtn') === video.name) { btns[i].focus(); return; }
+      }
+    } };
+    document.addEventListener('keydown', popKey);
+    var r = anchor.getBoundingClientRect();
+    el.style.top = (window.scrollY + r.bottom + 8) + 'px';
+    el.style.left = Math.max(8, Math.min(window.scrollX + r.left - 130, window.innerWidth - 306)) + 'px';
+
+    // The editor works on a copy and PUTs the whole list. On failure the copy
+    // is discarded and the popover stays open, so a save error can never look
+    // like a save.
+    var draft = (video.tags || []).slice();
+    // While a save is in flight, controls are disabled rather than left live:
+    // otherwise a second edit fired before the first PUT resolves races the
+    // first (both compute `next` from the same pre-save `draft`), and
+    // whichever response lands second silently undoes the other.
+    var saving = false;
+
+    // Mirrors badminton_analysis.library.tags.normalise so a doomed request
+    // never leaves the server, and the popover can say exactly why instead
+    // of the generic "invalid or reserved tag" the API returns.
+    function tagValidationError(clean) {
+      if (!clean) return zh ? '标签不能为空。' : 'Tag cannot be empty.';
+      if (clean.length > 40) return zh ? '标签最多 40 个字符。' : 'Tags are limited to 40 characters.';
+      if (clean.replace(/\./g, '') === '') return zh ? '标签不能只包含句点。' : 'Tags cannot be only dots.';
+      if (isSysTag(clean)) return zh ? '保留名称：由分析结果决定。' : 'Reserved — this name is set by the analysis.';
+      if (clean.indexOf('/') !== -1 || clean.indexOf('\\') !== -1) {
+        return zh ? '标签不能包含 / 或 \\。' : 'Tags cannot contain / or \\.';
+      }
+      for (var i = 0; i < clean.length; i++) {
+        var code = clean.charCodeAt(i);
+        if (code < 32 || code === 127) return zh ? '标签不能包含控制字符。' : 'Tags cannot contain control characters.';
+      }
+      return null;
+    }
+
+    function persist(next, onFail) {
+      saving = true;
+      draw();
+      fetch('/api/videos/' + encodeURIComponent(video.name) + '/tags', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: next })
+      }).then(function (res) { return res.json().then(function (d) { return { ok: res.ok, d: d }; }); })
+        .then(function (out) {
+          saving = false;
+          if (!out.ok) { onFail((out.d && out.d.error) || (zh ? '保存失败' : 'Save failed')); return; }
+          draft = out.d.tags; video.tags = out.d.tags;
+          pruneFilterTags();
+          draw(); renderCards(); renderTagBar(); renderResultLine();
+        })
+        .catch(function () { saving = false; onFail(zh ? '保存失败' : 'Save failed'); });
+    }
+
+    // `keepTyped` re-shows what the input held before a failed save (F12):
+    // a rejected edit must not also throw away the text the owner typed.
+    function draw(warning, keepTyped) {
+      var sys = sysTagsOf(video);
+      el.innerHTML =
+        '<h3 id="tag-pop-h">' + (zh ? '标签' : 'Tags') + '</h3><p class="sub">' + escHTML(video.name) + '</p>' +
+        (sys.length ? '<div class="pop-sys">' + sys.map(function (t) {
+            return '<span class="vtag sys">' + escHTML(tagLabel(t)) + '</span>'; }).join('') + '</div>' +
+          '<p class="pop-sys-note">' + (zh ? '来自分析结果，不可编辑。' : 'From analysis results — not editable.') + '</p>' : '') +
+        '<div class="pop-tags">' + (draft.length
+          ? draft.map(function (t) {
+              return '<span class="ptag">' + escHTML(t) + '<button data-rm="' + escHTML(t) + '"' +
+                (saving ? ' disabled' : '') + ' aria-label="' +
+                (zh ? '移除 ' : 'Remove ') + escHTML(t) + '">×</button></span>'; }).join('')
+          : '<span class="vtag-none">' + (zh ? '暂无' : 'none yet') + '</span>') + '</div>' +
+        '<input id="tag-in" autocomplete="off"' + (saving ? ' disabled' : '') + ' placeholder="' +
+          (zh ? '添加标签…' : 'Add a tag…') + '" aria-label="' + (zh ? '添加标签' : 'Add a tag') +
+          '" value="' + escHTML(keepTyped || '') + '">' +
+        (warning ? '<p class="warn" role="alert">' + escHTML(warning) + '</p>' : '') +
+        '<div id="sugg"></div>' +
+        '<p class="pop-hint">' + (zh ? '回车添加 · Esc 关闭 · 立即保存' : 'Enter to add · Esc to close · saves immediately') + '</p>';
+
+      el.querySelectorAll('[data-rm]').forEach(function (b) {
+        b.onclick = function () {
+          if (saving) return;
+          var t = b.getAttribute('data-rm');
+          var typed = input.value;
+          persist(draft.filter(function (x) { return x !== t; }),
+                  function (msg) { draw(msg, typed); });
+        };
+      });
+
+      var input = el.querySelector('#tag-in'), sugg = el.querySelector('#sugg'), cursor = -1;
+      function drawSugg() {
+        if (saving) { sugg.innerHTML = ''; sugg.className = ''; return; }
+        var val = input.value.trim().toLowerCase();
+        var pool = knownTags().filter(function (t) { return !isSysTag(t); })
+          .filter(function (t) { return draft.indexOf(t) === -1; })
+          .filter(function (t) { return !val || t.indexOf(val) !== -1; });
+        var rows = pool.slice(0, 5).map(function (t, i) {
+          return '<button data-add="' + escHTML(t) + '" class="' + (i === cursor ? 'cursor' : '') + '">' + escHTML(t) + '</button>'; });
+        // No "Create …" offered for a value that would only be rejected.
+        if (val && pool.indexOf(val) === -1 && !tagValidationError(val)) {
+          rows.push('<button data-add="' + escHTML(val) + '" class="new">' +
+            (zh ? '新建 “' : 'Create “') + escHTML(val) + '”</button>');
+        }
+        sugg.innerHTML = rows.join(''); sugg.className = rows.length ? 'sugg' : '';
+        sugg.querySelectorAll('[data-add]').forEach(function (b) {
+          b.onclick = function () { add(b.getAttribute('data-add')); }; });
+      }
+      function add(raw) {
+        if (saving) return;
+        var t = (raw || '').trim().toLowerCase();
+        if (!t) return;   // Enter on an empty box is a no-op, not an error.
+        var reason = tagValidationError(t);
+        if (reason) { draw(reason, raw); var i = el.querySelector('#tag-in'); if (i) { i.focus(); } return; }
+        if (draft.indexOf(t) !== -1) { input.value = ''; drawSugg(); return; }
+        persist(draft.concat([t]), function (msg) { draw(msg, raw); });
+      }
+      input.oninput = function () { cursor = -1; drawSugg(); };
+      input.onkeydown = function (e) {
+        var opts = sugg.querySelectorAll('[data-add]');
+        if (e.key === 'ArrowDown') { e.preventDefault(); cursor = Math.min(cursor + 1, opts.length - 1); drawSugg(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); cursor = Math.max(cursor - 1, -1); drawSugg(); }
+        else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (cursor >= 0 && opts[cursor]) add(opts[cursor].getAttribute('data-add'));
+          else add(input.value);
+        }
+      };
+      drawSugg();
+      if (!saving) { input.focus(); input.selectionStart = input.selectionEnd = input.value.length; }
+    }
+    draw();
+  }
+  function reloadLibrary() {
+    return fetch('/api/videos').then(function (r) { return r.json(); }).then(function (rows) {
+      lib.videos = rows || [];
+      pruneFilterTags();
+      renderCards(); renderTagBar(); renderResultLine();
+    });
+  }
+
+  function openTagManager() {
+    closePop();
+    var zh = state.lang === 'zh';
+    var backdrop = document.createElement('div'); backdrop.className = 'pop-backdrop';
+    backdrop.onclick = closePop;
+    var el = document.createElement('div'); el.className = 'modal';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-labelledby', 'tag-manage-h');
+    document.body.appendChild(backdrop); document.body.appendChild(el);
+    openPop = { el: el, backdrop: backdrop, onClose: function () {
+      var mng = document.getElementById('t-manage');
+      if (mng) mng.focus();
+    } };
+    document.addEventListener('keydown', popKey);
+    var editing = null, confirming = null, problem = null;
+
+    function counts() {
+      var c = {};
+      lib.videos.forEach(function (v) { tagsOf(v).forEach(function (t) { c[t] = (c[t] || 0) + 1; }); });
+      return c;
+    }
+    function draw() {
+      var c = counts(), tags = knownTags();
+      var sys = tags.filter(isSysTag), usr = tags.filter(function (t) { return !isSysTag(t); });
+      function row(t) {
+        if (editing === t) {
+          return '<div class="trow"><input id="ren" value="' + escHTML(t) + '" aria-label="' +
+            (zh ? '重命名 ' : 'Rename ') + escHTML(t) + '">' +
+            '<button class="tbtn" data-save="' + escHTML(t) + '">' + (zh ? '保存' : 'Save') + '</button>' +
+            '<button class="tbtn" data-cancel="1">' + (zh ? '取消' : 'Cancel') + '</button></div>';
+        }
+        if (isSysTag(t)) {
+          return '<div class="trow sys"><span class="nm">' + escHTML(tagLabel(t)) + '</span>' +
+            '<span class="ct">' + c[t] + '</span>' +
+            '<span class="why">' + (zh ? '自动' : 'derived') + '</span></div>';
+        }
+        return '<div class="trow"><span class="nm">' + escHTML(t) + '</span><span class="ct">' + c[t] + '</span>' +
+          '<button class="tbtn" data-ren="' + escHTML(t) + '">' + (zh ? '重命名' : 'Rename') + '</button>' +
+          '<button class="tbtn danger" data-del="' + escHTML(t) + '">' + (zh ? '删除' : 'Delete') + '</button></div>';
+      }
+      el.innerHTML = '<h2 id="tag-manage-h">' + (zh ? '管理标签' : 'Manage tags') + '</h2>' +
+        '<p class="sub">' + (zh ? '重命名或删除会应用到所有使用该标签的视频。'
+                                : 'Renaming or deleting applies to every video that uses the tag.') + '</p>' +
+        (sys.length ? '<div class="grp">' + (zh ? '来自分析' : 'From analysis') + '</div>' + sys.map(row).join('') : '') +
+        (usr.length ? '<div class="grp">' + (zh ? '自定义标签' : 'Your tags') + '</div>' + usr.map(row).join('')
+                    : '<p class="muted">' + (zh ? '暂无自定义标签' : 'No tags yet') + '</p>') +
+        (problem ? '<p class="warn" role="alert">' + escHTML(problem) + '</p>' : '') +
+        (confirming ? '<div class="confirm">' + (zh ? '删除 ' : 'Delete ') + '<b>' + escHTML(confirming) + '</b>' +
+          (zh ? '？视频本身不受影响。' : '? The videos themselves are not touched.') +
+          '<div class="modal-foot"><button class="btn-ghost" data-cancel="1">' + (zh ? '取消' : 'Cancel') + '</button>' +
+          '<button class="btn-primary" data-confirm="' + escHTML(confirming) + '">' + (zh ? '删除' : 'Delete') + '</button></div></div>' : '') +
+        '<div class="modal-foot"><button class="btn-ghost" data-close="1">' + (zh ? '完成' : 'Done') + '</button></div>';
+
+      // Shared by the Save button and Enter in #ren (F11) so the two ways of
+      // confirming a rename cannot drift apart.
+      function doRename(from) {
+        var i = el.querySelector('#ren');
+        var to = ((i && i.value) || '').trim().toLowerCase();
+        if (!to || to === from) { editing = null; draw(); return; }
+        fetch('/api/tags/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: from, to: to }) })
+          .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+          .then(function (o) {
+            if (!o.ok) { problem = (o.d && o.d.error) || (zh ? '重命名失败' : 'Rename failed'); draw(); return; }
+            editing = null; problem = null;
+            lib.filter.tags = lib.filter.tags.map(function (t) { return t === from ? to : t; })
+              .filter(function (t, i2, a) { return a.indexOf(t) === i2; });
+            reloadLibrary().then(draw);
+          })
+          .catch(function () { problem = zh ? '重命名失败' : 'Rename failed'; draw(); });
+      }
+      el.querySelectorAll('[data-ren]').forEach(function (b) {
+        b.onclick = function () {
+          editing = b.getAttribute('data-ren'); confirming = null; problem = null; draw();
+          var i = el.querySelector('#ren'); if (i) { i.focus(); i.select(); }
+        };
+      });
+      el.querySelectorAll('[data-save]').forEach(function (b) {
+        b.onclick = function () { doRename(b.getAttribute('data-save')); };
+      });
+      var renInput = el.querySelector('#ren');
+      if (renInput) {
+        renInput.onkeydown = function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); doRename(editing); }
+          else if (e.key === 'Escape') {
+            // Cancels only the rename row, not the whole modal: without
+            // stopPropagation this bubbles to the document-level Escape
+            // handler (popKey) that closes the dialog.
+            e.stopPropagation();
+            editing = null; problem = null; draw();
+          }
+        };
+      }
+      el.querySelectorAll('[data-del]').forEach(function (b) {
+        b.onclick = function () { confirming = b.getAttribute('data-del'); editing = null; problem = null; draw(); };
+      });
+      el.querySelectorAll('[data-confirm]').forEach(function (b) {
+        b.onclick = function () {
+          var t = b.getAttribute('data-confirm');
+          // Only the names are snapshotted before the request; undo re-reads
+          // each one's CURRENT tags at undo time (below), not this snapshot,
+          // so it cannot revert an edit made during the toast's 6s window.
+          var stems = lib.videos.filter(function (v) { return (v.tags || []).indexOf(t) !== -1; })
+            .map(function (v) { return v.name; });
+          fetch('/api/tags/' + encodeURIComponent(t), { method: 'DELETE' })
+            .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+            .then(function (o) {
+              if (!o.ok) { problem = (o.d && o.d.error) || (zh ? '删除失败' : 'Delete failed'); draw(); return; }
+              confirming = null; problem = null;
+              lib.filter.tags = lib.filter.tags.filter(function (x) { return x !== t; });
+              reloadLibrary().then(draw);
+              showToast('“' + t + '” ' + (zh ? '已删除' : 'deleted'), function () {
+                fetch('/api/videos').then(function (r) { return r.json(); }).then(function (rows) {
+                  var byName = {};
+                  (rows || []).forEach(function (v) { byName[v.name] = v; });
+                  return Promise.all(stems.map(function (name) {
+                    var v = byName[name];
+                    var current = (v && v.tags) || [];
+                    var next = current.indexOf(t) === -1 ? current.concat([t]) : current;
+                    return fetch('/api/videos/' + encodeURIComponent(name) + '/tags',
+                      { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tags: next }) })
+                      .then(function (res) { return res.ok; });
+                  }));
+                }).then(function (oks) {
+                  if (oks.some(function (ok) { return !ok; })) {
+                    showToast(zh ? '撤销失败' : 'Undo failed');
+                  }
+                }).catch(function () {
+                  showToast(zh ? '撤销失败' : 'Undo failed');
+                }).then(reloadLibrary);
+              });
+            })
+            .catch(function () { problem = zh ? '删除失败' : 'Delete failed'; draw(); });
+        };
+      });
+      el.querySelectorAll('[data-cancel]').forEach(function (b) {
+        b.onclick = function () { editing = null; confirming = null; problem = null; draw(); }; });
+      el.querySelectorAll('[data-close]').forEach(function (b) { b.onclick = closePop; });
+    }
+    draw();
+    // Focus on open (F3): the first row's own action button if there is one,
+    // else "Done" -- draw() itself is not the place for this, since it also
+    // reruns on every later redraw (rename save, delete confirm, ...), where
+    // stealing focus back to the top would fight the more specific focus
+    // those handlers already set (e.g. the rename input).
+    var firstRowBtn = el.querySelector('.trow button') || el.querySelector('[data-close]');
+    if (firstRowBtn) { firstRowBtn.focus(); }
+  }
+
+  var toastTimer = null;
+  function showToast(msg, undoFn) {
+    clearTimeout(toastTimer);
+    var old = document.querySelector('.toast'); if (old) old.remove();
+    var t = document.createElement('div');
+    t.className = 'toast'; t.setAttribute('role', 'status');
+    // No Undo button on a plain notice (e.g. F9's "undo failed"): a button
+    // that has nothing to undo is confusing, not merely inert.
+    t.innerHTML = '<span></span>' +
+      (undoFn ? '<button>' + (state.lang === 'zh' ? '撤销' : 'Undo') + '</button>' : '');
+    t.querySelector('span').textContent = msg;   // textContent: a tag is user input
+    document.body.appendChild(t);
+    var btn = t.querySelector('button');
+    if (btn) btn.onclick = function () { t.remove(); undoFn(); };
+    toastTimer = setTimeout(function () { t.remove(); }, 6000);
   }
   function renderSidebar() {
     var s = document.getElementById('sidebar');
