@@ -983,7 +983,9 @@ class BadmintonAnalysisSystem:
                 roi_corners = compute_expanded_roi(corners, template_color.shape)
         else:
             auto_preview_path = os.path.join(self.save_dir, 'auto_court_preview.png')
-            corners, roi_corners, mid_height = annotate_court(template_color, auto_preview_path=auto_preview_path)
+            corners, roi_corners, mid_height = annotate_court(
+                template_color, auto_preview_path=auto_preview_path,
+                interactive=bool(self.show_display))
        
         if not corners or not roi_corners or len(corners) != 4 or len(roi_corners) != 2:
             raise RuntimeError("Court annotation is incomplete: click 4 court corners in order. ROI is generated automatically.")

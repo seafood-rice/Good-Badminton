@@ -113,10 +113,14 @@ def compute_expanded_roi(court_corners, image_shape):
     return [(x1, y1), (x2, y2)]
 
 
-def annotate_court(image, auto_preview_path=None):
-    """
-    Interactive tool to annotate court corners on an image.
-    Returns court corners plus an automatically expanded ROI.
+def annotate_court(image, auto_preview_path=None, interactive=True):
+    """Resolve the court quad, by auto-detection and optional human review.
+
+    ``interactive=False`` is for unattended runs (background jobs, the
+    validation harness, CI): auto-detection is accepted without opening a
+    window or waiting for a keypress, and a detection failure raises instead
+    of falling through to manual annotation. The interactive path is
+    unchanged.
     """
     if not isinstance(image, np.ndarray):
         print("Error: Invalid image input")
@@ -132,6 +136,15 @@ def annotate_court(image, auto_preview_path=None):
         auto_preview = render_auto_court_preview(base_image, auto_corners, auto_roi_corners, auto_debug)
         if auto_preview_path:
             cv2.imwrite(auto_preview_path, auto_preview)
+
+        if not interactive:
+            court_mapper = CourtMapper(auto_corners)
+            _, auto_mid_height = court_mapper.draw_court_overlay(base_image)
+            scale_x = original_width / fixed_size[0]
+            scale_y = original_height / fixed_size[1]
+            original_corners = [(int(x * scale_x), int(y * scale_y)) for x, y in auto_corners]
+            original_roi_corners = [(int(x * scale_x), int(y * scale_y)) for x, y in auto_roi_corners]
+            return original_corners, original_roi_corners, int(auto_mid_height * scale_y)
 
         cv2.namedWindow("Auto court detection")
         cv2.imshow("Auto court detection", auto_preview)
@@ -154,6 +167,11 @@ def annotate_court(image, auto_preview_path=None):
     elif auto_preview_path:
         cv2.imwrite(auto_preview_path, render_auto_court_preview(base_image, None, None, auto_debug))
         print(f"No reliable auto court boundary found. Debug preview saved: {auto_preview_path}")
+
+    if not interactive:
+        raise RuntimeError(
+            "auto court detection failed and annotate_court is non-interactive; "
+            "supply <output-dir>/court_annotations.txt or run once interactively to annotate")
 
     corners = []
     mid_height = [680]
