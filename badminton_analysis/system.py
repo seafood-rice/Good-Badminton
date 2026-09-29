@@ -17,6 +17,17 @@ SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 # within the existing 5-frame rally thresholds.
 COURT_VIEW_CHECK_INTERVAL = 3
 
+# C0 self-calibrating court-view cut (spec §5 C0). The gate's NCC score has a
+# video-dependent absolute scale, so the cut is derived per video from a
+# strided pre-scan instead of the one global 0.75 (which admitted 0.66% of the
+# Axelsen match).
+COURT_VIEW_SCORE_WIDTH = 480      # downscale width for the gate's NCC (§0.9 signal D)
+COURT_VIEW_MAD_K = 4.0            # cut = median - k * 1.4826 * MAD (§0.6)
+COURT_VIEW_MIN_MEDIAN = 0.30      # below this the template is not of this video
+COURT_VIEW_FALLBACK_CUT = 0.75    # the historically shipped constant
+COURT_VIEW_CALIBRATION_STRIDE_SEC = 0.5   # ~2 samples/second
+COURT_VIEW_CALIBRATION_MAX_SAMPLES = 1500
+
 # Fast mode analyzes every Nth court frame (quick look).
 FAST_FRAME_STRIDE = 3
 
@@ -85,6 +96,53 @@ def _assign_one_to_one(side_points, candidates, max_sq):
     return chosen
 
 
+def downscale_for_gate(gray, width=COURT_VIEW_SCORE_WIDTH):
+    """Downscale a grayscale image to ``width``, preserving aspect ratio.
+
+    The gate compares whole-frame framing, not fine court lines, so 480px
+    wide is ample and far cheaper than full resolution (§0.9 signal D).
+    Never upscales -- an already-small frame is returned untouched.
+    """
+    import cv2
+
+    h, w = gray.shape[:2]
+    if w <= width:
+        return gray
+    scale = width / float(w)
+    return cv2.resize(gray, (width, max(1, int(round(h * scale)))),
+                      interpolation=cv2.INTER_AREA)
+
+
+def courtview_cut_from_scores(scores, k=COURT_VIEW_MAD_K):
+    """Per-video court-view cut from a sample of whole-frame NCC scores.
+
+    Returns the audit record written to metadata.json's ``court_view`` key.
+    Pure and video-free so the branch logic is testable without decoding.
+
+    Three non-normal outcomes, each named rather than silent:
+      * no samples          -> the shipped 0.75 constant (method "fallback")
+      * median below floor  -> template is not of this video; pass everything
+      * MAD collapses to 0  -> use the median itself, not median - 0
+    """
+    vals = sorted(float(s) for s in scores)
+    n = len(vals)
+    if n == 0:
+        return {"cut": COURT_VIEW_FALLBACK_CUT, "median": None, "mad": None,
+                "samples": 0, "method": "fallback", "k": float(k)}
+
+    median = vals[n // 2] if n % 2 else 0.5 * (vals[n // 2 - 1] + vals[n // 2])
+    if median < COURT_VIEW_MIN_MEDIAN:
+        return {"cut": float("-inf"), "median": median, "mad": None,
+                "samples": n, "method": "template_mismatch_pass_all", "k": float(k)}
+
+    devs = sorted(abs(v - median) for v in vals)
+    mad = devs[n // 2] if n % 2 else 0.5 * (devs[n // 2 - 1] + devs[n // 2])
+    cut = median - float(k) * 1.4826 * mad if mad > 0 else median
+    cut = max(0.0, min(0.95, cut))
+    return {"cut": cut, "median": median, "mad": mad, "samples": n,
+            "method": f"median-{float(k):g}mad", "k": float(k)}
+
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -148,7 +206,7 @@ class BadmintonAnalysisSystem:
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
-                 analysis_quality="accurate"):
+                 analysis_quality="accurate", court_view_threshold=None):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -160,6 +218,11 @@ class BadmintonAnalysisSystem:
         self.show_pose_roi = show_pose_roi
         self.analyze_technique = analyze_technique
         self.analysis_quality = analysis_quality
+        # C0: None -> calibrate the court-view cut per video; a number pins it
+        # (recorded as method "manual") and skips calibration entirely.
+        self.court_view_threshold_override = court_view_threshold
+        self.court_view_cut = COURT_VIEW_FALLBACK_CUT
+        self.court_view_calibration = None
         if analysis_quality == "fast":
             self.analyze_technique = False  # dense analytics need every frame
         self.racket_model_path = racket_model_path
@@ -291,6 +354,7 @@ class BadmintonAnalysisSystem:
 
         template_path = self._get_template_path()
         template_gray, template_color = self._load_template(template_path, cap)
+        self._prepare_court_view_cut(template_gray, fps)
         
 
         self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -365,6 +429,109 @@ class BadmintonAnalysisSystem:
 
         self._cleanup(cap)
 
+    def _court_view_score(self, gray_frame, template_small):
+        """Whole-frame NCC at COURT_VIEW_SCORE_WIDTH. Shared by C0 and C1."""
+        import cv2
+        import numpy as np
+
+        small = downscale_for_gate(gray_frame)
+        if small.shape != template_small.shape:
+            template_small = cv2.resize(template_small,
+                                        (small.shape[1], small.shape[0]),
+                                        interpolation=cv2.INTER_AREA)
+        result = cv2.matchTemplate(small, template_small, cv2.TM_CCOEFF_NORMED)
+        return float(np.max(result))
+
+    def _prepare_court_view_cut(self, template_gray, fps):
+        """Decide this run's court-view cut; never fatal.
+
+        A pinned ``court_view_threshold`` wins and skips calibration. Otherwise
+        the strided pre-scan runs; any failure logs and falls back to the
+        shipped constant so the run continues.
+        """
+        if self.court_view_threshold_override is not None:
+            self.court_view_cut = float(self.court_view_threshold_override)
+            self.court_view_calibration = {
+                "cut": self.court_view_cut, "median": None, "mad": None,
+                "samples": 0, "method": "manual", "k": None}
+            print(f"Court-view gate: cut={self.court_view_cut} (manual)")
+            return
+        try:
+            self._calibrate_court_view(
+                self.video_path, downscale_for_gate(template_gray), fps)
+        except Exception as exc:
+            print(f"Court-view calibration failed, using "
+                  f"{COURT_VIEW_FALLBACK_CUT}: {exc}")
+            self.court_view_calibration = courtview_cut_from_scores([])
+            self.court_view_cut = self.court_view_calibration["cut"]
+
+    def _calibrate_court_view(self, video_path, template_small, fps):
+        """Strided pre-scan deriving this video's court-view cut.
+
+        Only the sampled frames are decoded (``grab()`` skips the rest). Any
+        failure falls back to the shipped constant and says so.
+        """
+        import cv2
+
+        scores = []
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            stride = max(1, int(round(COURT_VIEW_CALIBRATION_STRIDE_SEC * (fps or 30))))
+            if total > 0:
+                # ceil, so the sample budget spans the whole video.
+                stride = max(stride, -(-total // COURT_VIEW_CALIBRATION_MAX_SAMPLES))
+            idx = 0
+            while len(scores) < COURT_VIEW_CALIBRATION_MAX_SAMPLES:
+                if not cap.grab():
+                    break
+                if idx % stride == 0:
+                    ok, frame = cap.retrieve()
+                    if ok:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        scores.append(self._court_view_score(gray, template_small))
+                idx += 1
+        except Exception as exc:
+            print(f"Court-view calibration failed, using {COURT_VIEW_FALLBACK_CUT}: {exc}")
+            scores = []
+        finally:
+            if cap is not None:
+                cap.release()
+
+        self.court_view_calibration = courtview_cut_from_scores(scores)
+        self.court_view_cut = self.court_view_calibration["cut"]
+        print(f"Court-view gate: cut={self.court_view_cut} "
+              f"({self.court_view_calibration['method']}, "
+              f"{self.court_view_calibration['samples']} samples)")
+
+    def _court_view_metadata(self):
+        """The ``court.court_view`` record for metadata.json.
+
+        Non-finite numbers (a pass-all cut of -inf) become null: the browser's
+        JSON parser rejects ``-Infinity``.
+        """
+        import math
+
+        cal = self.court_view_calibration
+        if cal is None:
+            return None
+
+        def finite_or_none(value):
+            if value is None:
+                return None
+            value = float(value)
+            return value if math.isfinite(value) else None
+
+        return {
+            "cut": finite_or_none(cal.get("cut")),
+            "method": cal.get("method"),
+            "k": finite_or_none(cal.get("k")),
+            "samples": int(cal.get("samples", 0)),
+            "median": finite_or_none(cal.get("median")),
+            "mad": finite_or_none(cal.get("mad")),
+        }
+
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
         metadata = {
             "schema_version": SCHEMA_VERSION,
@@ -390,6 +557,7 @@ class BadmintonAnalysisSystem:
                     "width": 6.1,
                     "length": 13.4,
                 },
+                "court_view": self._court_view_metadata(),
             },
             "outputs": {
                 "video": self.output_video_path,

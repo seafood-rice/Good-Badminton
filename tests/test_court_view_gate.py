@@ -1,0 +1,285 @@
+"""C0/C1: the court-view gate calibrates itself per video.
+
+Today's gate uses one global 0.75 cutoff on a similarity score whose
+absolute scale is video-dependent, which admitted 0.66% of frames on the
+Axelsen match (design spec §0.3). These tests pin the replacement.
+
+This file must pass when run alone: it never relies on the runtime globals
+(cv2, np, write_json) that ``load_runtime_dependencies()`` binds in
+``badminton_analysis.system``.
+"""
+import inspect
+import json
+
+import numpy as np
+
+from badminton_analysis import system
+
+
+def test_cut_is_median_minus_k_robust_sd():
+    # 100 court frames near 0.80 plus 5 clear outliers near 0.10.
+    scores = [0.80] * 100 + [0.10] * 5
+    out = system.courtview_cut_from_scores(scores, k=4.0)
+    # MAD of this set is 0.0 -> the robust SD collapses, so the cut must fall
+    # back to the median rather than emitting median - 0 and admitting nothing
+    # below it.
+    assert out["median"] == 0.80
+    assert out["cut"] <= 0.80
+    assert out["samples"] == 105
+    assert out["method"] == "median-4mad"
+    assert out["k"] == 4.0
+
+
+def test_cut_separates_play_from_non_play():
+    rng = np.random.default_rng(11)
+    play = list(0.80 + 0.02 * rng.standard_normal(400))
+    non_play = list(0.30 + 0.02 * rng.standard_normal(40))
+    out = system.courtview_cut_from_scores(play + non_play, k=4.0)
+    assert min(play) > out["cut"] > max(non_play)
+
+
+def test_template_mismatch_passes_everything():
+    """A template that does not match this video must lose the gate, not the run."""
+    out = system.courtview_cut_from_scores([0.05, 0.07, 0.06, 0.04], k=4.0)
+    assert out["cut"] == float("-inf")
+    assert out["method"] == "template_mismatch_pass_all"
+
+
+def test_no_samples_falls_back_to_the_shipped_constant():
+    out = system.courtview_cut_from_scores([], k=4.0)
+    assert out["cut"] == system.COURT_VIEW_FALLBACK_CUT
+    assert out["method"] == "fallback"
+    assert out["samples"] == 0
+
+
+def test_cut_is_clamped_to_a_usable_range():
+    out = system.courtview_cut_from_scores([0.99] * 50 + [0.98] * 50, k=4.0)
+    assert 0.0 <= out["cut"] <= 0.95
+
+
+def _fake_system():
+    """A bare instance with only the attributes the gate touches."""
+    cls = system.BadmintonAnalysisSystem
+    s = cls.__new__(cls)
+    s.court_view_cut = 0.5
+    s._court_view_cached = None
+    s._court_view_last_frame = -10
+    s.court_view_threshold_override = None
+    s.court_view_calibration = None
+    s.video_path = "unused.mp4"
+    return s
+
+
+def test_downscaled_scoring_separates_a_match_from_a_mismatch():
+    rng = np.random.default_rng(3)
+    template = rng.integers(0, 255, (720, 1280), dtype=np.uint8)
+    mismatch = rng.integers(0, 255, (720, 1280), dtype=np.uint8)
+
+    s = _fake_system()
+    small = system.downscale_for_gate(template)
+    assert s._court_view_score(template.copy(), small) > 0.9
+    assert s._court_view_score(mismatch, small) < 0.5
+
+
+def test_downscale_preserves_aspect_ratio_and_never_upscales():
+    tall = np.zeros((2160, 3840), np.uint8)
+    out = system.downscale_for_gate(tall, width=480)
+    assert out.shape == (270, 480)
+    small = np.zeros((90, 160), np.uint8)
+    assert system.downscale_for_gate(small, width=480).shape == (90, 160)
+
+
+# --- C0 wiring: manual pin, never-fatal fallback, cheap decoding, metadata ---
+
+
+def _template():
+    rng = np.random.default_rng(5)
+    return rng.integers(0, 255, (720, 1280), dtype=np.uint8)
+
+
+def _boom(*_args, **_kwargs):
+    raise AssertionError("calibration must not run")
+
+
+def test_constructor_accepts_court_view_threshold_defaulting_to_none():
+    param = inspect.signature(
+        system.BadmintonAnalysisSystem.__init__).parameters["court_view_threshold"]
+    assert param.default is None
+
+
+def test_manual_threshold_skips_calibration_and_is_recorded(monkeypatch):
+    s = _fake_system()
+    s.court_view_threshold_override = 0.62
+    monkeypatch.setattr(s, "_calibrate_court_view", _boom)
+
+    s._prepare_court_view_cut(_template(), 30.0)
+
+    assert s.court_view_cut == 0.62
+    record = s._court_view_metadata()
+    assert record["cut"] == 0.62
+    assert record["method"] == "manual"
+    assert record["samples"] == 0
+    assert record["median"] is None and record["mad"] is None
+
+
+def test_calibration_failure_is_never_fatal_and_falls_back(monkeypatch, capsys):
+    s = _fake_system()
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(s, "_calibrate_court_view", explode)
+
+    s._prepare_court_view_cut(_template(), 30.0)
+
+    assert s.court_view_cut == system.COURT_VIEW_FALLBACK_CUT
+    assert s._court_view_metadata()["method"] == "fallback"
+    assert "decoder exploded" in capsys.readouterr().out
+
+
+def test_prepare_runs_calibration_with_a_downscaled_template(monkeypatch):
+    s = _fake_system()
+    seen = {}
+
+    def fake_calibrate(video_path, template_small, fps):
+        seen.update(video_path=video_path, shape=template_small.shape, fps=fps)
+        s.court_view_calibration = system.courtview_cut_from_scores([0.8] * 10)
+        s.court_view_cut = s.court_view_calibration["cut"]
+
+    monkeypatch.setattr(s, "_calibrate_court_view", fake_calibrate)
+    s._prepare_court_view_cut(_template(), 25.0)
+
+    assert seen == {"video_path": "unused.mp4", "shape": (270, 480), "fps": 25.0}
+    assert s._court_view_metadata()["method"] == "median-4mad"
+
+
+class _FakeCapture:
+    """Counts grab/retrieve/read calls over a fixed-length synthetic video."""
+
+    instances = []
+
+    def __init__(self, _path, frames=1000):
+        self.frames = frames
+        self.pos = 0
+        self.grabs = self.retrieves = self.reads = 0
+        self.released = False
+        self.frame = np.full((720, 1280, 3), 127, np.uint8)
+        _FakeCapture.instances.append(self)
+
+    def get(self, prop):
+        import cv2
+        return self.frames if prop == cv2.CAP_PROP_FRAME_COUNT else 0
+
+    def grab(self):
+        self.grabs += 1
+        if self.pos >= self.frames:
+            return False
+        self.pos += 1
+        return True
+
+    def retrieve(self):
+        self.retrieves += 1
+        return True, self.frame
+
+    def read(self):
+        self.reads += 1
+        return False, None
+
+    def release(self):
+        self.released = True
+
+
+def test_calibration_only_decodes_the_sampled_frames(monkeypatch):
+    import cv2
+
+    _FakeCapture.instances.clear()
+    monkeypatch.setattr(cv2, "VideoCapture", _FakeCapture)
+    s = _fake_system()
+    template_small = system.downscale_for_gate(_template())
+
+    s._calibrate_court_view("video.mp4", template_small, 30.0)
+
+    cap = _FakeCapture.instances[0]
+    # stride = round(0.5 s * 30 fps) = 15 -> frames 0, 15, ... 990
+    assert cap.retrieves == 67
+    assert cap.grabs >= 1000
+    assert cap.reads == 0
+    assert cap.released
+    assert s.court_view_calibration["samples"] == 67
+    assert s.court_view_cut == s.court_view_calibration["cut"]
+
+
+def test_calibration_covers_the_whole_video_when_capped(monkeypatch):
+    import cv2
+
+    class Long(_FakeCapture):
+        def __init__(self, path):
+            super().__init__(path, frames=10 * system.COURT_VIEW_CALIBRATION_MAX_SAMPLES + 7)
+
+    _FakeCapture.instances.clear()
+    monkeypatch.setattr(cv2, "VideoCapture", Long)
+    s = _fake_system()
+
+    s._calibrate_court_view("video.mp4", system.downscale_for_gate(_template()), 30.0)
+
+    cap = _FakeCapture.instances[0]
+    # The stride must be sized so the sample budget spans the whole video
+    # rather than being exhausted in its first part.
+    assert cap.pos >= cap.frames - 1
+    assert s.court_view_calibration["samples"] <= system.COURT_VIEW_CALIBRATION_MAX_SAMPLES
+
+
+def test_calibration_with_an_unreadable_video_falls_back(monkeypatch):
+    import cv2
+
+    class Broken(_FakeCapture):
+        def __init__(self, path):
+            super().__init__(path)
+
+        def grab(self):
+            raise RuntimeError("codec missing")
+
+    _FakeCapture.instances.clear()
+    monkeypatch.setattr(cv2, "VideoCapture", Broken)
+    s = _fake_system()
+
+    s._calibrate_court_view("video.mp4", system.downscale_for_gate(_template()), 30.0)
+
+    assert s.court_view_cut == system.COURT_VIEW_FALLBACK_CUT
+    assert s.court_view_calibration["method"] == "fallback"
+    assert _FakeCapture.instances[0].released
+
+
+def test_non_finite_cut_is_recorded_as_null(monkeypatch, tmp_path):
+    from badminton_analysis.data.writer import write_json
+
+    # write_json is a runtime global bound by load_runtime_dependencies();
+    # wire it directly so this file passes when run alone.
+    monkeypatch.setattr(system, "write_json", write_json, raising=False)
+    monkeypatch.setattr(system, "SCHEMA_VERSION", "1.0", raising=False)
+
+    s = _fake_system()
+    s.court_view_calibration = system.courtview_cut_from_scores([0.05, 0.07, 0.06])
+    s.court_view_cut = s.court_view_calibration["cut"]
+    assert s.court_view_cut == float("-inf")
+
+    s.video_path = "v.mp4"
+    s.video_name = "v"
+    s.frame_width = 1280
+    s.frame_height = 720
+    s.output_video_path = "out.mp4"
+    s.detections_path = "d.jsonl"
+    s.ball_model_path = "ball.pt"
+    s.metadata_path = str(tmp_path / "metadata.json")
+
+    s._write_metadata(30.0, 300, 10.0, "t.png", [[0, 0]] * 4, [[0, 0], [1, 1]], 5)
+
+    text = (tmp_path / "metadata.json").read_text(encoding="utf-8")
+    assert "Infinity" not in text and "NaN" not in text
+    court_view = json.loads(text)["court"]["court_view"]
+    assert court_view["cut"] is None
+    assert court_view["method"] == "template_mismatch_pass_all"
+    assert court_view["samples"] == 3
+    assert court_view["k"] == 4.0
+    assert court_view["mad"] is None
+    assert court_view["median"] == 0.06
