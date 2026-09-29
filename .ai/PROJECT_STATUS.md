@@ -1,7 +1,7 @@
 # Good Badminton - Project Status
 
 - **schema_version:** 1
-- **last_updated_utc:** 2026-07-21T04:34:48Z
+- **last_updated_utc:** 2026-09-29T13:25:01Z
 
 This file is a concise protected-integration snapshot, updated only at integration
 milestones. It links to durable per-workstream detail instead of embedding full history.
@@ -11,97 +11,107 @@ the complete historical ledger.
 ## Integration state
 
 - **Protected integration branch:** `main`
-- **Integration commit:** `c39e4af994e51b8941c1fd4d742625f70f87ff76`
+- **Integration commit:** `0e7f43827f77b3e66dc8d332a2aca10e22887a2c` (PR #9, 2026-09-29)
 - **Remote state (`main`):** `pushed` - fork `origin`
-  (`https://github.com/seafood-rice/Good-Badminton.git`) reports `isFork: true`, parent
-  `qwpyyx/Good-Badminton`, default branch `main` at the same commit as source
-  `upstream/main` (`https://github.com/qwpyyx/Good-Badminton.git`, fetch-only, push
-  disabled).
-- **Development branch:** `codex/good-badminton-development`
-- **Development branch remote state:** `unpushed` - local `HEAD` is the reviewed continuity
-  implementation `c5547bcd2e960931331c2644642696ea4aab07a9` (plus this status commit and the
-  activation handoff/accept commits that follow), well ahead of
-  `origin/codex/good-badminton-development` at
-  `565d02bf7bde1c853f163419c6f7294d4b470f43`. Pre-existing dirty/untracked paths in the
-  working tree remain local and uncommitted; this snapshot does not claim they are pushed.
+  (`https://github.com/seafood-rice/Good-Badminton.git`, `isFork: true`, parent
+  `qwpyyx/Good-Badminton`, default branch `main`). PRs are opened against the fork's `main`
+  and squash-merged by the owner. `upstream/main`
+  (`https://github.com/qwpyyx/Good-Badminton.git`, fetch-only, push disabled) is still at
+  `c39e4af994e51b8941c1fd4d742625f70f87ff76`; nothing has been proposed upstream.
 - **Preserved disconnected refs:** `archive/pre-fork-good-badminton-development-2026-07-17`
   and `archive/pre-fork-master-2026-07-17`.
 
+## Merged since the last snapshot
+
+| PR | Merge commit | Date | What landed |
+|---|---|---|---|
+| #1 | `7714e94` | 2026-08-07 | Optional MotionBERT 3D pose-lifting stage (also carried the continuity layer onto `main`) |
+| #2, #3 | `7a81e7e` | 2026-08-07 | Sub-project B step 1 (B1): both-player capture + hitter selection |
+| #4 | `1d9f3cd` | 2026-08-07 | B11 groundwork: shuttle-detector investigation (negative result), perspective scale, contact gate, capture-quality gate |
+| #5 | `9fe1b36` | 2026-08-08 | Thumbnails for names with spaces; usable `--suggest` |
+| #6 | `d4c69d4` | 2026-08-23 | Posture rep detection for smash, drop shot and serve |
+| #7 | `00acb5a` | 2026-09-25 | Four analysis defects (unplayable video, VideoWriter hang, missing far-court player, perspective contact gate) + B11 decision record and implementation plan |
+| #8 | `cf0eba8` | 2026-09-29 | `ai-handoff.ps1` rejects comma-joined path elements from `pwsh -File` |
+| #9 | `0e7f438` | 2026-09-29 | Video library tags (multi-tag AND filter, rename/merge/delete with undo, Type filter absorbed) |
+
 ## Current objective and phase
 
-- **Objective:** install a portable, tested continuity layer so Claude and Codex can
-  safely alternate or work in parallel on Good Badminton, per
-  `docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md`.
-- **Phase:** Tasks 1-8 complete and reviewed - `scripts/ai-handoff.ps1` implements the
-  read-only status plus the claim, milestone, committed-handoff, accept, takeover, and full
-  failure-matrix layers, each individually reviewed and then confirmed by a Codex
-  whole-branch review whose Critical and Important findings are fixed. Task 9 (verify and
-  activate) is in progress: verification gates pass and the committed alternating
-  handoff/accept cycle activates the pilot.
-- **Acceptance criteria:** the twelve criteria in the design spec's "Acceptance Criteria"
-  section, including same-context startup for both tools, committed handoffs, disjoint
-  concurrent claims, crash-safe claims, concise status with detailed per-workstream
-  history, preserved unrelated user changes, full verification gates, no local
-  secrets/settings committed, no direct writes to `main`, enforced branch-prefix rules
-  (except the documented bootstrap exception), handoffs blocking until accepted, and a
-  verified fork/migration history.
+- **Objective:** Sub-project B - full-match stroke recognition - per
+  `docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md`.
+- **Phase:** B1 is merged. The next milestone is **B11 (rally / play detection)**: a
+  self-calibrating court-view gate and a post-loop rally segmenter that reports which signal
+  it used and how far to trust it. Its design
+  (`docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md`) and 12-task plan
+  (`docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`) are approved and merged;
+  no B11 implementation task has started. B2-B10 remain unplanned.
 
 ## Workstreams
 
-| ID | State | Branch | Base commit | Head commit | Status file | Next action | Updated (UTC) |
-|---|---|---|---|---|---|---|---|
-| `continuity-pilot` | `active` | `codex/good-badminton-development` | `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3` | `c5547bcd2e960931331c2644642696ea4aab07a9` | `.ai/workstreams/continuity-pilot.md` | Run the committed alternating handoff/accept cycle to activate the pilot | 2026-07-21T04:34:48Z |
-| `match-stroke-recognition-b` | `planned` | not yet created | `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3` | `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3` | `.ai/workstreams/match-stroke-recognition-b.md` | Approve the full-match stroke-recognition completion bar, then create its implementation plan | 2026-07-18T08:06:51Z |
+| ID | State | Branch | Head commit | Status file | Next action | Updated (UTC) |
+|---|---|---|---|---|---|---|
+| `match-stroke-recognition-b` | `active` - B11 next | a new `claude/` branch for B11 (to be created from `main`) | `0e7f438` (`main`) | `.ai/workstreams/match-stroke-recognition-b.md` | Execute the B11 plan from Task 1 (headless-safe `annotate_court`). The status file's own Next action predates the plan and will be corrected at B11 start | 2026-09-29 |
+| `project-status-refresh` | `active` | `claude/project-status-refresh` | - | `.ai/workstreams/project-status-refresh.md` | Owner merges this snapshot refresh | 2026-09-29 |
+| `library-tags` | merged (#9) | `claude/library-tags` | `bef6f6d` | `.ai/workstreams/library-tags.md` | None - done. Claim narrowed to its own status file (see Blockers) | 2026-09-29 |
+| `handoff-file-scope` | merged (#8) | `claude/handoff-file-scope` | - | `.ai/workstreams/handoff-file-scope.md` | None - done | 2026-09-29 |
+| `motionbert-3d-lifting` | merged (#1) | `claude/motionbert-3d-lifting` | - | `.ai/workstreams/motionbert-3d-lifting.md` | None for the lifting stage. The AQA scorer follow-up is a separate, unplanned sub-project gated on labelled data | 2026-08-07 |
+| `continuity-pilot` | integrated (via #1) | `codex/good-badminton-development` | - | `.ai/workstreams/continuity-pilot.md` | None - the helper is in daily use | 2026-07-21 |
+
+Status files for merged workstreams still show their last in-flight `State`/`Next action`;
+this table is the authoritative integration record for them (see Blockers).
 
 ## Durable decisions
 
-- The continuity pilot's design is approved:
-  `docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md`.
-- The implementation plan is approved:
-  `docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md`.
-- The pilot applies only to Good Badminton; adapting it for the other 12 local `Projects`
-  repositories that contain `CLAUDE.md` is deferred until this pilot is proven through
-  Sub-project B (design spec, "Rollout Scope").
-- Sub-project B (full-match stroke recognition) is next after the pilot, but its product
-  completion bar is a separate, unresolved decision that does not block installing the
-  pilot (design spec, "Current State").
+- The continuity layer (`scripts/ai-handoff.ps1`, `.ai/`) is the operating contract for all
+  agent work here: `docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md`.
+  Adapting it to the other local `Projects` repositories is still deferred.
+- Sub-project B's completion bar is approved (B spec section 2, "Done means"); B1 stands on
+  its synthetic/unit/end-to-end evidence plus an honestly reported upstream-blocked
+  real-footage attempt, and B11 is the next delivery (owner decision, 2026-08-23).
+- B11 owner decisions are recorded in the B11 spec section 12a (2026-08-23): **A** - true
+  multi-camera broadcast stays in scope, so a shot-boundary component is required, validated
+  hermetically only until a genuine broadcast sample exists; **B** - resolved by measurement:
+  no usable shuttle signal on the owner's fixed-camera footage, so the swing signal is
+  primary there; **C** - no "zero rallies": with no usable signal, emit degraded coarse
+  windows and withhold stroke labels on them; **D** - completion-bar R10 amended.
+- Library tags live in `data/library_tags.json` (gitignored), never in `outputs/<stem>/`;
+  every store read-modify-write is serialised by `_TAGS_LOCK` in `app.py`.
 
 ## Verification records
 
 | Command | Result | Tested commit / dirty state | UTC timestamp |
 |---|---|---|---|
-| Migration-worktree pytest run (whole repo) | 355 passed, 1 optional-model test skipped | Migrated `codex/good-badminton-development` tree matching the archived pre-fork development head | 2026-07-17 |
-| Later fresh-virtual-environment pytest run (whole repo) | 356 passed | Same migrated tree | 2026-07-17 |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` | RED: 4 failed, 13 passed (missing `.ai` files; duplicate/wrong-case `AGENTS.md` references) | Dirty tree at `HEAD` `432eb7ca02b1e0a0f64aabe61288e1f2b51e0fc3`, Task 1 changed paths | 2026-07-18T08:06:51Z |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` | GREEN: 17 passed | Same dirty tree/commit | 2026-07-18T08:12:05Z |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` (existing full suite plus this file) | 373 passed | Same dirty tree/commit | 2026-07-18T08:12:05Z |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest tests/test_ai_handoff.py -q -p no:cacheprovider --basetemp <unique>` | 290 passed | Tested commit `c5547bcd2e960931331c2644642696ea4aab07a9` | 2026-07-21T04:34:48Z |
-| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` (whole repo, post whole-branch-review fixes) | 646 passed | Tested commit `c5547bcd2e960931331c2644642696ea4aab07a9` | 2026-07-21T04:34:48Z |
+| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` | 976 passed, 3 skipped | `d016cad` (library-tags branch head before squash; tree identical to #9's code) | 2026-09-25 |
+| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` | 982 passed, 3 skipped (589 s) | `0e7f438` (`main`); only uncommitted changes were this refresh's two `.ai/` docs files, plus untracked `BirdEye Prototype.html` | 2026-09-29T13:25:01Z |
 
-Full Task 1 evidence, including the exact RED/GREEN command output, is recorded in
-`.ai/workstreams/continuity-pilot.md` and the Task 1 implementation report.
+The 3 skips are `tests/test_ai_handoff.py` symlink tests, which need the Windows symlink
+privilege (Developer Mode); they are environment-only. Earlier records (continuity pilot,
+2026-07-17 to 2026-07-21) are in `.ai/workstreams/continuity-pilot.md` and Git history.
 
 ## Blockers and deferred work
 
-- Sub-project B's product completion bar is undecided; `match-stroke-recognition-b` stays
-  `planned` until it is approved.
-- Pre-existing deleted assets (`assets/demo.gif`, `assets/demo_en.gif`,
-  `assets/label_court_example.png`, `assets/match_heatmap.png`,
-  `assets/match_heatmap_en.png`, `assets/match_scatter.png`, `assets/match_scatter_en.png`)
-  and other pre-existing untracked/local files remain intentionally uncommitted; the
-  continuity pilot must never sweep them into a commit.
+- **The continuity helper has no close operation.** `start` treats every `active` or
+  `handoff-ready` claim as live regardless of lease expiry, so a merged workstream's expired
+  claim keeps blocking overlapping paths. Workaround in use: `takeover` the expired claim with
+  a scope of only its own status file (done for `library-tags`, claim `2423a354`). A
+  follow-up to add a proper close is proposed separately.
+- B11 Task 11 (shot-boundary detection) can ship with hermetic tests only; real-footage
+  validation needs a genuine broadcast sample, which does not exist yet.
+- B11 Tasks 6 and 12 need the owner's match footage and the human labels at
+  `outputs/b11-labelling/LABELS.md` on disk.
+- Deferred minors from library tags: purity tests for `rename`/`delete`/`forget`; directory
+  fsync after `os.replace` (not possible on Windows).
+- `BirdEye Prototype.html` at the repo root is a pre-existing untracked file; never commit it.
 
 ## Immediate integration next actions
 
-1. Complete Tasks 2-8 of the implementation plan to build and fully test
-   `scripts/ai-handoff.ps1`.
-2. Run Task 9's full verification gates and two-worktree smoke test, then activate the
-   pilot with a real scoped claim and a committed alternating handoff/accept cycle.
-3. Prepare the reviewed branch for the user to publish to
-   `origin/codex/good-badminton-development`; agents never push without explicit approval.
+1. Owner merges this snapshot refresh.
+2. Start B11 on a new `claude/` branch from `main`: claim its scope, correct the
+   `match-stroke-recognition-b` status file, then execute the plan task by task with review
+   gates, beginning with Task 1.
 
 ## Links
 
-- Design spec: `docs/superpowers/specs/2026-07-16-claude-codex-continuity-design.md`
-- Implementation plan: `docs/superpowers/plans/2026-07-17-claude-codex-continuity-pilot.md`
+- Sub-project B spec: `docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md`
+- B11 spec: `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md`
+- B11 plan: `docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`
 - Historical ledger: `.superpowers/sdd/progress.md`
