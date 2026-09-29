@@ -3,20 +3,24 @@
 - **workstream_id:** `match-stroke-recognition-b`
 - **Objective:** Sub-project B - full-match stroke recognition, extending the completed
   Sub-project A per-rally analysis, per the approved completion bar.
-- **Scope paths:** `badminton_analysis/tracking/player.py`, `badminton_analysis/system.py`,
-  `badminton_analysis/stroke/events.py`, `badminton_analysis/stroke_recog/`,
-  `badminton_analysis/shuttle_track/`, `third_party/tracknet/`, `app.py`, `static/kestrel.js`,
-  `tests/test_player_half_classification.py` and related test files, plus this workstream
-  file and its design/plan docs.
+- **Scope paths (B11 claim `3388e5e9-cd73-46ad-b066-452e89c4dcf0`):**
+  `.ai/workstreams/match-stroke-recognition-b.md`, `badminton_analysis/court/mapper.py`,
+  `badminton_analysis/system.py`, `badminton_analysis/stroke/rallies.py`,
+  `badminton_analysis/stroke/shot_boundary.py`, `app.py`, `static/kestrel.js`,
+  `scripts/score_rally_labels.py`, `scripts/check_rally_gate.py`,
+  `tests/test_court_annotation_headless.py`, `tests/test_court_view_gate.py`,
+  `tests/test_rally_segmentation.py`, `tests/test_shot_boundary.py`, and the B11 plan, B11
+  spec and B completion-bar spec.
 - **State:** active
-- **Branch:** `claude/match-stroke-recognition-b`
+- **Branch:** `claude/match-stroke-recognition-b`, recreated 2026-09-29 from `origin/main` for
+  B11. (The B1 branch of the same name was squash-merged as #2/#3 and deleted; the 2026-09-20
+  defect fixes and the B11 plan landed from `claude/b11-rally-detection` as #7.)
 - **Worktree:** primary checkout (no separate worktree)
-- **Base commit:** `fe31415` (first commit on this branch: the `player.py` net-line fix) -
-  branched from `claude/motionbert-3d-lifting`'s tip rather than `main`, since
-  `main` is far behind and the MotionBERT branch's PR (seafood-rice/Good-Badminton#1) is
-  expected to land first; this branch will likely need a rebase once that merges.
-- **Head commit:** `1ac402b` (final-review fix pass, all 7 B1 tasks + prerequisite fix landed).
-- **Last milestone:** 2026-07-29 - **B1 (both-player capture + hitter selection) complete.**
+- **Base commit:** `b4ee267bfac35fb75dd8ee81812a3a506b546d31` (`origin/main` after #10)
+- **Head commit:** `b4ee267bfac35fb75dd8ee81812a3a506b546d31`
+- **Last milestone:** 2026-09-29 - B11 execution started: branch recreated from `main`, scope
+  claimed, plan to be executed task by task from Task 1. Previous milestone, 2026-07-29 -
+  **B1 (both-player capture + hitter selection) complete.**
   All 7 tasks implemented via subagent-driven-development (fresh implementer + task review
   per task), plus a final whole-branch review that found and fixed 5 Important
   cross-task issues invisible at task scope: the racket YOLO model ran twice per frame,
@@ -169,26 +173,13 @@ re-analysis. Its *data* still has no upper player — that needs a re-run.
 
 ## Next action
 
-Resume the B11 plan (`docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`) from
-Task 1. Note that Task 1's `annotate_court` headless fix is still outstanding and is now
-more relevant, since re-analysing the 0007 video unattended would hit that hang.
+Execute the B11 plan (`docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`) task by
+task from Task 1 (headless-safe `annotate_court`, still unfixed on `main`), with a task review
+after each and a final whole-branch review. Tasks 6 and 12 run against the owner's footage and
+`outputs/b11-labelling/LABELS.md`, both on disk. Task 11's real-footage validation stays
+blocked on a genuine broadcast sample. B2-B10 remain separate, unplanned pieces of Sub-project B.
 
-**Superseded 2026-08-23.** The owner took path (a): B1 stands on its synthetic/unit/end-to-end
-evidence plus the honestly-reported upstream-blocked real-footage attempt, and B11 is the
-next milestone delivery.
-
-Write B11's implementation plan. All owner decisions are now in (B11 spec §12a, including
-C's replacement behaviour), so the plan covers the C1 court-view gate rewrite, C2's
-shuttle/swing signals with density gating and static-artifact suppression, the degraded
-coarse-window path with stroke recognition withheld, fps-normalised parameters, the
-`system.py` wiring, and decision A's new shot-boundary component (hermetic tests only, real-
-footage validation blocked on a genuine broadcast sample).
-
-Recommended sequencing inside B11: fix the `annotate_court` headless hang first (see the
-Blockers section), because B11's own validation needs unattended runs. B2-B10 (segment-scoped
-dense tracking, budgeted selection, the background-job redesign, fps/resolution
-normalization) remain separate, not-yet-planned pieces of the broader Sub-project B effort
-per the completion-bar doc.
+(History: the "write B11's plan" next action of 2026-08-23 is done — the plan merged with #7.)
 
 <!-- ai-continuity:milestones:start -->
 <!-- ai-continuity:milestones:end -->
