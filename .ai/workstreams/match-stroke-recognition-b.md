@@ -111,6 +111,28 @@ non-regression with no weights present; full committed suite green.
   TrackNetV3's dense pre-pass is genuinely slow at native 4K (2.33 s/frame measured, vs 0.385
   s/frame at 1080p) regardless of GPU, because the bottleneck is per-pixel preprocessing, not
   the network itself — not because the machine lacks a GPU.
+- **B11 Task 6 fidelity gate (2026-09-30).** Command:
+  `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B scripts/score_rally_labels.py [--detections <path>] [--out <path>]`
+  (as-shipped constants swing_frac 0.25 / gap 1.0 / min_len 2.0; labels `outputs/b11-labelling/LABELS.md`).
+  - Step 1, UNMODIFIED script, pre-#7 fixture (`outputs/Dji 20260718111111 0010 D/detections.jsonl`):
+    F1 0.6439, precision 0.642, recall 0.646, 10/11 rallies found, start median +1.90 s,
+    end median +0.59 s. Matched the pre-task backup; §0.16's F1 0.644 applies to this
+    pre-#7 fixture only.
+  - Step 3, script routed through `rallies.wrists_from_hands` / `baseline_caps` /
+    `swing_activity` / `segments_from_activity` (caps 21.3 / 120.9 px from `metadata.json`),
+    same pre-#7 fixture: F1 0.6439, precision 0.642, recall 0.646, 10/11, start +1.90 s,
+    end +0.59 s. Byte-identical to Step 1 (including the grid search and `score_result.json`),
+    so the +-0.02 F1 and 10/11 criteria both held with delta 0. Nothing tuned.
+  - R10 re-measurement, a different input (post-PR-#7 run,
+    `outputs/b11-post7-dji0010/detections.jsonl`, far-court hands in 14,256 records vs ~1,483):
+    F1 0.6435, precision 0.646, recall 0.641, 10/11, start median +2.20 s, end median -0.26 s.
+    A new measurement for new data, not a pass/fail against 0.644.
+  - Tests: `tests/test_rally_segmentation.py` 46 passed; suite minus
+    `tests/test_ai_handoff.py` 778 passed. The two script-equivalence tests now use a frozen
+    copy of the d280bec script arithmetic as their oracle.
+  - Tested commit: parent `d280bec` plus working tree (`scripts/score_rally_labels.py`,
+    `tests/test_rally_segmentation.py`, this file); the commit that lands them is the one whose
+    message is `test(rallies): score the shipped swing signal against the human labels`.
 
 ## Blockers
 

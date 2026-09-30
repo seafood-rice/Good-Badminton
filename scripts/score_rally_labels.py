@@ -3,6 +3,13 @@ and fit its constants to this footage.
 
 Usage (from the repo root):
     PYTHONUTF8=1 ./.venv/Scripts/python.exe scripts/score_rally_labels.py
+    Optional: --detections <detections.jsonl> (default: the DJI 0010 fixture),
+              --out <score_result.json> (default: outputs/b11-labelling/score_result.json)
+
+The swing signal and the segmentation are the production ones
+(badminton_analysis.stroke.rallies), so this scores the shipped code path rather
+than a private copy. The teleport caps come from the court corners and fps in the
+metadata.json next to the detections file.
 
 Reads the filled-in table in outputs/b11-labelling/LABELS.md (git-ignored, since it is
 per-footage data). Reports, restricted to the labelled
@@ -16,24 +23,27 @@ window and excluding any spans the labeller marked unusable:
 Nothing here is committed as production behaviour -- it is the measurement that decides
 whether the swing path can ship validated or must stay experimental (B11 design doc §0.15).
 """
+import argparse
 import json
-import math
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from badminton_analysis.stroke import rallies  # noqa: E402
+
 LABEL_DIR = ROOT / "outputs/b11-labelling"
 DET = ROOT / "outputs/Dji 20260718111111 0010 D/detections.jsonl"
+DEFAULT_OUT = LABEL_DIR / "score_result.json"
 LABELS_MD = LABEL_DIR / "LABELS.md"
 
+# Frame-level scoring step. The teleport caps and the smoothing window come from
+# rallies.baseline_caps / rallies.swing_activity, using the run's own fps. (Historically
+# this script hardcoded far/near caps of 21.3 / 120.9 px for DJI 0010; baseline_caps
+# derives those same values from the court quad.)
 FPS = 59.94
-SMOOTH_SEC = 0.5
-# Perspective-correct teleport caps (B11 §0.15 Defect 2): derived from the court quad's own
-# scale -- 106.3 px/m at the far baseline vs 603.8 px/m at the near one -- at a generous
-# 12 m/s human sprint cap, instead of one absolute-pixel constant for both players.
-FAR_CAP_PX = 21.3
-NEAR_CAP_PX = 120.9
 
 
 def parse_labels():
@@ -63,10 +73,19 @@ def parse_labels():
     return sorted(rows), sorted(excl)
 
 
-def load_activity():
-    """Per-frame (time, smoothed swing activity) with perspective-correct teleport caps."""
-    t, up, lo = [], [], []
-    with open(DET, encoding="utf-8") as fh:
+def load_activity(det_path):
+    """Per-frame (time, smoothed swing activity), via the production module.
+
+    Parses detections.jsonl into the record shape the analysis track uses and
+    hands it to rallies.swing_activity, with caps from the run's metadata.json.
+    """
+    det_path = Path(det_path)
+    meta = json.loads((det_path.parent / "metadata.json").read_text(encoding="utf-8"))
+    fps = float(meta["video"]["fps"])
+    caps = rallies.baseline_caps(meta["court"]["corners"], fps)
+
+    track = []
+    with open(det_path, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
@@ -75,60 +94,15 @@ def load_activity():
             pl = d.get("players") or {}
 
             def wrist(side):
-                rec = pl.get(side) or {}
-                hands = rec.get("hands") or {}
-                pts = [p for p in (hands.get("left"), hands.get("right")) if p]
-                if not pts:
-                    return None
-                return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+                hands = (pl.get(side) or {}).get("hands") or {}
+                return rallies.wrists_from_hands(hands.get("left"), hands.get("right"))
 
-            t.append(d["time_sec"])
-            up.append(wrist("upper"))
-            lo.append(wrist("lower"))
-    n = len(t)
-
-    def speed(seq, cap):
-        out = [0.0] * n
-        for i in range(1, n):
-            a, b = seq[i - 1], seq[i]
-            if a and b:
-                v = math.hypot(b[0] - a[0], b[1] - a[1])
-                if v <= cap:
-                    out[i] = v
-        return out
-
-    act = [max(a, b) for a, b in zip(speed(lo, NEAR_CAP_PX), speed(up, FAR_CAP_PX))]
-    w = max(1, int(round(SMOOTH_SEC * FPS)))
-    sm, run = [], 0.0
-    for i, v in enumerate(act):
-        run += v
-        if i >= w:
-            run -= act[i - w]
-        sm.append(run / min(i + 1, w))
-    return t, sm
-
-
-def segment(t, sm, swing_frac, gap_sec, min_len_sec):
-    srt = sorted(sm)
-    thr = swing_frac * srt[min(len(srt) - 1, int(0.995 * len(srt)))]
-    active = [v >= thr for v in sm]
-    runs, i, n = [], 0, len(sm)
-    while i < n:
-        if active[i]:
-            j = i
-            while j + 1 < n and active[j + 1]:
-                j += 1
-            runs.append([i, j])
-            i = j + 1
-        else:
-            i += 1
-    merged = []
-    for r in runs:
-        if merged and (t[r[0]] - t[merged[-1][1]]) <= gap_sec:
-            merged[-1][1] = r[1]
-        else:
-            merged.append(r)
-    return [(t[a], t[b]) for a, b in merged if (t[b] - t[a]) >= min_len_sec]
+            track.append({"frame": d["frame"],
+                          "wrist_lower": wrist("lower"),
+                          "wrist_upper": wrist("upper")})
+    print(f"detections {det_path}  fps {fps:.3f}  caps far/near "
+          f"{caps[0]:.1f}/{caps[1]:.1f} px")
+    return rallies.swing_activity(track, fps, caps)
 
 
 def score(pred, truth, window, excluded):
@@ -174,14 +148,23 @@ def med(v):
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--detections", type=Path, default=DET,
+                    help="detections.jsonl to score (metadata.json is read beside it)")
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT,
+                    help="where to write the JSON result")
+    args = ap.parse_args()
+
     truth, excluded = parse_labels()
     window = (min(a for a, _ in truth) - 5.0, max(b for _, b in truth) + 5.0)
     print(f"labelled rallies: {len(truth)}   window {window[0]:.1f}-{window[1]:.1f}s"
           f"   excluded spans: {len(excluded)}")
 
-    t, sm = load_activity()
+    t, sm = load_activity(args.detections)
     base = dict(swing_frac=0.25, gap_sec=1.0, min_len_sec=2.0)
-    pred = segment(t, sm, **base)
+    pred = rallies.segments_from_activity(t, sm, frac=base["swing_frac"],
+                                          gap_sec=base["gap_sec"],
+                                          min_len_sec=base["min_len_sec"])
     r = score(pred, truth, window, excluded)
     print(f"\n==== as-shipped constants {base} ====")
     print(f"segments predicted in window: {sum(1 for a,b in pred if b>=window[0] and a<=window[1])}")
@@ -194,7 +177,9 @@ def main():
     for sf in (0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50):
         for gap in (0.5, 1.0, 1.5, 2.0):
             for mn in (1.0, 2.0, 3.0):
-                rr = score(segment(t, sm, sf, gap, mn), truth, window, excluded)
+                segs = rallies.segments_from_activity(t, sm, frac=sf, gap_sec=gap,
+                                                      min_len_sec=mn)
+                rr = score(segs, truth, window, excluded)
                 results.append((rr["f1"], sf, gap, mn, rr))
     results.sort(reverse=True, key=lambda x: x[0])
     print(" F1     swing_frac gap  min_len   prec   rec   rallies")
@@ -205,11 +190,13 @@ def main():
     print(f"\nbest: swing_frac={best[1]} gap_sec={best[2]} min_len_sec={best[3]} -> F1 {best[0]:.3f}")
     print("(as-shipped F1 was %.3f)" % r["f1"])
 
-    json.dump({"as_shipped": {k: v for k, v in r.items() if k not in ("start_err", "end_err")},
-               "best": {"swing_frac": best[1], "gap_sec": best[2], "min_len_sec": best[3],
-                        "f1": best[0]}},
-              open(LABEL_DIR / "score_result.json", "w"), indent=1)
-    print("\nwrote outputs/b11-labelling/score_result.json")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    result = {"as_shipped": {k: v for k, v in r.items() if k not in ("start_err", "end_err")},
+              "best": {"swing_frac": best[1], "gap_sec": best[2], "min_len_sec": best[3],
+                       "f1": best[0]}}
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=1)
+    print(f"\nwrote {args.out}")
 
 
 if __name__ == "__main__":

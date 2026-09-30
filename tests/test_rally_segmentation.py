@@ -3,10 +3,9 @@
 Boundaries are defined in SECONDS throughout, so the same temporal pattern
 at 30 and 60 fps must produce the same answer (design spec done-means 8).
 """
-import importlib.util
 import inspect
 import json
-import pathlib
+import math
 import random
 
 import pytest
@@ -179,13 +178,57 @@ def test_swing_activity_of_an_empty_track_is_empty():
     assert rallies.swing_activity([], 30.0, (1.0, 1.0)) == ([], [])
 
 
-def _load_script():
-    spec = importlib.util.spec_from_file_location(
-        "score_rally_labels",
-        pathlib.Path(__file__).resolve().parents[1] / "scripts" / "score_rally_labels.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+# --- Frozen reference for the swing signal ------------------------------------
+# This is the speed / teleport-cap / smoothing arithmetic of
+# scripts/score_rally_labels.py::load_activity exactly as of commit d280bec: the
+# version B11 spec §0.16's F1 0.644 was measured with. It is copied here, and
+# frozen, so rallies.swing_activity cannot drift from the measured signal
+# unnoticed. The script itself now calls the library, so it can no longer serve
+# as the independent oracle. Do NOT "simplify" or re-derive this from rallies.*.
+FROZEN_FAR_CAP_PX = 21.3
+FROZEN_NEAR_CAP_PX = 120.9
+FROZEN_SMOOTH_SEC = 0.5
+
+
+def _frozen_script_load_activity(records, fps):
+    """(times, smoothed activity) from parsed detections.jsonl records (dicts)."""
+    t, up, lo = [], [], []
+    for d in records:
+        pl = d.get("players") or {}
+
+        def wrist(side):
+            rec = pl.get(side) or {}
+            hands = rec.get("hands") or {}
+            pts = [p for p in (hands.get("left"), hands.get("right")) if p]
+            if not pts:
+                return None
+            return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+        t.append(d["time_sec"])
+        up.append(wrist("upper"))
+        lo.append(wrist("lower"))
+    n = len(t)
+
+    def speed(seq, cap):
+        out = [0.0] * n
+        for i in range(1, n):
+            a, b = seq[i - 1], seq[i]
+            if a and b:
+                v = math.hypot(b[0] - a[0], b[1] - a[1])
+                if v <= cap:
+                    out[i] = v
+        return out
+
+    act = [max(a, b) for a, b in zip(speed(lo, FROZEN_NEAR_CAP_PX),
+                                     speed(up, FROZEN_FAR_CAP_PX))]
+    w = max(1, int(round(FROZEN_SMOOTH_SEC * fps)))
+    sm, run = [], 0.0
+    for i, v in enumerate(act):
+        run += v
+        if i >= w:
+            run -= act[i - w]
+        sm.append(run / min(i + 1, w))
+    return t, sm
 
 
 def _random_hand(rng, prev):
@@ -198,12 +241,11 @@ def _random_hand(rng, prev):
     return [prev[0] + rng.uniform(-8, 8), prev[1] + rng.uniform(-8, 8)]
 
 
-def test_swing_activity_equals_the_scripts_load_activity(tmp_path, monkeypatch):
+def test_swing_activity_equals_the_frozen_script_signal():
     """Task 6 must reproduce §0.16 with this code: on the same detections the
-    library signal is bit-identical to scripts/score_rally_labels.py."""
-    script = _load_script()
+    library signal is bit-identical to the frozen script arithmetic."""
     rng = random.Random(1234)
-    fps = script.FPS
+    fps = 59.94  # the script's FPS constant
     lines, track = [], []
     prev = {}
     for frame in range(1, 401):
@@ -219,13 +261,10 @@ def test_swing_activity_equals_the_scripts_load_activity(tmp_path, monkeypatch):
         lines.append(json.dumps({"time_sec": frame / fps, "players": players}))
         track.append({"frame": frame, "wrist_lower": wrists["lower"],
                       "wrist_upper": wrists["upper"]})
-    det = tmp_path / "detections.jsonl"
-    det.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    monkeypatch.setattr(script, "DET", det)
-
-    times_ref, act_ref = script.load_activity()
+    times_ref, act_ref = _frozen_script_load_activity(
+        [json.loads(line) for line in lines], fps)
     times, act = rallies.swing_activity(
-        track, fps, (script.FAR_CAP_PX, script.NEAR_CAP_PX))
+        track, fps, (FROZEN_FAR_CAP_PX, FROZEN_NEAR_CAP_PX))
 
     assert any(v > 0 for v in act_ref)
     assert times == times_ref
@@ -337,11 +376,10 @@ def test_track_stride_is_the_median_frame_delta():
     assert rallies.track_stride([_rec(f) for f in (3, 6, 9, 30, 33, 36, 39)]) == 3
 
 
-def test_a_stride_one_track_with_gaps_is_still_identical_to_the_script(tmp_path, monkeypatch):
+def test_a_stride_one_track_with_gaps_is_still_identical_to_the_frozen_script():
     """Irregular gaps keep the script's semantics (records treated as adjacent)."""
-    script = _load_script()
     rng = random.Random(99)
-    fps = script.FPS
+    fps = 59.94  # the script's FPS constant
     dropped = set(range(100, 106)) | {250, 251} | set(range(300, 320))
     lines, track, prev = [], [], {}
     for frame in range(1, 401):
@@ -359,14 +397,11 @@ def test_a_stride_one_track_with_gaps_is_still_identical_to_the_script(tmp_path,
         lines.append(json.dumps({"time_sec": frame / fps, "players": players}))
         track.append({"frame": frame, "wrist_lower": wrists["lower"],
                       "wrist_upper": wrists["upper"]})
-    det = tmp_path / "detections.jsonl"
-    det.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    monkeypatch.setattr(script, "DET", det)
-
     assert rallies.track_stride(track) == 1
-    times_ref, act_ref = script.load_activity()
+    times_ref, act_ref = _frozen_script_load_activity(
+        [json.loads(line) for line in lines], fps)
     times, act = rallies.swing_activity(
-        track, fps, (script.FAR_CAP_PX, script.NEAR_CAP_PX))
+        track, fps, (FROZEN_FAR_CAP_PX, FROZEN_NEAR_CAP_PX))
     assert any(v > 0 for v in act_ref)
     assert times == times_ref
     assert act == act_ref
