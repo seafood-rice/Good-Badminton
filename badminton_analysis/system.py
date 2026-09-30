@@ -12,9 +12,10 @@ import argparse
 # yolo shuttle so match analysis stays responsive.
 SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 
-# Court-view state changes slowly (rally boundaries span >=5 frames); recompute the
-# template match only every N frames and hold the result between checks. Lossless
-# within the existing 5-frame rally thresholds.
+# Interval of the *pinned* gate only: when court_view_threshold is pinned the gate
+# stays exactly today's full-resolution match, recomputed every N frames with the
+# result held between checks (lossless within the 5-frame rally thresholds). The
+# default (calibrated) gate scores a 480px downscale on every frame instead.
 COURT_VIEW_CHECK_INTERVAL = 3
 
 # C0 self-calibrating court-view cut (spec §5 C0). The gate's NCC score has a
@@ -234,6 +235,10 @@ class BadmintonAnalysisSystem:
         self.court_view_threshold_override = court_view_threshold
         self.court_view_cut = COURT_VIEW_FALLBACK_CUT
         self.court_view_calibration = None
+        # True only for a usable manual pin: the gate then keeps today's
+        # full-resolution, every-COURT_VIEW_CHECK_INTERVAL-frames behaviour.
+        self.court_view_pinned = False
+        self.court_view_template_small = None
         if analysis_quality == "fast":
             self.analyze_technique = False  # dense analytics need every frame
         self.racket_model_path = racket_model_path
@@ -364,8 +369,9 @@ class BadmintonAnalysisSystem:
         
 
         template_path = self._get_template_path()
-        template_gray, template_color = self._load_template(template_path, cap)
-        self._prepare_court_view_cut(template_gray, fps)
+        template_gray, template_color, template_small = self._load_template(template_path, cap)
+        self.court_view_template_small = template_small
+        self._prepare_court_view_cut(template_small, fps)
         
 
         self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -466,17 +472,24 @@ class BadmintonAnalysisSystem:
             return None
         return pin if math.isfinite(pin) and 0.0 <= pin <= 1.0 else None
 
-    def _prepare_court_view_cut(self, template_gray, fps):
+    def _prepare_court_view_cut(self, template_small, fps):
         """Decide this run's court-view cut; never fatal.
 
-        A usable pinned ``court_view_threshold`` wins and skips calibration. An
-        unusable pin (NaN, non-numeric, outside [0, 1]) is warned about and
-        ignored in favour of normal calibration. Calibration failure logs and
-        falls back to the shipped constant so the run continues.
+        ``template_small`` is the template already downscaled by _load_template
+        (downscaled once, never again). A usable pinned ``court_view_threshold``
+        wins and skips calibration. An unusable pin (NaN, non-numeric, outside
+        [0, 1]) is warned about and ignored in favour of normal calibration.
+        Calibration failure logs and falls back to the shipped constant so the
+        run continues.
+
+        Also decides the live gate's mode: only a usable pin keeps the legacy
+        full-resolution gate (``court_view_pinned``).
         """
+        self.court_view_pinned = False
         if self.court_view_threshold_override is not None:
             pin = self._usable_court_view_pin(self.court_view_threshold_override)
             if pin is not None:
+                self.court_view_pinned = True
                 self.court_view_cut = pin
                 self.court_view_calibration = {
                     "cut": pin, "median": None, "mad": None, "samples": 0,
@@ -486,8 +499,7 @@ class BadmintonAnalysisSystem:
             print(f"Court-view threshold {self.court_view_threshold_override!r} "
                   f"is not a finite number in [0, 1]; calibrating instead")
         try:
-            self._calibrate_court_view(
-                self.video_path, downscale_for_gate(template_gray), fps)
+            self._calibrate_court_view(self.video_path, template_small, fps)
         except Exception as exc:
             print(f"Court-view calibration failed, using "
                   f"{COURT_VIEW_FALLBACK_CUT}: {exc}")
@@ -1142,7 +1154,13 @@ class BadmintonAnalysisSystem:
         return template_path
 
     def _load_template(self, template_path, cap):
-        """Load and resize the court template image."""
+        """Load and resize the court template image.
+
+        Returns ``(template_gray, template_color, template_small)``;
+        ``template_small`` is the gate's 480px template, downscaled exactly once.
+        """
+        import cv2
+
         template_gray = cv2.imread(template_path, 0)
         template_color = cv2.imread(template_path)
         if template_gray is None or template_color is None:
@@ -1154,7 +1172,7 @@ class BadmintonAnalysisSystem:
         template_gray = cv2.resize(template_gray, (frame_width, frame_height))
         template_color = cv2.resize(template_color, (frame_width, frame_height))
         
-        return template_gray, template_color
+        return template_gray, template_color, downscale_for_gate(template_gray)
 
     def _setup_video_writer(self, frame_width, frame_height, fps):
 
@@ -1260,22 +1278,59 @@ class BadmintonAnalysisSystem:
             "Hit-point analysis is disabled until it is migrated to detections.jsonl."
         )
 
-    def is_court_view(self, frame, template_gray, threshold=0.75):
-        """Return whether the frame matches the court template."""
+    def is_court_view(self, frame, template_gray, threshold=None):
+        """Full-resolution whole-frame NCC against the template (the pinned gate).
+
+        ``threshold=None`` uses ``self.court_view_cut``; an explicit value
+        overrides it. A ``-inf`` cut passes everything.
+        """
+        import cv2
+        import numpy as np
+
+        cut = self.court_view_cut if threshold is None else float(threshold)
+        if cut == float("-inf"):
+            return True
         result = cv2.matchTemplate(frame, template_gray, cv2.TM_CCOEFF_NORMED)
-        # print("match score: ", result)
-        return np.max(result) >= threshold
+        return bool(np.max(result) >= cut)
+
+    def _court_view_downscaled(self, gray_frame, template_small):
+        """The default gate: NCC of a 480px downscale against ``self.court_view_cut``.
+
+        A ``-inf`` cut (template not of this video) passes every frame without
+        scoring; a NaN score (constant frame) is not court view under a finite cut.
+        """
+        cut = self.court_view_cut
+        if cut == float("-inf"):
+            return True
+        return bool(self._court_view_score(gray_frame, template_small) >= cut)
 
     def _court_view_for_frame(self, gray_frame, template_gray, frame_count):
-        """Recompute is_court_view only every COURT_VIEW_CHECK_INTERVAL frames,
-        holding the cached result between checks. Lossless within the existing
-        5-frame rally thresholds (boundaries may shift by <= interval-1 frames)."""
-        cached = getattr(self, "_court_view_cached", None)
-        last_frame = getattr(self, "_court_view_last_frame", -10)
-        if cached is None or frame_count - last_frame >= COURT_VIEW_CHECK_INTERVAL:
-            self._court_view_cached = self.is_court_view(gray_frame, template_gray)
-            self._court_view_last_frame = frame_count
-        return self._court_view_cached
+        """Decide whether this frame shows the court.
+
+        Pinned (``court_view_threshold`` given, or an instance that never
+        prepared a cut): today's gate exactly -- full-resolution match against
+        the pinned value, recomputed every COURT_VIEW_CHECK_INTERVAL frames with
+        the result held between checks (lossless within the 5-frame rally
+        thresholds; boundaries may shift by <= interval-1 frames).
+
+        Otherwise: the 480px downscale is scored against the once-downscaled
+        template on every frame, using this video's calibrated cut.
+        """
+        # An instance that never ran __init__/_prepare_court_view_cut has no
+        # calibrated cut, so it keeps the legacy gate.
+        if getattr(self, "court_view_pinned", True):
+            cached = getattr(self, "_court_view_cached", None)
+            last_frame = getattr(self, "_court_view_last_frame", -10)
+            if cached is None or frame_count - last_frame >= COURT_VIEW_CHECK_INTERVAL:
+                self._court_view_cached = self.is_court_view(gray_frame, template_gray)
+                self._court_view_last_frame = frame_count
+            return self._court_view_cached
+
+        template_small = getattr(self, "court_view_template_small", None)
+        if template_small is None:
+            template_small = downscale_for_gate(template_gray)
+            self.court_view_template_small = template_small
+        return self._court_view_downscaled(gray_frame, template_small)
 
     def draw_court_roi(self, frame, corners, roi_corners):
         self.court_mapper = CourtMapper(corners)

@@ -135,7 +135,7 @@ def test_manual_threshold_skips_calibration_and_is_recorded(monkeypatch):
     s.court_view_threshold_override = 0.62
     monkeypatch.setattr(s, "_calibrate_court_view", _boom)
 
-    s._prepare_court_view_cut(_template(), 30.0)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 30.0)
 
     assert s.court_view_cut == 0.62
     record = s._court_view_metadata()
@@ -154,7 +154,7 @@ def test_calibration_failure_is_never_fatal_and_falls_back(monkeypatch, capsys):
 
     monkeypatch.setattr(s, "_calibrate_court_view", explode)
 
-    s._prepare_court_view_cut(_template(), 30.0)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 30.0)
 
     assert s.court_view_cut == system.COURT_VIEW_FALLBACK_CUT
     record = s._court_view_metadata()
@@ -174,7 +174,7 @@ def test_prepare_runs_calibration_with_a_downscaled_template(monkeypatch):
         s.court_view_cut = s.court_view_calibration["cut"]
 
     monkeypatch.setattr(s, "_calibrate_court_view", fake_calibrate)
-    s._prepare_court_view_cut(_template(), 25.0)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 25.0)
 
     assert seen == {"video_path": "unused.mp4", "shape": (270, 480), "fps": 25.0}
     record = s._court_view_metadata()
@@ -194,7 +194,7 @@ def test_unusable_pin_warns_and_calibrates_instead_of_failing(monkeypatch, capsy
         s.court_view_cut = s.court_view_calibration["cut"]
 
     monkeypatch.setattr(s, "_calibrate_court_view", fake_calibrate)
-    s._prepare_court_view_cut(_template(), 30.0)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 30.0)
 
     assert called == [True]
     assert s._court_view_metadata()["method"] == "median-4mad"
@@ -206,7 +206,7 @@ def test_boundary_pins_are_usable(monkeypatch, pin):
     s = _fake_system()
     s.court_view_threshold_override = pin
     monkeypatch.setattr(s, "_calibrate_court_view", _boom)
-    s._prepare_court_view_cut(_template(), 30.0)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 30.0)
     assert s.court_view_cut == float(pin)
     assert s._court_view_metadata()["calibration"] == "manual"
 
@@ -343,3 +343,243 @@ def test_non_finite_cut_is_recorded_as_null(monkeypatch, tmp_path):
     assert court_view["k"] == 4.0
     assert court_view["mad"] is None
     assert court_view["median"] == 0.06
+
+
+# --- C1: the live gate uses the per-video cut, downscaled, every frame ---
+
+
+def _noisy(template, sigma, seed):
+    rng = np.random.default_rng(seed)
+    noisy = template.astype(np.float32) + rng.normal(0, sigma, template.shape)
+    return np.clip(noisy, 0, 255).astype(np.uint8)
+
+
+def _blocky(seed):
+    rng = np.random.default_rng(seed)
+    return np.kron(rng.integers(0, 255, (18, 32), dtype=np.uint8),
+                   np.ones((40, 40), np.uint8))
+
+
+def test_prepare_hands_the_once_downscaled_template_to_calibration(monkeypatch):
+    s = _fake_system()
+    small = system.downscale_for_gate(_template())
+    seen = {}
+
+    def fake_calibrate(video_path, template_small, fps):
+        seen["template"] = template_small
+        s.court_view_calibration = system.courtview_cut_from_scores([0.8] * 10)
+        s.court_view_cut = s.court_view_calibration["cut"]
+
+    def no_second_downscale(*_a, **_k):
+        raise AssertionError("the template must be downscaled exactly once")
+
+    monkeypatch.setattr(s, "_calibrate_court_view", fake_calibrate)
+    monkeypatch.setattr(system, "downscale_for_gate", no_second_downscale)
+    s._prepare_court_view_cut(small, 30.0)
+    assert seen["template"] is small
+
+
+def test_load_template_returns_the_downscaled_template_too(tmp_path):
+    import cv2
+
+    rng = np.random.default_rng(8)
+    path = str(tmp_path / "court.png")
+    cv2.imwrite(path, rng.integers(0, 255, (300, 500, 3), dtype=np.uint8))
+
+    class Cap:
+        def get(self, prop):
+            return {cv2.CAP_PROP_FRAME_WIDTH: 1280,
+                    cv2.CAP_PROP_FRAME_HEIGHT: 720}[prop]
+
+    gray, color, small = _fake_system()._load_template(path, Cap())
+    assert gray.shape == (720, 1280) and color.shape == (720, 1280, 3)
+    assert small.shape == (270, 480)
+    assert np.array_equal(small, system.downscale_for_gate(gray))
+
+
+def test_unpinned_gate_scores_the_downscale_on_every_frame(monkeypatch):
+    s = _fake_system()
+    s.court_view_pinned = False
+    template = _template()
+    small = system.downscale_for_gate(template)
+    s.court_view_template_small = small
+    scored = []
+    real = s._court_view_score
+
+    def counting(gray, tmpl):
+        scored.append(gray.shape)
+        assert tmpl is small
+        return real(gray, tmpl)
+
+    monkeypatch.setattr(s, "_court_view_score", counting)
+    monkeypatch.setattr(s, "is_court_view", _boom)   # the full-res path is not used
+    for f in range(1, 8):
+        assert s._court_view_for_frame(template.copy(), template, f) is True
+    assert len(scored) == 7
+
+
+def test_unpinned_gate_downscales_the_template_once_when_not_preloaded(monkeypatch):
+    s = _fake_system()
+    s.court_view_pinned = False
+    template = _template()
+    real = system.downscale_for_gate
+    template_calls = []
+
+    def counting(gray, *a, **k):
+        if gray is template:
+            template_calls.append(1)
+        return real(gray, *a, **k)
+
+    monkeypatch.setattr(system, "downscale_for_gate", counting)
+    for f in range(1, 6):
+        s._court_view_for_frame(template.copy(), template, f)
+    assert len(template_calls) == 1
+
+
+def test_unpinned_gate_honours_the_calibrated_cut():
+    """A frame scoring between two cuts flips with the cut; nothing is 0.75."""
+    template = _template()
+    frame = _noisy(template, 90, 21)
+    s = _fake_system()
+    s.court_view_pinned = False
+    s.court_view_template_small = system.downscale_for_gate(template)
+    score = s._court_view_score(frame, s.court_view_template_small)
+    assert 0.05 < score < 0.74     # strictly between the cuts below, and below 0.75
+
+    s.court_view_cut = score - 0.02
+    assert s._court_view_for_frame(frame, template, 1) is True
+    s.court_view_cut = score + 0.02
+    assert s._court_view_for_frame(frame, template, 2) is False
+    s.court_view_cut = 0.75        # the shipped constant is just another cut
+    assert s._court_view_for_frame(frame, template, 3) is False
+
+
+def test_pass_all_cut_admits_every_frame_through_the_live_gate():
+    """A template that is not of this video loses the gate, not the run."""
+    rng = np.random.default_rng(6)
+    template = _template()
+    s = _fake_system()
+    s.court_view_pinned = False
+    s.court_view_cut = float("-inf")
+    s.court_view_template_small = system.downscale_for_gate(template)
+    for f in range(1, 6):
+        noise = rng.integers(0, 255, (720, 1280), dtype=np.uint8)
+        assert s._court_view_for_frame(noise, template, f) is True
+    # ... and a constant frame (NaN score) is admitted too, not an error.
+    assert s._court_view_for_frame(np.full((720, 1280), 9, np.uint8), template, 9) is True
+
+
+def test_a_constant_frame_is_not_court_view_under_a_finite_cut():
+    template = _template()
+    s = _fake_system()
+    s.court_view_pinned = False
+    s.court_view_template_small = system.downscale_for_gate(template)
+    assert s._court_view_for_frame(np.full((720, 1280), 9, np.uint8), template, 1) is False
+
+
+def test_manual_pin_marks_the_gate_pinned_and_calibration_does_not(monkeypatch):
+    small = system.downscale_for_gate(_template())
+
+    s = _fake_system()
+    s.court_view_threshold_override = 0.62
+    monkeypatch.setattr(s, "_calibrate_court_view", _boom)
+    s._prepare_court_view_cut(small, 30.0)
+    assert s.court_view_pinned is True
+
+    def calibrating(system_under_test):
+        def fake_calibrate(video_path, template_small, fps):
+            system_under_test.court_view_calibration = \
+                system.courtview_cut_from_scores([0.8] * 10)
+            system_under_test.court_view_cut = \
+                system_under_test.court_view_calibration["cut"]
+        return fake_calibrate
+
+    s = _fake_system()
+    monkeypatch.setattr(s, "_calibrate_court_view", calibrating(s))
+    s._prepare_court_view_cut(small, 30.0)
+    assert s.court_view_pinned is False
+
+    s = _fake_system()    # unusable pin -> calibrates -> not pinned
+    s.court_view_threshold_override = float("nan")
+    monkeypatch.setattr(s, "_calibrate_court_view", calibrating(s))
+    s._prepare_court_view_cut(small, 30.0)
+    assert s.court_view_pinned is False
+
+
+def test_pinned_gate_keeps_todays_full_resolution_interval_3_path(monkeypatch):
+    template = _template()
+    s = _fake_system()
+    s.court_view_pinned = True
+    s.court_view_cut = 0.62
+    seen = []
+
+    def full_res(frame, tmpl, threshold=None):
+        seen.append((frame.shape, tmpl.shape, threshold))
+        return True
+
+    monkeypatch.setattr(s, "is_court_view", full_res)
+    monkeypatch.setattr(s, "_court_view_score", _boom)   # no downscaled scoring
+    assert system.COURT_VIEW_CHECK_INTERVAL == 3
+    for f in range(1, 8):
+        assert s._court_view_for_frame(template, template, f) is True
+    # frames 1, 4, 7 evaluated; the rest hold the cache. Full resolution both sides.
+    assert len(seen) == 3
+    assert all(frame == tmpl == (720, 1280) for frame, tmpl, _ in seen)
+
+
+def test_pinned_gate_compares_against_the_pinned_value_at_full_resolution():
+    import cv2
+
+    template = _template()
+    frame = _noisy(template, 90, 21)
+    score = float(np.max(cv2.matchTemplate(frame, template, cv2.TM_CCOEFF_NORMED)))
+
+    s = _fake_system()
+    s.court_view_pinned = True
+    s.court_view_cut = score - 0.02
+    assert s._court_view_for_frame(frame, template, 1) is True
+
+    s = _fake_system()
+    s.court_view_pinned = True
+    s.court_view_cut = score + 0.02
+    assert s._court_view_for_frame(frame, template, 1) is False
+
+
+def test_is_court_view_uses_the_cut_unless_a_threshold_is_given():
+    template = _template()
+    s = _fake_system()
+    s.court_view_cut = 0.99
+    assert s.is_court_view(template.copy(), template) is True
+    s.court_view_cut = 1.01
+    assert s.is_court_view(template.copy(), template) is False
+    s.court_view_cut = 0.5
+    assert s.is_court_view(template.copy(), template, threshold=1.01) is False
+    assert s.is_court_view(template.copy(), template, threshold=0.99) is True
+    s.court_view_cut = float("-inf")
+    assert s.is_court_view(_noisy(template, 200, 1), template) is True
+
+
+@pytest.mark.parametrize("make_template", [
+    lambda: np.random.default_rng(31).integers(0, 255, (720, 1280), dtype=np.uint8),
+    lambda: _blocky(32),
+])
+def test_downscale_does_not_change_decisions_away_from_the_boundary(make_template):
+    """Spec section 8: 480px scoring agrees with full resolution off the cut."""
+    template = make_template()
+    other = np.random.default_rng(33).integers(0, 255, template.shape, dtype=np.uint8)
+    frames = {
+        "same": (template.copy(), True),
+        "slightly_noisy": (_noisy(template, 12, 34), True),
+        "unrelated": (other, False),
+        "constant": (np.full(template.shape, 128, np.uint8), False),
+    }
+    cut = 0.5
+    s = _fake_system()
+    s.court_view_cut = cut
+    s.court_view_pinned = False
+    s.court_view_template_small = system.downscale_for_gate(template)
+    for name, (frame, expected) in frames.items():
+        full = s.is_court_view(frame, template, threshold=cut)
+        small = s._court_view_for_frame(frame, template, 1)
+        assert full is expected, name
+        assert small is expected, name
