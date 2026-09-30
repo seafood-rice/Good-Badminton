@@ -310,3 +310,90 @@ def test_process_frame_records_the_rally_track_outside_the_technique_branch():
 def test_init_starts_an_empty_rally_track():
     src = inspect.getsource(sysmod.BadmintonAnalysisSystem.__init__)
     assert "self._rally_track = []" in src
+
+
+# --- Task 5 fix round 1 -------------------------------------------------------
+
+
+def test_a_strided_track_is_scaled_to_per_frame_speed_and_window():
+    """Fast mode records every 3rd frame: a 30 px step per record is 10 px per
+    frame, under the 21.3 far cap, and the 0.5 s window is round(0.5*fps/3)."""
+    fps = 60.0
+    track = [_rec(3 * (i + 1), upper=(30.0 * i, 0.0)) for i in range(40)]
+    times, act = rallies.swing_activity(track, fps, (21.3, 120.9))
+    assert times == [3 * (i + 1) / fps for i in range(40)]
+    raw = [0.0] + [10.0] * 39
+    assert act == rallies.smooth(raw, round(0.5 * fps / 3))     # window 10
+    assert act[1] == pytest.approx(5.0)     # not zeroed as a 30 px "teleport"
+    assert act[-1] == pytest.approx(10.0)
+
+
+def test_track_stride_is_the_median_frame_delta():
+    assert rallies.track_stride([]) == 1
+    assert rallies.track_stride([_rec(5)]) == 1
+    assert rallies.track_stride([_rec(f) for f in (1, 2, 3, 4)]) == 1
+    assert rallies.track_stride([_rec(f) for f in (3, 6, 9, 12)]) == 3
+    # One dropped stretch does not change the regular stride.
+    assert rallies.track_stride([_rec(f) for f in (3, 6, 9, 30, 33, 36, 39)]) == 3
+
+
+def test_a_stride_one_track_with_gaps_is_still_identical_to_the_script(tmp_path, monkeypatch):
+    """Irregular gaps keep the script's semantics (records treated as adjacent)."""
+    script = _load_script()
+    rng = random.Random(99)
+    fps = script.FPS
+    dropped = set(range(100, 106)) | {250, 251} | set(range(300, 320))
+    lines, track, prev = [], [], {}
+    for frame in range(1, 401):
+        if frame in dropped:
+            continue
+        players, wrists = {}, {}
+        for side in ("upper", "lower"):
+            hands = {}
+            for hand in ("left", "right"):
+                pt = _random_hand(rng, prev.get((side, hand)))
+                prev[(side, hand)] = pt
+                hands[hand] = pt
+            players[side] = {"hands": hands}
+            wrists[side] = rallies.wrists_from_hands(hands["left"], hands["right"])
+        lines.append(json.dumps({"time_sec": frame / fps, "players": players}))
+        track.append({"frame": frame, "wrist_lower": wrists["lower"],
+                      "wrist_upper": wrists["upper"]})
+    det = tmp_path / "detections.jsonl"
+    det.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(script, "DET", det)
+
+    assert rallies.track_stride(track) == 1
+    times_ref, act_ref = script.load_activity()
+    times, act = rallies.swing_activity(
+        track, fps, (script.FAR_CAP_PX, script.NEAR_CAP_PX))
+    assert any(v > 0 for v in act_ref)
+    assert times == times_ref
+    assert act == act_ref
+
+
+def test_a_raising_recorder_never_propagates_and_logs_once(capsys):
+    s = _bare_tracker_system()
+
+    def boom(*_a, **_k):
+        raise RuntimeError("bad record")
+    s._rally_track_record = boom
+    for frame in range(1, 6):
+        s._record_rally_frame(frame, [], {}, {}, {}, None)     # must not raise
+    assert s._rally_track == []
+    out = capsys.readouterr().out
+    assert out.count("bad record") == 1
+
+
+@pytest.mark.parametrize("fps", [float("nan"), float("inf"), float("-inf"), 0.0, -30.0, None])
+def test_baseline_caps_reject_a_non_finite_or_non_positive_fps(fps):
+    with pytest.raises(ValueError):
+        rallies.baseline_caps(DJI_QUAD, fps)
+
+
+def test_baseline_caps_reject_a_quad_with_a_non_finite_coordinate():
+    for bad in (float("nan"), float("inf")):
+        quad = [list(p) for p in DJI_QUAD]
+        quad[2][1] = bad
+        with pytest.raises(ValueError):
+            rallies.baseline_caps(quad, DJI_FPS)

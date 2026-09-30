@@ -254,6 +254,7 @@ class BadmintonAnalysisSystem:
         # run (technique analysis on or off, fast or accurate), unlike the two
         # tracks above: it is what makes rally windows computable afterwards.
         self._rally_track = []
+        self._rally_track_error_logged = False
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
 
@@ -697,9 +698,18 @@ class BadmintonAnalysisSystem:
 
     def _record_rally_frame(self, frame_count, centroids, players,
                             point_left_hands, point_right_hands, ball_position):
-        self._rally_track.append(self._rally_track_record(
-            frame_count, centroids, players, point_left_hands, point_right_hands,
-            ball_position))
+        """Append this frame's rally record. Never fatal: the track is a side
+        artefact of the analysis, so a failure is logged once and skips only
+        this frame's record."""
+        try:
+            self._rally_track.append(self._rally_track_record(
+                frame_count, centroids, players, point_left_hands, point_right_hands,
+                ball_position))
+        except Exception as exc:
+            if not getattr(self, "_rally_track_error_logged", False):
+                self._rally_track_error_logged = True
+                print(f"Rally track recording failed (frame {frame_count}); "
+                      f"skipping such frames, analysis continues: {exc!r}")
 
     def _analyze_this_frame(self, frame_count):
         """Gate for the heavy per-frame analysis (pose/ball/draw).

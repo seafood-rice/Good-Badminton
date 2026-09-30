@@ -143,22 +143,53 @@ def baseline_caps(quad, fps):
     ``SPRINT_CAP_MPS`` at the px/m of the FAR and NEAR baseline rows, divided by
     fps. On DJI 0010 (106.3 / 603.8 px/m at 59.94 fps) this gives the 21.3 /
     120.9 px the §0.16 measurement used (§0.15 Defect 2). ``quad`` is
-    TL, TR, BR, BL; a degenerate quad or a non-positive fps raises ValueError.
+    TL, TR, BR, BL; a degenerate or non-finite quad, or a non-finite or
+    non-positive fps, raises ValueError (a NaN cap would silently zero the
+    whole signal).
     """
-    if not fps or float(fps) <= 0:
-        raise ValueError("fps must be positive")
+    try:
+        fps = float(fps)
+    except (TypeError, ValueError):
+        raise ValueError("fps must be a finite positive number") from None
+    if not (math.isfinite(fps) and fps > 0):
+        raise ValueError("fps must be a finite positive number")
+    try:
+        coords = [float(v) for p in quad for v in p]
+    except (TypeError, ValueError):
+        raise ValueError("court quad must be four (x, y) points") from None
+    if not all(math.isfinite(v) for v in coords):
+        raise ValueError("court quad has a non-finite coordinate")
     scale = PerspectiveScale.from_quad(quad)
     far_y = (float(quad[0][1]) + float(quad[1][1])) / 2.0
     near_y = (float(quad[3][1]) + float(quad[2][1])) / 2.0
-    return (SPRINT_CAP_MPS * scale.px_per_m(far_y) / float(fps),
-            SPRINT_CAP_MPS * scale.px_per_m(near_y) / float(fps))
+    return (SPRINT_CAP_MPS * scale.px_per_m(far_y) / fps,
+            SPRINT_CAP_MPS * scale.px_per_m(near_y) / fps)
 
 
-def side_speed(points, cap_px):
+def track_stride(track):
+    """The track's regular frame stride: the median gap between consecutive
+    ``frame`` values, as an integer >= 1 (1 for fewer than two records).
+
+    Fast mode records only every ``FAST_FRAME_STRIDE``-th court frame, so
+    consecutive records are that many frames apart. The median ignores the
+    irregular gaps (non-court stretches) that any track has.
+    """
+    deltas = sorted(b["frame"] - a["frame"] for a, b in zip(track, track[1:]))
+    if not deltas:
+        return 1
+    mid = len(deltas) // 2
+    median = deltas[mid] if len(deltas) % 2 else (deltas[mid - 1] + deltas[mid]) / 2.0
+    return max(1, int(round(median)))
+
+
+def side_speed(points, cap_px, stride=1):
     """Per-frame displacement of one side's point series, in px/frame.
 
-    Zero where either endpoint is missing (a gap is not a jump), and zero where
-    the delta exceeds ``cap_px`` -- that is a track break, not movement.
+    Each consecutive-record displacement is divided by ``stride`` (the frames
+    between regular records) before it is compared with ``cap_px`` and used as
+    speed. Zero where either endpoint is missing (a gap is not a jump), and
+    zero where the per-frame delta exceeds ``cap_px`` -- that is a track
+    break, not movement. At ``stride`` 1 this is the script's arithmetic.
     """
     out = [0.0] * len(points)
     for i in range(1, len(points)):
@@ -166,6 +197,8 @@ def side_speed(points, cap_px):
         if a is None or b is None:
             continue
         v = math.hypot(b[0] - a[0], b[1] - a[1])
+        if stride != 1:
+            v /= stride
         if v <= cap_px:
             out[i] = v
     return out
@@ -176,12 +209,19 @@ def swing_activity(track, fps, caps=None):
 
     ``track`` is the per-frame ``_rally_track``: records with ``frame``,
     ``wrist_lower`` and ``wrist_upper``. Per side, wrist speed with teleports
-    zeroed; ``max`` across sides; then a ``round(SMOOTH_SEC * fps)``-sample
-    trailing mean. This is the variant that scored F1 0.644 against human
-    labels in §0.16, and it is arithmetically identical to
+    zeroed; ``max`` across sides; then a trailing mean over
+    ``round(SMOOTH_SEC * fps / stride)`` samples. This is the variant that
+    scored F1 0.644 against human labels in §0.16, and at stride 1 it is
+    arithmetically identical to
     ``scripts/score_rally_labels.py::load_activity`` (the combining rule was
     under-specified in §0.8 and reproducing it loosely moved coverage by 20
     points, §0.15 Defect 1).
+
+    ``stride`` is the track's regular frame gap (``track_stride``): a strided
+    (fast-mode) track has its displacements scaled to per-frame speed and its
+    window sized in seconds, not samples. Irregular gaps larger than the
+    stride are NOT normalised per pair -- records are treated as adjacent, as
+    the script does.
 
     ``caps`` is ``(far_cap_px, near_cap_px)`` -- see ``baseline_caps``. The far
     cap bounds the UPPER side and the near cap the LOWER side, because each
@@ -190,10 +230,11 @@ def swing_activity(track, fps, caps=None):
     Times are ``frame / fps`` seconds.
     """
     far_cap, near_cap = caps if caps is not None else (TELEPORT_MIN_PX, TELEPORT_MIN_PX)
+    stride = track_stride(track)
     lower = [rec.get("wrist_lower") for rec in track]
     upper = [rec.get("wrist_upper") for rec in track]
-    act = [max(a, b) for a, b in zip(side_speed(lower, near_cap),
-                                     side_speed(upper, far_cap))]
+    act = [max(a, b) for a, b in zip(side_speed(lower, near_cap, stride),
+                                     side_speed(upper, far_cap, stride))]
     fps = float(fps)
     times = [rec["frame"] / fps for rec in track]
-    return times, smooth(act, max(1, int(round(SMOOTH_SEC * fps))))
+    return times, smooth(act, max(1, int(round(SMOOTH_SEC * fps / stride))))
