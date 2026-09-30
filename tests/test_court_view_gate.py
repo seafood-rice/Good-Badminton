@@ -12,6 +12,7 @@ import inspect
 import json
 
 import numpy as np
+import pytest
 
 from badminton_analysis import system
 
@@ -24,9 +25,10 @@ def test_cut_is_median_minus_k_robust_sd():
     # back to the median rather than emitting median - 0 and admitting nothing
     # below it.
     assert out["median"] == 0.80
-    assert out["cut"] <= 0.80
+    assert out["cut"] == 0.80
     assert out["samples"] == 105
     assert out["method"] == "median-4mad"
+    assert out["calibration"] == "median-4mad"
     assert out["k"] == 4.0
 
 
@@ -42,14 +44,35 @@ def test_template_mismatch_passes_everything():
     """A template that does not match this video must lose the gate, not the run."""
     out = system.courtview_cut_from_scores([0.05, 0.07, 0.06, 0.04], k=4.0)
     assert out["cut"] == float("-inf")
-    assert out["method"] == "template_mismatch_pass_all"
+    assert out["method"] == "median-4mad"
+    assert out["calibration"] == "template_mismatch_pass_all"
 
 
 def test_no_samples_falls_back_to_the_shipped_constant():
     out = system.courtview_cut_from_scores([], k=4.0)
     assert out["cut"] == system.COURT_VIEW_FALLBACK_CUT
-    assert out["method"] == "fallback"
+    assert out["method"] == "median-4mad"   # the method that was attempted
+    assert out["calibration"] == "fallback_constant"
     assert out["samples"] == 0
+
+
+def test_non_finite_scores_are_dropped_before_the_cut():
+    nan, inf = float("nan"), float("inf")
+    scores = [0.8, nan, 0.82, inf, 0.78, -inf, 0.81, 0.79]
+    out = system.courtview_cut_from_scores(scores, k=4.0)
+    # Only the 5 finite scores inform the cut; a NaN must not turn the median
+    # into NaN and let the clamp silently produce 0.95.
+    assert out["samples"] == 5
+    assert out["median"] == 0.80
+    assert out["calibration"] == "median-4mad"
+    assert 0.0 < out["cut"] < 0.80
+
+
+def test_all_non_finite_scores_take_the_fallback_path():
+    out = system.courtview_cut_from_scores([float("nan"), float("inf")], k=4.0)
+    assert out["samples"] == 0
+    assert out["cut"] == system.COURT_VIEW_FALLBACK_CUT
+    assert out["calibration"] == "fallback_constant"
 
 
 def test_cut_is_clamped_to_a_usable_range():
@@ -118,6 +141,7 @@ def test_manual_threshold_skips_calibration_and_is_recorded(monkeypatch):
     record = s._court_view_metadata()
     assert record["cut"] == 0.62
     assert record["method"] == "manual"
+    assert record["calibration"] == "manual"
     assert record["samples"] == 0
     assert record["median"] is None and record["mad"] is None
 
@@ -133,7 +157,10 @@ def test_calibration_failure_is_never_fatal_and_falls_back(monkeypatch, capsys):
     s._prepare_court_view_cut(_template(), 30.0)
 
     assert s.court_view_cut == system.COURT_VIEW_FALLBACK_CUT
-    assert s._court_view_metadata()["method"] == "fallback"
+    record = s._court_view_metadata()
+    assert record["method"] == "median-4mad"
+    assert record["calibration"] == "fallback_constant"
+    assert record["cut"] == system.COURT_VIEW_FALLBACK_CUT
     assert "decoder exploded" in capsys.readouterr().out
 
 
@@ -150,7 +177,38 @@ def test_prepare_runs_calibration_with_a_downscaled_template(monkeypatch):
     s._prepare_court_view_cut(_template(), 25.0)
 
     assert seen == {"video_path": "unused.mp4", "shape": (270, 480), "fps": 25.0}
+    record = s._court_view_metadata()
+    assert record["method"] == "median-4mad"
+    assert record["calibration"] == "median-4mad"
+
+
+@pytest.mark.parametrize("bad_pin", [float("nan"), float("inf"), -0.1, 1.5, "abc", True, [0.6]])
+def test_unusable_pin_warns_and_calibrates_instead_of_failing(monkeypatch, capsys, bad_pin):
+    s = _fake_system()
+    s.court_view_threshold_override = bad_pin
+    called = []
+
+    def fake_calibrate(video_path, template_small, fps):
+        called.append(True)
+        s.court_view_calibration = system.courtview_cut_from_scores([0.8] * 10)
+        s.court_view_cut = s.court_view_calibration["cut"]
+
+    monkeypatch.setattr(s, "_calibrate_court_view", fake_calibrate)
+    s._prepare_court_view_cut(_template(), 30.0)
+
+    assert called == [True]
     assert s._court_view_metadata()["method"] == "median-4mad"
+    assert "not a finite number in [0, 1]" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pin", [0.0, 1.0, 0.62, 1])
+def test_boundary_pins_are_usable(monkeypatch, pin):
+    s = _fake_system()
+    s.court_view_threshold_override = pin
+    monkeypatch.setattr(s, "_calibrate_court_view", _boom)
+    s._prepare_court_view_cut(_template(), 30.0)
+    assert s.court_view_cut == float(pin)
+    assert s._court_view_metadata()["calibration"] == "manual"
 
 
 class _FakeCapture:
@@ -246,7 +304,8 @@ def test_calibration_with_an_unreadable_video_falls_back(monkeypatch):
     s._calibrate_court_view("video.mp4", system.downscale_for_gate(_template()), 30.0)
 
     assert s.court_view_cut == system.COURT_VIEW_FALLBACK_CUT
-    assert s.court_view_calibration["method"] == "fallback"
+    assert s.court_view_calibration["method"] == "median-4mad"
+    assert s.court_view_calibration["calibration"] == "fallback_constant"
     assert _FakeCapture.instances[0].released
 
 
@@ -278,7 +337,8 @@ def test_non_finite_cut_is_recorded_as_null(monkeypatch, tmp_path):
     assert "Infinity" not in text and "NaN" not in text
     court_view = json.loads(text)["court"]["court_view"]
     assert court_view["cut"] is None
-    assert court_view["method"] == "template_mismatch_pass_all"
+    assert court_view["method"] == "median-4mad"
+    assert court_view["calibration"] == "template_mismatch_pass_all"
     assert court_view["samples"] == 3
     assert court_view["k"] == 4.0
     assert court_view["mad"] is None

@@ -119,28 +119,39 @@ def courtview_cut_from_scores(scores, k=COURT_VIEW_MAD_K):
     Returns the audit record written to metadata.json's ``court_view`` key.
     Pure and video-free so the branch logic is testable without decoding.
 
-    Three non-normal outcomes, each named rather than silent:
-      * no samples          -> the shipped 0.75 constant (method "fallback")
-      * median below floor  -> template is not of this video; pass everything
-      * MAD collapses to 0  -> use the median itself, not median - 0
+    ``method`` is always the estimator that was attempted ("median-4mad");
+    ``calibration`` names what actually happened:
+      * "median-4mad"                 -> normal: cut = median - k*1.4826*MAD
+        (MAD collapsing to 0 uses the median itself, not median - 0)
+      * "fallback_constant"           -> no finite samples; the shipped 0.75
+      * "template_mismatch_pass_all"  -> median below the floor: the template
+        is not of this video, so the cut is -inf and everything passes
+
+    Non-finite scores (NaN from a constant frame, inf) are dropped first, so
+    ``samples`` counts only the scores that informed the cut.
     """
-    vals = sorted(float(s) for s in scores)
+    import math
+
+    method = f"median-{float(k):g}mad"
+    vals = sorted(f for f in (float(s) for s in scores) if math.isfinite(f))
     n = len(vals)
     if n == 0:
         return {"cut": COURT_VIEW_FALLBACK_CUT, "median": None, "mad": None,
-                "samples": 0, "method": "fallback", "k": float(k)}
+                "samples": 0, "method": method,
+                "calibration": "fallback_constant", "k": float(k)}
 
     median = vals[n // 2] if n % 2 else 0.5 * (vals[n // 2 - 1] + vals[n // 2])
     if median < COURT_VIEW_MIN_MEDIAN:
         return {"cut": float("-inf"), "median": median, "mad": None,
-                "samples": n, "method": "template_mismatch_pass_all", "k": float(k)}
+                "samples": n, "method": method,
+                "calibration": "template_mismatch_pass_all", "k": float(k)}
 
     devs = sorted(abs(v - median) for v in vals)
     mad = devs[n // 2] if n % 2 else 0.5 * (devs[n // 2 - 1] + devs[n // 2])
     cut = median - float(k) * 1.4826 * mad if mad > 0 else median
     cut = max(0.0, min(0.95, cut))
     return {"cut": cut, "median": median, "mad": mad, "samples": n,
-            "method": f"median-{float(k):g}mad", "k": float(k)}
+            "method": method, "calibration": method, "k": float(k)}
 
 
 def load_runtime_dependencies():
@@ -442,20 +453,38 @@ class BadmintonAnalysisSystem:
         result = cv2.matchTemplate(small, template_small, cv2.TM_CCOEFF_NORMED)
         return float(np.max(result))
 
+    @staticmethod
+    def _usable_court_view_pin(value):
+        """A pin is usable only as a finite number in [0.0, 1.0]."""
+        import math
+
+        if isinstance(value, bool):
+            return None
+        try:
+            pin = float(value)
+        except (TypeError, ValueError):
+            return None
+        return pin if math.isfinite(pin) and 0.0 <= pin <= 1.0 else None
+
     def _prepare_court_view_cut(self, template_gray, fps):
         """Decide this run's court-view cut; never fatal.
 
-        A pinned ``court_view_threshold`` wins and skips calibration. Otherwise
-        the strided pre-scan runs; any failure logs and falls back to the
-        shipped constant so the run continues.
+        A usable pinned ``court_view_threshold`` wins and skips calibration. An
+        unusable pin (NaN, non-numeric, outside [0, 1]) is warned about and
+        ignored in favour of normal calibration. Calibration failure logs and
+        falls back to the shipped constant so the run continues.
         """
         if self.court_view_threshold_override is not None:
-            self.court_view_cut = float(self.court_view_threshold_override)
-            self.court_view_calibration = {
-                "cut": self.court_view_cut, "median": None, "mad": None,
-                "samples": 0, "method": "manual", "k": None}
-            print(f"Court-view gate: cut={self.court_view_cut} (manual)")
-            return
+            pin = self._usable_court_view_pin(self.court_view_threshold_override)
+            if pin is not None:
+                self.court_view_cut = pin
+                self.court_view_calibration = {
+                    "cut": pin, "median": None, "mad": None, "samples": 0,
+                    "method": "manual", "calibration": "manual", "k": None}
+                print(f"Court-view gate: cut={pin} (manual)")
+                return
+            print(f"Court-view threshold {self.court_view_threshold_override!r} "
+                  f"is not a finite number in [0, 1]; calibrating instead")
         try:
             self._calibrate_court_view(
                 self.video_path, downscale_for_gate(template_gray), fps)
@@ -502,7 +531,7 @@ class BadmintonAnalysisSystem:
         self.court_view_calibration = courtview_cut_from_scores(scores)
         self.court_view_cut = self.court_view_calibration["cut"]
         print(f"Court-view gate: cut={self.court_view_cut} "
-              f"({self.court_view_calibration['method']}, "
+              f"({self.court_view_calibration['calibration']}, "
               f"{self.court_view_calibration['samples']} samples)")
 
     def _court_view_metadata(self):
@@ -526,6 +555,7 @@ class BadmintonAnalysisSystem:
         return {
             "cut": finite_or_none(cal.get("cut")),
             "method": cal.get("method"),
+            "calibration": cal.get("calibration"),
             "k": finite_or_none(cal.get("k")),
             "samples": int(cal.get("samples", 0)),
             "median": finite_or_none(cal.get("median")),
