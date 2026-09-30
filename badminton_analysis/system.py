@@ -250,6 +250,10 @@ class BadmintonAnalysisSystem:
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
         self._analysis_track_both = []  # both-player contact track (contacts/BST only)
+        # Per-court-frame track for post-loop rally segmentation. Recorded on EVERY
+        # run (technique analysis on or off, fast or accurate), unlike the two
+        # tracks above: it is what makes rally windows computable afterwards.
+        self._rally_track = []
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
 
@@ -661,6 +665,42 @@ class BadmintonAnalysisSystem:
             self._far_roi = None
             return [], {}, {}
 
+    def _rally_track_record(self, frame_count, centroids, players,
+                            point_left_hands, point_right_hands, ball_position):
+        """One ``_rally_track`` record, rebuilt exactly as the tracker attaches
+        hands to ``detections.jsonl`` (what the §0.16 measurement read).
+
+        ``players`` is the tracker's ``{side: centroid}``, which keeps a STALE
+        last-known centroid for a side that was not selected this frame. A side
+        counts as selected only if its centroid is among this frame's
+        ``centroids``; only then are its hands (looked up by centroid y) and
+        position recorded, otherwise wrist and pos are None.
+        """
+        from .stroke import rallies
+
+        record = {"frame": frame_count, "shuttle": None}
+        if ball_position is not None and len(ball_position) >= 2:
+            bx, by = float(ball_position[0]), float(ball_position[1])
+            if not (bx == 0.0 and by == 0.0):     # [0, 0] is "no detection"
+                record["shuttle"] = (bx, by)
+        for side in ("lower", "upper"):
+            centroid = players.get(side)
+            if centroid is not None and centroid in centroids:
+                hands = (point_left_hands.get(centroid[1]),
+                         point_right_hands.get(centroid[1]))
+                record["wrist_" + side] = rallies.wrists_from_hands(*hands)
+                record["pos_" + side] = centroid
+            else:
+                record["wrist_" + side] = None
+                record["pos_" + side] = None
+        return record
+
+    def _record_rally_frame(self, frame_count, centroids, players,
+                            point_left_hands, point_right_hands, ball_position):
+        self._rally_track.append(self._rally_track_record(
+            frame_count, centroids, players, point_left_hands, point_right_hands,
+            ball_position))
+
     def _analyze_this_frame(self, frame_count):
         """Gate for the heavy per-frame analysis (pose/ball/draw).
 
@@ -755,6 +795,9 @@ class BadmintonAnalysisSystem:
 
         players = self.player_tracker.update(frame_count, centroids, ball_position,
                                              point_left_hands, point_right_hands, detect_frame_count)
+
+        self._record_rally_frame(frame_count, centroids, players,
+                                 point_left_hands, point_right_hands, ball_position)
 
         if self.analyze_technique:
             self._capture_analysis_frame(frame_count, frame, roi_corners, ball_position)
