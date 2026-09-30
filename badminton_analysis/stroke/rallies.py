@@ -238,3 +238,193 @@ def swing_activity(track, fps, caps=None):
     fps = float(fps)
     times = [rec["frame"] / fps for rec in track]
     return times, smooth(act, max(1, int(round(SMOOTH_SEC * fps / stride))))
+
+
+# --- The shuttle signal, artifact suppression, and signal selection (§0.7, §5 C2) ---
+
+SHUTTLE_DENSITY_MIN = 0.50
+STATIC_FRAC_MAX = 0.25
+STATIC_SPREAD_PX = 25.0
+STATIC_GRID_PX = 50.0
+STATIC_DROP_RADIUS_PX = 1.5 * STATIC_SPREAD_PX
+"""A static cluster is judged on the 90th percentile of its spread, so up to
+10% of its points may lie beyond STATIC_SPREAD_PX of its median. Points are
+removed out to this larger radius, so that tail goes with the fixture."""
+
+COURT_VOLUME_RAISE_FRAC = 0.9
+"""How far above the far baseline the play volume extends, as a fraction of the
+court's own image depth (spec §0.7: 0.9 x court depth).
+
+Not optional: a clear or a lob spends most of its flight ABOVE the far
+baseline's image row, so gating to the flat court polygon would discard exactly
+the shots that matter (1 of 4,194 detections survive the flat polygon on DJI
+0010; 17 survive the raised volume). This gate exists to reject the scoreboard,
+the next court over, and the ceiling lights, not to be tight.
+"""
+
+
+def _median(values):
+    srt = sorted(values)
+    mid = len(srt) // 2
+    return srt[mid] if len(srt) % 2 else (srt[mid - 1] + srt[mid]) / 2.0
+
+
+def _p90(values):
+    srt = sorted(values)
+    return srt[min(len(srt) - 1, int(math.ceil(0.9 * len(srt))) - 1)]
+
+
+def suppress_static(track):
+    """Drop shuttle detections that are a fixture rather than a shuttle.
+
+    A cluster holding more than STATIC_FRAC_MAX of all detections whose robust
+    spread is under STATIC_SPREAD_PX is a light fitting, a line marking, or a
+    pole-mounted decoy -- not a shuttle, which never sits inside a 25 px disc
+    for minutes. On the owner's footage this is 86% of the ball model's output
+    (§0.7), so without this the density gate would be fooled into choosing a
+    dead signal.
+
+    Points are bucketed into STATIC_GRID_PX cells and each cell is MERGED with
+    its 8 neighbours before testing, because the real fixture is a jittered
+    ~25 px cluster that straddles cell edges. The spread is the 90th-percentile
+    distance of the merged points to their median point, so a few stray points
+    do not defeat the test the way a max-min spread would. Cells are examined
+    fullest first and a suppressed cluster's points leave the pool, so one
+    fixture is reported once. Points within STATIC_DROP_RADIUS_PX of the
+    cluster's median are removed.
+
+    Returns ``(cleaned_track, summary)`` and never mutates the input.
+    ``summary`` is JSON-friendly, for provenance as ``suppressed_static_shuttle``:
+    ``{"count": points removed, "cells": [{"point": [x, y], "count": n}, ...]}``
+    with the median point of each suppressed cluster rounded to 1 decimal.
+    """
+    points = {}
+    for i, rec in enumerate(track):
+        p = _valid_point(rec.get("shuttle"))
+        if p is not None:
+            points[i] = p
+    total = len(points)
+
+    cells = {}
+    for i, (x, y) in points.items():
+        key = (int(x // STATIC_GRID_PX), int(y // STATIC_GRID_PX))
+        cells.setdefault(key, []).append(i)
+
+    drop, summary_cells = set(), []
+    for key in sorted(cells, key=lambda k: -len(cells[k])):
+        # merged 3x3 block of the cells not yet suppressed
+        block = [i for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                 for i in cells.get((key[0] + dx, key[1] + dy), ())
+                 if i not in drop]
+        if len(block) <= STATIC_FRAC_MAX * total:
+            continue
+        mx = _median([points[i][0] for i in block])
+        my = _median([points[i][1] for i in block])
+        dist = {i: math.hypot(points[i][0] - mx, points[i][1] - my) for i in block}
+        if _p90(list(dist.values())) >= STATIC_SPREAD_PX:
+            continue
+        removed = [i for i in block if dist[i] <= STATIC_DROP_RADIUS_PX]
+        drop.update(removed)
+        summary_cells.append({"point": [round(mx, 1), round(my, 1)],
+                              "count": len(removed)})
+
+    cleaned = []
+    for i, rec in enumerate(track):
+        out = dict(rec)
+        if i in drop:
+            out["shuttle"] = None
+        cleaned.append(out)
+    return cleaned, {"count": len(drop), "cells": summary_cells}
+
+
+def _point_in_polygon(x, y, poly):
+    """Ray-casting point-in-polygon. Vertices in order, closed implicitly."""
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            t = (y - y1) / (y2 - y1)
+            if x < x1 + t * (x2 - x1):
+                inside = not inside
+    return inside
+
+
+def gate_to_court_volume(track, quad, raise_frac=COURT_VOLUME_RAISE_FRAC):
+    """Drop shuttle detections outside the court's play volume.
+
+    ``quad`` is the annotated 4-corner court in TL, TR, BR, BL order -- the
+    ordering badminton_analysis.court.mapper already uses. The far edge is
+    raised by ``raise_frac`` of the quad's image depth so airborne shuttles
+    count.
+
+    This is what stops a dead detector from looking alive: on the owner's
+    multi-court footage it cuts 4,194 detections to 17, which is the *correct*
+    answer -- that footage's shuttle detection does not work -- and is exactly
+    why the density check must run after this gate rather than on raw output.
+    A malformed shuttle point carries no evidence and is dropped too.
+
+    ``quad=None`` gates nothing, so a run without court corners degrades to
+    "no gating" instead of silently discarding every detection.
+
+    Returns (gated_track, dropped_count) and never mutates the input.
+    """
+    if not quad or len(quad) != 4:
+        return [dict(rec) for rec in track], 0
+
+    pts = [(float(p[0]), float(p[1])) for p in quad]
+    (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = pts
+    top_y = min(tly, try_)
+    bottom_y = max(bly, bry)
+    lift = max(0.0, (bottom_y - top_y) * float(raise_frac))
+    volume = [(tlx, tly - lift), (trx, try_ - lift), (brx, bry), (blx, bly)]
+
+    gated, dropped = [], 0
+    for rec in track:
+        out = dict(rec)
+        raw = rec.get("shuttle")
+        if raw is not None:
+            p = _valid_point(raw)
+            if p is None or not _point_in_polygon(p[0], p[1], volume):
+                out["shuttle"] = None
+                dropped += 1
+        gated.append(out)
+    return gated, dropped
+
+
+def shuttle_density(track):
+    """Fraction of frames with a usable shuttle. Call AFTER suppress_static."""
+    if not track:
+        return 0.0
+    return (sum(1 for rec in track if _valid_point(rec.get("shuttle")) is not None)
+            / float(len(track)))
+
+
+def _has_swing_input(track):
+    return any(rec.get("wrist_lower") is not None or rec.get("wrist_upper") is not None
+               for rec in track)
+
+
+def choose_signal(track, *, signal="auto"):
+    """Pick the segmentation signal and say why. ``track`` must be suppressed already.
+
+    Selection is gated on density rather than trusting whatever the detector
+    handed over, because on the owner's footage the shuttle signal is
+    measurably dead (§0.7) and using it anyway would produce confident
+    nonsense. Returns ``(name, reason)`` with ``name`` in
+    ``{"shuttle", "swing", "none"}``; a non-"auto" ``signal`` is honoured as
+    pinned.
+    """
+    if signal != "auto":
+        return signal, f"signal pinned to {signal!r} by the caller"
+
+    density = shuttle_density(track)
+    if density >= SHUTTLE_DENSITY_MIN:
+        return "shuttle", (f"shuttle density {density:.3f} at or above "
+                           f"{SHUTTLE_DENSITY_MIN:.2f} after artifact suppression")
+    if _has_swing_input(track):
+        return "swing", (f"shuttle density {density:.3f} below "
+                         f"{SHUTTLE_DENSITY_MIN:.2f} after artifact suppression")
+    return "none", (f"shuttle density {density:.3f} below "
+                    f"{SHUTTLE_DENSITY_MIN:.2f} and no wrist track to fall back on")

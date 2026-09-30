@@ -432,3 +432,212 @@ def test_baseline_caps_reject_a_quad_with_a_non_finite_coordinate():
         quad[2][1] = bad
         with pytest.raises(ValueError):
             rallies.baseline_caps(quad, DJI_FPS)
+
+
+# --- Task 7: shuttle signal, artifact suppression, signal selection -----------------
+
+def _track(shuttles):
+    return [{"frame": i, "shuttle": s, "wrist_lower": None, "wrist_upper": None}
+            for i, s in enumerate(shuttles)]
+
+
+def _kept(track):
+    return sum(1 for r in track if r["shuttle"] is not None)
+
+
+def _jittered_cluster(rng, cx, cy, n, radius=25.0):
+    """n points uniformly inside a ``radius`` px disc around (cx, cy)."""
+    pts = []
+    while len(pts) < n:
+        dx, dy = rng.uniform(-radius, radius), rng.uniform(-radius, radius)
+        if math.hypot(dx, dy) <= radius:
+            pts.append((cx + dx, cy + dy))
+    return pts
+
+
+def test_static_fixture_is_suppressed_and_reported():
+    """86% of the ball model's output on the owner's footage is one fixture (§0.7)."""
+    fixture = [(473.0, 846.0)] * 90
+    real = [(100.0 + 8 * i, 200.0 + 5 * i) for i in range(10)]
+    cleaned, suppressed = rallies.suppress_static(_track(fixture + real))
+    assert suppressed["count"] == 90
+    assert len(suppressed["cells"]) == 1
+    assert suppressed["cells"][0]["count"] == 90
+    assert suppressed["cells"][0]["point"] == pytest.approx([473.0, 846.0])
+    assert _kept(cleaned) == 10
+
+
+def test_a_moving_shuttle_is_never_suppressed():
+    moving = [(10.0 * i, 5.0 * i) for i in range(100)]
+    cleaned, suppressed = rallies.suppress_static(_track(moving))
+    assert suppressed == {"count": 0, "cells": []}
+    assert _kept(cleaned) == 100
+
+
+def test_jittered_fixture_straddling_a_cell_edge_is_suppressed():
+    """The real fixture is a ~25 px jittered cluster centred 4 px from a grid edge
+    (473 -> edge at 450/500, 846 -> edge at 850), so it spans several cells and a
+    single stray point must not defeat the test (R11)."""
+    rng = random.Random(7)
+    fixture = _jittered_cluster(rng, 473.0, 846.0, 400)
+    outliers = [(1500.0, 300.0), (2900.0, 1700.0), (60.0, 1900.0),
+                (2000.0, 1000.0), (3300.0, 400.0)]
+    pts = fixture + outliers
+    rng.shuffle(pts)
+    # sanity: the cluster really does straddle cell edges
+    cells = {(int(x // rallies.STATIC_GRID_PX), int(y // rallies.STATIC_GRID_PX))
+             for x, y in fixture}
+    assert len(cells) >= 2
+    cleaned, suppressed = rallies.suppress_static(_track(pts))
+    assert suppressed["count"] == 400
+    assert len(suppressed["cells"]) == 1
+    assert suppressed["cells"][0]["count"] == 400
+    x, y = suppressed["cells"][0]["point"]
+    assert math.hypot(x - 473.0, y - 846.0) < 3.0
+    assert _kept(cleaned) == 5
+    assert {r["shuttle"] for r in cleaned if r["shuttle"] is not None} == set(outliers)
+
+
+def test_a_slow_shuttle_through_the_fixture_area_is_not_suppressed():
+    """Enough points to pass the count test in one merged block, but they travel
+    ~200 px, so the robust spread rejects them."""
+    slow = [(373.0 + 1.0 * i, 846.0 + 0.2 * i) for i in range(200)]
+    cleaned, suppressed = rallies.suppress_static(_track(slow))
+    assert suppressed == {"count": 0, "cells": []}
+    assert _kept(cleaned) == 200
+
+
+def test_a_shuttle_passing_the_fixture_keeps_its_far_points():
+    """Fixture suppressed; the flight that crosses it keeps every point outside
+    the fixture's own radius."""
+    rng = random.Random(3)
+    fixture = _jittered_cluster(rng, 473.0, 846.0, 600)
+    flight = [(200.0 + 10.0 * i, 700.0 + 3.0 * i) for i in range(60)]
+    cleaned, suppressed = rallies.suppress_static(_track(fixture + flight))
+    assert len(suppressed["cells"]) == 1
+    far = [p for p in flight if math.hypot(p[0] - 473.0, p[1] - 846.0) > 40.0]
+    kept = {r["shuttle"] for r in cleaned if r["shuttle"] is not None}
+    assert set(far) <= kept
+
+
+def test_suppression_never_mutates_the_input_and_keeps_other_fields():
+    track = _track([(473.0, 846.0)] * 50 + [(10.0 * i, 3.0 * i) for i in range(10)])
+    for rec in track:
+        rec["pos_lower"] = (1.0, 2.0)
+    before = [dict(r) for r in track]
+    cleaned, _ = rallies.suppress_static(track)
+    assert track == before
+    assert all(r["pos_lower"] == (1.0, 2.0) for r in cleaned)
+    assert [r["frame"] for r in cleaned] == [r["frame"] for r in track]
+
+
+def test_suppression_of_an_empty_or_shuttle_free_track():
+    assert rallies.suppress_static([]) == ([], {"count": 0, "cells": []})
+    cleaned, suppressed = rallies.suppress_static(_track([None] * 5))
+    assert suppressed == {"count": 0, "cells": []}
+    assert _kept(cleaned) == 0
+
+
+def test_suppression_summary_is_json_friendly_and_rounded():
+    rng = random.Random(11)
+    fixture = _jittered_cluster(rng, 473.0, 846.0, 200)
+    _, suppressed = rallies.suppress_static(_track(fixture))
+    assert json.loads(json.dumps(suppressed)) == suppressed
+    for v in suppressed["cells"][0]["point"]:
+        assert isinstance(v, float) and v == round(v, 1)
+
+
+def test_dense_track_selects_the_shuttle_signal():
+    dense = [(10.0 * i % 900, 7.0 * i % 700) for i in range(100)]
+    name, reason = rallies.choose_signal(_track(dense))
+    assert name == "shuttle"
+    assert "density" in reason
+
+
+def test_sparse_track_falls_back_to_swing():
+    sparse = [None] * 95 + [(10.0 * i, 7.0 * i) for i in range(5)]
+    track = _track(sparse)
+    for i, rec in enumerate(track):          # give the swing signal something to see
+        rec["wrist_lower"] = (float(i), 500.0)
+    name, reason = rallies.choose_signal(track)
+    assert name == "swing"
+    assert "0.50" in reason
+
+
+def test_neither_signal_available_selects_none():
+    name, reason = rallies.choose_signal(_track([None] * 100))
+    assert name == "none"
+    assert reason
+
+
+def test_a_pinned_signal_is_honoured():
+    name, reason = rallies.choose_signal(_track([None] * 10), signal="swing")
+    assert name == "swing"
+    assert "pinned" in reason
+
+
+def test_density_is_computed_after_suppression():
+    """A track that is 90% one fixture is sparse, not dense."""
+    fixture = [(473.0, 846.0)] * 90
+    real = [(100.0 + 8 * i, 200.0 + 5 * i) for i in range(10)]
+    cleaned, _ = rallies.suppress_static(_track(fixture + real))
+    assert rallies.shuttle_density(cleaned) == pytest.approx(0.10)
+
+
+def test_density_of_an_empty_track_is_zero():
+    assert rallies.shuttle_density([]) == 0.0
+
+
+# --- court-volume gating (design spec §5: "gate the shuttle before segmentation") ---
+
+_QUAD = [(100.0, 200.0), (900.0, 200.0), (1000.0, 800.0), (0.0, 800.0)]  # TL, TR, BR, BL
+
+
+def test_points_outside_the_court_are_dropped():
+    inside = (500.0, 500.0)
+    outside = (500.0, 1500.0)          # well below the near baseline
+    gated, dropped = rallies.gate_to_court_volume(
+        _track([inside, outside, inside]), _QUAD)
+    assert dropped == 1
+    assert [r["shuttle"] for r in gated] == [inside, None, inside]
+
+
+def test_airborne_shuttles_above_the_far_baseline_are_kept():
+    """The top edge is raised, or every clear and lob would be gated away."""
+    airborne = (500.0, 40.0)           # above the quad's far baseline (y=200)
+    gated, dropped = rallies.gate_to_court_volume(_track([airborne]), _QUAD)
+    assert dropped == 0
+    assert gated[0]["shuttle"] == airborne
+
+
+def test_court_volume_lift_is_0_9_of_court_depth():
+    """§0.7 / §5: the volume's top edge sits 0.9 x court depth above the far baseline."""
+    assert rallies.COURT_VOLUME_RAISE_FRAC == 0.9
+    depth = 800.0 - 200.0
+    top = 200.0 - 0.9 * depth                      # -340
+    just_in, just_out = (500.0, top + 2.0), (500.0, top - 2.0)
+    gated, dropped = rallies.gate_to_court_volume(_track([just_in, just_out]), _QUAD)
+    assert dropped == 1
+    assert [r["shuttle"] for r in gated] == [just_in, None]
+
+
+def test_an_explicit_raise_frac_overrides_the_default():
+    airborne = (500.0, 40.0)
+    gated, dropped = rallies.gate_to_court_volume(_track([airborne]), _QUAD, raise_frac=0.0)
+    assert dropped == 1 and gated[0]["shuttle"] is None
+
+
+def test_gating_keeps_other_fields_and_does_not_mutate():
+    track = _track([(500.0, 1500.0)])
+    track[0]["pos_upper"] = (3.0, 4.0)
+    gated, _ = rallies.gate_to_court_volume(track, _QUAD)
+    assert track[0]["shuttle"] == (500.0, 1500.0)
+    assert gated[0]["pos_upper"] == (3.0, 4.0)
+
+
+def test_no_quad_means_no_gating():
+    """A run without court corners must not silently discard every detection."""
+    pts = [(9999.0, 9999.0)] * 5
+    gated, dropped = rallies.gate_to_court_volume(_track(pts), None)
+    assert dropped == 0
+    assert all(r["shuttle"] is not None for r in gated)
