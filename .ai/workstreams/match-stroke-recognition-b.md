@@ -17,8 +17,8 @@
   defect fixes and the B11 plan landed from `claude/b11-rally-detection` as #7.)
 - **Worktree:** primary checkout (no separate worktree)
 - **Base commit:** `b4ee267bfac35fb75dd8ee81812a3a506b546d31` (`origin/main` after #10)
-- **Head commit:** `b4ee267bfac35fb75dd8ee81812a3a506b546d31`
-- **Last milestone:** 2026-09-29 - B11 execution started: branch recreated from `main`, scope
+- **Head commit:** `1628b562042719953f7ca8d4640e326823f8ba9f`
+- **Last milestone:** 2026-10-02T14:07:17Z - B11 complete: all 12 plan tasks + the court-view gate fix implemented, task-reviewed, final whole-branch review with one fix wave and re-review clean; E2E production run on DJI 0010 verified.
   claimed, plan to be executed task by task from Task 1. Previous milestone, 2026-07-29 -
   **B1 (both-player capture + hitter selection) complete.**
   All 7 tasks implemented via subagent-driven-development (fresh implementer + task review
@@ -204,7 +204,7 @@ non-regression with no weights present; full committed suite green.
     median 0.6633, MAD 0.0244, 1,491 samples), pass 62,690 / 64,085 = **97.8%**.
   - Tested commit: `0de0ad1` (the harness ran on the tree with those code changes
     uncommitted; the committed tree is identical).
-- **B11 end-to-end run (commit `548c536`):** a real pipeline run on DJI 0010
+- **B11 end-to-end run (code at commit `548c536`, i.e. before the gate fix):** a real pipeline run on DJI 0010
   (`outputs/b11-e2e-dji0010`): signal `swing`, 19 segments, full provenance block, gate
   coverage 0.875, empty error log. Replaying that run's own `detections.jsonl` through
   `check_rally_gate.py --replay` reproduces all 19 segments. Scored against the human labels:
@@ -227,6 +227,9 @@ non-regression with no weights present; full committed suite green.
 
 ## Blockers
 
+- **Continuity-scope note (B11):** `tests/test_app_rally_summary.py` was created in B11 Task 10
+  but was not in this workstream's recorded claim scope (claims `3388e5e9` and its takeover
+  `fc55462f`); the helper's scope cannot widen mid-claim. Recorded here so the gap is visible.
 - Further real-footage validation of B1 is coupled to B11 (rally/court-view detection fixes on
   both footage types) — chasing a better clip segment without fixing detection first risks
   repeated runs with the same null result. Recommend addressing B11 (or at least a
@@ -292,13 +295,11 @@ re-analysis. Its *data* still has no upper player — that needs a re-run.
 
 ## Next action
 
-Execute the B11 plan (`docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`) task by
-task from Task 1 (headless-safe `annotate_court`, still unfixed on `main`), with a task review
-after each and a final whole-branch review. Tasks 6 and 12 run against the owner's footage and
-`outputs/b11-labelling/LABELS.md`, both on disk. Task 11's real-footage validation stays
-blocked on a genuine broadcast sample. B2-B10 remain separate, unplanned pieces of Sub-project B.
-
-(History: the "write B11's plan" next action of 2026-08-23 is done — the plan merged with #7.)
+Owner reviews and squash-merges PR #11 (https://github.com/seafood-rice/Good-Badminton/pull/11; fix the squash message trailers). Then owner-run: full Axelsen re-run with the new gate (expect long run time / memory) to validate the shuttle path; then plan B2-B10.
 
 <!-- ai-continuity:milestones:start -->
+- 2026-10-02T14:07:17Z - state: active - B11 complete: all 12 plan tasks + the court-view gate fix implemented, task-reviewed, final whole-branch review with one fix wave and re-review clean; E2E production run on DJI 0010 verified.
+  - Changed paths: `.ai/workstreams/match-stroke-recognition-b.md`
+  - Verification: passed - command `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique> (1246 passed, 3 skipped)` - commit `1628b562042719953f7ca8d4640e326823f8ba9f` - dirty paths: `.ai/workstreams/match-stroke-recognition-b.md`
+  - Next action: Owner reviews and squash-merges PR #11 (https://github.com/seafood-rice/Good-Badminton/pull/11; fix the squash message trailers). Then owner-run: full Axelsen re-run with the new gate (expect long run time / memory) to validate the shuttle path; then plan B2-B10.
 <!-- ai-continuity:milestones:end -->
