@@ -175,6 +175,21 @@ non-regression with no weights present; full committed suite green.
     file); the commit that lands them is `test(b11): staged gate and segmenter-replay
     validation harness`.
 
+- **B11 gate fix (2026-10-02):** Task 12 found the calibrated gate passing 87.6% of DJI 0010
+  (old 0.75: 98%). Fixed in `0de0ad1` (`system.py`, `tests/test_court_view_gate.py`):
+  shift-tolerant unpinned score (`COURT_VIEW_SHIFT_PX = 4`, max NCC over the slid cropped
+  template, shared by calibration and live gate) plus a 0.75 cap on calibrated cuts
+  (`court.court_view.capped` / `calibrated_cut`). Spec correction: §0.6a.
+  - Tests: RED 9 failed / 46 passed (new tests vs old code), GREEN 55 passed in
+    `tests/test_court_view_gate.py`; suite `--ignore=tests/test_ai_handoff.py` 936 passed.
+  - Per-frame score cost (synthetic gray, 300 iterations, mean): 4K 1.89 ms new vs 1.93 ms
+    old; 1080p 1.18 ms new vs 1.27 ms old.
+  - `check_rally_gate.py --gate`, DJI 0010: cut 0.75 (capped from 0.8813, median 0.9432, MAD
+    0.0104, 575 samples), pass 17,167 / 17,234 = **99.6%**. Axelsen: cut 0.5189 (not capped,
+    median 0.6633, MAD 0.0244, 1,491 samples), pass 62,690 / 64,085 = **97.8%**.
+  - Tested commit: `0de0ad1` (the harness ran on the tree with those code changes
+    uncommitted; the committed tree is identical).
+
 ## Blockers
 
 - Further real-footage validation of B1 is coupled to B11 (rally/court-view detection fixes on

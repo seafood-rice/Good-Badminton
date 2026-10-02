@@ -173,6 +173,45 @@ unblocks *analysis capture* — which is what B1's validation was actually block
 does **not** produce rallies. Those are two different problems and the completion bar's
 B11 text conflates them.
 
+### 0.6a CORRECTION (2026-10-02): §0.6's 99.7% was not a 480 px figure; production uses INTER_AREA, +/-4 px shift tolerance and a 0.75 cap
+
+Task 12's validation of the shipped calibrated gate on the fixed-camera DJI 0010 video
+passed only **87.6%** of frames (cut 0.8786), against the 99.7% (cut 0.7402) in the §0.6
+table. Cause, measured on production's own functions:
+
+- §0.6's DJI figure (0.7402 -> 99.7%) was a full-resolution signal-A number, not a 480 px
+  one. §0.9's signal D used `INTER_LINEAR`; production (`downscale_for_gate`) uses
+  `INTER_AREA`. `INTER_AREA` makes aligned frames score in a very tight cluster (DJI median
+  0.943, MAD 0.011), so a frame only slightly off the template fell more than 4 robust SD
+  below the median.
+- DJI's camera drifts at the start: the image is ~20 px (at 4K) left of the template frame
+  at t=0 and settles by ~60 s. 89% of the rejected frames are in the first 32 s; the rest
+  are two real occlusions (a spectator at 95.9-98.3 s, a person at 270.8-272.6 s).
+
+Fix (`badminton_analysis/system.py`, commit `0de0ad1`), unpinned gate only:
+
+1. **Shift-tolerant score.** `_court_view_score` (shared by calibration and the live gate)
+   crops the once-downscaled template by `COURT_VIEW_SHIFT_PX = 4` px on every side (at the
+   480 px gate width, ~+/-32 px at 4K) and returns the max of the `TM_CCOEFF_NORMED` result
+   map. `INTER_AREA`, the 480 px width and k=4 are unchanged. Per-frame cost is unchanged
+   (4K 1.89 ms vs 1.93 ms old; 1080p 1.18 ms vs 1.27 ms old; the downscale dominates).
+2. **Cap.** A calibrated (`median-4mad`) cut is capped at `COURT_VIEW_FALLBACK_CUT` (0.75),
+   so the calibrated gate is never stricter than the constant it replaced.
+   `court.court_view` records `cut` (the value used), `capped` and `calibrated_cut`
+   (the uncapped value). Template-mismatch, fallback-constant and manual-pin paths are never
+   capped. A pinned `court_view_threshold` keeps today's full-resolution gate unchanged.
+
+Measured pass fractions (`scripts/check_rally_gate.py --gate`, every frame):
+
+| Video | Pass fraction | Cut used | Calibrated cut | Capped |
+|---|---|---|---|---|
+| DJI 0010 (17,234 frames) | **99.6%** (17,167) | 0.75 | 0.8813 | yes |
+| Axelsen broadcast (64,085 frames) | **97.8%** (62,690) | 0.5189 | 0.5189 | no |
+
+Shift tolerance alone gave 98.0% (DJI) and 97.7% (Axelsen) in the diagnosis, with every
+sampled broadcast non-play frame (§0.4 non-play spans) still rejected; the cap adds the rest
+on DJI. Axelsen is unaffected by the cap (its cut is below 0.75).
+
 ### 0.7 New blocker (not in the completion bar) — on the owner's own footage the shuttle signal is 86% a single static false positive
 
 Analysing all 16,889 records of `outputs/Dji 20260718111111 0010 D/detections.jsonl`:
