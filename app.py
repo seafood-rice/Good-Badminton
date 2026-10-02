@@ -157,6 +157,64 @@ def _running_job_for(stem):
     return None
 
 
+def _rally_summary(save_dir):
+    """What ``rally_segments.json`` in *save_dir* may honestly claim.
+
+    One reading shared by the job result, the library totals and (via the same
+    rules) the Kestrel results panel. Returns ``{"count", "suppressed",
+    "label", "signal", "degraded"}``:
+
+    * ``shuttle`` / ``courtview`` -> the count is shown, label "rallies";
+    * ``swing`` -> suppressed, label "segments" (the swing signal inflates
+      rally COUNT by +36% and total rally time by +41%, design spec §0.17);
+    * degraded or ``none`` -> suppressed, label "windows" (coarse windows are
+      not rallies, §12a-C);
+    * ``error``, a missing or unreadable file -> count 0, not suppressed,
+      ``signal`` None: unknown, treated like a run with no data today
+      (``failed`` marks the ``error`` and unreadable cases);
+    * an older file with no ``detection`` block -> count shown, "rallies".
+
+    "suppressed" means the count must not be presented (or summed) as a rally
+    count; ``count`` itself is still the number of segments in the file.
+    ``failed`` is True for a ``signal: "error"`` file and for an unreadable or
+    malformed one: such a run is not a reliable rally count either, and
+    /api/stats must not treat it as one.
+
+    The ``shuttle`` path is unvalidated: no shuttle-based segmentation has been
+    measured on any footage (§0.16 measured the swing path only). It is not
+    known to be bad, so it is still counted; Kestrel hedges its wording.
+    """
+    unknown = {'count': 0, 'suppressed': False, 'label': 'rallies',
+               'signal': None, 'degraded': False, 'failed': False}
+    path = os.path.join(str(save_dir), 'rally_segments.json')
+    if not os.path.exists(path):
+        return unknown
+    try:
+        with open(path, encoding='utf-8') as f:
+            payload = json.load(f)
+        rallies = payload.get('rallies', [])
+        if not isinstance(rallies, list):
+            raise ValueError('rallies is not a list')
+        detection = payload.get('detection')
+        if not isinstance(detection, dict):
+            detection = {}
+    except Exception as exc:
+        print(f'Could not read {path}: {exc!r}; treating the rally count as unknown')
+        return dict(unknown, failed=True)
+
+    signal = detection.get('signal')
+    if signal == 'error':
+        return dict(unknown, failed=True)
+    degraded = bool(detection.get('degraded'))
+    summary = {'count': len(rallies), 'suppressed': False, 'label': 'rallies',
+               'signal': signal, 'degraded': degraded, 'failed': False}
+    if degraded or signal == 'none':
+        summary.update(suppressed=True, label='windows')
+    elif signal == 'swing':
+        summary.update(suppressed=True, label='segments')
+    return summary
+
+
 def _racket_weights(base=None):
     """Path to trained racket-detector weights when installed, else None."""
     base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
@@ -533,6 +591,7 @@ def api_delete_tag(tag):
 def api_stats():
     """Dashboard tiles: counts + aggregate scores across all outputs."""
     count = analyzed = rallies = 0
+    reliable_runs = suppressed_runs = 0
     score_sum = score_n = 0.0
     for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
         for p in VIDEOS.glob(ext):
@@ -542,13 +601,17 @@ def api_stats():
             has_posture = (out / 'posture' / 'drill_summary.json').exists()
             if has_match or has_posture:
                 analyzed += 1
-            rf = out / 'rally_segments.json'
-            if rf.exists():
-                try:
-                    with open(rf, encoding='utf-8') as f:
-                        rallies += len(json.load(f).get('rallies', []))
-                except Exception:
-                    pass
+            # Only reliable runs add to the total: a swing-derived or degraded
+            # segmentation is not a rally count (see _rally_summary).
+            rs = _rally_summary(out)
+            if rs['suppressed']:
+                suppressed_runs += 1
+            elif not rs['failed']:
+                # A failed (error) run has no count to add and is not a reliable
+                # run: a library of only such runs shows a dash, not "0".
+                rallies += rs['count']
+                if os.path.exists(out / 'rally_segments.json'):
+                    reliable_runs += 1
             tf = out / 'technique_summary.json'
             if tf.exists():
                 try:
@@ -562,8 +625,17 @@ def api_stats():
                 except Exception:
                     pass
     avg = round(score_sum / score_n, 1) if score_n else None
-    return jsonify({'videos': count, 'analyzed': analyzed,
-                    'rallies': rallies, 'avg_technique_score': avg})
+    # A library whose every segmented run is suppressed has no rally count to
+    # show; a bare 0 would read as "no rallies were played". null renders as a dash.
+    if suppressed_runs and not reliable_runs:
+        rallies = None
+    stats = {'videos': count, 'analyzed': analyzed,
+             'rallies': rallies, 'avg_technique_score': avg}
+    if suppressed_runs:
+        # Present only when something was suppressed, so a library without such
+        # runs returns exactly the payload it always did.
+        stats['rallies_suppressed_runs'] = suppressed_runs
+    return jsonify(stats)
 
 
 @app.route('/api/models')
@@ -851,14 +923,8 @@ def api_analyze():
 
             # 收集结果
             pos_dir = os.path.join(sd, 'position_visualizations')
-            rally_file = os.path.join(sd, 'rally_segments.json')
-            rally_count = 0
-            if os.path.exists(rally_file):
-                try:
-                    with open(rally_file) as rf:
-                        rally_count = len(json.load(rf).get('rallies', []))
-                except:
-                    pass
+            rs = _rally_summary(sd)
+            rally_count = None if rs['suppressed'] else rs['count']
 
             job['result'] = {
                 'video_name': vs,
@@ -867,7 +933,11 @@ def api_analyze():
                 'heatmap': f'/api/output/{vs}/position_visualizations/heatmaps/match_heatmap.png',
                 'scatter': f'/api/output/{vs}/position_visualizations/scatter_plots/match_scatter.png',
                 'preview': f'/api/output/{vs}/auto_court_preview.png',
+                # None when suppressed (swing-derived or degraded segmentation):
+                # the UI shows rally_label, not a rally count.
                 'rally_count': rally_count,
+                'rally_count_suppressed': rs['suppressed'],
+                'rally_label': rs['label'],
                 # None on success. When set, the served video is still the
                 # OpenCV fallback codec and will not play in a browser; the UI
                 # says so rather than showing a black player.

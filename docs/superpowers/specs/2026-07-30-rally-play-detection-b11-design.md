@@ -173,6 +173,45 @@ unblocks *analysis capture* — which is what B1's validation was actually block
 does **not** produce rallies. Those are two different problems and the completion bar's
 B11 text conflates them.
 
+### 0.6a CORRECTION (2026-10-02): §0.6's 99.7% was not a 480 px figure; production uses INTER_AREA, +/-4 px shift tolerance and a 0.75 cap
+
+Task 12's validation of the shipped calibrated gate on the fixed-camera DJI 0010 video
+passed only **87.6%** of frames (cut 0.8786), against the 99.7% (cut 0.7402) in the §0.6
+table. Cause, measured on production's own functions:
+
+- §0.6's DJI figure (0.7402 -> 99.7%) was a full-resolution signal-A number, not a 480 px
+  one. §0.9's signal D used `INTER_LINEAR`; production (`downscale_for_gate`) uses
+  `INTER_AREA`. `INTER_AREA` makes aligned frames score in a very tight cluster (DJI median
+  0.943, MAD 0.011), so a frame only slightly off the template fell more than 4 robust SD
+  below the median.
+- DJI's camera drifts at the start: the image is ~20 px (at 4K) left of the template frame
+  at t=0 and settles by ~60 s. 89% of the rejected frames are in the first 32 s; the rest
+  are two real occlusions (a spectator at 95.9-98.3 s, a person at 270.8-272.6 s).
+
+Fix (`badminton_analysis/system.py`, commit `0de0ad1`), unpinned gate only:
+
+1. **Shift-tolerant score.** `_court_view_score` (shared by calibration and the live gate)
+   crops the once-downscaled template by `COURT_VIEW_SHIFT_PX = 4` px on every side (at the
+   480 px gate width, ~+/-32 px at 4K) and returns the max of the `TM_CCOEFF_NORMED` result
+   map. `INTER_AREA`, the 480 px width and k=4 are unchanged. Per-frame cost is unchanged
+   (4K 1.89 ms vs 1.93 ms old; 1080p 1.18 ms vs 1.27 ms old; the downscale dominates).
+2. **Cap.** A calibrated (`median-4mad`) cut is capped at `COURT_VIEW_FALLBACK_CUT` (0.75),
+   so the calibrated gate is never stricter than the constant it replaced.
+   `court.court_view` records `cut` (the value used), `capped` and `calibrated_cut`
+   (the uncapped value). Template-mismatch, fallback-constant and manual-pin paths are never
+   capped. A pinned `court_view_threshold` keeps today's full-resolution gate unchanged.
+
+Measured pass fractions (`scripts/check_rally_gate.py --gate`, every frame):
+
+| Video | Pass fraction | Cut used | Calibrated cut | Capped |
+|---|---|---|---|---|
+| DJI 0010 (17,234 frames) | **99.6%** (17,167) | 0.75 | 0.8813 | yes |
+| Axelsen broadcast (64,085 frames) | **97.8%** (62,690) | 0.5189 | 0.5189 | no |
+
+Shift tolerance alone gave 98.0% (DJI) and 97.7% (Axelsen) in the diagnosis, with every
+sampled broadcast non-play frame (§0.4 non-play spans) still rejected; the cap adds the rest
+on DJI. Axelsen is unaffected by the cap (its cut is below 0.75).
+
 ### 0.7 New blocker (not in the completion bar) — on the owner's own footage the shuttle signal is 86% a single static false positive
 
 Analysing all 16,889 records of `outputs/Dji 20260718111111 0010 D/detections.jsonl`:
@@ -1905,3 +1944,63 @@ owner's own footage. **Proposed default: out of scope for B11, raised as its own
   by PID.
 - **No writes to `main`**; work proceeds on `claude/match-stroke-recognition-b` under a
   scoped claim.
+
+## 15. As built (2026-10-02)
+
+What shipped on `claude/match-stroke-recognition-b` differs from the spec and plan text in the
+places below; where they disagree, **this section wins** (the plan's code blocks were amended
+during execution). Ruling ids are those in `.superpowers/sdd/2026-08-23-rally-play-detection-b11/`
+(`preflight-rulings.md`, `progress.md`).
+
+- **R1 - segmentation input.** `segment_rallies` runs over `self._rally_track`: the tracker's
+  wrists rebuilt from `hands` (the §0.16 source), recorded every analysed frame on every run. It
+  does NOT use `_analysis_track_both` or racket points.
+- **R9 + Task 5 - teleport caps.** The caps are the §0.16 baseline-row caps from
+  `baseline_caps(quad, fps)` (21.3 / 120.9 px on the DJI quad), not a per-row cap and not
+  `10 x median`. In fast mode (strided track) displacement is divided by the track's median frame
+  stride and the smoothing window is `round(SMOOTH_SEC * fps / stride)` samples; stride 1 is
+  bit-identical to the §0.16 script.
+- **R2 - time base.** Every time is `frame / fps` of a recorded frame, never a list index
+  (gapped and strided tracks are tested). Invalid fps (None, NaN, inf, <= 0, non-numeric) returns
+  no segments, `degraded: true`, `signal: "none"`, with the fps problem in `reason`.
+- **R6 + F1 - failure semantics.** An internal segmenter failure is `signal: "error"`,
+  `degraded: false`, `error: true`, `reason` = the exception type only, no segments, whatever the
+  fps. It is not a degraded segmentation: `stroke_labels_withheld` is `false` and stroke
+  recognition runs. (The first build returned degraded windows from the catch-all; the final review
+  caught that.) Malformed track records (not a dict, no integer `frame`) are dropped up front and
+  stay a degraded-windows case, not an error.
+- **R7 / R8 - pins.** Pins are constructor keywords `court_view_threshold` (a usable value keeps the
+  legacy full-resolution gate at check interval 3) and `rally_signal`
+  (`auto|shuttle|swing|courtview`). NO CLI flags were built (`main.py` is outside the claim), so
+  the web UI cannot pin. `courtview` keeps today's in-loop segments, so the in-loop state machine
+  keeps that responsibility and is not removed.
+- **R11 + `STATIC_MIN_POINTS = 300` - static suppression.** Robust: p90 spread, 8-neighbour cell
+  merge, and an absolute floor of 300 points, so a short clip with a genuinely static fixture
+  (fewer than 300 detections) is not suppressed.
+- **R12 - `rally_segments.json` as shipped.** Per rally: `id, start_frame, end_frame, start_sec,
+  end_sec, degraded`. `detection`: `signal` (`shuttle|swing|none|courtview|error`),
+  `attempted_signal`, `reason`, `degraded`, `params`, `suppressed_static_shuttle`,
+  `gated_outside_court`, `shuttle_density`, `caps_source`, `stroke_labels_withheld`, and `error` on
+  failure. `court_view`: `cut` (null when non-finite), `method`, `calibration`, `capped`,
+  `calibrated_cut`, `pass_frac`, `court_frames`, `frames`.
+- **R5 + F4 - UI/API honesty.** Swing is hedged ("play segments, estimated from swings; counts run
+  high"); degraded is "coarse windows - segmentation unreliable, stroke labels withheld"; shuttle
+  is "N rallies (shuttle signal - not yet validated)" because no shuttle segmentation has been
+  measured on any footage; an error is "Rally detection failed" and is not counted. `/api/stats`
+  sums only non-suppressed, non-failed runs (shuttle runs still count) and returns `null`
+  (a dash) when every segmented run is suppressed.
+- **Gate fix (§0.6a).** Production scores with INTER_AREA, +/-4 px shift tolerance and a 0.75 cap on
+  calibrated cuts (never stricter than the shipped gate); DJI 99.6% / Axelsen 97.8%. The
+  calibration pre-scan measured 31-51 s per video (every frame is grabbed, and `grab()` decodes
+  with the FFmpeg backend), not the "10-20 s" estimated earlier. It now runs after court
+  annotation succeeds and after a `calibrating_court_view` progress update, still before
+  `_write_metadata` (R14).
+- **Degraded windows.** Coarse windows also break wherever consecutive recorded frames are more than
+  `gap_sec` apart, so a window never claims time that was not recorded.
+- **Task 8 decision, kept.** A chosen (or pinned) signal that finds no rally goes degraded without
+  trying the other signal: conservative, and it never fabricates a segmentation.
+- **R19 - shot boundaries.** `badminton_analysis/stroke/shot_boundary.py` is standalone and
+  UNWIRED; it is covered by hermetic tests only (no footage with a cut exists).
+- **Known gaps at merge.** The shuttle path is unvalidated; Axelsen segmentation needs an owner-run
+  full re-run with the new gate; pins are constructor-only; the legacy `web_ui.html` (`/` route)
+  disables clips for swing runs; clip padding is 1.5 s against §0.16's >= 2 s.

@@ -12,10 +12,30 @@ import argparse
 # yolo shuttle so match analysis stays responsive.
 SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 
-# Court-view state changes slowly (rally boundaries span >=5 frames); recompute the
-# template match only every N frames and hold the result between checks. Lossless
-# within the existing 5-frame rally thresholds.
+# Interval of the *pinned* gate only: when court_view_threshold is pinned the gate
+# stays exactly today's full-resolution match, recomputed every N frames with the
+# result held between checks (lossless within the 5-frame rally thresholds). The
+# default (calibrated) gate scores a 480px downscale on every frame instead.
 COURT_VIEW_CHECK_INTERVAL = 3
+
+# C0 self-calibrating court-view cut (spec §5 C0). The gate's NCC score has a
+# video-dependent absolute scale, so the cut is derived per video from a
+# strided pre-scan instead of the one global 0.75 (which admitted 0.66% of the
+# Axelsen match).
+COURT_VIEW_SCORE_WIDTH = 480      # downscale width for the gate's NCC (§0.9 signal D)
+COURT_VIEW_MAD_K = 4.0            # cut = median - k * 1.4826 * MAD (§0.6)
+COURT_VIEW_MIN_MEDIAN = 0.30      # below this the template is not of this video
+COURT_VIEW_FALLBACK_CUT = 0.75    # the historically shipped constant
+COURT_VIEW_CALIBRATION_STRIDE_SEC = 0.5   # ~2 samples/second
+COURT_VIEW_CALIBRATION_MAX_SAMPLES = 1500
+# Shift tolerance of the unpinned gate score, in pixels AT THE 480px GATE WIDTH
+# (~ +/-32 px at 4K): the once-downscaled template is cropped by this many pixels on
+# every side and slid over the frame, taking the best NCC. Chosen to absorb the
+# camera/gimbal settling drift measured on DJI 0010 (the image sits ~20 px at 4K
+# left of the template frame at t=0 and settles by ~60 s); INTER_AREA makes aligned
+# frames score in a tight cluster, so without it a slightly misaligned full-court
+# frame fell > 4 robust SD below the median and was rejected (87.6% pass).
+COURT_VIEW_SHIFT_PX = 4
 
 # Fast mode analyzes every Nth court frame (quick look).
 FAST_FRAME_STRIDE = 3
@@ -85,6 +105,84 @@ def _assign_one_to_one(side_points, candidates, max_sq):
     return chosen
 
 
+def downscale_for_gate(gray, width=COURT_VIEW_SCORE_WIDTH):
+    """Downscale a grayscale image to ``width``, preserving aspect ratio.
+
+    The gate compares whole-frame framing, not fine court lines, so 480px
+    wide is ample and far cheaper than full resolution (§0.9 signal D).
+    Never upscales -- an already-small frame is returned untouched.
+    """
+    import cv2
+
+    h, w = gray.shape[:2]
+    if w <= width:
+        return gray
+    scale = width / float(w)
+    return cv2.resize(gray, (width, max(1, int(round(h * scale)))),
+                      interpolation=cv2.INTER_AREA)
+
+
+def courtview_cut_from_scores(scores, k=COURT_VIEW_MAD_K):
+    """Per-video court-view cut from a sample of whole-frame NCC scores.
+
+    Returns the audit record written to metadata.json's ``court_view`` key.
+    Pure and video-free so the branch logic is testable without decoding.
+
+    ``method`` is always the estimator that was attempted ("median-4mad");
+    ``calibration`` names what actually happened:
+      * "median-4mad"                 -> normal: cut = median - k*1.4826*MAD
+        (MAD collapsing to 0 uses the median itself, not median - 0)
+      * "fallback_constant"           -> no finite samples; the shipped 0.75
+      * "template_mismatch_pass_all"  -> median below the floor: the template
+        is not of this video, so the cut is -inf and everything passes
+
+    Non-finite scores (NaN from a constant frame, inf) are dropped first, so
+    ``samples`` counts only the scores that informed the cut.
+    """
+    import math
+
+    method = f"median-{float(k):g}mad"
+    vals = sorted(f for f in (float(s) for s in scores) if math.isfinite(f))
+    n = len(vals)
+    if n == 0:
+        return {"cut": COURT_VIEW_FALLBACK_CUT, "median": None, "mad": None,
+                "samples": 0, "method": method,
+                "calibration": "fallback_constant", "k": float(k)}
+
+    median = vals[n // 2] if n % 2 else 0.5 * (vals[n // 2 - 1] + vals[n // 2])
+    if median < COURT_VIEW_MIN_MEDIAN:
+        return {"cut": float("-inf"), "median": median, "mad": None,
+                "samples": n, "method": method,
+                "calibration": "template_mismatch_pass_all", "k": float(k)}
+
+    devs = sorted(abs(v - median) for v in vals)
+    mad = devs[n // 2] if n % 2 else 0.5 * (devs[n // 2 - 1] + devs[n // 2])
+    cut = median - float(k) * 1.4826 * mad if mad > 0 else median
+    cut = max(0.0, min(0.95, cut))
+    return {"cut": cut, "median": median, "mad": mad, "samples": n,
+            "method": method, "calibration": method, "k": float(k)}
+
+
+def cap_court_view_cut(calibration, cap=COURT_VIEW_FALLBACK_CUT):
+    """Never let a calibrated cut be stricter than ``cap`` (the shipped 0.75).
+
+    Returns a copy of ``calibration`` (from ``courtview_cut_from_scores``) with
+    two audit keys added: ``capped`` and ``calibrated_cut`` (the cut before
+    capping). Only the normal estimator path ("median-4mad") is capped;
+    ``fallback_constant``, ``template_mismatch_pass_all`` and manual pins are
+    returned unchanged with ``capped`` False and ``calibrated_cut`` None.
+    """
+    out = dict(calibration)
+    out["capped"] = False
+    out["calibrated_cut"] = None
+    if str(out.get("calibration", "")).startswith("median-"):
+        out["calibrated_cut"] = out["cut"]
+        if out["cut"] > cap:
+            out["cut"] = cap
+            out["capped"] = True
+    return out
+
+
 def load_runtime_dependencies():
     """Load heavy runtime dependencies after argparse has handled --help."""
     global cv2, np, YOLO, CourtMapper, annotate_court, compute_expanded_roi, PlayerTracker
@@ -148,7 +246,8 @@ class BadmintonAnalysisSystem:
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
-                 analysis_quality="accurate"):
+                 analysis_quality="accurate", court_view_threshold=None,
+                 rally_signal="auto"):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -160,6 +259,22 @@ class BadmintonAnalysisSystem:
         self.show_pose_roi = show_pose_roi
         self.analyze_technique = analyze_technique
         self.analysis_quality = analysis_quality
+        # C0: None -> calibrate the court-view cut per video; a number pins it
+        # (recorded as method "manual") and skips calibration entirely.
+        self.court_view_threshold_override = court_view_threshold
+        self.court_view_cut = COURT_VIEW_FALLBACK_CUT
+        self.court_view_calibration = None
+        # True only for a usable manual pin: the gate then keeps today's
+        # full-resolution, every-COURT_VIEW_CHECK_INTERVAL-frames behaviour.
+        self.court_view_pinned = False
+        self.court_view_template_small = None
+        # B11: "auto" | "shuttle" | "swing" go to segment_rallies; "courtview"
+        # writes the legacy in-loop court-view segments. Anything else is "auto".
+        self.rally_signal = rally_signal
+        self.rally_detection = None   # the detection block written to rally_segments.json
+        # Frames the court-view gate evaluated / passed, for the provenance block.
+        self._gate_frames = 0
+        self._gate_court_frames = 0
         if analysis_quality == "fast":
             self.analyze_technique = False  # dense analytics need every frame
         self.racket_model_path = racket_model_path
@@ -171,6 +286,11 @@ class BadmintonAnalysisSystem:
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
         self._analysis_track_both = []  # both-player contact track (contacts/BST only)
+        # Per-court-frame track for post-loop rally segmentation. Recorded on EVERY
+        # run (technique analysis on or off, fast or accurate), unlike the two
+        # tracks above: it is what makes rally windows computable afterwards.
+        self._rally_track = []
+        self._rally_track_error_logged = False
         self._analysis_frames = {}  # frame_index -> window-frame record; grows one entry per court frame (memory ~scales with video length); acceptable for typical clips
         self._racket_detector = None
 
@@ -290,7 +410,8 @@ class BadmintonAnalysisSystem:
         
 
         template_path = self._get_template_path()
-        template_gray, template_color = self._load_template(template_path, cap)
+        template_gray, template_color, template_small = self._load_template(template_path, cap)
+        self.court_view_template_small = template_small
         
 
         self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -303,6 +424,13 @@ class BadmintonAnalysisSystem:
         self.court_roi_corners = roi_corners
         self._write_progress("court_setup")
         progress_interval = max(1, int(fps))
+
+        # Calibration is a 30-50 s pre-scan, so it runs only after court annotation
+        # has succeeded (a failed annotation raises before any of that work) and
+        # after a progress update; it must still precede _write_metadata, which
+        # records the cut (R14). Never fatal.
+        self._write_progress("calibrating_court_view")
+        self._prepare_court_view_cut(template_small, fps)
 
         self._write_metadata(fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height)
         self._run_shuttle_pretrack()
@@ -336,18 +464,8 @@ class BadmintonAnalysisSystem:
                 self._write_progress("analyzing", current_frame=frame_count)
             frame, detect_frame_count = self._process_frame(frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count)
 
-        # 视频结束时如果还在回合中，记录最后一个回合
-        if self.rally_active:
-            self.rally_segments.append((self.rally_count, self._current_rally_start, frame_count))
-
-        # 保存回合分段数据
-        rally_path = os.path.join(self.save_dir, "rally_segments.json")
-        write_json(rally_path, {
-            "fps": fps,
-            "rallies": [{"id": r[0], "start_frame": r[1], "end_frame": r[2],
-                         "start_sec": r[1]/fps, "end_sec": r[2]/fps}
-                        for r in self.rally_segments],
-        })
+        # Post-loop: segment the recorded track and write rally_segments.json.
+        self._write_rally_segments(fps, frame_count)
 
         self.end_time = time.time()
         processing_time = self.end_time - self.start_time
@@ -364,6 +482,273 @@ class BadmintonAnalysisSystem:
         self._run_stroke_recognition()
 
         self._cleanup(cap)
+
+    def _court_view_score(self, gray_frame, template_small):
+        """Shift-tolerant whole-frame NCC at COURT_VIEW_SCORE_WIDTH. Shared by
+        calibration (C0) and the live unpinned gate (C1), so both see one scale.
+
+        The once-downscaled template is cropped by COURT_VIEW_SHIFT_PX on every
+        side and slid over the frame; the best NCC is returned, so a frame that
+        has drifted up to that many pixels (at 480 wide) still scores as a match.
+        A template too small to crop falls back to the equal-size score. A
+        non-finite maximum is returned as is (calibration drops it; the live
+        gate treats it as not court view).
+        """
+        import cv2
+        import numpy as np
+
+        small = downscale_for_gate(gray_frame)
+        if small.shape != template_small.shape:
+            template_small = cv2.resize(template_small,
+                                        (small.shape[1], small.shape[0]),
+                                        interpolation=cv2.INTER_AREA)
+        m = COURT_VIEW_SHIFT_PX
+        h, w = template_small.shape[:2]
+        if h >= 2 * m + 1 and w >= 2 * m + 1:
+            template_small = template_small[m:h - m, m:w - m]
+        result = cv2.matchTemplate(small, template_small, cv2.TM_CCOEFF_NORMED)
+        return float(np.max(result))
+
+    @staticmethod
+    def _usable_court_view_pin(value):
+        """A pin is usable only as a finite number in [0.0, 1.0]."""
+        import math
+
+        if isinstance(value, bool):
+            return None
+        try:
+            pin = float(value)
+        except (TypeError, ValueError):
+            return None
+        return pin if math.isfinite(pin) and 0.0 <= pin <= 1.0 else None
+
+    def _prepare_court_view_cut(self, template_small, fps):
+        """Decide this run's court-view cut; never fatal.
+
+        ``template_small`` is the template already downscaled by _load_template
+        (downscaled once, never again). A usable pinned ``court_view_threshold``
+        wins and skips calibration. An unusable pin (NaN, non-numeric, outside
+        [0, 1]) is warned about and ignored in favour of normal calibration.
+        Calibration failure logs and falls back to the shipped constant so the
+        run continues.
+
+        Also decides the live gate's mode: only a usable pin keeps the legacy
+        full-resolution gate (``court_view_pinned``).
+        """
+        self.court_view_pinned = False
+        if self.court_view_threshold_override is not None:
+            pin = self._usable_court_view_pin(self.court_view_threshold_override)
+            if pin is not None:
+                self.court_view_pinned = True
+                self.court_view_cut = pin
+                self.court_view_calibration = {
+                    "cut": pin, "median": None, "mad": None, "samples": 0,
+                    "method": "manual", "calibration": "manual", "k": None,
+                    "capped": False, "calibrated_cut": None}
+                print(f"Court-view gate: cut={pin} (manual)")
+                return
+            print(f"Court-view threshold {self.court_view_threshold_override!r} "
+                  f"is not a finite number in [0, 1]; calibrating instead")
+        try:
+            self._calibrate_court_view(self.video_path, template_small, fps)
+        except Exception as exc:
+            print(f"Court-view calibration failed, using "
+                  f"{COURT_VIEW_FALLBACK_CUT}: {exc}")
+            self.court_view_calibration = cap_court_view_cut(
+                courtview_cut_from_scores([]))
+            self.court_view_cut = self.court_view_calibration["cut"]
+
+    def _calibrate_court_view(self, video_path, template_small, fps):
+        """Strided pre-scan deriving this video's court-view cut.
+
+        Every frame is grabbed, and with the FFmpeg backend ``grab()`` decodes
+        the frame; only the sampled frames are retrieved and scored. Measured
+        cost is therefore ~31-51 s per video (17,234 grabs took ~51 s), not
+        the cost of the sampled frames alone. Any failure falls back to the
+        shipped constant and says so.
+        """
+        import cv2
+
+        scores = []
+        cap = None
+        try:
+            cap = cv2.VideoCapture(video_path)
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            stride = max(1, int(round(COURT_VIEW_CALIBRATION_STRIDE_SEC * (fps or 30))))
+            if total > 0:
+                # ceil, so the sample budget spans the whole video.
+                stride = max(stride, -(-total // COURT_VIEW_CALIBRATION_MAX_SAMPLES))
+            idx = 0
+            while len(scores) < COURT_VIEW_CALIBRATION_MAX_SAMPLES:
+                if not cap.grab():
+                    break
+                if idx % stride == 0:
+                    ok, frame = cap.retrieve()
+                    if ok:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        scores.append(self._court_view_score(gray, template_small))
+                idx += 1
+        except Exception as exc:
+            print(f"Court-view calibration failed, using {COURT_VIEW_FALLBACK_CUT}: {exc}")
+            scores = []
+        finally:
+            if cap is not None:
+                cap.release()
+
+        self.court_view_calibration = cap_court_view_cut(
+            courtview_cut_from_scores(scores))
+        self.court_view_cut = self.court_view_calibration["cut"]
+        capped = self.court_view_calibration["capped"]
+        print(f"Court-view gate: cut={self.court_view_cut} "
+              f"({self.court_view_calibration['calibration']}, "
+              f"{self.court_view_calibration['samples']} samples"
+              + (f", capped from {self.court_view_calibration['calibrated_cut']}"
+                 if capped else "") + ")")
+
+    def _court_view_metadata(self):
+        """The ``court.court_view`` record for metadata.json.
+
+        Non-finite numbers (a pass-all cut of -inf) become null: the browser's
+        JSON parser rejects ``-Infinity``.
+        """
+        import math
+
+        cal = self.court_view_calibration
+        if cal is None:
+            return None
+
+        def finite_or_none(value):
+            if value is None:
+                return None
+            value = float(value)
+            return value if math.isfinite(value) else None
+
+        return {
+            "cut": finite_or_none(cal.get("cut")),
+            "method": cal.get("method"),
+            "calibration": cal.get("calibration"),
+            "k": finite_or_none(cal.get("k")),
+            "samples": int(cal.get("samples", 0)),
+            "median": finite_or_none(cal.get("median")),
+            "mad": finite_or_none(cal.get("mad")),
+            "capped": bool(cal.get("capped", False)),
+            "calibrated_cut": finite_or_none(cal.get("calibrated_cut")),
+        }
+
+    RALLY_SIGNALS = ("auto", "shuttle", "swing", "courtview")
+
+    def _rally_court_view_block(self):
+        """The ``detection.court_view`` record: the gate's cut, how it was
+        chosen, and how many evaluated frames passed it. Never raises (None if
+        the record cannot be built); non-finite numbers become null."""
+        try:
+            meta = self._court_view_metadata() or {}
+            frames = int(getattr(self, "_gate_frames", 0))
+            court_frames = int(getattr(self, "_gate_court_frames", 0))
+            return {
+                "cut": meta.get("cut"),
+                "method": meta.get("method"),
+                "calibration": meta.get("calibration"),
+                "capped": bool(meta.get("capped", False)),
+                "calibrated_cut": meta.get("calibrated_cut"),
+                "pass_frac": court_frames / frames if frames > 0 else None,
+                "court_frames": court_frames,
+                "frames": frames,
+            }
+        except Exception:
+            return None
+
+    def _rally_segments_for_output(self, fps, last_frame):
+        """``(rallies, detection)`` for rally_segments.json, per ``rally_signal``.
+
+        ``"courtview"`` is the legacy behaviour: the in-loop state machine's
+        segments, with a rally still open at the end of the video closed at
+        ``last_frame``. Everything else is ``segment_rallies`` over the
+        recorded track (an unknown value is ``"auto"``, and says so).
+        """
+        mode = getattr(self, "rally_signal", "auto")
+        note = None
+        if mode not in self.RALLY_SIGNALS:
+            note = f"unknown rally_signal {mode!r} treated as 'auto'"
+            mode = "auto"
+
+        if mode == "courtview":
+            pairs = [tuple(r) for r in self.rally_segments]
+            if self.rally_active and last_frame is not None:
+                pairs.append((self.rally_count, self._current_rally_start, last_frame))
+            rallies = [{"id": r[0], "start_frame": r[1], "end_frame": r[2],
+                        "start_sec": r[1] / fps, "end_sec": r[2] / fps,
+                        "degraded": False} for r in pairs]
+            detection = {"signal": "courtview", "attempted_signal": None,
+                         "reason": "rally_signal='courtview': in-loop court-view "
+                                   "state machine (legacy behaviour)",
+                         "degraded": False}
+            return rallies, detection
+
+        from .stroke import rallies as rallies_mod
+
+        segments, detection = rallies_mod.segment_rallies(
+            self._rally_track, fps, signal=mode,
+            quad=getattr(self, "court_corners", None))
+        detection = dict(detection)
+        if note:
+            detection["reason"] = "; ".join(
+                part for part in (detection.get("reason"), note) if part)
+        rallies = [{"id": s["id"], "start_frame": s["start_frame"],
+                    "end_frame": s["end_frame"], "start_sec": s["start_sec"],
+                    "end_sec": s["end_sec"], "degraded": s["degraded"]}
+                   for s in segments]
+        return rallies, detection
+
+    def _write_rally_segments(self, fps, last_frame=None):
+        """Segment rallies from the recorded track and write rally_segments.json.
+
+        Post-loop by design: nothing in the frame loop consumes rally segments
+        live. Never fatal: if anything around the segmenter (or the write)
+        raises, ``rallies`` is empty and ``detection`` is ``signal: "error"``,
+        ``degraded: False`` (an error is not a degraded segmentation) with only
+        the exception type as its reason; the full exception goes to the
+        console once. ``self.rally_detection`` is the detection block written.
+        """
+        import traceback
+
+        from .data.writer import write_json as _write_json
+
+        path = os.path.join(self.save_dir, "rally_segments.json")
+        court_view = self._rally_court_view_block()
+        error = None
+        try:
+            rallies, detection = self._rally_segments_for_output(fps, last_frame)
+            detection["court_view"] = court_view
+            # Recorded, not inferred: stroke labels are withheld exactly when
+            # the segmentation is degraded (an error or courtview is not).
+            detection["stroke_labels_withheld"] = bool(detection.get("degraded"))
+            _write_json(path, {"fps": fps, "rallies": rallies, "detection": detection})
+        except Exception as exc:
+            error = exc
+            print(f"Rally segmentation failed, writing an empty result:\n"
+                  f"{traceback.format_exc()}")
+            rallies = []
+            detection = {"signal": "error", "degraded": False, "error": True,
+                         "reason": type(exc).__name__, "court_view": court_view,
+                         "stroke_labels_withheld": False}
+            try:
+                _write_json(path, {"fps": fps, "rallies": rallies,
+                                   "detection": detection})
+            except Exception as write_exc:
+                print(f"Rally segments could not be written: {write_exc!r}")
+
+        self.rally_detection = detection
+        line = (f"Rally segmentation: signal={detection.get('signal')}, "
+                f"{len(rallies)} segments")
+        if error is not None:
+            line += f", error: {detection['reason']}"
+        elif detection.get("error"):
+            # segment_rallies' own failure result: an error, not a degradation.
+            line += f", error: {detection.get('reason')}"
+        elif detection.get("degraded"):
+            line += f", degraded: {detection.get('reason')}"
+        print(line)
 
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
         metadata = {
@@ -390,6 +775,7 @@ class BadmintonAnalysisSystem:
                     "width": 6.1,
                     "length": 13.4,
                 },
+                "court_view": self._court_view_metadata(),
             },
             "outputs": {
                 "video": self.output_video_path,
@@ -451,6 +837,51 @@ class BadmintonAnalysisSystem:
             self._far_roi = None
             return [], {}, {}
 
+    def _rally_track_record(self, frame_count, centroids, players,
+                            point_left_hands, point_right_hands, ball_position):
+        """One ``_rally_track`` record, rebuilt exactly as the tracker attaches
+        hands to ``detections.jsonl`` (what the §0.16 measurement read).
+
+        ``players`` is the tracker's ``{side: centroid}``, which keeps a STALE
+        last-known centroid for a side that was not selected this frame. A side
+        counts as selected only if its centroid is among this frame's
+        ``centroids``; only then are its hands (looked up by centroid y) and
+        position recorded, otherwise wrist and pos are None.
+        """
+        from .stroke import rallies
+
+        record = {"frame": frame_count, "shuttle": None}
+        if ball_position is not None and len(ball_position) >= 2:
+            bx, by = float(ball_position[0]), float(ball_position[1])
+            if not (bx == 0.0 and by == 0.0):     # [0, 0] is "no detection"
+                record["shuttle"] = (bx, by)
+        for side in ("lower", "upper"):
+            centroid = players.get(side)
+            if centroid is not None and centroid in centroids:
+                hands = (point_left_hands.get(centroid[1]),
+                         point_right_hands.get(centroid[1]))
+                record["wrist_" + side] = rallies.wrists_from_hands(*hands)
+                record["pos_" + side] = centroid
+            else:
+                record["wrist_" + side] = None
+                record["pos_" + side] = None
+        return record
+
+    def _record_rally_frame(self, frame_count, centroids, players,
+                            point_left_hands, point_right_hands, ball_position):
+        """Append this frame's rally record. Never fatal: the track is a side
+        artefact of the analysis, so a failure is logged once and skips only
+        this frame's record."""
+        try:
+            self._rally_track.append(self._rally_track_record(
+                frame_count, centroids, players, point_left_hands, point_right_hands,
+                ball_position))
+        except Exception as exc:
+            if not getattr(self, "_rally_track_error_logged", False):
+                self._rally_track_error_logged = True
+                print(f"Rally track recording failed (frame {frame_count}); "
+                      f"skipping such frames, analysis continues: {exc!r}")
+
     def _analyze_this_frame(self, frame_count):
         """Gate for the heavy per-frame analysis (pose/ball/draw).
 
@@ -469,7 +900,13 @@ class BadmintonAnalysisSystem:
         # frame = self.draw_court_roi(frame, corners, roi_corners)
 
         is_court = self._court_view_for_frame(gray_frame, template_gray, frame_count)
-        
+
+        # Gate statistics for rally_segments.json's provenance (getattr: a bare
+        # instance that skipped __init__ must keep working).
+        self._gate_frames = getattr(self, "_gate_frames", 0) + 1
+        if is_court:
+            self._gate_court_frames = getattr(self, "_gate_court_frames", 0) + 1
+
         if is_court:
             self.is_court_view_count += 1
             self.consecutive_non_court_frames = 0
@@ -545,6 +982,9 @@ class BadmintonAnalysisSystem:
 
         players = self.player_tracker.update(frame_count, centroids, ball_position,
                                              point_left_hands, point_right_hands, detect_frame_count)
+
+        self._record_rally_frame(frame_count, centroids, players,
+                                 point_left_hands, point_right_hands, ball_position)
 
         if self.analyze_technique:
             self._capture_analysis_frame(frame_count, frame, roi_corners, ball_position)
@@ -888,7 +1328,38 @@ class BadmintonAnalysisSystem:
         at the contact frame -- no longer a zero-filled opponent (fixed by
         B1; previously the tracked/near player's pose leaked into person-0
         even for far-player hits).
+
+        Withheld entirely when rally segmentation is degraded (owner decision
+        §12a-C): BST labels computed over coarse windows that do not
+        correspond to rallies are close to noise, and shipping them behind a
+        badge is weaker than the impression that strokes were detected. When
+        B6 adds per-rally invocation, the same ``degraded`` flag skips
+        individual segments instead of the whole run. A segmenter ERROR
+        (``signal: "error"``, ``degraded: False``) is not a degraded
+        segmentation and does not withhold; nor does a missing
+        ``rally_detection`` (older runs, bare instances).
         """
+        detection = getattr(self, "rally_detection", None) or {}
+        # The decision is the one recorded in rally_segments.json
+        # (``stroke_labels_withheld``); a detection without the key (bare
+        # instances) falls back to ``degraded``, which that key is derived from.
+        if detection.get("stroke_labels_withheld", bool(detection.get("degraded"))):
+            print("Stroke labels withheld: segmentation unreliable -- "
+                  f"{detection.get('reason') or 'no reason recorded'}. Labels over "
+                  "windows that are not rallies would be noise, so none are produced.")
+            # An earlier run's labels must not survive beside this run's
+            # "withheld" statement. Only this step's own output (strokes.json);
+            # strokes.jsonl and technique_summary.json belong to technique analysis.
+            stale = os.path.join(self.save_dir, "strokes.json")
+            try:
+                os.remove(stale)
+                print(f"Removed the previous run's stroke labels: {stale}")
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"Could not remove the previous run's stroke labels {stale}: {exc}")
+            return
+
         if not self.bst_weights:
             return
 
@@ -944,7 +1415,13 @@ class BadmintonAnalysisSystem:
         return template_path
 
     def _load_template(self, template_path, cap):
-        """Load and resize the court template image."""
+        """Load and resize the court template image.
+
+        Returns ``(template_gray, template_color, template_small)``;
+        ``template_small`` is the gate's 480px template, downscaled exactly once.
+        """
+        import cv2
+
         template_gray = cv2.imread(template_path, 0)
         template_color = cv2.imread(template_path)
         if template_gray is None or template_color is None:
@@ -956,7 +1433,7 @@ class BadmintonAnalysisSystem:
         template_gray = cv2.resize(template_gray, (frame_width, frame_height))
         template_color = cv2.resize(template_color, (frame_width, frame_height))
         
-        return template_gray, template_color
+        return template_gray, template_color, downscale_for_gate(template_gray)
 
     def _setup_video_writer(self, frame_width, frame_height, fps):
 
@@ -983,7 +1460,9 @@ class BadmintonAnalysisSystem:
                 roi_corners = compute_expanded_roi(corners, template_color.shape)
         else:
             auto_preview_path = os.path.join(self.save_dir, 'auto_court_preview.png')
-            corners, roi_corners, mid_height = annotate_court(template_color, auto_preview_path=auto_preview_path)
+            corners, roi_corners, mid_height = annotate_court(
+                template_color, auto_preview_path=auto_preview_path,
+                interactive=bool(self.show_display))
        
         if not corners or not roi_corners or len(corners) != 4 or len(roi_corners) != 2:
             raise RuntimeError("Court annotation is incomplete: click 4 court corners in order. ROI is generated automatically.")
@@ -996,7 +1475,8 @@ class BadmintonAnalysisSystem:
 
     # Per-stage fixed pct for non-analyzing stages; analyzing derives from frames.
     _PROGRESS_STAGE_PCT = {
-        "initializing": 1, "court_setup": 3, "analyzing": None,
+        "initializing": 1, "court_setup": 3, "calibrating_court_view": 3,
+        "analyzing": None,
         "visualizing": 97, "encoding": 99, "done": 100,
     }
 
@@ -1060,22 +1540,59 @@ class BadmintonAnalysisSystem:
             "Hit-point analysis is disabled until it is migrated to detections.jsonl."
         )
 
-    def is_court_view(self, frame, template_gray, threshold=0.75):
-        """Return whether the frame matches the court template."""
+    def is_court_view(self, frame, template_gray, threshold=None):
+        """Full-resolution whole-frame NCC against the template (the pinned gate).
+
+        ``threshold=None`` uses ``self.court_view_cut``; an explicit value
+        overrides it. A ``-inf`` cut passes everything.
+        """
+        import cv2
+        import numpy as np
+
+        cut = self.court_view_cut if threshold is None else float(threshold)
+        if cut == float("-inf"):
+            return True
         result = cv2.matchTemplate(frame, template_gray, cv2.TM_CCOEFF_NORMED)
-        # print("match score: ", result)
-        return np.max(result) >= threshold
+        return bool(np.max(result) >= cut)
+
+    def _court_view_downscaled(self, gray_frame, template_small):
+        """The default gate: NCC of a 480px downscale against ``self.court_view_cut``.
+
+        A ``-inf`` cut (template not of this video) passes every frame without
+        scoring; a NaN score (constant frame) is not court view under a finite cut.
+        """
+        cut = self.court_view_cut
+        if cut == float("-inf"):
+            return True
+        return bool(self._court_view_score(gray_frame, template_small) >= cut)
 
     def _court_view_for_frame(self, gray_frame, template_gray, frame_count):
-        """Recompute is_court_view only every COURT_VIEW_CHECK_INTERVAL frames,
-        holding the cached result between checks. Lossless within the existing
-        5-frame rally thresholds (boundaries may shift by <= interval-1 frames)."""
-        cached = getattr(self, "_court_view_cached", None)
-        last_frame = getattr(self, "_court_view_last_frame", -10)
-        if cached is None or frame_count - last_frame >= COURT_VIEW_CHECK_INTERVAL:
-            self._court_view_cached = self.is_court_view(gray_frame, template_gray)
-            self._court_view_last_frame = frame_count
-        return self._court_view_cached
+        """Decide whether this frame shows the court.
+
+        Pinned (``court_view_threshold`` given, or an instance that never
+        prepared a cut): today's gate exactly -- full-resolution match against
+        the pinned value, recomputed every COURT_VIEW_CHECK_INTERVAL frames with
+        the result held between checks (lossless within the 5-frame rally
+        thresholds; boundaries may shift by <= interval-1 frames).
+
+        Otherwise: the 480px downscale is scored against the once-downscaled
+        template on every frame, using this video's calibrated cut.
+        """
+        # An instance that never ran __init__/_prepare_court_view_cut has no
+        # calibrated cut, so it keeps the legacy gate.
+        if getattr(self, "court_view_pinned", True):
+            cached = getattr(self, "_court_view_cached", None)
+            last_frame = getattr(self, "_court_view_last_frame", -10)
+            if cached is None or frame_count - last_frame >= COURT_VIEW_CHECK_INTERVAL:
+                self._court_view_cached = self.is_court_view(gray_frame, template_gray)
+                self._court_view_last_frame = frame_count
+            return self._court_view_cached
+
+        template_small = getattr(self, "court_view_template_small", None)
+        if template_small is None:
+            template_small = downscale_for_gate(template_gray)
+            self.court_view_template_small = template_small
+        return self._court_view_downscaled(gray_frame, template_small)
 
     def draw_court_roi(self, frame, corners, roi_corners):
         self.court_mapper = CourtMapper(corners)
