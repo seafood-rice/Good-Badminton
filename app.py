@@ -583,6 +583,7 @@ def api_delete_tag(tag):
 def api_stats():
     """Dashboard tiles: counts + aggregate scores across all outputs."""
     count = analyzed = rallies = 0
+    reliable_runs = suppressed_runs = 0
     score_sum = score_n = 0.0
     for ext in ('*.mp4', '*.mov', '*.avi', '*.mkv', '*.webm'):
         for p in VIDEOS.glob(ext):
@@ -595,8 +596,12 @@ def api_stats():
             # Only reliable runs add to the total: a swing-derived or degraded
             # segmentation is not a rally count (see _rally_summary).
             rs = _rally_summary(out)
-            if not rs['suppressed']:
+            if rs['suppressed']:
+                suppressed_runs += 1
+            else:
                 rallies += rs['count']
+                if os.path.exists(out / 'rally_segments.json'):
+                    reliable_runs += 1
             tf = out / 'technique_summary.json'
             if tf.exists():
                 try:
@@ -610,8 +615,17 @@ def api_stats():
                 except Exception:
                     pass
     avg = round(score_sum / score_n, 1) if score_n else None
-    return jsonify({'videos': count, 'analyzed': analyzed,
-                    'rallies': rallies, 'avg_technique_score': avg})
+    # A library whose every segmented run is suppressed has no rally count to
+    # show; a bare 0 would read as "no rallies were played". null renders as a dash.
+    if suppressed_runs and not reliable_runs:
+        rallies = None
+    stats = {'videos': count, 'analyzed': analyzed,
+             'rallies': rallies, 'avg_technique_score': avg}
+    if suppressed_runs:
+        # Present only when something was suppressed, so a library without such
+        # runs returns exactly the payload it always did.
+        stats['rallies_suppressed_runs'] = suppressed_runs
+    return jsonify(stats)
 
 
 @app.route('/api/models')

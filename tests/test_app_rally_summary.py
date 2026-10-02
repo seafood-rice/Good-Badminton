@@ -98,3 +98,49 @@ def test_stats_total_sums_only_non_suppressed_runs(client):
     (videos / "nofile.mp4").write_bytes(b"\x00")
 
     assert c.get("/api/stats").get_json()["rallies"] == 5 + 2 + 1
+
+
+def _stat_client_with(client, runs, extra_videos=()):
+    c, videos, outputs = client
+    for stem, payload in runs.items():
+        (videos / f"{stem}.mp4").write_bytes(b"\x00")
+        if payload is not None:
+            _write(outputs / stem, payload)
+    for stem in extra_videos:
+        (videos / f"{stem}.mp4").write_bytes(b"\x00")
+    return c.get("/api/stats").get_json()
+
+
+def test_stats_swing_only_library_is_unknown_not_zero(client):
+    s = _stat_client_with(client, {"a": _payload(7, signal="swing", degraded=False),
+                                   "b": _payload(3, signal="swing", degraded=False)})
+    assert s["rallies"] is None                      # the tile shows a dash, not "0"
+    assert s["rallies_suppressed_runs"] == 2
+
+
+def test_stats_all_degraded_library_is_unknown_not_zero(client):
+    s = _stat_client_with(client, {"a": _payload(4, signal="none", degraded=True)},
+                          extra_videos=["not_analysed"])
+    assert s["rallies"] is None and s["rallies_suppressed_runs"] == 1
+
+
+def test_stats_mixed_library_sums_only_the_reliable_runs(client):
+    s = _stat_client_with(client, {"a": _payload(5, signal="shuttle", degraded=False),
+                                   "b": _payload(7, signal="swing", degraded=False)})
+    assert s["rallies"] == 5 and s["rallies_suppressed_runs"] == 1
+
+
+def test_stats_reliable_run_with_zero_rallies_is_a_real_zero(client):
+    s = _stat_client_with(client, {"a": _payload(0, signal="shuttle", degraded=False)})
+    assert s["rallies"] == 0 and "rallies_suppressed_runs" not in s
+
+
+def test_stats_empty_library_is_unchanged(client):
+    s = _stat_client_with(client, {})
+    assert s["rallies"] == 0 and "rallies_suppressed_runs" not in s
+    assert s["videos"] == 0
+
+
+def test_stats_library_with_no_rally_files_is_unchanged(client):
+    s = _stat_client_with(client, {"a": None, "b": None})
+    assert s["rallies"] == 0 and "rallies_suppressed_runs" not in s

@@ -660,6 +660,9 @@ class BadmintonAnalysisSystem:
         try:
             rallies, detection = self._rally_segments_for_output(fps, last_frame)
             detection["court_view"] = court_view
+            # Recorded, not inferred: stroke labels are withheld exactly when
+            # the segmentation is degraded (an error or courtview is not).
+            detection["stroke_labels_withheld"] = bool(detection.get("degraded"))
             _write_json(path, {"fps": fps, "rallies": rallies, "detection": detection})
         except Exception as exc:
             error = exc
@@ -667,7 +670,8 @@ class BadmintonAnalysisSystem:
                   f"{traceback.format_exc()}")
             rallies = []
             detection = {"signal": "error", "degraded": False, "error": True,
-                         "reason": type(exc).__name__, "court_view": court_view}
+                         "reason": type(exc).__name__, "court_view": court_view,
+                         "stroke_labels_withheld": False}
             try:
                 _write_json(path, {"fps": fps, "rallies": rallies,
                                    "detection": detection})
@@ -1273,10 +1277,24 @@ class BadmintonAnalysisSystem:
         ``rally_detection`` (older runs, bare instances).
         """
         detection = getattr(self, "rally_detection", None) or {}
-        if detection.get("degraded"):
+        # The decision is the one recorded in rally_segments.json
+        # (``stroke_labels_withheld``); a detection without the key (bare
+        # instances) falls back to ``degraded``, which that key is derived from.
+        if detection.get("stroke_labels_withheld", bool(detection.get("degraded"))):
             print("Stroke labels withheld: segmentation unreliable -- "
                   f"{detection.get('reason') or 'no reason recorded'}. Labels over "
                   "windows that are not rallies would be noise, so none are produced.")
+            # An earlier run's labels must not survive beside this run's
+            # "withheld" statement. Only this step's own output (strokes.json);
+            # strokes.jsonl and technique_summary.json belong to technique analysis.
+            stale = os.path.join(self.save_dir, "strokes.json")
+            try:
+                os.remove(stale)
+                print(f"Removed the previous run's stroke labels: {stale}")
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"Could not remove the previous run's stroke labels {stale}: {exc}")
             return
 
         if not self.bst_weights:

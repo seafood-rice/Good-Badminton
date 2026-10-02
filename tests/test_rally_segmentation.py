@@ -1421,3 +1421,100 @@ def test_missing_rally_detection_recognition_runs_as_before(tmp_path, monkeypatc
     assert ("label_rally",) in calls
     assert (tmp_path / "strokes.json").exists()
     assert "withheld" not in capsys.readouterr().out.lower()
+
+
+# --- Task 10 fix round: withholding is recorded, and stale labels are removed ---
+
+def _spy_segmenter(monkeypatch, signal, degraded):
+    monkeypatch.setattr(
+        rallies, "segment_rallies",
+        lambda track, fps, **kw: ([], {"signal": signal, "reason": "spy",
+                                       "degraded": degraded}))
+
+
+def test_degraded_segmentation_records_that_stroke_labels_are_withheld(tmp_path):
+    track = [{"frame": i, "shuttle": None, "wrist_lower": None, "wrist_upper": None}
+             for i in range(1200)]
+    s = _writer_system(tmp_path, track, quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    det = _read_segments(tmp_path)["detection"]
+    assert det["degraded"] is True
+    assert det["stroke_labels_withheld"] is True
+    assert s.rally_detection["stroke_labels_withheld"] is True   # in place before recognition
+
+
+@pytest.mark.parametrize("signal", ["swing", "shuttle"])
+def test_reliable_signals_do_not_withhold_stroke_labels(tmp_path, monkeypatch, signal):
+    _spy_segmenter(monkeypatch, signal, degraded=False)
+    s = _writer_system(tmp_path, [], quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    assert _read_segments(tmp_path)["detection"]["stroke_labels_withheld"] is False
+
+
+def test_a_real_swing_run_does_not_withhold_stroke_labels(tmp_path):
+    s = _writer_system(tmp_path, _swing_track(range(1800), _two_bursts), quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    det = _read_segments(tmp_path)["detection"]
+    assert det["signal"] == "swing" and det["stroke_labels_withheld"] is False
+
+
+def test_courtview_does_not_withhold_stroke_labels(tmp_path):
+    s = _writer_system(tmp_path, [], rally_signal="courtview")
+    s._write_rally_segments(fps=FPS)
+    det = _read_segments(tmp_path)["detection"]
+    assert det["signal"] == "courtview" and det["stroke_labels_withheld"] is False
+
+
+def test_a_segmenter_error_does_not_withhold_stroke_labels(tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(rallies, "segment_rallies", _boom)
+    s = _writer_system(tmp_path, [])
+    s._write_rally_segments(fps=FPS)
+    det = _read_segments(tmp_path)["detection"]
+    assert det["signal"] == "error" and det["stroke_labels_withheld"] is False
+    assert s.rally_detection["stroke_labels_withheld"] is False
+
+
+def test_recognition_follows_the_recorded_withheld_flag(tmp_path, monkeypatch, capsys):
+    """The decision and the file cannot disagree: the recorded flag governs."""
+    s, calls = _bare_system_for_recognition(
+        tmp_path, monkeypatch,
+        {"signal": "swing", "degraded": False, "stroke_labels_withheld": True,
+         "reason": "r"})
+    s._run_stroke_recognition()
+    assert calls == [] and "withheld" in capsys.readouterr().out.lower()
+
+
+def test_withholding_removes_the_previous_runs_stroke_labels(tmp_path, monkeypatch):
+    """A re-run that is now degraded must not leave last run's strokes.json beside the badge."""
+    s, calls = _bare_system_for_recognition(
+        tmp_path, monkeypatch,
+        {"signal": "none", "degraded": True, "stroke_labels_withheld": True,
+         "reason": "no usable signal"})
+    (tmp_path / "strokes.json").write_text("{}", encoding="utf-8")
+    technique = tmp_path / "strokes.jsonl"            # technique analysis' output
+    technique.write_text("{}\n", encoding="utf-8")
+    summary = tmp_path / "technique_summary.json"
+    summary.write_text("{}", encoding="utf-8")
+
+    s._run_stroke_recognition()
+
+    assert calls == []
+    assert not (tmp_path / "strokes.json").exists()
+    assert technique.exists() and summary.exists()
+
+
+def test_a_failed_removal_of_stale_labels_is_logged_and_not_fatal(tmp_path, monkeypatch, capsys):
+    s, calls = _bare_system_for_recognition(
+        tmp_path, monkeypatch, {"signal": "none", "degraded": True, "reason": "r"})
+    (tmp_path / "strokes.json").write_text("{}", encoding="utf-8")
+
+    def _locked(path):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(sysmod.os, "remove", _locked)
+    s._run_stroke_recognition()                       # must not raise
+    out = capsys.readouterr().out
+    assert "strokes.json" in out and "withheld" in out.lower()
