@@ -75,6 +75,20 @@ non-regression with no weights present; full committed suite green.
 - `badminton_analysis/detection/racket.py`, `badminton_analysis/stroke/events.py`,
   `badminton_analysis/stroke_recog/{hits,inputs,recognizer}.py`, `badminton_analysis/system.py`
   (the 7 B1 tasks + final-review fix pass), plus their test files.
+- **B11** (`git diff --stat b4ee267..HEAD`, plus the final-review fix wave):
+  - `badminton_analysis/stroke/rallies.py` (new: segmenter, shared wrists/caps helpers),
+    `badminton_analysis/stroke/shot_boundary.py` (new, standalone, unwired),
+    `badminton_analysis/system.py` (calibrated gate, `_rally_track`, post-loop segmentation,
+    stroke withholding, pins), `badminton_analysis/court/mapper.py` (headless `annotate_court`),
+    `app.py` (`_rally_summary`, `/api/stats`, job result), `static/kestrel.js` (rally copy,
+    calibration stage).
+  - `scripts/check_rally_gate.py` (new harness), `scripts/score_rally_labels.py`.
+  - `tests/test_rally_segmentation.py`, `tests/test_court_view_gate.py`,
+    `tests/test_court_annotation_headless.py`, `tests/test_app_rally_summary.py`,
+    `tests/test_shot_boundary.py` (all new).
+  - `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md` (sections 0.6a and
+    15), `docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md` (as-built pointer),
+    and this file.
 
 ## Verification
 
@@ -149,8 +163,9 @@ non-regression with no weights present; full committed suite green.
     (15,086 / 17,234) - NOT the ~0.98 the plan expected to be preserved**: the old fixed 0.75
     gate recorded 16,889 / 17,234 = 0.980 frames for this clip. The calibrated cut sits well
     above 0.75, so this clip loses ~12% of frames to the gate. Recorded as a finding, not
-    tuned; the cause (heavy low tail of whole-frame NCC, e.g. occlusion or camera shake) is not
-    investigated. Calibration pre-scan 51.3 s (17,234 frames grabbed, 575 decoded); per-frame
+    tuned; the speculated cause here (occlusion or camera shake, "not investigated") is
+    **superseded by the gate-fix diagnosis below**: camera drift at the start of the video,
+    fixed by shift tolerance plus the 0.75 cap (DJI 99.6% / Axelsen 97.8%). Calibration pre-scan 51.3 s (17,234 frames grabbed, 575 decoded); per-frame
     gate pass 475.5 s total (391.8 s decoding, 83.7 s grayscale + score).
   - `--gate` Axelsen broadcast (1080p, 60 fps, 64,085 frames): calibration `median-4mad`,
     median 0.6359, MAD 0.02349, cut 0.4966, 1,491 samples. **Gate pass fraction 0.9812
@@ -189,6 +204,26 @@ non-regression with no weights present; full committed suite green.
     median 0.6633, MAD 0.0244, 1,491 samples), pass 62,690 / 64,085 = **97.8%**.
   - Tested commit: `0de0ad1` (the harness ran on the tree with those code changes
     uncommitted; the committed tree is identical).
+- **B11 end-to-end run (commit `548c536`):** a real pipeline run on DJI 0010
+  (`outputs/b11-e2e-dji0010`): signal `swing`, 19 segments, full provenance block, gate
+  coverage 0.875, empty error log. Replaying that run's own `detections.jsonl` through
+  `check_rally_gate.py --replay` reproduces all 19 segments. Scored against the human labels:
+  F1 0.653, precision 0.671, recall 0.637, 10/11 rallies found, start median +2.22 s, end
+  median -0.29 s.
+- **B11 final-review fix wave (2026-10-02):** F1 (an internal segmenter failure is
+  `signal: "error"`, not degraded), F4 (shuttle signal hedged as not yet validated), M1-M6
+  (pre-merge minors) and the F2/F3 docs. Commits `f5603f7`, `c4e4d75`, plus the docs commit
+  that carries this section.
+  - Tests, each touched file alone: `tests/test_rally_segmentation.py` 154 passed,
+    `tests/test_court_view_gate.py` 60, `tests/test_court_annotation_headless.py` 5,
+    `tests/test_app_rally_summary.py` 24, `tests/test_shot_boundary.py` 21;
+    `node --check static/kestrel.js` clean.
+  - Suite `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider
+    --ignore=tests/test_ai_handoff.py`: **953 passed** in 33 s. Tested commit: `c4e4d75` (all
+    code and tests; the only uncommitted changes at that moment were the B11 spec/plan docs).
+  - `check_rally_gate.py --replay "outputs/Dji 20260718111111 0010 D/detections.jsonl"` after
+    the fix: `swing`, 20 segments, not degraded (unchanged).
+  - `tests/test_ai_handoff.py` was not run (not touched; continuity helper unchanged).
 
 ## Blockers
 
@@ -196,21 +231,27 @@ non-regression with no weights present; full committed suite green.
   both footage types) — chasing a better clip segment without fixing detection first risks
   repeated runs with the same null result. Recommend addressing B11 (or at least a
   quick recalibration of `is_court_view`'s threshold) before another validation attempt.
-- **New defect found during the 2026-07-29 validation run (recorded 2026-08-01):** the
-  pipeline blocks on an interactive stdin prompt (`"Press Enter/Y to accept auto detection;
-  press M/R/Esc for manual annotation."`) even when invoked with `--display false`. It
-  silently consumed 4h43m of the run's 17,443s wall-clock time. Any unattended/background
-  invocation — directly relevant to B10, the planned background-job redesign — can hang
-  indefinitely at this prompt. Not fixed as part of this correction; tracked here so B10
-  planning accounts for it.
-  - **Root cause narrowed 2026-08-23, and it is worse than "the flag is ignored".**
-    `annotate_court` (`badminton_analysis/court/mapper.py:116`) takes **no** display or
-    headless parameter at all, opens a `cv2` window, and spins in `while True:
-    cv2.waitKey(1)` with no timeout; `system.py:924` calls it unconditionally. So
-    `--display false` *structurally cannot* suppress it — there is no code path that would
-    consult the flag. Recommend fixing this as a small prerequisite ahead of B11, since B11's
-    own validation needs unattended runs and B10's background job cannot exist while any
-    stage can block forever on a GUI keypress.
+- **RESOLVED (B11 Task 1, commit `577cff1`): the `annotate_court` hang.** The defect found
+  during the 2026-07-29 validation run (the pipeline blocked on an interactive stdin prompt
+  even with `--display false`, silently consuming 4h43m of that run) is fixed: `annotate_court`
+  now takes `interactive`, the pipeline passes `bool(self.show_display)`, and a non-interactive
+  run with no usable auto detection raises with a message instead of waiting on a keypress. Both
+  the refusal and the call site are covered by `tests/test_court_annotation_headless.py`. The
+  history of the root-cause investigation is in B11 spec section 0.10 and the B1 plan's
+  "Validation outcome".
+- **B11 known gaps at merge** (also in B11 spec section 15):
+  - The shuttle signal path is unvalidated: no shuttle-based segmentation has been measured on
+    any footage (section 0.16 measured the swing path only). Kestrel hedges it as "not yet
+    validated"; `/api/stats` still sums shuttle runs.
+  - Axelsen segmentation needs an owner-run full re-run with the new gate. Warning: the gate now
+    admits about 98% of its 64k frames (it admitted 0.66% before), which multiplies run time and
+    `_analysis_frames` memory; the DJI run peaked at about 2.4 GB.
+  - Shot-boundary detection (`shot_boundary.py`) is standalone, unwired and unvalidated: no
+    on-disk footage contains a cut.
+  - Pins are constructor-only (`court_view_threshold`, `rally_signal`): there are no CLI flags
+    because `main.py` is outside the claim, so the web UI cannot pin.
+  - The legacy `web_ui.html` (`/` route) disables clips for swing runs.
+  - Clip padding is 1.5 s, below section 0.16's >= 2 s start padding.
 
 ## Interruption: 2026-09-20 match-analysis defect fixes (branch `claude/b11-rally-detection`)
 
