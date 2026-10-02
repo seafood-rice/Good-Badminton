@@ -632,6 +632,22 @@ def test_a_3px_shift_barely_moves_the_score_while_the_old_score_collapses():
     assert old_aligned - old_shifted > 0.15
 
 
+def test_a_3px_vertical_shift_is_tolerated_too():
+    # 8 px at 1280 wide is 3 px at 480 wide on both axes (same scale factor).
+    rng = np.random.default_rng(46)
+    blocks = rng.integers(0, 255, (74, 160), dtype=np.uint8)
+    canvas = np.kron(blocks, np.ones((10, 8), np.uint8))[:728, :1280]
+    template = canvas[8:728, :]
+    frame = canvas[0:720, :]           # drifted 8 px vertically = 3 px at 480 wide
+    s = _fake_system()
+    small = system.downscale_for_gate(template)
+
+    aligned = s._court_view_score(template.copy(), small)
+    assert aligned > 0.99
+    assert abs(aligned - s._court_view_score(frame, small)) < 0.01
+    assert aligned - _equal_size_score(frame, template) > 0.15   # really a shift
+
+
 def test_a_shift_beyond_the_tolerance_is_penalised():
     canvas = _canvas(42, width=1304)   # 24 px = 9 px at 480 wide, > 4
     template = canvas[:, 24:1304]

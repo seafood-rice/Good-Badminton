@@ -1133,7 +1133,8 @@ def test_pipeline_writes_provenance_without_breaking_the_rallies_schema(tmp_path
     assert det["reason"] and det["caps_source"] == "quad"
     assert det["court_view"] == {"cut": 0.5, "method": "median-4mad",
                                  "calibration": "median-4mad", "pass_frac": 0.8,
-                                 "court_frames": 80, "frames": 100}
+                                 "court_frames": 80, "frames": 100,
+                                 "capped": False, "calibrated_cut": None}
     assert s.rally_detection == det                  # what Task 10 consumes
 
 
@@ -1179,7 +1180,29 @@ def test_a_missing_calibration_and_no_gate_frames_write_nulls_not_garbage(tmp_pa
     assert payload["rallies"] == []
     assert payload["detection"]["court_view"] == {
         "cut": None, "method": None, "calibration": None, "pass_frac": None,
-        "court_frames": 0, "frames": 0}
+        "court_frames": 0, "frames": 0, "capped": False, "calibrated_cut": None}
+
+
+def test_a_capped_calibration_is_recorded_in_rally_segments_json(tmp_path):
+    """The estimator wanted 0.88 and was overridden to 0.75: the file must say so."""
+    cal = sysmod.cap_court_view_cut(dict(_CAL, cut=0.88))
+    assert cal["capped"] is True
+    s = _writer_system(tmp_path, [], calibration=cal)
+    s._write_rally_segments(fps=FPS)
+    cv = _read_segments(tmp_path)["detection"]["court_view"]
+    assert cv["cut"] == 0.75
+    assert cv["capped"] is True
+    assert cv["calibrated_cut"] == pytest.approx(0.88)
+    assert cv["calibration"] == "median-4mad"
+
+
+def test_an_uncapped_calibration_records_its_cut_and_no_cap(tmp_path):
+    cal = sysmod.cap_court_view_cut(dict(_CAL, cut=0.6))
+    s = _writer_system(tmp_path, [], calibration=cal)
+    s._write_rally_segments(fps=FPS)
+    cv = _read_segments(tmp_path)["detection"]["court_view"]
+    assert cv["cut"] == 0.6 and cv["capped"] is False
+    assert cv["calibrated_cut"] == pytest.approx(0.6)
 
 
 def test_a_non_finite_cut_is_written_as_null(tmp_path):

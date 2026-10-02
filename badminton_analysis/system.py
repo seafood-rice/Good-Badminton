@@ -640,6 +640,8 @@ class BadmintonAnalysisSystem:
                 "cut": meta.get("cut"),
                 "method": meta.get("method"),
                 "calibration": meta.get("calibration"),
+                "capped": bool(meta.get("capped", False)),
+                "calibrated_cut": meta.get("calibrated_cut"),
                 "pass_frac": court_frames / frames if frames > 0 else None,
                 "court_frames": court_frames,
                 "frames": frames,
