@@ -218,7 +218,8 @@ class BadmintonAnalysisSystem:
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
-                 analysis_quality="accurate", court_view_threshold=None):
+                 analysis_quality="accurate", court_view_threshold=None,
+                 rally_signal="auto"):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -239,6 +240,13 @@ class BadmintonAnalysisSystem:
         # full-resolution, every-COURT_VIEW_CHECK_INTERVAL-frames behaviour.
         self.court_view_pinned = False
         self.court_view_template_small = None
+        # B11: "auto" | "shuttle" | "swing" go to segment_rallies; "courtview"
+        # writes the legacy in-loop court-view segments. Anything else is "auto".
+        self.rally_signal = rally_signal
+        self.rally_detection = None   # the detection block written to rally_segments.json
+        # Frames the court-view gate evaluated / passed, for the provenance block.
+        self._gate_frames = 0
+        self._gate_court_frames = 0
         if analysis_quality == "fast":
             self.analyze_technique = False  # dense analytics need every frame
         self.racket_model_path = racket_model_path
@@ -422,18 +430,8 @@ class BadmintonAnalysisSystem:
                 self._write_progress("analyzing", current_frame=frame_count)
             frame, detect_frame_count = self._process_frame(frame, template_gray, corners, roi_corners, frame_count, out, detect_frame_count)
 
-        # 视频结束时如果还在回合中，记录最后一个回合
-        if self.rally_active:
-            self.rally_segments.append((self.rally_count, self._current_rally_start, frame_count))
-
-        # 保存回合分段数据
-        rally_path = os.path.join(self.save_dir, "rally_segments.json")
-        write_json(rally_path, {
-            "fps": fps,
-            "rallies": [{"id": r[0], "start_frame": r[1], "end_frame": r[2],
-                         "start_sec": r[1]/fps, "end_sec": r[2]/fps}
-                        for r in self.rally_segments],
-        })
+        # Post-loop: segment the recorded track and write rally_segments.json.
+        self._write_rally_segments(fps, frame_count)
 
         self.end_time = time.time()
         processing_time = self.end_time - self.start_time
@@ -578,6 +576,112 @@ class BadmintonAnalysisSystem:
             "median": finite_or_none(cal.get("median")),
             "mad": finite_or_none(cal.get("mad")),
         }
+
+    RALLY_SIGNALS = ("auto", "shuttle", "swing", "courtview")
+
+    def _rally_court_view_block(self):
+        """The ``detection.court_view`` record: the gate's cut, how it was
+        chosen, and how many evaluated frames passed it. Never raises (None if
+        the record cannot be built); non-finite numbers become null."""
+        try:
+            meta = self._court_view_metadata() or {}
+            frames = int(getattr(self, "_gate_frames", 0))
+            court_frames = int(getattr(self, "_gate_court_frames", 0))
+            return {
+                "cut": meta.get("cut"),
+                "method": meta.get("method"),
+                "calibration": meta.get("calibration"),
+                "pass_frac": court_frames / frames if frames > 0 else None,
+                "court_frames": court_frames,
+                "frames": frames,
+            }
+        except Exception:
+            return None
+
+    def _rally_segments_for_output(self, fps, last_frame):
+        """``(rallies, detection)`` for rally_segments.json, per ``rally_signal``.
+
+        ``"courtview"`` is the legacy behaviour: the in-loop state machine's
+        segments, with a rally still open at the end of the video closed at
+        ``last_frame``. Everything else is ``segment_rallies`` over the
+        recorded track (an unknown value is ``"auto"``, and says so).
+        """
+        mode = getattr(self, "rally_signal", "auto")
+        note = None
+        if mode not in self.RALLY_SIGNALS:
+            note = f"unknown rally_signal {mode!r} treated as 'auto'"
+            mode = "auto"
+
+        if mode == "courtview":
+            pairs = [tuple(r) for r in self.rally_segments]
+            if self.rally_active and last_frame is not None:
+                pairs.append((self.rally_count, self._current_rally_start, last_frame))
+            rallies = [{"id": r[0], "start_frame": r[1], "end_frame": r[2],
+                        "start_sec": r[1] / fps, "end_sec": r[2] / fps,
+                        "degraded": False} for r in pairs]
+            detection = {"signal": "courtview", "attempted_signal": None,
+                         "reason": "rally_signal='courtview': in-loop court-view "
+                                   "state machine (legacy behaviour)",
+                         "degraded": False}
+            return rallies, detection
+
+        from .stroke import rallies as rallies_mod
+
+        segments, detection = rallies_mod.segment_rallies(
+            self._rally_track, fps, signal=mode,
+            quad=getattr(self, "court_corners", None))
+        detection = dict(detection)
+        if note:
+            detection["reason"] = "; ".join(
+                part for part in (detection.get("reason"), note) if part)
+        rallies = [{"id": s["id"], "start_frame": s["start_frame"],
+                    "end_frame": s["end_frame"], "start_sec": s["start_sec"],
+                    "end_sec": s["end_sec"], "degraded": s["degraded"]}
+                   for s in segments]
+        return rallies, detection
+
+    def _write_rally_segments(self, fps, last_frame=None):
+        """Segment rallies from the recorded track and write rally_segments.json.
+
+        Post-loop by design: nothing in the frame loop consumes rally segments
+        live. Never fatal: if anything around the segmenter (or the write)
+        raises, ``rallies`` is empty and ``detection`` is ``signal: "error"``,
+        ``degraded: False`` (an error is not a degraded segmentation) with only
+        the exception type as its reason; the full exception goes to the
+        console once. ``self.rally_detection`` is the detection block written.
+        """
+        import traceback
+
+        from .data.writer import write_json as _write_json
+
+        path = os.path.join(self.save_dir, "rally_segments.json")
+        court_view = self._rally_court_view_block()
+        error = None
+        try:
+            rallies, detection = self._rally_segments_for_output(fps, last_frame)
+            detection["court_view"] = court_view
+            _write_json(path, {"fps": fps, "rallies": rallies, "detection": detection})
+        except Exception as exc:
+            error = exc
+            print(f"Rally segmentation failed, writing an empty result:\n"
+                  f"{traceback.format_exc()}")
+            rallies = []
+            detection = {"signal": "error", "degraded": False, "error": True,
+                         "reason": type(exc).__name__, "court_view": court_view}
+            try:
+                _write_json(path, {"fps": fps, "rallies": rallies,
+                                   "detection": detection})
+            except Exception as write_exc:
+                print(f"Rally segments could not be written: {write_exc!r}")
+
+        self.rally_detection = detection
+        line = (f"Rally segmentation: signal={detection.get('signal')}, "
+                f"{len(rallies)} segments")
+        if error is not None:
+            line += f", error: {detection['reason']}"
+        elif detection.get("degraded"):
+            line += f", degraded: {detection.get('reason')}"
+        print(line)
 
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
         metadata = {
@@ -729,7 +833,13 @@ class BadmintonAnalysisSystem:
         # frame = self.draw_court_roi(frame, corners, roi_corners)
 
         is_court = self._court_view_for_frame(gray_frame, template_gray, frame_count)
-        
+
+        # Gate statistics for rally_segments.json's provenance (getattr: a bare
+        # instance that skipped __init__ must keep working).
+        self._gate_frames = getattr(self, "_gate_frames", 0) + 1
+        if is_court:
+            self._gate_court_frames = getattr(self, "_gate_court_frames", 0) + 1
+
         if is_court:
             self.is_court_view_count += 1
             self.consecutive_non_court_frames = 0

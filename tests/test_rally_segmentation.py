@@ -1081,3 +1081,256 @@ def test_the_rallies_module_stays_pure():
     for forbidden in ("import cv2", "badminton_analysis.system", "from ..system",
                       "import logging", "open(", "print("):
         assert forbidden not in src
+
+
+# --- Task 9: the pipeline writes rally_segments.json post-loop ----------------------
+#
+# Hermetic and runnable alone: systems are built with __new__, and the runtime
+# globals (cv2, write_json) are never needed -- the writer imports its own.
+
+_CAL = {"cut": 0.5, "method": "median-4mad", "calibration": "median-4mad",
+        "k": 4.0, "samples": 40, "median": 0.8, "mad": 0.02}
+
+
+def _writer_system(tmp_path, track, *, rally_signal="auto", quad=None, frames=100,
+                   court_frames=80, calibration=_CAL):
+    s = object.__new__(sysmod.BadmintonAnalysisSystem)
+    s.save_dir = str(tmp_path)
+    s.court_corners = quad
+    s._rally_track = track
+    s.rally_signal = rally_signal
+    s.court_view_calibration = calibration
+    s._gate_frames = frames
+    s._gate_court_frames = court_frames
+    s.rally_active = False
+    s.rally_count = 0
+    s.rally_segments = []
+    s._current_rally_start = 0
+    return s
+
+
+def _read_segments(tmp_path):
+    with open(tmp_path / "rally_segments.json", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_pipeline_writes_provenance_without_breaking_the_rallies_schema(tmp_path):
+    """player_positions.py and the UI read `rallies`; it must keep its exact shape."""
+    track = _swing_track(range(1800), _two_bursts)
+    s = _writer_system(tmp_path, track, quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    payload = _read_segments(tmp_path)
+
+    assert payload["fps"] == FPS
+    assert len(payload["rallies"]) == 2
+    for rally in payload["rallies"]:
+        assert set(rally) == {"id", "start_frame", "end_frame", "start_sec", "end_sec",
+                              "degraded"}
+        assert rally["degraded"] is False
+        assert rally["start_sec"] == pytest.approx(rally["start_frame"] / FPS)
+    det = payload["detection"]
+    assert det["signal"] == "swing" and det["degraded"] is False
+    assert det["reason"] and det["caps_source"] == "quad"
+    assert det["court_view"] == {"cut": 0.5, "method": "median-4mad",
+                                 "calibration": "median-4mad", "pass_frac": 0.8,
+                                 "court_frames": 80, "frames": 100}
+    assert s.rally_detection == det                  # what Task 10 consumes
+
+
+def test_a_degraded_segmentation_is_written_as_degraded_windows(tmp_path):
+    track = [{"frame": i, "shuttle": None, "wrist_lower": None, "wrist_upper": None}
+             for i in range(1200)]
+    s = _writer_system(tmp_path, track, quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    payload = _read_segments(tmp_path)
+    assert payload["rallies"] and all(r["degraded"] is True for r in payload["rallies"])
+    assert payload["detection"]["signal"] == "none"
+    assert payload["detection"]["degraded"] is True
+    assert "error" not in payload["detection"]
+
+
+def test_the_rally_signal_pin_reaches_the_segmenter(tmp_path, monkeypatch):
+    seen = {}
+
+    def _spy(track, fps, **kw):
+        seen.update(kw, fps=fps, n=len(track))
+        return [], {"signal": "none", "reason": "spy", "degraded": True}
+
+    monkeypatch.setattr(rallies, "segment_rallies", _spy)
+    s = _writer_system(tmp_path, _swing_track(range(10), _two_bursts),
+                       rally_signal="shuttle", quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    assert seen == {"signal": "shuttle", "quad": _QUAD, "fps": FPS, "n": 10}
+
+
+def test_an_unknown_rally_signal_is_auto_and_the_reason_says_so(tmp_path):
+    s = _writer_system(tmp_path, _swing_track(range(1800), _two_bursts),
+                       rally_signal="bogus", quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+    det = _read_segments(tmp_path)["detection"]
+    assert det["signal"] == "swing"                  # auto still chose
+    assert "bogus" in det["reason"] and "auto" in det["reason"]
+
+
+def test_a_missing_calibration_and_no_gate_frames_write_nulls_not_garbage(tmp_path):
+    s = _writer_system(tmp_path, [], calibration=None, frames=0, court_frames=0)
+    s._write_rally_segments(fps=FPS)
+    payload = _read_segments(tmp_path)
+    assert payload["rallies"] == []
+    assert payload["detection"]["court_view"] == {
+        "cut": None, "method": None, "calibration": None, "pass_frac": None,
+        "court_frames": 0, "frames": 0}
+
+
+def test_a_non_finite_cut_is_written_as_null(tmp_path):
+    cal = dict(_CAL, cut=float("-inf"), method="template-mismatch",
+               calibration="template-mismatch")
+    s = _writer_system(tmp_path, [], calibration=cal)
+    s._write_rally_segments(fps=FPS)
+    raw = (tmp_path / "rally_segments.json").read_text(encoding="utf-8")
+    assert "Infinity" not in raw and "NaN" not in raw
+    assert json.loads(raw)["detection"]["court_view"]["cut"] is None
+
+
+def test_segmenter_failure_is_never_fatal_and_is_not_degraded(tmp_path, monkeypatch, capsys):
+    def _boom(*a, **k):
+        raise RuntimeError("synthetic segmenter failure with /secret/path")
+
+    monkeypatch.setattr(rallies, "segment_rallies", _boom)
+    s = _writer_system(tmp_path, [])
+    s._write_rally_segments(fps=FPS)                 # must not raise
+
+    payload = _read_segments(tmp_path)
+    assert payload["rallies"] == []
+    det = payload["detection"]
+    assert det["signal"] == "error"
+    assert det["error"] is True and det["degraded"] is False
+    assert det["reason"] == "RuntimeError"           # the type only, never the message
+    assert "secret" not in json.dumps(payload)
+    assert det["court_view"]["frames"] == 100
+    assert s.rally_detection == det
+    out = capsys.readouterr().out
+    assert "synthetic segmenter failure" in out      # the full exception, on the console
+    assert "RuntimeError" in out
+
+
+def test_a_failing_write_is_also_contained(tmp_path, monkeypatch):
+    import badminton_analysis.data.writer as writer_mod
+
+    calls = []
+
+    def _flaky(path, payload):
+        calls.append(payload["detection"]["signal"])
+        raise OSError("disk full")
+
+    monkeypatch.setattr(writer_mod, "write_json", _flaky)
+    s = _writer_system(tmp_path, _swing_track(range(1800), _two_bursts), quad=_QUAD)
+    s._write_rally_segments(fps=FPS)                 # must not raise
+    assert calls == ["swing", "error"]
+    assert s.rally_detection["signal"] == "error"
+    assert s.rally_detection["degraded"] is False
+
+
+def test_the_constructor_accepts_rally_signal_and_defaults_to_auto():
+    params = inspect.signature(sysmod.BadmintonAnalysisSystem.__init__).parameters
+    assert params["rally_signal"].default == "auto"
+    src = inspect.getsource(sysmod.BadmintonAnalysisSystem.__init__)
+    assert "self.rally_signal = rally_signal" in src
+
+
+def test_process_video_writes_segments_after_the_frame_loop():
+    src = inspect.getsource(sysmod.BadmintonAnalysisSystem.process_video)
+    assert (src.index("self._process_frame(") < src.index("self._write_rally_segments(")
+            < src.index("self._run_stroke_recognition()"))
+
+
+# --- R20: rally_signal="courtview" reproduces today's rally_segments.json ----------
+
+def _drive_inloop_machine(tmp_path, monkeypatch, blocks):
+    """Run today's in-loop court-view state machine through the real
+    ``_process_frame`` and the real PINNED gate (check interval 3), with only the
+    NCC itself stubbed: a frame's value says whether it matches the template."""
+    import types
+
+    import numpy as np
+
+    stub_cv2 = types.SimpleNamespace(COLOR_BGR2GRAY=6,
+                                     cvtColor=lambda frame, code: frame[:, :, 0])
+    monkeypatch.setattr(sysmod, "cv2", stub_cv2, raising=False)
+
+    s = _writer_system(tmp_path, [], rally_signal="courtview", frames=0, court_frames=0)
+    s.show_display = False
+    s.show_pose_roi = False
+    s.court_view_frames_threshold = 5
+    s.non_court_frames_threshold = 5
+    s.is_court_view_count = 0
+    s.consecutive_non_court_frames = 0
+    s.court_view_pinned = True               # court_view_threshold pinned
+    s.court_view_threshold_override = 0.5
+    s.court_view_cut = 0.5
+    s.court_view_calibration = {"cut": 0.5, "method": "manual",
+                                "calibration": "manual", "samples": 0}
+    s.player_tracker = types.SimpleNamespace(start_new_rally=lambda: None)
+    s.shuttlecock_tracker = types.SimpleNamespace(clear_trajectory=lambda: None)
+    s.is_court_view = lambda gray, tmpl, threshold=None: bool(gray[0, 0])
+    s._analyze_this_frame = lambda frame_count: False      # no pose/ball work
+    out = types.SimpleNamespace(write=lambda frame: None)
+
+    frame_count = 0
+    for is_court, n in blocks:
+        for _ in range(n):
+            frame_count += 1
+            frame = np.full((4, 4, 3), 1 if is_court else 0, dtype=np.uint8)
+            s._process_frame(frame, None, [(0, 0)] * 4, [(0, 0), (2, 2)],
+                             frame_count, out, 0)
+    return s, frame_count
+
+
+# Block lengths are multiples of the pinned gate's 3-frame check interval and the
+# sequence starts on a check frame, so the held gate equals the raw sequence.
+_COURTVIEW_BLOCKS = [(True, 21), (False, 9), (True, 33), (False, 3), (True, 18),
+                     (False, 9), (True, 3), (False, 9), (True, 21)]
+# Hand-derived from the pre-change machine: a rally starts when the 5th
+# consecutive court frame arrives, ends on the 5th consecutive non-court frame,
+# a 3-frame dip does not end it, a 3-frame blip does not start one, and the
+# still-open rally is closed at the last frame of the video.
+_COURTVIEW_EXPECTED = [(1, 5, 26), (2, 35, 89), (3, 110, 126)]
+
+
+def test_courtview_pin_writes_exactly_todays_rallies(tmp_path, monkeypatch):
+    fps = 30.0
+    s, last = _drive_inloop_machine(tmp_path, monkeypatch, _COURTVIEW_BLOCKS)
+    assert last == 126
+    assert s.rally_segments == _COURTVIEW_EXPECTED[:2]      # the open one is not yet closed
+    assert s.rally_active is True
+
+    s._write_rally_segments(fps=fps, last_frame=last)
+    payload = _read_segments(tmp_path)
+
+    today = [{"id": i, "start_frame": a, "end_frame": b,
+              "start_sec": a / fps, "end_sec": b / fps}
+             for i, a, b in _COURTVIEW_EXPECTED]
+    assert [{k: v for k, v in r.items() if k != "degraded"}
+            for r in payload["rallies"]] == today
+    assert all(r["degraded"] is False for r in payload["rallies"])
+    assert payload["fps"] == fps and set(payload) == {"fps", "rallies", "detection"}
+    det = payload["detection"]
+    assert det["signal"] == "courtview" and det["degraded"] is False
+    assert det["court_view"]["method"] == "manual"
+    assert det["court_view"]["cut"] == 0.5
+    # the gate counters are fed by _process_frame itself
+    assert det["court_view"]["frames"] == 126
+    assert det["court_view"]["court_frames"] == 21 + 33 + 18 + 3 + 21
+    assert det["court_view"]["pass_frac"] == pytest.approx(96 / 126)
+    # writing must not close the live rally in the machine itself
+    assert s.rally_segments == _COURTVIEW_EXPECTED[:2]
+
+
+def test_the_courtview_pin_never_calls_the_segmenter(tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("segment_rallies must not run for courtview")
+
+    monkeypatch.setattr(rallies, "segment_rallies", _boom)
+    s, last = _drive_inloop_machine(tmp_path, monkeypatch, _COURTVIEW_BLOCKS)
+    s._write_rally_segments(fps=30.0, last_frame=last)
+    assert _read_segments(tmp_path)["detection"]["signal"] == "courtview"
