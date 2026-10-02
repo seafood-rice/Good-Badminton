@@ -3,20 +3,24 @@
 - **workstream_id:** `match-stroke-recognition-b`
 - **Objective:** Sub-project B - full-match stroke recognition, extending the completed
   Sub-project A per-rally analysis, per the approved completion bar.
-- **Scope paths:** `badminton_analysis/tracking/player.py`, `badminton_analysis/system.py`,
-  `badminton_analysis/stroke/events.py`, `badminton_analysis/stroke_recog/`,
-  `badminton_analysis/shuttle_track/`, `third_party/tracknet/`, `app.py`, `static/kestrel.js`,
-  `tests/test_player_half_classification.py` and related test files, plus this workstream
-  file and its design/plan docs.
+- **Scope paths (B11 claim `3388e5e9-cd73-46ad-b066-452e89c4dcf0`):**
+  `.ai/workstreams/match-stroke-recognition-b.md`, `badminton_analysis/court/mapper.py`,
+  `badminton_analysis/system.py`, `badminton_analysis/stroke/rallies.py`,
+  `badminton_analysis/stroke/shot_boundary.py`, `app.py`, `static/kestrel.js`,
+  `scripts/score_rally_labels.py`, `scripts/check_rally_gate.py`,
+  `tests/test_court_annotation_headless.py`, `tests/test_court_view_gate.py`,
+  `tests/test_rally_segmentation.py`, `tests/test_shot_boundary.py`, and the B11 plan, B11
+  spec and B completion-bar spec.
 - **State:** active
-- **Branch:** `claude/match-stroke-recognition-b`
+- **Branch:** `claude/match-stroke-recognition-b`, recreated 2026-09-29 from `origin/main` for
+  B11. (The B1 branch of the same name was squash-merged as #2/#3 and deleted; the 2026-09-20
+  defect fixes and the B11 plan landed from `claude/b11-rally-detection` as #7.)
 - **Worktree:** primary checkout (no separate worktree)
-- **Base commit:** `fe31415` (first commit on this branch: the `player.py` net-line fix) -
-  branched from `claude/motionbert-3d-lifting`'s tip rather than `main`, since
-  `main` is far behind and the MotionBERT branch's PR (seafood-rice/Good-Badminton#1) is
-  expected to land first; this branch will likely need a rebase once that merges.
-- **Head commit:** `1ac402b` (final-review fix pass, all 7 B1 tasks + prerequisite fix landed).
-- **Last milestone:** 2026-07-29 - **B1 (both-player capture + hitter selection) complete.**
+- **Base commit:** `b4ee267bfac35fb75dd8ee81812a3a506b546d31` (`origin/main` after #10)
+- **Head commit:** `1628b562042719953f7ca8d4640e326823f8ba9f`
+- **Last milestone:** 2026-10-02T14:07:17Z - B11 complete: all 12 plan tasks + the court-view gate fix implemented, task-reviewed, final whole-branch review with one fix wave and re-review clean; E2E production run on DJI 0010 verified.
+  claimed, plan to be executed task by task from Task 1. Previous milestone, 2026-07-29 -
+  **B1 (both-player capture + hitter selection) complete.**
   All 7 tasks implemented via subagent-driven-development (fresh implementer + task review
   per task), plus a final whole-branch review that found and fixed 5 Important
   cross-task issues invisible at task scope: the racket YOLO model ran twice per frame,
@@ -71,6 +75,20 @@ non-regression with no weights present; full committed suite green.
 - `badminton_analysis/detection/racket.py`, `badminton_analysis/stroke/events.py`,
   `badminton_analysis/stroke_recog/{hits,inputs,recognizer}.py`, `badminton_analysis/system.py`
   (the 7 B1 tasks + final-review fix pass), plus their test files.
+- **B11** (`git diff --stat b4ee267..HEAD`, plus the final-review fix wave):
+  - `badminton_analysis/stroke/rallies.py` (new: segmenter, shared wrists/caps helpers),
+    `badminton_analysis/stroke/shot_boundary.py` (new, standalone, unwired),
+    `badminton_analysis/system.py` (calibrated gate, `_rally_track`, post-loop segmentation,
+    stroke withholding, pins), `badminton_analysis/court/mapper.py` (headless `annotate_court`),
+    `app.py` (`_rally_summary`, `/api/stats`, job result), `static/kestrel.js` (rally copy,
+    calibration stage).
+  - `scripts/check_rally_gate.py` (new harness), `scripts/score_rally_labels.py`.
+  - `tests/test_rally_segmentation.py`, `tests/test_court_view_gate.py`,
+    `tests/test_court_annotation_headless.py`, `tests/test_app_rally_summary.py`,
+    `tests/test_shot_boundary.py` (all new).
+  - `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md` (sections 0.6a and
+    15), `docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md` (as-built pointer),
+    and this file.
 
 ## Verification
 
@@ -107,28 +125,136 @@ non-regression with no weights present; full committed suite green.
   TrackNetV3's dense pre-pass is genuinely slow at native 4K (2.33 s/frame measured, vs 0.385
   s/frame at 1080p) regardless of GPU, because the bottleneck is per-pixel preprocessing, not
   the network itself — not because the machine lacks a GPU.
+- **B11 Task 6 fidelity gate (2026-09-30).** Command:
+  `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B scripts/score_rally_labels.py [--detections <path>] [--out <path>]`
+  (as-shipped constants swing_frac 0.25 / gap 1.0 / min_len 2.0; labels `outputs/b11-labelling/LABELS.md`).
+  - Step 1, UNMODIFIED script, pre-#7 fixture (`outputs/Dji 20260718111111 0010 D/detections.jsonl`):
+    F1 0.6439, precision 0.642, recall 0.646, 10/11 rallies found, start median +1.90 s,
+    end median +0.59 s. Matched the pre-task backup; §0.16's F1 0.644 applies to this
+    pre-#7 fixture only.
+  - Step 3, script routed through `rallies.wrists_from_hands` / `baseline_caps` /
+    `swing_activity` / `segments_from_activity` (caps 21.3 / 120.9 px from `metadata.json`),
+    same pre-#7 fixture: F1 0.6439, precision 0.642, recall 0.646, 10/11, start +1.90 s,
+    end +0.59 s. Byte-identical to Step 1 (including the grid search and `score_result.json`),
+    so the +-0.02 F1 and 10/11 criteria both held with delta 0. Nothing tuned.
+  - R10 re-measurement, a different input (post-PR-#7 run,
+    `outputs/b11-post7-dji0010/detections.jsonl`, far-court hands in 14,256 records vs ~1,483):
+    F1 0.6435, precision 0.646, recall 0.641, 10/11, start median +2.20 s, end median -0.26 s.
+    A new measurement for new data, not a pass/fail against 0.644.
+  - Tests: `tests/test_rally_segmentation.py` 46 passed; suite minus
+    `tests/test_ai_handoff.py` 778 passed. The two script-equivalence tests now use a frozen
+    copy of the d280bec script arithmetic as their oracle.
+  - Tested commit: parent `d280bec` plus working tree (`scripts/score_rally_labels.py`,
+    `tests/test_rally_segmentation.py`, this file); the commit that lands them is the one whose
+    message is `test(rallies): score the shipped swing signal against the human labels`.
+- **B11 Task 12 validation harness (2026-10-02).** `scripts/check_rally_gate.py` (new; prints
+  only, writes nothing under `outputs/`). Reuses production code: `--gate` builds
+  `BadmintonAnalysisSystem.__new__` (no weights) and calls `_load_template`,
+  `_calibrate_court_view` (timed alone; a counting `cv2.VideoCapture` proxy reports frames
+  grabbed/decoded) and `_court_view_downscaled` per frame; `--replay` uses
+  `rallies.wrists_from_hands` and `rallies.segment_rallies(quad=corners)` with fps and corners
+  from the run's `metadata.json` (shuttle key is `shuttlecock.image`). Command form:
+  `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B scripts/check_rally_gate.py --gate <video> --template <png>`
+  / `--replay <detections.jsonl>`.
+  - **Contention:** another python process (PID 20108, ~2.4 GB, the long analysis job) was
+    running throughout and was not stopped; all timings below are inflated by an unknown amount.
+  - `--gate` DJI 0010 (3840x2160, 59.94 fps, 17,234 frames): calibration `median-4mad`,
+    median 0.9428, MAD 0.01083, cut 0.8786, 575 samples. **Gate pass fraction 0.8754
+    (15,086 / 17,234) - NOT the ~0.98 the plan expected to be preserved**: the old fixed 0.75
+    gate recorded 16,889 / 17,234 = 0.980 frames for this clip. The calibrated cut sits well
+    above 0.75, so this clip loses ~12% of frames to the gate. Recorded as a finding, not
+    tuned; the speculated cause here (occlusion or camera shake, "not investigated") is
+    **superseded by the gate-fix diagnosis below**: camera drift at the start of the video,
+    fixed by shift tolerance plus the 0.75 cap (DJI 99.6% / Axelsen 97.8%). Calibration pre-scan 51.3 s (17,234 frames grabbed, 575 decoded); per-frame
+    gate pass 475.5 s total (391.8 s decoding, 83.7 s grayscale + score).
+  - `--gate` Axelsen broadcast (1080p, 60 fps, 64,085 frames): calibration `median-4mad`,
+    median 0.6359, MAD 0.02349, cut 0.4966, 1,491 samples. **Gate pass fraction 0.9812
+    (62,881 / 64,085)**, up from 0.0066 at the old 0.75 gate. Calibration pre-scan 30.6 s
+    (64,085 grabbed, 1,491 decoded); per-frame gate pass 373.2 s total (199.3 s decoding,
+    173.8 s grayscale + score).
+  - `--replay` DJI 0010 pre-#7 (`outputs/Dji 20260718111111 0010 D/detections.jsonl`, 16,889
+    records): `suppressed_static_shuttle` = 1 cluster at (473.0, 846.0), 3,941 points (R11
+    fixture suppression confirmed on real data); signal `swing`, not degraded; 20 segments
+    (median 5.37 s, shortest 2.05 s, longest 12.61 s); `shuttle_density` 0.00101;
+    `caps_source` `quad`; `gated_outside_court` 236.
+  - `--replay` post-#7 (`outputs/b11-post7-dji0010/detections.jsonl`, 16,889 records):
+    identical suppression (1 cluster, (473.0, 846.0), 3,941 points), `swing`, not degraded;
+    21 segments (median 4.20 s, shortest 2.34 s, longest 14.03 s); `shuttle_density` 0.00101;
+    `caps_source` `quad`; `gated_outside_court` 236.
+  - **not run:** Axelsen segmentation replay - its recorded `detections.jsonl` has ~426 records
+    (recorded at the old 0.75 gate), so a replay is meaningless; it requires a full Axelsen
+    re-run with the new gate (owner-run Step 4). Task 11 shot-boundary real-footage validation
+    - no on-disk sample contains a cut (hermetic tests only).
+  - Suite: `--ignore=tests/test_ai_handoff.py` 922 passed.
+  - Tested commit: parent `f9aaf62` plus working tree (`scripts/check_rally_gate.py`, this
+    file); the commit that lands them is `test(b11): staged gate and segmenter-replay
+    validation harness`.
+
+- **B11 gate fix (2026-10-02):** Task 12 found the calibrated gate passing 87.6% of DJI 0010
+  (old 0.75: 98%). Fixed in `0de0ad1` (`system.py`, `tests/test_court_view_gate.py`):
+  shift-tolerant unpinned score (`COURT_VIEW_SHIFT_PX = 4`, max NCC over the slid cropped
+  template, shared by calibration and live gate) plus a 0.75 cap on calibrated cuts
+  (`court.court_view.capped` / `calibrated_cut`). Spec correction: §0.6a.
+  - Tests: RED 9 failed / 46 passed (new tests vs old code), GREEN 55 passed in
+    `tests/test_court_view_gate.py`; suite `--ignore=tests/test_ai_handoff.py` 936 passed.
+  - Per-frame score cost (synthetic gray, 300 iterations, mean): 4K 1.89 ms new vs 1.93 ms
+    old; 1080p 1.18 ms new vs 1.27 ms old.
+  - `check_rally_gate.py --gate`, DJI 0010: cut 0.75 (capped from 0.8813, median 0.9432, MAD
+    0.0104, 575 samples), pass 17,167 / 17,234 = **99.6%**. Axelsen: cut 0.5189 (not capped,
+    median 0.6633, MAD 0.0244, 1,491 samples), pass 62,690 / 64,085 = **97.8%**.
+  - Tested commit: `0de0ad1` (the harness ran on the tree with those code changes
+    uncommitted; the committed tree is identical).
+- **B11 end-to-end run (code at commit `548c536`, i.e. before the gate fix):** a real pipeline run on DJI 0010
+  (`outputs/b11-e2e-dji0010`): signal `swing`, 19 segments, full provenance block, gate
+  coverage 0.875, empty error log. Replaying that run's own `detections.jsonl` through
+  `check_rally_gate.py --replay` reproduces all 19 segments. Scored against the human labels:
+  F1 0.653, precision 0.671, recall 0.637, 10/11 rallies found, start median +2.22 s, end
+  median -0.29 s.
+- **B11 final-review fix wave (2026-10-02):** F1 (an internal segmenter failure is
+  `signal: "error"`, not degraded), F4 (shuttle signal hedged as not yet validated), M1-M6
+  (pre-merge minors) and the F2/F3 docs. Commits `f5603f7`, `c4e4d75`, plus the docs commit
+  that carries this section.
+  - Tests, each touched file alone: `tests/test_rally_segmentation.py` 154 passed,
+    `tests/test_court_view_gate.py` 60, `tests/test_court_annotation_headless.py` 5,
+    `tests/test_app_rally_summary.py` 24, `tests/test_shot_boundary.py` 21;
+    `node --check static/kestrel.js` clean.
+  - Suite `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider
+    --ignore=tests/test_ai_handoff.py`: **953 passed** in 33 s. Tested commit: `c4e4d75` (all
+    code and tests; the only uncommitted changes at that moment were the B11 spec/plan docs).
+  - `check_rally_gate.py --replay "outputs/Dji 20260718111111 0010 D/detections.jsonl"` after
+    the fix: `swing`, 20 segments, not degraded (unchanged).
+  - `tests/test_ai_handoff.py` was not run (not touched; continuity helper unchanged).
 
 ## Blockers
 
+- **Continuity-scope note (B11):** `tests/test_app_rally_summary.py` was created in B11 Task 10
+  but was not in this workstream's recorded claim scope (claims `3388e5e9` and its takeover
+  `fc55462f`); the helper's scope cannot widen mid-claim. Recorded here so the gap is visible.
 - Further real-footage validation of B1 is coupled to B11 (rally/court-view detection fixes on
   both footage types) — chasing a better clip segment without fixing detection first risks
   repeated runs with the same null result. Recommend addressing B11 (or at least a
   quick recalibration of `is_court_view`'s threshold) before another validation attempt.
-- **New defect found during the 2026-07-29 validation run (recorded 2026-08-01):** the
-  pipeline blocks on an interactive stdin prompt (`"Press Enter/Y to accept auto detection;
-  press M/R/Esc for manual annotation."`) even when invoked with `--display false`. It
-  silently consumed 4h43m of the run's 17,443s wall-clock time. Any unattended/background
-  invocation — directly relevant to B10, the planned background-job redesign — can hang
-  indefinitely at this prompt. Not fixed as part of this correction; tracked here so B10
-  planning accounts for it.
-  - **Root cause narrowed 2026-08-23, and it is worse than "the flag is ignored".**
-    `annotate_court` (`badminton_analysis/court/mapper.py:116`) takes **no** display or
-    headless parameter at all, opens a `cv2` window, and spins in `while True:
-    cv2.waitKey(1)` with no timeout; `system.py:924` calls it unconditionally. So
-    `--display false` *structurally cannot* suppress it — there is no code path that would
-    consult the flag. Recommend fixing this as a small prerequisite ahead of B11, since B11's
-    own validation needs unattended runs and B10's background job cannot exist while any
-    stage can block forever on a GUI keypress.
+- **RESOLVED (B11 Task 1, commit `577cff1`): the `annotate_court` hang.** The defect found
+  during the 2026-07-29 validation run (the pipeline blocked on an interactive stdin prompt
+  even with `--display false`, silently consuming 4h43m of that run) is fixed: `annotate_court`
+  now takes `interactive`, the pipeline passes `bool(self.show_display)`, and a non-interactive
+  run with no usable auto detection raises with a message instead of waiting on a keypress. Both
+  the refusal and the call site are covered by `tests/test_court_annotation_headless.py`. The
+  history of the root-cause investigation is in B11 spec section 0.10 and the B1 plan's
+  "Validation outcome".
+- **B11 known gaps at merge** (also in B11 spec section 15):
+  - The shuttle signal path is unvalidated: no shuttle-based segmentation has been measured on
+    any footage (section 0.16 measured the swing path only). Kestrel hedges it as "not yet
+    validated"; `/api/stats` still sums shuttle runs.
+  - Axelsen segmentation needs an owner-run full re-run with the new gate. Warning: the gate now
+    admits about 98% of its 64k frames (it admitted 0.66% before), which multiplies run time and
+    `_analysis_frames` memory; the DJI run peaked at about 2.4 GB.
+  - Shot-boundary detection (`shot_boundary.py`) is standalone, unwired and unvalidated: no
+    on-disk footage contains a cut.
+  - Pins are constructor-only (`court_view_threshold`, `rally_signal`): there are no CLI flags
+    because `main.py` is outside the claim, so the web UI cannot pin.
+  - The legacy `web_ui.html` (`/` route) disables clips for swing runs.
+  - Clip padding is 1.5 s, below section 0.16's >= 2 s start padding.
 
 ## Interruption: 2026-09-20 match-analysis defect fixes (branch `claude/b11-rally-detection`)
 
@@ -169,26 +295,11 @@ re-analysis. Its *data* still has no upper player — that needs a re-run.
 
 ## Next action
 
-Resume the B11 plan (`docs/superpowers/plans/2026-08-23-rally-play-detection-b11.md`) from
-Task 1. Note that Task 1's `annotate_court` headless fix is still outstanding and is now
-more relevant, since re-analysing the 0007 video unattended would hit that hang.
-
-**Superseded 2026-08-23.** The owner took path (a): B1 stands on its synthetic/unit/end-to-end
-evidence plus the honestly-reported upstream-blocked real-footage attempt, and B11 is the
-next milestone delivery.
-
-Write B11's implementation plan. All owner decisions are now in (B11 spec §12a, including
-C's replacement behaviour), so the plan covers the C1 court-view gate rewrite, C2's
-shuttle/swing signals with density gating and static-artifact suppression, the degraded
-coarse-window path with stroke recognition withheld, fps-normalised parameters, the
-`system.py` wiring, and decision A's new shot-boundary component (hermetic tests only, real-
-footage validation blocked on a genuine broadcast sample).
-
-Recommended sequencing inside B11: fix the `annotate_court` headless hang first (see the
-Blockers section), because B11's own validation needs unattended runs. B2-B10 (segment-scoped
-dense tracking, budgeted selection, the background-job redesign, fps/resolution
-normalization) remain separate, not-yet-planned pieces of the broader Sub-project B effort
-per the completion-bar doc.
+Owner reviews and squash-merges PR #11 (https://github.com/seafood-rice/Good-Badminton/pull/11; fix the squash message trailers). Then owner-run: full Axelsen re-run with the new gate (expect long run time / memory) to validate the shuttle path; then plan B2-B10.
 
 <!-- ai-continuity:milestones:start -->
+- 2026-10-02T14:07:17Z - state: active - B11 complete: all 12 plan tasks + the court-view gate fix implemented, task-reviewed, final whole-branch review with one fix wave and re-review clean; E2E production run on DJI 0010 verified.
+  - Changed paths: `.ai/workstreams/match-stroke-recognition-b.md`
+  - Verification: passed - command `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique> (1246 passed, 3 skipped)` - commit `1628b562042719953f7ca8d4640e326823f8ba9f` - dirty paths: `.ai/workstreams/match-stroke-recognition-b.md`
+  - Next action: Owner reviews and squash-merges PR #11 (https://github.com/seafood-rice/Good-Badminton/pull/11; fix the squash message trailers). Then owner-run: full Axelsen re-run with the new gate (expect long run time / memory) to validate the shuttle path; then plan B2-B10.
 <!-- ai-continuity:milestones:end -->

@@ -1,5 +1,9 @@
 # B11 — Rally / Play Detection Implementation Plan
 
+> **As built:** this plan's code blocks and task text were amended during execution (rulings
+> R1-R21 and the fix rounds); where they differ from what shipped, spec section 15 ("As built",
+> `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md`) is authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
