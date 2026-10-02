@@ -9,10 +9,16 @@ re-run without re-processing the video.
 Measured limits, which callers must not overstate (design spec §0.16, scored
 against human labels on the owner's own footage): the swing signal finds 10 of
 11 rallies but bounds them poorly -- frame-level F1 0.644, a +1.90 s median
-start lag, rally count inflated +36%, total rally time +41%. It is fit for
+start lag, rally count inflated +36%, total rally time +41%. Those are the
+pre-#7 fixture figures. Re-measured since: the post-#7 re-run gives F1 0.6435
+and a +2.20 s start lag, and the shipped pipeline (measured on
+outputs/b11-e2e-dji0010) gives F1 0.653 and a +2.22 s start lag. It is fit for
 deciding which spans deserve expensive downstream work. It is NOT fit for
 defining authoritative rally windows, and a consumer needing the serve inside
 its window must pad the start by at least ~2 s.
+
+Only the swing path has been measured. The shuttle path is unvalidated: no
+shuttle-based segmentation has been scored on any footage.
 """
 import math
 

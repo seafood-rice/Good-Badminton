@@ -798,3 +798,94 @@ def test_a_manual_pin_is_never_capped(monkeypatch):
     assert record["cut"] == 0.9
     assert record["capped"] is False
     assert record["calibrated_cut"] is None
+
+
+# --- M5: calibration runs AFTER court annotation, with a progress update --------
+
+
+class _StopRun(Exception):
+    """Raised by a stub to end process_video once the step under test has run."""
+
+
+class _FakeCap:
+    def isOpened(self):
+        return True
+
+    def get(self, prop):
+        return {"fps": 30.0, "frames": 300, "w": 1920, "h": 1080}[prop]
+
+    def release(self):
+        pass
+
+
+def _process_video_driver(tmp_path, monkeypatch, annotation, order):
+    """A bare system whose process_video is run up to ``_write_metadata`` with every
+    heavy step stubbed; each step appends its name to ``order``."""
+    import types
+
+    fake_cv2 = types.SimpleNamespace(
+        VideoCapture=lambda path: _FakeCap(), CAP_PROP_FPS="fps",
+        CAP_PROP_FRAME_COUNT="frames", CAP_PROP_FRAME_WIDTH="w", CAP_PROP_FRAME_HEIGHT="h")
+    monkeypatch.setattr(system, "cv2", fake_cv2, raising=False)
+
+    s = object.__new__(system.BadmintonAnalysisSystem)
+    s.video_path = "fake.mp4"
+    s.save_dir = str(tmp_path)
+    s.court_view_threshold_override = None
+    s._get_template_path = lambda: "tpl.png"
+    s._load_template = lambda path, cap: ("gray", "color", "small")
+    s._setup_video_writer = lambda w, h, fps: object()
+
+    def _annotation(template_color):
+        order.append("annotation")
+        return annotation()
+
+    s._setup_court_annotation = _annotation
+    s._write_progress = lambda stage, current_frame=None: order.append(f"progress:{stage}")
+    s._prepare_court_view_cut = lambda small, fps: order.append("calibration")
+
+    def _metadata(*a, **k):
+        order.append("metadata")
+        raise _StopRun
+
+    s._write_metadata = _metadata
+    return s
+
+
+def test_calibration_runs_after_court_annotation_and_before_metadata(tmp_path, monkeypatch):
+    order = []
+    s = _process_video_driver(
+        tmp_path, monkeypatch,
+        lambda: ([(0, 0)] * 4, [(0, 0), (1, 1)], 5), order)
+    with pytest.raises(_StopRun):
+        s.process_video()
+    assert order.index("annotation") < order.index("calibration") < order.index("metadata")
+
+
+def test_a_progress_stage_is_written_before_the_calibration_prescan(tmp_path, monkeypatch):
+    order = []
+    s = _process_video_driver(
+        tmp_path, monkeypatch,
+        lambda: ([(0, 0)] * 4, [(0, 0), (1, 1)], 5), order)
+    with pytest.raises(_StopRun):
+        s.process_video()
+    assert order.index("progress:calibrating_court_view") < order.index("calibration")
+    assert order.index("annotation") < order.index("progress:calibrating_court_view")
+
+
+def test_a_failed_court_annotation_raises_before_any_calibration_work(tmp_path, monkeypatch):
+    order = []
+
+    def _fails():
+        raise RuntimeError("Court annotation is incomplete")
+
+    s = _process_video_driver(tmp_path, monkeypatch, _fails, order)
+    with pytest.raises(RuntimeError, match="Court annotation is incomplete"):
+        s.process_video()
+    assert "calibration" not in order
+    assert "progress:calibrating_court_view" not in order
+    assert "metadata" not in order
+
+
+def test_the_calibration_progress_stage_is_known_to_the_progress_writer():
+    assert system.BadmintonAnalysisSystem._PROGRESS_STAGE_PCT["calibrating_court_view"] == 3

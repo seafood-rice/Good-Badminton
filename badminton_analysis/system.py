@@ -412,7 +412,6 @@ class BadmintonAnalysisSystem:
         template_path = self._get_template_path()
         template_gray, template_color, template_small = self._load_template(template_path, cap)
         self.court_view_template_small = template_small
-        self._prepare_court_view_cut(template_small, fps)
         
 
         self.frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -425,6 +424,13 @@ class BadmintonAnalysisSystem:
         self.court_roi_corners = roi_corners
         self._write_progress("court_setup")
         progress_interval = max(1, int(fps))
+
+        # Calibration is a 30-50 s pre-scan, so it runs only after court annotation
+        # has succeeded (a failed annotation raises before any of that work) and
+        # after a progress update; it must still precede _write_metadata, which
+        # records the cut (R14). Never fatal.
+        self._write_progress("calibrating_court_view")
+        self._prepare_court_view_cut(template_small, fps)
 
         self._write_metadata(fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height)
         self._run_shuttle_pretrack()
@@ -555,8 +561,11 @@ class BadmintonAnalysisSystem:
     def _calibrate_court_view(self, video_path, template_small, fps):
         """Strided pre-scan deriving this video's court-view cut.
 
-        Only the sampled frames are decoded (``grab()`` skips the rest). Any
-        failure falls back to the shipped constant and says so.
+        Every frame is grabbed, and with the FFmpeg backend ``grab()`` decodes
+        the frame; only the sampled frames are retrieved and scored. Measured
+        cost is therefore ~31-51 s per video (17,234 grabs took ~51 s), not
+        the cost of the sampled frames alone. Any failure falls back to the
+        shipped constant and says so.
         """
         import cv2
 
@@ -1466,7 +1475,8 @@ class BadmintonAnalysisSystem:
 
     # Per-stage fixed pct for non-analyzing stages; analyzing derives from frames.
     _PROGRESS_STAGE_PCT = {
-        "initializing": 1, "court_setup": 3, "analyzing": None,
+        "initializing": 1, "court_setup": 3, "calibrating_court_view": 3,
+        "analyzing": None,
         "visualizing": 97, "encoding": 99, "done": 100,
     }
 

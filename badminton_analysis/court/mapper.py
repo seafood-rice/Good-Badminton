@@ -171,7 +171,9 @@ def annotate_court(image, auto_preview_path=None, interactive=True):
     if not interactive:
         raise RuntimeError(
             "auto court detection failed and annotate_court is non-interactive; "
-            "supply <output-dir>/court_annotations.txt or run once interactively to annotate")
+            "supply <output-dir>/court_annotations.txt, annotate the court in the "
+            "web UI (Kestrel's manual court annotation step), or run once "
+            "interactively to annotate")
 
     corners = []
     mid_height = [680]

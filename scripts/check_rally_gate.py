@@ -31,7 +31,8 @@ class _CountingCapture:
     """Delegating ``cv2.VideoCapture`` that counts grab/retrieve/read calls.
 
     Lets the harness report how many frames the production calibration pre-scan
-    traversed (grab) and decoded (retrieve) without copying its sampling loop.
+    grabbed (with the FFmpeg backend ``grab()`` DECODES every frame) and how
+    many it retrieved and scored, without copying its sampling loop.
     """
     grabs = 0
     retrieves = 0
@@ -114,7 +115,7 @@ def gate(video, template_path):
         "container_frame_count": total,
         "calibration": calib,
         "calibration_frames_grabbed": _CountingCapture.grabs,
-        "calibration_frames_sampled_decoded": _CountingCapture.retrieves,
+        "calibration_frames_sampled_retrieved": _CountingCapture.retrieves,
         "calibration_seconds": round(calibration_sec, 2),
         "gate_pass_frames_decoded": decoded,
         "gate_pass_frames_passed": passed,

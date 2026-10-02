@@ -20,8 +20,10 @@ window and excluding any spans the labeller marked unusable:
   * a small grid search over swing_frac / gap_sec / min_len_sec, so the constants can be
     FITTED to this footage rather than inherited from rep_segmenter's drill context
 
-Nothing here is committed as production behaviour -- it is the measurement that decides
-whether the swing path can ship validated or must stay experimental (B11 design doc §0.15).
+This scores the PRODUCTION segmenter (``badminton_analysis.stroke.rallies``) against the
+human labels; it is the measurement that decided whether the swing path could ship
+validated or had to stay experimental (B11 design doc §0.15-§0.16). The grid search is
+diagnostic only -- the as-shipped constants are deliberately not the fitted ones.
 """
 import argparse
 import json

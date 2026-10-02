@@ -952,13 +952,14 @@ window.Kestrel = (function () {
   var STAGE_LABELS = {
     loading: ['加载模型', 'Loading model'], analyzing: ['分析动作', 'Analyzing'],
     initializing: ['初始化', 'Initializing'],
-    court_setup: ['球场设置', 'Court setup'], visualizing: ['生成可视化', 'Visualizing'],
+    court_setup: ['球场设置', 'Court setup'], calibrating_court_view: ['校准球场画面', 'Calibrating court view'],
+    visualizing: ['生成可视化', 'Visualizing'],
     scoring: ['评分', 'Scoring'], report: ['生成报告', 'Building report'],
     encoding: ['转码视频', 'Encoding video'], done: ['完成', 'Done'], error: ['失败', 'Failed']
   };
   function progressStages() {
     return wiz.mode === 'posture' ? ['loading','analyzing','scoring','report','encoding','done']
-                                  : ['initializing','court_setup','analyzing','visualizing','encoding','done'];
+                                  : ['initializing','court_setup','calibrating_court_view','analyzing','visualizing','encoding','done'];
   }
   function renderStepProgress(body) {
     var zh = state.lang === 'zh';
@@ -1168,7 +1169,8 @@ window.Kestrel = (function () {
       var n = d && Array.isArray(d.rallies) ? d.rallies.length : 0;
       // What the segmentation may honestly claim (mirrors app.py _rally_summary):
       // a swing-derived count runs ~36% high and a degraded one is coarse
-      // windows, not rallies, so neither is reported as "N rallies".
+      // windows, not rallies, so neither is reported as "N rallies". The shuttle
+      // signal has not been measured on any footage, so its count is hedged too.
       var det = d && d.detection && typeof d.detection === 'object' ? d.detection : {};
       var failed = det.signal === 'error';
       var coarse = !failed && (det.degraded === true || det.signal === 'none');
@@ -1179,6 +1181,8 @@ window.Kestrel = (function () {
                                  : (n + (n === 1 ? ' coarse window' : ' coarse windows') + ' — segmentation unreliable, stroke labels withheld');
       else if (swing) text = zh ? (n + ' 个比赛片段（由挥拍估算，数量偏高）')
                                 : (n + (n === 1 ? ' play segment' : ' play segments') + ' (estimated from swings; counts run high)');
+      else if (det.signal === 'shuttle') text = zh ? (n + ' 个回合（羽毛球轨迹信号，尚未验证）')
+                                                  : (n + (n === 1 ? ' rally' : ' rallies') + ' (shuttle signal — not yet validated)');
       else text = zh ? (n + ' 个回合') : (n + (n === 1 ? ' rally detected' : ' rallies detected'));
       // textContent only: nothing from the file (detection.reason included) is parsed as HTML.
       document.getElementById('rally-info').textContent = text;

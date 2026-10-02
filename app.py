@@ -170,14 +170,22 @@ def _rally_summary(save_dir):
     * degraded or ``none`` -> suppressed, label "windows" (coarse windows are
       not rallies, §12a-C);
     * ``error``, a missing or unreadable file -> count 0, not suppressed,
-      ``signal`` None: unknown, treated like a run with no data today;
+      ``signal`` None: unknown, treated like a run with no data today
+      (``failed`` marks the ``error`` and unreadable cases);
     * an older file with no ``detection`` block -> count shown, "rallies".
 
     "suppressed" means the count must not be presented (or summed) as a rally
     count; ``count`` itself is still the number of segments in the file.
+    ``failed`` is True for a ``signal: "error"`` file and for an unreadable or
+    malformed one: such a run is not a reliable rally count either, and
+    /api/stats must not treat it as one.
+
+    The ``shuttle`` path is unvalidated: no shuttle-based segmentation has been
+    measured on any footage (§0.16 measured the swing path only). It is not
+    known to be bad, so it is still counted; Kestrel hedges its wording.
     """
     unknown = {'count': 0, 'suppressed': False, 'label': 'rallies',
-               'signal': None, 'degraded': False}
+               'signal': None, 'degraded': False, 'failed': False}
     path = os.path.join(str(save_dir), 'rally_segments.json')
     if not os.path.exists(path):
         return unknown
@@ -192,14 +200,14 @@ def _rally_summary(save_dir):
             detection = {}
     except Exception as exc:
         print(f'Could not read {path}: {exc!r}; treating the rally count as unknown')
-        return unknown
+        return dict(unknown, failed=True)
 
     signal = detection.get('signal')
     if signal == 'error':
-        return unknown
+        return dict(unknown, failed=True)
     degraded = bool(detection.get('degraded'))
     summary = {'count': len(rallies), 'suppressed': False, 'label': 'rallies',
-               'signal': signal, 'degraded': degraded}
+               'signal': signal, 'degraded': degraded, 'failed': False}
     if degraded or signal == 'none':
         summary.update(suppressed=True, label='windows')
     elif signal == 'swing':
@@ -598,7 +606,9 @@ def api_stats():
             rs = _rally_summary(out)
             if rs['suppressed']:
                 suppressed_runs += 1
-            else:
+            elif not rs['failed']:
+                # A failed (error) run has no count to add and is not a reliable
+                # run: a library of only such runs shows a dash, not "0".
                 rallies += rs['count']
                 if os.path.exists(out / 'rally_segments.json'):
                     reliable_runs += 1
