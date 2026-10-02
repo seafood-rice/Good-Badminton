@@ -1334,3 +1334,90 @@ def test_the_courtview_pin_never_calls_the_segmenter(tmp_path, monkeypatch):
     s, last = _drive_inloop_machine(tmp_path, monkeypatch, _COURTVIEW_BLOCKS)
     s._write_rally_segments(fps=30.0, last_frame=last)
     assert _read_segments(tmp_path)["detection"]["signal"] == "courtview"
+
+
+# --- Task 10: a degraded segmentation withholds stroke labels (§12a-C) -------
+
+def _bare_system_for_recognition(tmp_path, monkeypatch, rally_detection, missing=False):
+    """A bare instance whose BST recognizer is a recording fake."""
+    from badminton_analysis.stroke_recog import recognizer as recog_mod
+
+    calls = []
+
+    class _FakeRecognizer:
+        def __init__(self, weights):
+            calls.append(("init", weights))
+
+        def label_rally(self, *args):
+            calls.append(("label_rally",))
+            return [{"stroke": "smash"}, {"stroke": "smash"}, {"stroke": "clear"}]
+
+    monkeypatch.setattr(recog_mod, "StrokeRecognizer", _FakeRecognizer)
+    # write_json is a lazily-loaded runtime global of system.py (set by
+    # load_runtime_dependencies); supply it so this test passes when run alone.
+    from badminton_analysis.data.writer import write_json as _real_write_json
+    monkeypatch.setattr(sysmod, "write_json", _real_write_json, raising=False)
+    s = sysmod.BadmintonAnalysisSystem.__new__(sysmod.BadmintonAnalysisSystem)
+    s.save_dir = str(tmp_path)
+    s.bst_weights = "weights/bst.pt"        # pretend weights exist
+    s._analysis_track_both = []
+    s._analysis_frames = {}
+    s.court_corners = DJI_QUAD
+    s.frame_width, s.frame_height = 1920, 1080
+    s._shuttle_source = "yolo"
+    if not missing:
+        s.rally_detection = rally_detection
+    return s, calls
+
+
+def test_degraded_segmentation_skips_stroke_recognition(tmp_path, monkeypatch, capsys):
+    """Labels over windows that are not rallies would be noise presented as strokes."""
+    s, calls = _bare_system_for_recognition(
+        tmp_path, monkeypatch,
+        {"signal": "none", "degraded": True, "reason": "no usable signal"})
+
+    s._run_stroke_recognition()
+
+    assert calls == []                       # the recognizer was never built or run
+    assert not (tmp_path / "strokes.json").exists()
+    out = capsys.readouterr().out.lower()
+    assert "stroke labels withheld" in out
+    assert "segmentation unreliable" in out
+    assert "no usable signal" in out         # the reason is surfaced
+
+
+def test_non_degraded_segmentation_does_not_block_recognition(tmp_path, monkeypatch, capsys):
+    s, calls = _bare_system_for_recognition(
+        tmp_path, monkeypatch,
+        {"signal": "shuttle", "degraded": False, "reason": "dense"})
+
+    s._run_stroke_recognition()
+
+    assert ("label_rally",) in calls
+    assert (tmp_path / "strokes.json").exists()
+    assert "withheld" not in capsys.readouterr().out.lower()
+
+
+def test_segmenter_error_is_not_degraded_recognition_still_runs(tmp_path, monkeypatch, capsys):
+    """R6: an ERROR is not a degraded segmentation; recognition runs as before."""
+    s, calls = _bare_system_for_recognition(
+        tmp_path, monkeypatch,
+        {"signal": "error", "degraded": False, "error": True, "reason": "ValueError"})
+
+    s._run_stroke_recognition()
+
+    assert ("label_rally",) in calls
+    assert (tmp_path / "strokes.json").exists()
+    assert "withheld" not in capsys.readouterr().out.lower()
+
+
+def test_missing_rally_detection_recognition_runs_as_before(tmp_path, monkeypatch, capsys):
+    """Bare instances / older runs have no rally_detection attribute at all."""
+    s, calls = _bare_system_for_recognition(tmp_path, monkeypatch, None, missing=True)
+    assert not hasattr(s, "rally_detection")
+
+    s._run_stroke_recognition()
+
+    assert ("label_rally",) in calls
+    assert (tmp_path / "strokes.json").exists()
+    assert "withheld" not in capsys.readouterr().out.lower()

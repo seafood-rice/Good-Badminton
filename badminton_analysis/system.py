@@ -1261,7 +1261,24 @@ class BadmintonAnalysisSystem:
         at the contact frame -- no longer a zero-filled opponent (fixed by
         B1; previously the tracked/near player's pose leaked into person-0
         even for far-player hits).
+
+        Withheld entirely when rally segmentation is degraded (owner decision
+        §12a-C): BST labels computed over coarse windows that do not
+        correspond to rallies are close to noise, and shipping them behind a
+        badge is weaker than the impression that strokes were detected. When
+        B6 adds per-rally invocation, the same ``degraded`` flag skips
+        individual segments instead of the whole run. A segmenter ERROR
+        (``signal: "error"``, ``degraded: False``) is not a degraded
+        segmentation and does not withhold; nor does a missing
+        ``rally_detection`` (older runs, bare instances).
         """
+        detection = getattr(self, "rally_detection", None) or {}
+        if detection.get("degraded"):
+            print("Stroke labels withheld: segmentation unreliable -- "
+                  f"{detection.get('reason') or 'no reason recorded'}. Labels over "
+                  "windows that are not rallies would be noise, so none are produced.")
+            return
+
         if not self.bst_weights:
             return
 

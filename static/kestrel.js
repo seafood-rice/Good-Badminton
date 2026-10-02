@@ -1165,9 +1165,25 @@ window.Kestrel = (function () {
 
     // Rally summary + clip generation.
     fetch('/api/output/' + stem + '/rally_segments.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
-      var n = d && d.rallies ? d.rallies.length : 0;
-      document.getElementById('rally-info').textContent = zh ? (n + ' 个回合') : (n + (n === 1 ? ' rally detected' : ' rallies detected'));
-      var btn = document.getElementById('clip-btn'); btn.disabled = n === 0;
+      var n = d && Array.isArray(d.rallies) ? d.rallies.length : 0;
+      // What the segmentation may honestly claim (mirrors app.py _rally_summary):
+      // a swing-derived count runs ~36% high and a degraded one is coarse
+      // windows, not rallies, so neither is reported as "N rallies".
+      var det = d && d.detection && typeof d.detection === 'object' ? d.detection : {};
+      var failed = det.signal === 'error';
+      var coarse = !failed && (det.degraded === true || det.signal === 'none');
+      var swing = !failed && !coarse && det.signal === 'swing';
+      var text;
+      if (failed) text = zh ? '回合检测失败' : 'Rally detection failed';
+      else if (coarse) text = zh ? (n + ' 个粗略时间窗 — 分段不可靠，未生成击球标签')
+                                 : (n + (n === 1 ? ' coarse window' : ' coarse windows') + ' — segmentation unreliable, stroke labels withheld');
+      else if (swing) text = zh ? (n + ' 个比赛片段（由挥拍估算，数量偏高）')
+                                : (n + (n === 1 ? ' play segment' : ' play segments') + ' (estimated from swings; counts run high)');
+      else text = zh ? (n + ' 个回合') : (n + (n === 1 ? ' rally detected' : ' rallies detected'));
+      // textContent only: nothing from the file (detection.reason included) is parsed as HTML.
+      document.getElementById('rally-info').textContent = text;
+      // Clips of coarse windows are still useful, so the button needs only a segment to cut.
+      var btn = document.getElementById('clip-btn'); btn.disabled = failed || n === 0;
     }).catch(function () { document.getElementById('rally-info').textContent = zh?'暂无回合数据':'No rally data'; document.getElementById('clip-btn').disabled = true; });
     document.getElementById('clip-btn').onclick = function () {
       var btn = document.getElementById('clip-btn'); btn.disabled = true; btn.textContent = zh?'生成中…':'Generating…';
