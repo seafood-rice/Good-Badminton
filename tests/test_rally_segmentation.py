@@ -678,3 +678,371 @@ def test_no_quad_means_no_gating():
     gated, dropped = rallies.gate_to_court_volume(_track(pts), None)
     assert dropped == 0
     assert all(r["shuttle"] is not None for r in gated)
+
+
+# --- Task 8: segment_rallies -- the public API, provenance, the degraded path -----
+
+FPS = 60.0
+
+
+def _swing_track(frames, active):
+    """Records for ``frames``; the lower wrist advances 3 px per active record."""
+    x, out = 0.0, []
+    for f in frames:
+        if active(f):
+            x += 3.0
+        out.append({"frame": f, "shuttle": None,
+                    "wrist_lower": (x, 500.0), "wrist_upper": None})
+    return out
+
+
+def _two_bursts(f):
+    return 300 <= f < 600 or 900 <= f < 1200
+
+
+def _shuttle_track(n, present):
+    """A moving shuttle (never static) inside _QUAD's play volume where ``present``."""
+    return [{"frame": i,
+             "shuttle": (200.0 + (3 * i) % 500, 300.0 + (2 * i) % 400) if present(i) else None,
+             "wrist_lower": None, "wrist_upper": None} for i in range(n)]
+
+
+def _seg_frames(segments):
+    return [(s["start_frame"], s["end_frame"]) for s in segments]
+
+
+def test_no_signal_emits_degraded_coarse_windows_not_zero_rallies():
+    """Owner decision 12a-C: never an empty result, never one whole-video rally."""
+    track = _track([None] * 1800)          # 30 s at 60 fps, nothing to see
+    segments, prov = rallies.segment_rallies(track, fps=FPS)
+    assert prov["signal"] == "none"
+    assert prov["attempted_signal"] is None
+    assert prov["degraded"] is True
+    assert len(segments) == 3              # 30 s / DEGRADED_WINDOW_SEC
+    assert all(s["degraded"] for s in segments)
+    assert segments[0]["start_frame"] == 0
+    assert segments[-1]["end_frame"] == 1799
+    assert not (len(segments) == 1 and segments[0]["end_frame"] == 1799)
+
+
+def test_a_real_signal_produces_non_degraded_segments():
+    segments, prov = rallies.segment_rallies(
+        _swing_track(range(1800), _two_bursts), fps=FPS)
+    assert prov["signal"] == "swing"
+    assert prov["attempted_signal"] == "swing"
+    assert prov["degraded"] is False
+    assert len(segments) == 2
+    assert all(not s["degraded"] for s in segments)
+    assert [s["id"] for s in segments] == [1, 2]
+    assert prov["caps_source"] == "fallback_100px"      # no quad was given
+
+
+def test_segment_dicts_have_the_documented_keys_and_frame_based_seconds():
+    segments, _ = rallies.segment_rallies(
+        _swing_track(range(1800), _two_bursts), fps=FPS)
+    for s in segments:
+        assert set(s) == {"id", "start_frame", "end_frame", "start_sec", "end_sec",
+                          "degraded"}
+        assert s["start_sec"] == s["start_frame"] / FPS
+        assert s["end_sec"] == s["end_frame"] / FPS
+        assert isinstance(s["start_frame"], int) and isinstance(s["end_frame"], int)
+
+
+def test_provenance_states_signal_reason_and_params():
+    segments, prov = rallies.segment_rallies(_track([None] * 600), fps=FPS)
+    assert set(prov) >= {"signal", "attempted_signal", "reason", "degraded", "params",
+                         "suppressed_static_shuttle", "gated_outside_court",
+                         "shuttle_density", "caps_source"}
+    assert set(prov["params"]) == {"gap_sec", "min_len_sec", "swing_frac",
+                                   "degraded_window_sec", "stride"}
+    assert prov["params"]["gap_sec"] == 1.0
+    assert prov["params"]["min_len_sec"] == 2.0
+    assert prov["params"]["swing_frac"] == 0.25
+    assert prov["params"]["degraded_window_sec"] == rallies.DEGRADED_WINDOW_SEC
+    assert prov["params"]["stride"] == 1
+    assert prov["reason"]
+
+
+def test_out_of_court_detections_are_reported_not_silently_dropped():
+    """A dead detector must look dead in the provenance, not just in the count."""
+    # Moving, so suppress_static does not eat them first -- the point of this
+    # test is the court gate, not the fixture filter.
+    below_court = [(50.0, 1500.0 + 2.0 * i) for i in range(200)]
+    _segments, prov = rallies.segment_rallies(_track(below_court), fps=FPS, quad=_QUAD)
+    assert prov["gated_outside_court"] > 0
+    assert prov["signal"] == "none"
+
+
+def test_suppressed_fixture_appears_in_provenance():
+    fixture = [(473.0, 846.0)] * 900
+    _segments, prov = rallies.segment_rallies(_track(fixture + [None] * 100), fps=FPS)
+    assert prov["suppressed_static_shuttle"]["count"] == 900
+    assert prov["suppressed_static_shuttle"]["cells"][0]["count"] == 900
+
+
+def test_empty_track_is_not_an_error():
+    segments, prov = rallies.segment_rallies([], fps=FPS)
+    assert segments == []
+    assert prov["signal"] == "none"
+    assert prov["degraded"] is True
+    assert rallies.segment_rallies(None, fps=FPS)[0] == []
+
+
+def test_density_is_measured_after_suppression_and_court_gating():
+    """40 in-court + 60 below-court detections: raw density 1.0, gated 0.4."""
+    inside = [(200.0 + 7.0 * i, 300.0 + 3.0 * i) for i in range(40)]
+    outside = [(50.0 + 3.0 * i, 1500.0 + 2.0 * i) for i in range(60)]
+    _segments, prov = rallies.segment_rallies(
+        _track(inside + outside), fps=FPS, quad=_QUAD)
+    assert prov["gated_outside_court"] == 60
+    assert prov["shuttle_density"] == pytest.approx(0.4)
+    assert prov["signal"] == "none"          # 0.4 < SHUTTLE_DENSITY_MIN, no wrists
+
+
+def test_pinned_swing_equals_calling_the_swing_pipeline_directly():
+    """PM2/R20: a pinned swing run is exactly swing_activity + segments_from_activity."""
+    track = _swing_track(range(1800), _two_bursts)
+    segments, prov = rallies.segment_rallies(track, FPS, signal="swing", quad=_QUAD)
+    caps = rallies.baseline_caps(_QUAD, FPS)
+    times, act = rallies.swing_activity(track, FPS, caps)
+    spans = rallies.segments_from_activity(times, act)
+    expected = [(int(round(a * FPS)), int(round(b * FPS))) for a, b in spans]
+    assert len(expected) == 2
+    assert _seg_frames(segments) == expected
+    assert prov["signal"] == "swing"
+    assert prov["caps_source"] == "quad"
+    assert "pinned" in prov["reason"]
+
+
+def test_pinned_shuttle_equals_the_presence_mask_segmented_directly():
+    track = _shuttle_track(1800, lambda i: 100 <= i < 700 or 900 <= i < 1500)
+    segments, prov = rallies.segment_rallies(track, FPS, signal="shuttle", quad=_QUAD)
+    times = [rec["frame"] / FPS for rec in track]
+    act = [1.0 if rec["shuttle"] is not None else 0.0 for rec in track]
+    spans = rallies.segments_from_activity(times, act)
+    expected = [(int(round(a * FPS)), int(round(b * FPS))) for a, b in spans]
+    assert expected == [(100, 699), (900, 1499)]
+    assert _seg_frames(segments) == expected
+    assert prov["signal"] == "shuttle" and prov["degraded"] is False
+    # Auto selection reaches the same answer on this dense track.
+    auto_segments, auto_prov = rallies.segment_rallies(track, FPS, quad=_QUAD)
+    assert auto_prov["signal"] == "shuttle"
+    assert auto_prov["shuttle_density"] == pytest.approx(1200 / 1800)
+    assert _seg_frames(auto_segments) == expected
+
+
+# --- R2: seconds are frame / fps, never list-index based ------------------------------
+
+
+def test_a_gapped_track_keeps_frame_time_for_real_and_degraded_segments():
+    frames = list(range(0, 600)) + list(range(3000, 3600))
+
+    def burst(f):
+        return 100 <= f < 500 or 3100 <= f < 3500
+
+    segments, prov = rallies.segment_rallies(_swing_track(frames, burst), FPS)
+    assert prov["signal"] == "swing" and prov["degraded"] is False
+    assert len(segments) == 2
+    for s in segments:
+        assert s["start_sec"] == s["start_frame"] / FPS
+        assert s["end_sec"] == s["end_frame"] / FPS
+        assert s["end_frame"] < 600 or s["start_frame"] >= 3000   # never across the gap
+    assert segments[1]["start_sec"] > 50.0         # an index-based time would be < 20 s
+
+    empty = [{"frame": f, "shuttle": None, "wrist_lower": None, "wrist_upper": None}
+             for f in frames]
+    windows, dprov = rallies.segment_rallies(empty, FPS)
+    assert dprov["signal"] == "none" and dprov["degraded"] is True
+    assert _seg_frames(windows) == [(0, 599), (3000, 3599)]
+    for w in windows:
+        assert w["start_sec"] == w["start_frame"] / FPS
+        assert w["end_sec"] == w["end_frame"] / FPS
+    assert windows[1]["end_sec"] == pytest.approx(3599 / FPS)
+
+
+def test_degraded_windows_are_sized_in_seconds_not_records():
+    """The same 25 s of video recorded at stride 1 and stride 3 tiles identically."""
+    for stride in (1, 3):
+        frames = range(0, 1500, stride)
+        empty = [{"frame": f, "shuttle": None, "wrist_lower": None, "wrist_upper": None}
+                 for f in frames]
+        windows, prov = rallies.segment_rallies(empty, FPS)
+        assert prov["params"]["stride"] == stride
+        assert [w["start_frame"] for w in windows] == [0, 600, 1200]
+
+
+def test_a_strided_track_reports_frame_times_and_its_stride():
+    frames = list(range(0, 1800, 3))
+    segments, prov = rallies.segment_rallies(
+        _swing_track(frames, lambda f: 300 <= f < 600 or 900 <= f < 1200), FPS)
+    assert prov["params"]["stride"] == 3
+    assert prov["signal"] == "swing" and len(segments) == 2
+    for s in segments:
+        assert s["start_frame"] % 3 == 0 and s["end_frame"] % 3 == 0
+        assert s["start_sec"] == s["start_frame"] / FPS
+
+
+# --- pinned signals --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["courtview", "SWING", "", None, 5, ["swing"]])
+def test_an_invalid_pin_is_treated_as_auto_and_says_so(bad):
+    track = _swing_track(range(1800), _two_bursts)
+    segments, prov = rallies.segment_rallies(track, FPS, signal=bad)
+    assert prov["signal"] == "swing"                       # what auto would choose
+    assert "invalid signal pin" in prov["reason"] and "ignored" in prov["reason"]
+    assert len(segments) == 2
+
+
+def test_a_pinned_signal_with_no_usable_input_is_degraded_and_says_so():
+    swing_only = _swing_track(range(1800), _two_bursts)
+    segments, prov = rallies.segment_rallies(swing_only, FPS, signal="shuttle")
+    assert prov["signal"] == "none" and prov["degraded"] is True
+    assert prov["attempted_signal"] == "shuttle"
+    assert "no usable shuttle" in prov["reason"]
+    assert segments and all(s["degraded"] for s in segments)
+
+    shuttle_only = _shuttle_track(1800, lambda i: True)
+    segments, prov = rallies.segment_rallies(shuttle_only, FPS, signal="swing")
+    assert prov["signal"] == "none" and prov["degraded"] is True
+    assert prov["attempted_signal"] == "swing"
+    assert "no usable swing" in prov["reason"]
+    assert segments and all(s["degraded"] for s in segments)
+
+
+def test_a_chosen_signal_that_finds_no_rally_is_degraded_with_attempted_signal():
+    still = _swing_track(range(1800), lambda f: False)     # wrists present, never moving
+    segments, prov = rallies.segment_rallies(still, FPS)
+    assert prov["attempted_signal"] == "swing"
+    assert prov["signal"] == "none" and prov["degraded"] is True
+    assert "no segments" in prov["reason"]
+    assert len(segments) == 3 and all(s["degraded"] for s in segments)
+
+
+# --- quad validation (never fatal, never silently drops every point) ------------------
+
+
+@pytest.mark.parametrize("bad_quad", [
+    "not a quad",
+    [1, 2, 3, 4],
+    [(0, 0), (1, 1)],
+    [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+    [("a", "b")] * 4,
+    [(float("nan"), 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+    [(0.0, 0.0), (float("inf"), 0.0), (1.0, 1.0), (0.0, 1.0)],
+    [(5.0, 5.0)] * 4,                                         # zero area
+    [(0.0, 5.0), (10.0, 5.0), (10.0, 5.0), (0.0, 5.0)],       # zero depth
+    42,
+])
+def test_an_unusable_quad_is_ignored_not_fatal_and_not_a_silent_gate(bad_quad):
+    track = _shuttle_track(600, lambda i: True)
+    segments, prov = rallies.segment_rallies(track, FPS, quad=bad_quad)
+    assert prov["gated_outside_court"] == 0                   # nothing silently dropped
+    assert prov["signal"] == "shuttle"
+    assert prov["shuttle_density"] == pytest.approx(1.0)
+    assert prov["caps_source"] == "fallback_100px"
+    assert "quad" in prov["reason"]
+    assert segments
+
+
+def test_a_missing_quad_skips_gating_and_falls_back_on_the_absolute_cap():
+    track = _shuttle_track(600, lambda i: True)
+    _segments, prov = rallies.segment_rallies(track, FPS, quad=None)
+    assert prov["gated_outside_court"] == 0
+    assert prov["caps_source"] == "fallback_100px"
+
+
+def test_a_well_formed_quad_that_has_no_perspective_still_gates():
+    """A top-down rectangle cannot give baseline caps but is a perfectly good gate."""
+    rect = [(100.0, 200.0), (900.0, 200.0), (900.0, 800.0), (100.0, 800.0)]
+    inside = [(200.0 + 7.0 * i, 300.0 + 3.0 * i) for i in range(50)]
+    outside = [(50.0 + 3.0 * i, 1500.0 + 2.0 * i) for i in range(50)]
+    _segments, prov = rallies.segment_rallies(_track(inside + outside), FPS, quad=rect)
+    assert prov["gated_outside_court"] == 50
+    assert prov["caps_source"] == "fallback_100px"
+    assert "caps" in prov["reason"]
+
+
+# --- never fatal ---------------------------------------------------------------------
+
+
+def test_an_internal_exception_yields_degraded_windows_not_a_raise(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("synthetic failure")
+    monkeypatch.setattr(rallies, "swing_activity", boom)
+    track = _swing_track(range(1800), _two_bursts)
+    segments, prov = rallies.segment_rallies(track, FPS)
+    assert prov["signal"] == "none" and prov["degraded"] is True
+    assert "RuntimeError" in prov["reason"]
+    assert len(segments) == 3 and all(s["degraded"] for s in segments)
+    assert segments[0]["start_frame"] == 0 and segments[-1]["end_frame"] == 1799
+    json.dumps(prov, allow_nan=False)
+
+
+def test_an_early_internal_exception_is_also_contained(monkeypatch):
+    def boom(*_a, **_k):
+        raise ValueError("early")
+    monkeypatch.setattr(rallies, "suppress_static", boom)
+    segments, prov = rallies.segment_rallies(_track([None] * 700), FPS)
+    assert prov["signal"] == "none" and prov["degraded"] is True
+    assert "ValueError" in prov["reason"]
+    assert segments
+    json.dumps(prov, allow_nan=False)
+
+
+def test_records_without_a_usable_frame_never_raise():
+    track = [{"shuttle": None}, {"frame": "x"}, {"frame": 5, "shuttle": None}, None]
+    segments, prov = rallies.segment_rallies(track, FPS)
+    assert prov["degraded"] is True and prov["signal"] == "none"
+    assert [(s["start_frame"], s["end_frame"]) for s in segments] == [(5, 5)]
+
+
+@pytest.mark.parametrize("fps", [float("nan"), float("inf"), 0.0, -30.0, None, "60"])
+def test_an_invalid_fps_is_degraded_not_fatal(fps):
+    segments, prov = rallies.segment_rallies(
+        _swing_track(range(900), _two_bursts), fps)
+    assert prov["signal"] == "none" and prov["degraded"] is True
+    assert "fps" in prov["reason"]
+    assert segments and all(s["degraded"] for s in segments)
+    json.dumps([segments, prov], allow_nan=False)
+
+
+def test_invalid_numeric_parameters_fall_back_to_defaults_and_say_so():
+    track = _swing_track(range(1800), _two_bursts)
+    segments, prov = rallies.segment_rallies(
+        track, FPS, gap_sec=float("nan"), min_len_sec=-1.0, swing_frac="x")
+    assert prov["params"]["gap_sec"] == 1.0
+    assert prov["params"]["min_len_sec"] == 2.0
+    assert prov["params"]["swing_frac"] == 0.25
+    assert "gap_sec" in prov["reason"]
+    assert len(segments) == 2
+    json.dumps(prov, allow_nan=False)
+
+
+def test_provenance_and_segments_are_json_serialisable_and_finite():
+    fixture = [(473.0, 846.0)] * 900
+    scenarios = [
+        rallies.segment_rallies(_track(fixture + [None] * 100), FPS, quad=DJI_QUAD),
+        rallies.segment_rallies(_swing_track(range(1800), _two_bursts), FPS, quad=_QUAD),
+        rallies.segment_rallies(_shuttle_track(900, lambda i: True), FPS, quad=_QUAD),
+        rallies.segment_rallies([], FPS),
+    ]
+    for segments, prov in scenarios:
+        round_trip = json.loads(json.dumps([segments, prov], allow_nan=False))
+        assert round_trip == json.loads(json.dumps([segments, prov]))
+
+
+def test_segment_rallies_does_not_mutate_the_track():
+    track = _swing_track(range(900), _two_bursts)
+    for rec in track:
+        rec["shuttle"] = (473.0, 846.0)
+    before = [dict(r) for r in track]
+    rallies.segment_rallies(track, FPS, quad=_QUAD)
+    assert track == before
+
+
+def test_the_rallies_module_stays_pure():
+    src = inspect.getsource(rallies)
+    for forbidden in ("import cv2", "badminton_analysis.system", "from ..system",
+                      "import logging", "open(", "print("):
+        assert forbidden not in src

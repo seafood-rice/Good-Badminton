@@ -435,3 +435,285 @@ def choose_signal(track, *, signal="auto"):
                          f"{SHUTTLE_DENSITY_MIN:.2f} after artifact suppression")
     return "none", (f"shuttle density {density:.3f} below "
                     f"{SHUTTLE_DENSITY_MIN:.2f} and no wrist track to fall back on")
+
+
+# --- The public API: segment_rallies, provenance, the degraded path (§5 C2, §12a-C) ---
+
+DEGRADED_WINDOW_SEC = 10.0
+"""Window length for the degraded fallback (owner decision §12a-C).
+
+Deliberately dumb and not load-bearing: nothing downstream labels a degraded
+segment, so this only controls how the unreliable span is chopped up for
+display.
+"""
+
+_PINNABLE_SIGNALS = ("auto", "shuttle", "swing")
+_WINDOW_FALLBACK_FPS = 30.0
+"""Only used to size degraded windows when the caller's fps is unusable; no
+signal is run in that case and the reason says so."""
+
+
+def _fresh_provenance():
+    """The provenance block as it stands before anything has been computed.
+
+    ``segment_rallies`` fills it in stage by stage, so if a later stage raises
+    the degraded result still reports what was learned before the failure.
+    """
+    return {
+        "signal": "none",
+        "attempted_signal": None,
+        "reason": "",
+        "degraded": True,
+        "params": {"gap_sec": GAP_SEC, "min_len_sec": MIN_LEN_SEC,
+                   "swing_frac": SWING_FRAC,
+                   "degraded_window_sec": DEGRADED_WINDOW_SEC, "stride": None},
+        "suppressed_static_shuttle": {"count": 0, "cells": []},
+        "gated_outside_court": 0,
+        "shuttle_density": 0.0,
+        "caps_source": "fallback_100px",
+    }
+
+
+def _valid_fps(fps):
+    """``fps`` as a finite positive float, else None (a bool or a string is not one)."""
+    if isinstance(fps, (bool, str)):
+        return None
+    try:
+        value = float(fps)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _clean_param(value, default, label, notes):
+    """``value`` as a finite non-negative float, else ``default`` and a note."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float("nan")
+    if isinstance(value, bool) or not math.isfinite(number) or number < 0.0:
+        notes.append(f"invalid {label} {value!r} replaced by the default {default}")
+        return default
+    return number
+
+
+def _usable_quad(quad):
+    """The quad as four finite ``(x, y)`` float tuples, or None if it cannot gate.
+
+    Must be TL, TR, BR, BL with a positive image depth and non-zero area: a
+    degenerate polygon would contain no point at all and so would silently
+    discard every shuttle detection. Perspective is NOT required here (a
+    top-down rectangle gates fine); ``baseline_caps`` judges that separately.
+    """
+    try:
+        pts = []
+        for p in quad:
+            if len(p) != 2:
+                return None
+            pts.append((float(p[0]), float(p[1])))
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+    if len(pts) != 4 or not all(math.isfinite(v) for p in pts for v in p):
+        return None
+    area2 = sum(pts[i][0] * pts[(i + 1) % 4][1] - pts[(i + 1) % 4][0] * pts[i][1]
+                for i in range(4))
+    depth = max(pts[2][1], pts[3][1]) - min(pts[0][1], pts[1][1])
+    if area2 == 0.0 or depth <= 0.0:
+        return None
+    return pts
+
+
+def _recorded_frames(track):
+    """Sorted, de-duplicated integer ``frame`` values of the records that have one."""
+    frames = set()
+    for rec in track or []:
+        try:
+            frames.add(int(rec["frame"]))
+        except (TypeError, ValueError, KeyError, OverflowError):
+            continue
+    return sorted(frames)
+
+
+def _coarse_windows(frames, fps):
+    """Uniform DEGRADED_WINDOW_SEC windows over the recorded frames, as frame pairs.
+
+    Windows are cut by frame TIME (``(frame - first_frame) / fps``), anchored at
+    the first recorded frame; each window's bounds are the first and last
+    RECORDED frame inside it, and a window with no recorded frame does not
+    exist. So a recording gap is never covered by a window, and a strided track
+    tiles exactly like a stride-1 one. A short trailing window is kept as is:
+    folding it into its predecessor could bridge a recording gap.
+    """
+    if not frames:
+        return []
+    first = frames[0]
+    out, current = [], None
+    for f in frames:
+        index = int(((f - first) / fps) // DEGRADED_WINDOW_SEC)
+        if index != current:
+            out.append([f, f])
+            current = index
+        else:
+            out[-1][1] = f
+    return out
+
+
+def _segment_dicts(frame_pairs, fps, degraded):
+    """RallySegment dicts (plain, so they serialise straight into the JSON array).
+
+    Seconds are always ``frame / fps`` of the recorded frame numbers -- never
+    derived from a list index, which is wrong for a gapped or strided track.
+    """
+    return [{"id": n, "start_frame": int(a), "end_frame": int(b),
+             "start_sec": a / fps, "end_sec": b / fps, "degraded": degraded}
+            for n, (a, b) in enumerate(frame_pairs, start=1)]
+
+
+def _degraded_result(track, fps, prov, reason):
+    """Coarse degraded windows plus ``prov`` rewritten to say so. Never raises."""
+    prov["signal"] = "none"
+    prov["degraded"] = True
+    prov["reason"] = reason
+    window_fps = _valid_fps(fps) or _WINDOW_FALLBACK_FPS
+    try:
+        segments = _segment_dicts(
+            _coarse_windows(_recorded_frames(track), window_fps), window_fps, True)
+    except Exception:       # a result must always come back; an empty one is the floor
+        segments = []
+    return segments, prov
+
+
+def _segment_rallies(track, fps, signal, gap_sec, min_len_sec, swing_frac, quad, prov):
+    notes = []
+    track = list(track or [])
+    gap_sec = _clean_param(gap_sec, GAP_SEC, "gap_sec", notes)
+    min_len_sec = _clean_param(min_len_sec, MIN_LEN_SEC, "min_len_sec", notes)
+    swing_frac = _clean_param(swing_frac, SWING_FRAC, "swing_frac", notes)
+    prov["params"].update(gap_sec=gap_sec, min_len_sec=min_len_sec, swing_frac=swing_frac)
+
+    if not (isinstance(signal, str) and signal in _PINNABLE_SIGNALS):
+        notes.append(f"invalid signal pin {signal!r} ignored (using auto)")
+        signal = "auto"
+
+    if not track:
+        return _degraded_result(track, fps, prov,
+                                "; ".join(["empty track: no recorded frames"] + notes))
+
+    prov["params"]["stride"] = track_stride(track)
+
+    cleaned, suppressed = suppress_static(track)
+    prov["suppressed_static_shuttle"] = suppressed
+
+    quad_pts = _usable_quad(quad) if quad is not None else None
+    if quad_pts is not None:
+        cleaned, gated_out = gate_to_court_volume(cleaned, quad_pts)
+        prov["gated_outside_court"] = gated_out
+    elif quad is None:
+        notes.append("no court quad given: court gating skipped")
+    else:
+        notes.append("court quad unusable (malformed, non-finite or degenerate): "
+                     "court gating skipped")
+
+    prov["shuttle_density"] = shuttle_density(cleaned)
+
+    fps_val = _valid_fps(fps)
+    caps = None
+    if quad_pts is not None and fps_val is not None:
+        try:
+            caps = baseline_caps(quad_pts, fps_val)
+        except ValueError as exc:
+            notes.append(f"quad gives no usable teleport caps ({exc})")
+    if caps is not None and all(math.isfinite(c) and c > 0 for c in caps):
+        prov["caps_source"] = "quad"
+    else:
+        caps = None
+        prov["caps_source"] = "fallback_100px"
+
+    name, reason = choose_signal(cleaned, signal=signal)
+    prov["attempted_signal"] = name if name in ("shuttle", "swing") else None
+
+    run = name
+    if name == "shuttle" and not prov["shuttle_density"] > 0.0:
+        run = "none"
+        notes.append("no usable shuttle input after artifact suppression and gating")
+    elif name == "swing" and not _has_swing_input(cleaned):
+        run = "none"
+        notes.append("no usable swing input: no wrist track recorded")
+    elif run in ("shuttle", "swing") and fps_val is None:
+        run = "none"
+        notes.append(f"fps {fps!r} is not a finite positive number: no signal was run")
+
+    spans, times, frames = None, [], [int(rec["frame"]) for rec in cleaned]
+    if run == "shuttle":
+        times = [f / fps_val for f in frames]
+        activity = [1.0 if _valid_point(rec.get("shuttle")) is not None else 0.0
+                    for rec in cleaned]
+    elif run == "swing":
+        times, activity = swing_activity(cleaned, fps_val, caps)
+    if run in ("shuttle", "swing"):
+        spans = segments_from_activity(times, activity, frac=swing_frac,
+                                       gap_sec=gap_sec, min_len_sec=min_len_sec)
+        if not spans:
+            notes.append(f"{run} signal produced no segments")
+
+    if not spans:
+        return _degraded_result(
+            cleaned, fps, prov,
+            "; ".join([reason] + notes + ["degraded coarse windows emitted; "
+                                          "stroke labels must be withheld"]))
+
+    frame_at = dict(zip(times, frames))
+    pairs = [(frame_at[a], frame_at[b]) for a, b in spans]
+    prov["signal"] = run
+    prov["degraded"] = False
+    prov["reason"] = "; ".join([reason] + notes)
+    return _segment_dicts(pairs, fps_val, False), prov
+
+
+def segment_rallies(track, fps, *, signal="auto", gap_sec=GAP_SEC,
+                    min_len_sec=MIN_LEN_SEC, swing_frac=SWING_FRAC, quad=None):
+    """Segment a recorded per-frame analysis track into rallies.
+
+    ``track`` is the post-loop ``_rally_track``: per-frame dicts of
+    {frame, shuttle, wrist_lower, wrist_upper, ...} for the gate-passed frames.
+    ``quad`` is the annotated court corners (TL, TR, BR, BL), or None.
+
+    Returns ``(segments, provenance)``. Pipeline order (spec §5 C2):
+    ``suppress_static`` -> ``gate_to_court_volume`` (only when ``quad`` is a
+    usable court) -> ``shuttle_density`` over that cleaned and gated track
+    (denominator: its records, i.e. the gate-passed frames) ->
+    ``choose_signal`` -> segment on the chosen signal. Every second is
+    ``frame / fps`` of a recorded frame, never a list index.
+
+    ``signal`` is ``"auto"``, ``"shuttle"`` or ``"swing"``. Anything else
+    (including today's legacy ``"courtview"``, which the pipeline handles
+    itself) is ignored as ``"auto"`` and the reason says so. A pinned signal
+    with no usable input takes the degraded path.
+
+    Never raises. When no signal qualifies -- or one qualifies but finds no
+    rally, or anything at all goes wrong -- the result is uniform coarse
+    windows over the recorded frames, every one ``degraded: True``, with
+    ``provenance["signal"] == "none"`` (owner decision §12a-C). That is
+    displayable but NOT a rally count, and stroke recognition must withhold
+    labels on it (§0.16: even the working swing signal inflates rally count
+    +36% and total rally time +41%). Only an empty track yields no segments.
+
+    ``provenance``: ``signal`` (``"shuttle" | "swing" | "none"``),
+    ``attempted_signal`` (what auto-selection or the pin tried, or None),
+    ``reason``, ``degraded``, ``params`` (``gap_sec``, ``min_len_sec``,
+    ``swing_frac``, ``degraded_window_sec``, ``stride``),
+    ``suppressed_static_shuttle`` (``{"count", "cells"}``),
+    ``gated_outside_court`` (count), ``shuttle_density`` (after suppression and
+    gating) and ``caps_source`` (``"quad"``, or ``"fallback_100px"`` when the
+    unmeasured absolute teleport cap was used because no usable quad was
+    given). All values are JSON-serialisable and finite.
+    """
+    prov = _fresh_provenance()
+    try:
+        return _segment_rallies(track, fps, signal, gap_sec, min_len_sec,
+                                swing_frac, quad, prov)
+    except Exception as exc:        # never fatal: the video and other outputs survive
+        return _degraded_result(
+            track, fps, prov,
+            f"segmentation failed ({type(exc).__name__}); degraded coarse windows emitted; "
+            "stroke labels must be withheld")
