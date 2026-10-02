@@ -124,6 +124,55 @@ def test_find_cuts_with_one_black_frame_between_identical():
     assert shot_boundary.find_cuts(sigs) == []
 
 
+def test_frame_signature_handles_zero_by_zero_empty_array():
+    """A truly empty (0, 0) frame should return an all-zero signature.
+
+    This tests the edge case of a frame with zero pixels (not a black frame,
+    but an empty array). The signature has zero total mass, which is safe.
+    """
+    empty = np.zeros((0, 0), dtype=np.uint8)
+    sig = shot_boundary.frame_signature(empty)
+    assert len(sig) == shot_boundary.HIST_BINS
+    assert all(v == 0.0 for v in sig)
+
+
+def test_frame_signature_handles_constant_frame_all_same_value():
+    """A frame with constant pixel value (zero variance) should return normalised histogram.
+
+    After fix round 1, zero-variance signatures are safe (never produce cuts).
+    This test ensures the signature is still normalised even for uniform frames.
+    """
+    const = np.full((180, 320), 128, dtype=np.uint8)
+    sig = shot_boundary.frame_signature(const)
+    assert len(sig) == shot_boundary.HIST_BINS
+    # All pixels same value -> histogram is sparse (only one bin filled)
+    assert abs(sum(sig) - 1.0) < 1e-9
+
+
+def test_find_cuts_handles_empty_signature_list():
+    """Empty signature list should return empty cut list."""
+    result = shot_boundary.find_cuts([])
+    assert result == []
+
+
+def test_find_cuts_handles_single_signature():
+    """Single signature (no comparisons possible) should return empty cut list."""
+    sig = shot_boundary.frame_signature(_flat(100))
+    result = shot_boundary.find_cuts([sig])
+    assert result == []
+
+
+def test_is_cut_handles_constant_frames():
+    """Two identical constant-valued frames should not be a cut.
+
+    After fix round 1, zero-variance signatures never produce cuts, so two
+    identical constant-valued frames (both zero variance) are safe.
+    """
+    const1 = shot_boundary.frame_signature(_flat(100))
+    const2 = shot_boundary.frame_signature(_flat(100))
+    assert shot_boundary.is_cut(const1, const2) is False
+
+
 # --- Desired behavior: texture and content changes ---
 
 def test_textured_frame_vs_same_rolled_is_not_a_cut():
