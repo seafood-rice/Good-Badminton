@@ -6,9 +6,14 @@ validation not run — blocked on a genuine broadcast sample with hard cuts
 
 Method: correlate coarse intensity histograms of consecutive frames. A hard
 cut replaces the whole image at once, so the histogram decorrelates in a
-single step, while pans, zooms, and lighting changes drift smoothly. This
-deliberately does NOT attempt replay detection (logo wipes, slow motion),
-which is a different and harder problem.
+single step. This method EXPECTS this behaviour to hold; it is unvalidated on
+real broadcast footage. This deliberately does NOT attempt replay detection
+(logo wipes, slow motion), which is a different and harder problem.
+
+Known limitations:
+  - Global brightness steps, flashes, and fades read as cuts (false positives).
+  - Cuts between shots with similar intensity histograms are missed (false negatives).
+  - Callers should pass a downscaled frame; a full 4K frame signature costs ~83 ms per frame.
 """
 import math
 
@@ -25,12 +30,14 @@ def frame_signature(gray, bins=HIST_BINS):
     """Normalised coarse intensity histogram of a grayscale frame.
 
     Args:
-        gray: grayscale frame (any array-like with shape and dtype)
+        gray: 8-bit grayscale frame (values 0-255), any array-like with shape
         bins: number of histogram bins (default HIST_BINS)
 
     Returns:
-        list[float]: normalised histogram summing to 1.0; safe on degenerate
-                     input (empty/black/constant frames).
+        list[float]: normalised histogram summing to 1.0. Returns all-zero
+                     signature [0.0, ...] on degenerate input (empty frame,
+                     zero total mass, failed decode). An all-zero signature
+                     never produces a cut (see is_cut).
     """
     import numpy as np
 
@@ -40,6 +47,32 @@ def frame_signature(gray, bins=HIST_BINS):
     if total <= 0:
         return [0.0] * bins
     return [float(v) / total for v in hist]
+
+
+def _is_degenerate(signature):
+    """Check if a signature is degenerate (unsafe for cut detection).
+
+    Returns True if:
+    - signature is empty
+    - signature has zero total mass (all zeros)
+    - signature has zero variance (all values identical)
+    - signature contains non-finite values (NaN, inf)
+    """
+    if not signature:
+        return True
+    # Check total mass
+    total = sum(signature)
+    if total <= 0:
+        return True
+    # Check for non-finite values
+    if any(not math.isfinite(v) for v in signature):
+        return True
+    # Check variance
+    mean = total / len(signature)
+    variance = sum((v - mean) ** 2 for v in signature)
+    if variance <= 0:
+        return True
+    return False
 
 
 def _correlation(a, b):
@@ -69,9 +102,18 @@ def is_cut(sig_a, sig_b, max_corr=CUT_CORRELATION_MAX):
         max_corr: correlation threshold; below this is a cut
 
     Returns:
-        bool: True if a cut is detected, False otherwise; safe on degenerate
-              input.
+        bool: True if a cut is detected, False otherwise. Returns False on
+              degenerate input (mismatched lengths, zero total mass, zero
+              variance, non-finite values, or empty signature). Degenerate
+              signatures never produce cuts, preventing failed decodes or
+              empty frames from yielding spurious cuts.
     """
+    # Degenerate input: no cut
+    if _is_degenerate(sig_a) or _is_degenerate(sig_b):
+        return False
+    # Mismatched lengths: no cut
+    if len(sig_a) != len(sig_b):
+        return False
     return _correlation(sig_a, sig_b) < max_corr
 
 
