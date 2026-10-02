@@ -597,9 +597,50 @@ def _degraded_result(track, fps, prov, reason, windows=True):
     return segments, prov
 
 
+def _usable_records(track):
+    """The records of ``track`` that are dicts with an integer-convertible ``frame``.
+
+    Anything else (None, a record with no or a non-numeric ``frame``) cannot be
+    placed in time, so it is dropped rather than left to raise inside a stage,
+    where it would now be reported as an internal ERROR. Each kept record is a
+    shallow copy whose ``frame`` is a plain int.
+    """
+    out = []
+    for rec in track or []:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            frame = int(rec["frame"])
+        except (TypeError, ValueError, KeyError, OverflowError):
+            continue
+        out.append({**rec, "frame": frame})
+    return out
+
+
+def _error_result(prov, exc):
+    """``([], prov)`` for an internal failure: an ERROR, never a degraded result.
+
+    A code bug is not an unreliable signal (spec §7, ruling R6): it yields no
+    segments, ``signal: "error"``, ``degraded: False`` (so stroke recognition is
+    not withheld) and ``error: True``. ``reason`` is the exception TYPE only.
+    Whatever ``prov`` learned before the failure is kept; a non-finite number
+    in it is zeroed so the block always serialises. Never raises.
+    """
+    prov["signal"] = "error"
+    prov["degraded"] = False
+    prov["error"] = True
+    prov["reason"] = type(exc).__name__
+    try:
+        if not math.isfinite(float(prov.get("shuttle_density", 0.0))):
+            prov["shuttle_density"] = 0.0
+    except (TypeError, ValueError):
+        prov["shuttle_density"] = 0.0
+    return [], prov
+
+
 def _segment_rallies(track, fps, signal, gap_sec, min_len_sec, swing_frac, quad, prov):
     notes = []
-    track = list(track or [])
+    track = _usable_records(track)
     gap_sec = _clean_param(gap_sec, GAP_SEC, "gap_sec", notes)
     min_len_sec = _clean_param(min_len_sec, MIN_LEN_SEC, "min_len_sec", notes)
     swing_frac = _clean_param(swing_frac, SWING_FRAC, "swing_frac", notes)
@@ -702,7 +743,7 @@ def segment_rallies(track, fps, *, signal="auto", gap_sec=GAP_SEC,
     with no usable input takes the degraded path.
 
     Never raises. When no signal qualifies -- or one qualifies but finds no
-    rally, or anything at all goes wrong -- the result is uniform coarse
+    rally -- the result is uniform coarse
     windows over the recorded frames, every one ``degraded: True``, with
     ``provenance["signal"] == "none"`` (owner decision §12a-C). That is
     displayable but NOT a rally count, and stroke recognition must withhold
@@ -712,12 +753,18 @@ def segment_rallies(track, fps, *, signal="auto", gap_sec=GAP_SEC,
     at any recording gap longer than ``gap_sec``, so they never claim time that
     was not recorded.
 
+    An INTERNAL failure (a bug, not an unreliable signal) is different: the
+    result is ``[]`` with ``signal: "error"``, ``degraded: False``, ``error:
+    True`` and ``reason`` the exception type only, so a code bug is never
+    mistaken for a degraded segmentation (which withholds stroke labels). Any
+    provenance filled in before the failure is kept.
+
     An empty track yields no segments, and neither does an invalid ``fps``
     (None, NaN, inf, <= 0, non-numeric): with no time base, no second is
     invented, so the result is ``[]`` with ``degraded: True``, ``signal:
     "none"`` and a reason that states the fps problem.
 
-    ``provenance``: ``signal`` (``"shuttle" | "swing" | "none"``),
+    ``provenance``: ``signal`` (``"shuttle" | "swing" | "none" | "error"``),
     ``attempted_signal`` (what auto-selection or the pin tried, or None),
     ``reason``, ``degraded``, ``params`` (``gap_sec``, ``min_len_sec``,
     ``swing_frac``, ``degraded_window_sec``, ``stride``),
@@ -732,5 +779,4 @@ def segment_rallies(track, fps, *, signal="auto", gap_sec=GAP_SEC,
         return _segment_rallies(track, fps, signal, gap_sec, min_len_sec,
                                 swing_frac, quad, prov)
     except Exception as exc:        # never fatal: the video and other outputs survive
-        return _degraded_result(
-            track, fps, prov, f"segmentation failed ({type(exc).__name__})")
+        return _error_result(prov, exc)

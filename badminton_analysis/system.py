@@ -734,6 +734,9 @@ class BadmintonAnalysisSystem:
                 f"{len(rallies)} segments")
         if error is not None:
             line += f", error: {detection['reason']}"
+        elif detection.get("error"):
+            # segment_rallies' own failure result: an error, not a degradation.
+            line += f", error: {detection.get('reason')}"
         elif detection.get("degraded"):
             line += f", degraded: {detection.get('reason')}"
         print(line)

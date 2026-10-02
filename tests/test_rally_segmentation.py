@@ -966,27 +966,54 @@ def test_a_well_formed_quad_that_has_no_perspective_still_gates():
 # --- never fatal ---------------------------------------------------------------------
 
 
-def test_an_internal_exception_yields_degraded_windows_not_a_raise(monkeypatch):
+def test_an_internal_exception_is_an_error_not_a_degraded_segmentation(monkeypatch):
+    """Spec §7 / R6: a code bug is an ERROR. It must not masquerade as a degraded
+    (unreliable-signal) segmentation, which would withhold stroke labels."""
     def boom(*_a, **_k):
-        raise RuntimeError("synthetic failure")
+        raise RuntimeError("synthetic failure with /secret/path")
     monkeypatch.setattr(rallies, "swing_activity", boom)
     track = _swing_track(range(1800), _two_bursts)
     segments, prov = rallies.segment_rallies(track, FPS)
-    assert prov["signal"] == "none" and prov["degraded"] is True
-    assert "RuntimeError" in prov["reason"]
-    assert len(segments) == 3 and all(s["degraded"] for s in segments)
-    assert segments[0]["start_frame"] == 0 and segments[-1]["end_frame"] == 1799
+    assert segments == []
+    assert prov["signal"] == "error"
+    assert prov["degraded"] is False
+    assert prov["error"] is True
+    assert prov["reason"] == "RuntimeError"          # the type only, never the message
+    assert "secret" not in json.dumps(prov)
     json.dumps(prov, allow_nan=False)
 
 
-def test_an_early_internal_exception_is_also_contained(monkeypatch):
+def test_an_early_internal_exception_is_also_an_error(monkeypatch):
     def boom(*_a, **_k):
         raise ValueError("early")
     monkeypatch.setattr(rallies, "suppress_static", boom)
     segments, prov = rallies.segment_rallies(_track([None] * 700), FPS)
-    assert prov["signal"] == "none" and prov["degraded"] is True
-    assert "ValueError" in prov["reason"]
-    assert segments
+    assert segments == []
+    assert prov["signal"] == "error" and prov["degraded"] is False
+    assert prov["error"] is True and prov["reason"] == "ValueError"
+    json.dumps(prov, allow_nan=False)
+
+
+def test_an_error_keeps_the_provenance_filled_before_the_failure(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("late")
+    monkeypatch.setattr(rallies, "swing_activity", boom)
+    track = _swing_track(range(1800), _two_bursts)
+    _segments, prov = rallies.segment_rallies(track, FPS, quad=_QUAD)
+    assert prov["params"]["stride"] == 1             # set before the failing stage
+    assert "suppressed_static_shuttle" in prov
+    assert prov["attempted_signal"] == "swing"
+    assert prov["caps_source"] == "quad"
+    json.dumps(prov, allow_nan=False)
+
+
+def test_an_error_result_is_json_safe_even_with_a_non_finite_partial_value(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("late")
+    monkeypatch.setattr(rallies, "shuttle_density", lambda _t: float("nan"))
+    monkeypatch.setattr(rallies, "choose_signal", boom)
+    _segments, prov = rallies.segment_rallies(_swing_track(range(900), _two_bursts), FPS)
+    assert prov["signal"] == "error"
     json.dumps(prov, allow_nan=False)
 
 
@@ -1022,7 +1049,9 @@ def test_an_invalid_fps_yields_no_segments_on_every_path(fps, monkeypatch):
     monkeypatch.setattr(rallies, "suppress_static",
                         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("x")))
     segments, prov = rallies.segment_rallies(swing, fps)
-    assert segments == [] and "fps" in prov["reason"] and "RuntimeError" in prov["reason"]
+    # An internal failure is an error whatever the fps (it is not a degradation).
+    assert segments == [] and prov["signal"] == "error" and prov["degraded"] is False
+    assert prov["reason"] == "RuntimeError"
 
 
 def test_a_degraded_window_never_covers_a_gap_longer_than_gap_sec():
@@ -1215,12 +1244,15 @@ def test_a_non_finite_cut_is_written_as_null(tmp_path):
     assert json.loads(raw)["detection"]["court_view"]["cut"] is None
 
 
-def test_segmenter_failure_is_never_fatal_and_is_not_degraded(tmp_path, monkeypatch, capsys):
+def test_a_failure_around_the_segmenter_is_never_fatal_and_is_not_degraded(
+        tmp_path, monkeypatch, capsys):
+    """Defence in depth: the system's own step raising (segment_rallies itself no
+    longer raises) is contained by _write_rally_segments."""
     def _boom(*a, **k):
         raise RuntimeError("synthetic segmenter failure with /secret/path")
 
-    monkeypatch.setattr(rallies, "segment_rallies", _boom)
     s = _writer_system(tmp_path, [])
+    monkeypatch.setattr(s, "_rally_segments_for_output", _boom, raising=False)
     s._write_rally_segments(fps=FPS)                 # must not raise
 
     payload = _read_segments(tmp_path)
@@ -1235,6 +1267,31 @@ def test_segmenter_failure_is_never_fatal_and_is_not_degraded(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "synthetic segmenter failure" in out      # the full exception, on the console
     assert "RuntimeError" in out
+
+
+def test_an_internal_segmenter_stage_failure_is_written_as_an_error(
+        tmp_path, monkeypatch, capsys):
+    """F1 at the system level: segment_rallies' own error result is kept as an
+    error (not turned into degraded windows) and logged once with its reason."""
+    def _boom(*a, **k):
+        raise RuntimeError("synthetic stage failure /secret/path")
+
+    monkeypatch.setattr(rallies, "suppress_static", _boom)
+    s = _writer_system(tmp_path, _swing_track(range(1800), _two_bursts), quad=_QUAD)
+    s._write_rally_segments(fps=FPS)
+
+    payload = _read_segments(tmp_path)
+    assert payload["rallies"] == []
+    det = payload["detection"]
+    assert det["signal"] == "error" and det["error"] is True
+    assert det["degraded"] is False and det["stroke_labels_withheld"] is False
+    assert det["reason"] == "RuntimeError"
+    assert det["court_view"]["frames"] == 100
+    assert "secret" not in json.dumps(payload)
+    assert s.rally_detection == det
+    out = capsys.readouterr().out
+    assert out.count("RuntimeError") == 1            # the reason is logged once
+    assert "degraded" not in out.lower()
 
 
 def test_a_failing_write_is_also_contained(tmp_path, monkeypatch):
@@ -1488,16 +1545,36 @@ def test_courtview_does_not_withhold_stroke_labels(tmp_path):
     assert det["signal"] == "courtview" and det["stroke_labels_withheld"] is False
 
 
-def test_a_segmenter_error_does_not_withhold_stroke_labels(tmp_path, monkeypatch):
+def test_a_segmenter_error_does_not_withhold_stroke_labels(tmp_path, monkeypatch, capsys):
+    """An internal stage failure inside the real pipeline order: segments.json says
+    error / not withheld, and stroke recognition IS reached (no withholding, and
+    the previous strokes.json is replaced by this run's, not deleted)."""
     def _boom(*a, **k):
         raise RuntimeError("x")
 
-    monkeypatch.setattr(rallies, "segment_rallies", _boom)
-    s = _writer_system(tmp_path, [])
+    monkeypatch.setattr(rallies, "suppress_static", _boom)
+    s, calls = _bare_system_for_recognition(tmp_path, monkeypatch, None, missing=True)
+    s.save_dir = str(tmp_path)
+    s.court_corners = _QUAD
+    s._rally_track = _swing_track(range(1800), _two_bursts)
+    s.rally_signal = "auto"
+    s.court_view_calibration = _CAL
+    s._gate_frames, s._gate_court_frames = 100, 80
+    s.rally_active, s.rally_count, s.rally_segments = False, 0, []
+    s._current_rally_start = 0
+    (tmp_path / "strokes.json").write_text('{"stale": true}', encoding="utf-8")
+
     s._write_rally_segments(fps=FPS)
     det = _read_segments(tmp_path)["detection"]
     assert det["signal"] == "error" and det["stroke_labels_withheld"] is False
     assert s.rally_detection["stroke_labels_withheld"] is False
+    capsys.readouterr()
+
+    s._run_stroke_recognition()
+
+    assert ("label_rally",) in calls                  # recognition was reached
+    assert "stale" not in (tmp_path / "strokes.json").read_text(encoding="utf-8")
+    assert "withheld" not in capsys.readouterr().out.lower()
 
 
 def test_recognition_follows_the_recorded_withheld_flag(tmp_path, monkeypatch, capsys):
