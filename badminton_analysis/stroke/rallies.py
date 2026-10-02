@@ -448,9 +448,6 @@ display.
 """
 
 _PINNABLE_SIGNALS = ("auto", "shuttle", "swing")
-_WINDOW_FALLBACK_FPS = 30.0
-"""Only used to size degraded windows when the caller's fps is unusable; no
-signal is run in that case and the reason says so."""
 
 
 def _fresh_provenance():
@@ -534,27 +531,32 @@ def _recorded_frames(track):
     return sorted(frames)
 
 
-def _coarse_windows(frames, fps):
+def _coarse_windows(frames, fps, gap_sec):
     """Uniform DEGRADED_WINDOW_SEC windows over the recorded frames, as frame pairs.
 
-    Windows are cut by frame TIME (``(frame - first_frame) / fps``), anchored at
-    the first recorded frame; each window's bounds are the first and last
-    RECORDED frame inside it, and a window with no recorded frame does not
-    exist. So a recording gap is never covered by a window, and a strided track
-    tiles exactly like a stride-1 one. A short trailing window is kept as is:
-    folding it into its predecessor could bridge a recording gap.
+    ``fps`` must be a valid (finite, positive) frame rate. Windows are cut by
+    frame TIME (``(frame - first_frame) / fps``), anchored at the first
+    recorded frame; each window's bounds are the first and last RECORDED frame
+    inside it, and a window with no recorded frame does not exist. A new window
+    also starts whenever the time between two consecutive recorded frames
+    exceeds ``gap_sec`` (the segmenter's own gap rule), so a window never
+    covers a recording gap longer than ``gap_sec``; a gap of ``gap_sec`` or less
+    stays inside its window. A strided track tiles like a stride-1 one. A short
+    trailing window is kept as is: folding it into its predecessor could bridge
+    a recording gap.
     """
     if not frames:
         return []
     first = frames[0]
-    out, current = [], None
+    out, current, prev = [], None, None
     for f in frames:
         index = int(((f - first) / fps) // DEGRADED_WINDOW_SEC)
-        if index != current:
+        if index != current or (f - prev) / fps > gap_sec:
             out.append([f, f])
             current = index
         else:
             out[-1][1] = f
+        prev = f
     return out
 
 
@@ -569,15 +571,27 @@ def _segment_dicts(frame_pairs, fps, degraded):
             for n, (a, b) in enumerate(frame_pairs, start=1)]
 
 
-def _degraded_result(track, fps, prov, reason):
-    """Coarse degraded windows plus ``prov`` rewritten to say so. Never raises."""
+def _degraded_result(track, fps, prov, reason, windows=True):
+    """Coarse degraded windows plus ``prov`` rewritten to say so. Never raises.
+
+    With no valid ``fps`` there is no time base: no segments are returned (and
+    no second is written anywhere), and the reason says so. ``windows=False``
+    is for the empty track, where nothing is emitted for a reason other than
+    fps and the "windows emitted" note would be untrue.
+    """
     prov["signal"] = "none"
     prov["degraded"] = True
-    prov["reason"] = reason
-    window_fps = _valid_fps(fps) or _WINDOW_FALLBACK_FPS
+    valid = _valid_fps(fps)
+    if valid is None:
+        prov["reason"] = (f"{reason}; fps {fps!r} is not a finite positive number: "
+                          "no time base, so no segments were emitted")
+        return [], prov
+    prov["reason"] = (f"{reason}; degraded coarse windows emitted; "
+                      "stroke labels must be withheld") if windows else reason
     try:
         segments = _segment_dicts(
-            _coarse_windows(_recorded_frames(track), window_fps), window_fps, True)
+            _coarse_windows(_recorded_frames(track), valid,
+                            prov["params"]["gap_sec"]), valid, True)
     except Exception:       # a result must always come back; an empty one is the floor
         segments = []
     return segments, prov
@@ -597,7 +611,8 @@ def _segment_rallies(track, fps, signal, gap_sec, min_len_sec, swing_frac, quad,
 
     if not track:
         return _degraded_result(track, fps, prov,
-                                "; ".join(["empty track: no recorded frames"] + notes))
+                                "; ".join(["empty track: no recorded frames"] + notes),
+                                windows=False)
 
     prov["params"]["stride"] = track_stride(track)
 
@@ -640,8 +655,7 @@ def _segment_rallies(track, fps, signal, gap_sec, min_len_sec, swing_frac, quad,
         run = "none"
         notes.append("no usable swing input: no wrist track recorded")
     elif run in ("shuttle", "swing") and fps_val is None:
-        run = "none"
-        notes.append(f"fps {fps!r} is not a finite positive number: no signal was run")
+        run = "none"       # _degraded_result states the fps problem
 
     spans, times, frames = None, [], [int(rec["frame"]) for rec in cleaned]
     if run == "shuttle":
@@ -657,10 +671,7 @@ def _segment_rallies(track, fps, signal, gap_sec, min_len_sec, swing_frac, quad,
             notes.append(f"{run} signal produced no segments")
 
     if not spans:
-        return _degraded_result(
-            cleaned, fps, prov,
-            "; ".join([reason] + notes + ["degraded coarse windows emitted; "
-                                          "stroke labels must be withheld"]))
+        return _degraded_result(cleaned, fps, prov, "; ".join([reason] + notes))
 
     frame_at = dict(zip(times, frames))
     pairs = [(frame_at[a], frame_at[b]) for a, b in spans]
@@ -696,7 +707,15 @@ def segment_rallies(track, fps, *, signal="auto", gap_sec=GAP_SEC,
     ``provenance["signal"] == "none"`` (owner decision §12a-C). That is
     displayable but NOT a rally count, and stroke recognition must withhold
     labels on it (§0.16: even the working swing signal inflates rally count
-    +36% and total rally time +41%). Only an empty track yields no segments.
+    +36% and total rally time +41%). A chosen (or pinned) signal that finds no
+    segment goes degraded as well; the other signal is not tried. Windows split
+    at any recording gap longer than ``gap_sec``, so they never claim time that
+    was not recorded.
+
+    An empty track yields no segments, and neither does an invalid ``fps``
+    (None, NaN, inf, <= 0, non-numeric): with no time base, no second is
+    invented, so the result is ``[]`` with ``degraded: True``, ``signal:
+    "none"`` and a reason that states the fps problem.
 
     ``provenance``: ``signal`` (``"shuttle" | "swing" | "none"``),
     ``attempted_signal`` (what auto-selection or the pin tried, or None),
@@ -714,6 +733,4 @@ def segment_rallies(track, fps, *, signal="auto", gap_sec=GAP_SEC,
                                 swing_frac, quad, prov)
     except Exception as exc:        # never fatal: the video and other outputs survive
         return _degraded_result(
-            track, fps, prov,
-            f"segmentation failed ({type(exc).__name__}); degraded coarse windows emitted; "
-            "stroke labels must be withheld")
+            track, fps, prov, f"segmentation failed ({type(exc).__name__})")

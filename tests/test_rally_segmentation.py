@@ -997,14 +997,49 @@ def test_records_without_a_usable_frame_never_raise():
     assert [(s["start_frame"], s["end_frame"]) for s in segments] == [(5, 5)]
 
 
-@pytest.mark.parametrize("fps", [float("nan"), float("inf"), 0.0, -30.0, None, "60"])
-def test_an_invalid_fps_is_degraded_not_fatal(fps):
-    segments, prov = rallies.segment_rallies(
-        _swing_track(range(900), _two_bursts), fps)
-    assert prov["signal"] == "none" and prov["degraded"] is True
-    assert "fps" in prov["reason"]
-    assert segments and all(s["degraded"] for s in segments)
-    json.dumps([segments, prov], allow_nan=False)
+_BAD_FPS = [float("nan"), float("inf"), float("-inf"), 0.0, -30.0, None, "abc", "60", True]
+
+
+@pytest.mark.parametrize("fps", _BAD_FPS)
+def test_an_invalid_fps_yields_no_segments_and_says_so(fps):
+    """No time base exists, so no segment (and no second) may be invented."""
+    swing = _swing_track(range(900), _two_bursts)
+    empty = _track([None] * 900)
+    for track in (swing, empty, []):
+        segments, prov = rallies.segment_rallies(track, fps)
+        assert segments == []
+        assert prov["signal"] == "none" and prov["degraded"] is True
+        assert "fps" in prov["reason"]
+        json.dumps([segments, prov], allow_nan=False)
+
+
+@pytest.mark.parametrize("fps", [None, float("nan"), 0.0, "abc"])
+def test_an_invalid_fps_yields_no_segments_on_every_path(fps, monkeypatch):
+    swing = _swing_track(range(900), _two_bursts)
+    for pin in ("auto", "swing", "shuttle", "courtview"):
+        segments, prov = rallies.segment_rallies(swing, fps, signal=pin, quad=_QUAD)
+        assert segments == [] and prov["degraded"] is True and "fps" in prov["reason"]
+    monkeypatch.setattr(rallies, "suppress_static",
+                        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("x")))
+    segments, prov = rallies.segment_rallies(swing, fps)
+    assert segments == [] and "fps" in prov["reason"] and "RuntimeError" in prov["reason"]
+
+
+def test_a_degraded_window_never_covers_a_gap_longer_than_gap_sec():
+    """Frames 0-29 and 570-599 at 60 fps: 9 s of absence must not be claimed."""
+    frames = list(range(0, 30)) + list(range(570, 600))
+    empty = [{"frame": f, "shuttle": None, "wrist_lower": None, "wrist_upper": None}
+             for f in frames]
+    windows, prov = rallies.segment_rallies(empty, FPS)
+    assert prov["degraded"] is True
+    assert _seg_frames(windows) == [(0, 29), (570, 599)]
+    # A gap at or under gap_sec (1 s = 60 frames) does not split a window.
+    near = [{"frame": f, "shuttle": None, "wrist_lower": None, "wrist_upper": None}
+            for f in list(range(0, 30)) + list(range(89, 119))]
+    assert _seg_frames(rallies.segment_rallies(near, FPS)[0]) == [(0, 118)]
+    # gap_sec is the caller's: widening it merges what the default splits.
+    wide = rallies.segment_rallies(empty, FPS, gap_sec=10.0)[0]
+    assert _seg_frames(wide) == [(0, 599)]
 
 
 def test_invalid_numeric_parameters_fall_back_to_defaults_and_say_so():
