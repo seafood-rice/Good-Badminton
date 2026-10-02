@@ -28,6 +28,14 @@ COURT_VIEW_MIN_MEDIAN = 0.30      # below this the template is not of this video
 COURT_VIEW_FALLBACK_CUT = 0.75    # the historically shipped constant
 COURT_VIEW_CALIBRATION_STRIDE_SEC = 0.5   # ~2 samples/second
 COURT_VIEW_CALIBRATION_MAX_SAMPLES = 1500
+# Shift tolerance of the unpinned gate score, in pixels AT THE 480px GATE WIDTH
+# (~ +/-32 px at 4K): the once-downscaled template is cropped by this many pixels on
+# every side and slid over the frame, taking the best NCC. Chosen to absorb the
+# camera/gimbal settling drift measured on DJI 0010 (the image sits ~20 px at 4K
+# left of the template frame at t=0 and settles by ~60 s); INTER_AREA makes aligned
+# frames score in a tight cluster, so without it a slightly misaligned full-court
+# frame fell > 4 robust SD below the median and was rejected (87.6% pass).
+COURT_VIEW_SHIFT_PX = 4
 
 # Fast mode analyzes every Nth court frame (quick look).
 FAST_FRAME_STRIDE = 3
@@ -153,6 +161,26 @@ def courtview_cut_from_scores(scores, k=COURT_VIEW_MAD_K):
     cut = max(0.0, min(0.95, cut))
     return {"cut": cut, "median": median, "mad": mad, "samples": n,
             "method": method, "calibration": method, "k": float(k)}
+
+
+def cap_court_view_cut(calibration, cap=COURT_VIEW_FALLBACK_CUT):
+    """Never let a calibrated cut be stricter than ``cap`` (the shipped 0.75).
+
+    Returns a copy of ``calibration`` (from ``courtview_cut_from_scores``) with
+    two audit keys added: ``capped`` and ``calibrated_cut`` (the cut before
+    capping). Only the normal estimator path ("median-4mad") is capped;
+    ``fallback_constant``, ``template_mismatch_pass_all`` and manual pins are
+    returned unchanged with ``capped`` False and ``calibrated_cut`` None.
+    """
+    out = dict(calibration)
+    out["capped"] = False
+    out["calibrated_cut"] = None
+    if str(out.get("calibration", "")).startswith("median-"):
+        out["calibrated_cut"] = out["cut"]
+        if out["cut"] > cap:
+            out["cut"] = cap
+            out["capped"] = True
+    return out
 
 
 def load_runtime_dependencies():
@@ -450,7 +478,16 @@ class BadmintonAnalysisSystem:
         self._cleanup(cap)
 
     def _court_view_score(self, gray_frame, template_small):
-        """Whole-frame NCC at COURT_VIEW_SCORE_WIDTH. Shared by C0 and C1."""
+        """Shift-tolerant whole-frame NCC at COURT_VIEW_SCORE_WIDTH. Shared by
+        calibration (C0) and the live unpinned gate (C1), so both see one scale.
+
+        The once-downscaled template is cropped by COURT_VIEW_SHIFT_PX on every
+        side and slid over the frame; the best NCC is returned, so a frame that
+        has drifted up to that many pixels (at 480 wide) still scores as a match.
+        A template too small to crop falls back to the equal-size score. A
+        non-finite maximum is returned as is (calibration drops it; the live
+        gate treats it as not court view).
+        """
         import cv2
         import numpy as np
 
@@ -459,6 +496,10 @@ class BadmintonAnalysisSystem:
             template_small = cv2.resize(template_small,
                                         (small.shape[1], small.shape[0]),
                                         interpolation=cv2.INTER_AREA)
+        m = COURT_VIEW_SHIFT_PX
+        h, w = template_small.shape[:2]
+        if h >= 2 * m + 1 and w >= 2 * m + 1:
+            template_small = template_small[m:h - m, m:w - m]
         result = cv2.matchTemplate(small, template_small, cv2.TM_CCOEFF_NORMED)
         return float(np.max(result))
 
@@ -496,7 +537,8 @@ class BadmintonAnalysisSystem:
                 self.court_view_cut = pin
                 self.court_view_calibration = {
                     "cut": pin, "median": None, "mad": None, "samples": 0,
-                    "method": "manual", "calibration": "manual", "k": None}
+                    "method": "manual", "calibration": "manual", "k": None,
+                    "capped": False, "calibrated_cut": None}
                 print(f"Court-view gate: cut={pin} (manual)")
                 return
             print(f"Court-view threshold {self.court_view_threshold_override!r} "
@@ -506,7 +548,8 @@ class BadmintonAnalysisSystem:
         except Exception as exc:
             print(f"Court-view calibration failed, using "
                   f"{COURT_VIEW_FALLBACK_CUT}: {exc}")
-            self.court_view_calibration = courtview_cut_from_scores([])
+            self.court_view_calibration = cap_court_view_cut(
+                courtview_cut_from_scores([]))
             self.court_view_cut = self.court_view_calibration["cut"]
 
     def _calibrate_court_view(self, video_path, template_small, fps):
@@ -543,11 +586,15 @@ class BadmintonAnalysisSystem:
             if cap is not None:
                 cap.release()
 
-        self.court_view_calibration = courtview_cut_from_scores(scores)
+        self.court_view_calibration = cap_court_view_cut(
+            courtview_cut_from_scores(scores))
         self.court_view_cut = self.court_view_calibration["cut"]
+        capped = self.court_view_calibration["capped"]
         print(f"Court-view gate: cut={self.court_view_cut} "
               f"({self.court_view_calibration['calibration']}, "
-              f"{self.court_view_calibration['samples']} samples)")
+              f"{self.court_view_calibration['samples']} samples"
+              + (f", capped from {self.court_view_calibration['calibrated_cut']}"
+                 if capped else "") + ")")
 
     def _court_view_metadata(self):
         """The ``court.court_view`` record for metadata.json.
@@ -575,6 +622,8 @@ class BadmintonAnalysisSystem:
             "samples": int(cal.get("samples", 0)),
             "median": finite_or_none(cal.get("median")),
             "mad": finite_or_none(cal.get("mad")),
+            "capped": bool(cal.get("capped", False)),
+            "calibrated_cut": finite_or_none(cal.get("calibrated_cut")),
         }
 
     RALLY_SIGNALS = ("auto", "shuttle", "swing", "courtview")

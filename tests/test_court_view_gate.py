@@ -583,3 +583,202 @@ def test_downscale_does_not_change_decisions_away_from_the_boundary(make_templat
         small = s._court_view_for_frame(frame, template, 1)
         assert full is expected, name
         assert small is expected, name
+
+
+# --- Gate fix (2026-10): shift-tolerant score, and never stricter than 0.75 ---
+
+
+def _canvas(seed, width=1288):
+    """A blocky, texture-rich canvas 8 px wider than a 1280 frame.
+
+    8 px at 1280 wide is exactly 3 px at the gate's 480 px width, and lands on
+    the INTER_AREA grid, so a window offset by 8 px is an exact 3 px shift of
+    the downscaled image.
+    """
+    rng = np.random.default_rng(seed)
+    blocks = rng.integers(0, 255, (72, width // 8), dtype=np.uint8)
+    return np.kron(blocks, np.ones((10, 8), np.uint8))
+
+
+def _equal_size_score(frame, template):
+    """The pre-fix score, written out independently of production."""
+    import cv2
+
+    small = system.downscale_for_gate(frame)
+    tmpl = system.downscale_for_gate(template)
+    return float(np.max(cv2.matchTemplate(small, tmpl, cv2.TM_CCOEFF_NORMED)))
+
+
+def test_shift_tolerance_is_a_named_documented_constant():
+    assert system.COURT_VIEW_SHIFT_PX == 4
+    assert system.COURT_VIEW_SCORE_WIDTH == 480
+
+
+def test_a_3px_shift_barely_moves_the_score_while_the_old_score_collapses():
+    canvas = _canvas(41)
+    template = canvas[:, 8:1288]
+    frame = canvas[:, 0:1280]          # the image drifted 8 px = 3 px at 480 wide
+    s = _fake_system()
+    small = system.downscale_for_gate(template)
+
+    aligned = s._court_view_score(template.copy(), small)
+    shifted = s._court_view_score(frame, small)
+    assert aligned > 0.99
+    assert abs(aligned - shifted) < 0.01
+
+    # The test must really exercise a shift: the equal-size score drops by a lot.
+    old_aligned = _equal_size_score(template.copy(), template)
+    old_shifted = _equal_size_score(frame, template)
+    assert old_aligned - old_shifted > 0.15
+
+
+def test_a_shift_beyond_the_tolerance_is_penalised():
+    canvas = _canvas(42, width=1304)   # 24 px = 9 px at 480 wide, > 4
+    template = canvas[:, 24:1304]
+    frame = canvas[:, 0:1280]
+    s = _fake_system()
+    small = system.downscale_for_gate(template)
+    assert s._court_view_score(template.copy(), small) - \
+        s._court_view_score(frame, small) > 0.1
+
+
+def test_an_unrelated_frame_still_scores_far_below_a_match():
+    template = _canvas(43)[:, 0:1280]
+    other = _canvas(44)[:, 0:1280]
+    s = _fake_system()
+    small = system.downscale_for_gate(template)
+    assert s._court_view_score(template.copy(), small) > 0.99
+    assert s._court_view_score(other, small) < 0.3
+
+
+def test_the_score_is_a_python_float_and_non_finite_maxima_are_not_hidden(monkeypatch):
+    import cv2
+
+    s = _fake_system()
+    small = system.downscale_for_gate(_template())
+    score = s._court_view_score(_template().copy(), small)
+    assert type(score) is float
+
+    monkeypatch.setattr(cv2, "matchTemplate",
+                        lambda *_a, **_k: np.full((9, 9), np.nan, np.float32))
+    got = s._court_view_score(_template(), small)
+    assert type(got) is float and got != got      # NaN, so calibration drops it
+
+
+def test_a_template_too_small_to_crop_falls_back_to_the_equal_size_score():
+    rng = np.random.default_rng(45)
+    tiny = rng.integers(0, 255, (8, 100), dtype=np.uint8)    # 8 < 2*4 + 1
+    s = _fake_system()
+    assert abs(s._court_view_score(tiny.copy(), tiny) - 1.0) < 1e-4
+    narrow = rng.integers(0, 255, (100, 8), dtype=np.uint8)
+    assert abs(s._court_view_score(narrow.copy(), narrow) - 1.0) < 1e-4
+
+
+def test_calibration_and_the_live_gate_use_the_same_scoring_function(monkeypatch):
+    import cv2
+
+    calls = []
+
+    def scoring(gray, tmpl):
+        calls.append(gray.shape)
+        return 0.9
+
+    _FakeCapture.instances.clear()
+    monkeypatch.setattr(cv2, "VideoCapture", _FakeCapture)
+    s = _fake_system()
+    s.court_view_pinned = False
+    template = _template()
+    small = system.downscale_for_gate(template)
+    s.court_view_template_small = small
+    monkeypatch.setattr(s, "_court_view_score", scoring)
+
+    s._calibrate_court_view("video.mp4", small, 30.0)
+    in_calibration = len(calls)
+    assert in_calibration == 67
+
+    s.court_view_cut = 0.5
+    assert s._court_view_for_frame(template.copy(), template, 1) is True
+    assert len(calls) == in_calibration + 1
+
+
+# --- the 0.75 cap ---
+
+
+def _calibrate_with_scores(monkeypatch, score_value):
+    import cv2
+
+    _FakeCapture.instances.clear()
+    monkeypatch.setattr(cv2, "VideoCapture", _FakeCapture)
+    s = _fake_system()
+    monkeypatch.setattr(s, "_court_view_score", lambda *_a: score_value)
+    s._calibrate_court_view("video.mp4", system.downscale_for_gate(_template()), 30.0)
+    return s
+
+
+def test_a_calibrated_cut_above_the_fallback_is_capped_and_recorded(monkeypatch):
+    s = _calibrate_with_scores(monkeypatch, 0.93)   # MAD 0 -> cut = median = 0.93
+    assert s.court_view_cut == system.COURT_VIEW_FALLBACK_CUT == 0.75
+    record = s._court_view_metadata()
+    assert record["cut"] == 0.75
+    assert record["capped"] is True
+    assert record["calibrated_cut"] == pytest.approx(0.93)
+    assert record["calibration"] == "median-4mad"
+    assert record["median"] == pytest.approx(0.93)
+
+
+def test_a_calibrated_cut_below_the_fallback_is_untouched(monkeypatch):
+    s = _calibrate_with_scores(monkeypatch, 0.60)
+    assert s.court_view_cut == pytest.approx(0.60)
+    record = s._court_view_metadata()
+    assert record["cut"] == pytest.approx(0.60)
+    assert record["capped"] is False
+    assert record["calibrated_cut"] == pytest.approx(0.60)
+
+
+def test_a_calibrated_cut_exactly_at_the_fallback_is_not_reported_as_capped(monkeypatch):
+    s = _calibrate_with_scores(monkeypatch, 0.75)
+    assert s.court_view_cut == pytest.approx(0.75)
+    assert s._court_view_metadata()["capped"] is False
+
+
+def test_template_mismatch_is_never_capped(monkeypatch):
+    s = _calibrate_with_scores(monkeypatch, 0.05)
+    assert s.court_view_cut == float("-inf")
+    record = s._court_view_metadata()
+    assert record["calibration"] == "template_mismatch_pass_all"
+    assert record["cut"] is None
+    assert record["capped"] is False
+    assert record["calibrated_cut"] is None
+
+
+def test_the_fallback_constant_is_never_capped(monkeypatch):
+    s = _calibrate_with_scores(monkeypatch, float("nan"))    # no finite samples
+    assert s.court_view_cut == 0.75
+    record = s._court_view_metadata()
+    assert record["calibration"] == "fallback_constant"
+    assert record["capped"] is False
+    assert record["calibrated_cut"] is None
+
+
+def test_a_failed_calibration_is_never_capped(monkeypatch):
+    s = _fake_system()
+
+    def explode(*_a, **_k):
+        raise RuntimeError("decoder exploded")
+
+    monkeypatch.setattr(s, "_calibrate_court_view", explode)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 30.0)
+    record = s._court_view_metadata()
+    assert record["capped"] is False and record["calibrated_cut"] is None
+
+
+def test_a_manual_pin_is_never_capped(monkeypatch):
+    s = _fake_system()
+    s.court_view_threshold_override = 0.9          # above 0.75, still honoured
+    monkeypatch.setattr(s, "_calibrate_court_view", _boom)
+    s._prepare_court_view_cut(system.downscale_for_gate(_template()), 30.0)
+    assert s.court_view_cut == 0.9
+    record = s._court_view_metadata()
+    assert record["cut"] == 0.9
+    assert record["capped"] is False
+    assert record["calibrated_cut"] is None
