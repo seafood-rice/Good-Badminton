@@ -457,17 +457,17 @@ def _jittered_cluster(rng, cx, cy, n, radius=25.0):
 
 def test_static_fixture_is_suppressed_and_reported():
     """86% of the ball model's output on the owner's footage is one fixture (§0.7)."""
-    fixture = [(473.0, 846.0)] * 90
+    fixture = [(473.0, 846.0)] * 900
     real = [(100.0 + 8 * i, 200.0 + 5 * i) for i in range(10)]
     cleaned, suppressed = rallies.suppress_static(_track(fixture + real))
-    assert suppressed["count"] == 90
+    assert suppressed["count"] == 900
     assert len(suppressed["cells"]) == 1
-    assert suppressed["cells"][0]["count"] == 90
+    assert suppressed["cells"][0]["count"] == 900
     assert suppressed["cells"][0]["point"] == pytest.approx([473.0, 846.0])
     assert _kept(cleaned) == 10
 
 
-def test_a_moving_shuttle_is_never_suppressed():
+def test_a_straight_moving_flight_is_not_suppressed():
     moving = [(10.0 * i, 5.0 * i) for i in range(100)]
     cleaned, suppressed = rallies.suppress_static(_track(moving))
     assert suppressed == {"count": 0, "cells": []}
@@ -498,6 +498,43 @@ def test_jittered_fixture_straddling_a_cell_edge_is_suppressed():
     assert {r["shuttle"] for r in cleaned if r["shuttle"] is not None} == set(outliers)
 
 
+def test_serve_hold_in_a_short_clip_is_not_a_fixture():
+    """A server holding the shuttle still for ~0.7 s is a real shuttle."""
+    rng = random.Random(5)
+    hold = _jittered_cluster(rng, 600.0, 700.0, 40, radius=3.0)
+    flight = [(700.0 + 12.0 * i, 650.0 - 4.0 * i) for i in range(90)]
+    cleaned, suppressed = rallies.suppress_static(_track(hold + flight))
+    assert suppressed == {"count": 0, "cells": []}
+    assert _kept(cleaned) == 130
+
+
+def test_apex_hover_is_not_a_fixture():
+    """A shuttle hanging near the top of a lob stays inside ~20 px briefly."""
+    rng = random.Random(6)
+    hover = _jittered_cluster(rng, 1200.0, 300.0, 30, radius=20.0)
+    flight = [(200.0 + 9.0 * i, 900.0 - 3.0 * i) for i in range(70)]
+    cleaned, suppressed = rallies.suppress_static(_track(flight[:35] + hover + flight[35:]))
+    assert suppressed == {"count": 0, "cells": []}
+    assert _kept(cleaned) == 100
+
+
+def test_tiny_track_cluster_is_not_suppressed():
+    """3 of 10 detections are 30% of the track, but 3 points are not a fixture."""
+    pts = [(500.0, 500.0), (501.0, 500.0), (500.0, 502.0)] + \
+        [(100.0 + 90.0 * i, 40.0 + 60.0 * i) for i in range(7)]
+    cleaned, suppressed = rallies.suppress_static(_track(pts))
+    assert suppressed == {"count": 0, "cells": []}
+    assert _kept(cleaned) == 10
+
+
+def test_the_absolute_floor_is_what_protects_a_small_cluster():
+    assert rallies.STATIC_MIN_POINTS == 300
+    floor = rallies.STATIC_MIN_POINTS
+    for n, expect in ((floor - 1, 0), (floor, floor)):
+        _, suppressed = rallies.suppress_static(_track([(473.0, 846.0)] * n))
+        assert suppressed["count"] == expect
+
+
 def test_a_slow_shuttle_through_the_fixture_area_is_not_suppressed():
     """Enough points to pass the count test in one merged block, but they travel
     ~200 px, so the robust spread rejects them."""
@@ -521,7 +558,7 @@ def test_a_shuttle_passing_the_fixture_keeps_its_far_points():
 
 
 def test_suppression_never_mutates_the_input_and_keeps_other_fields():
-    track = _track([(473.0, 846.0)] * 50 + [(10.0 * i, 3.0 * i) for i in range(10)])
+    track = _track([(473.0, 846.0)] * 400 + [(10.0 * i, 3.0 * i) for i in range(10)])
     for rec in track:
         rec["pos_lower"] = (1.0, 2.0)
     before = [dict(r) for r in track]
@@ -540,7 +577,7 @@ def test_suppression_of_an_empty_or_shuttle_free_track():
 
 def test_suppression_summary_is_json_friendly_and_rounded():
     rng = random.Random(11)
-    fixture = _jittered_cluster(rng, 473.0, 846.0, 200)
+    fixture = _jittered_cluster(rng, 473.0, 846.0, 400)
     _, suppressed = rallies.suppress_static(_track(fixture))
     assert json.loads(json.dumps(suppressed)) == suppressed
     for v in suppressed["cells"][0]["point"]:
@@ -578,8 +615,8 @@ def test_a_pinned_signal_is_honoured():
 
 def test_density_is_computed_after_suppression():
     """A track that is 90% one fixture is sparse, not dense."""
-    fixture = [(473.0, 846.0)] * 90
-    real = [(100.0 + 8 * i, 200.0 + 5 * i) for i in range(10)]
+    fixture = [(473.0, 846.0)] * 900
+    real = [(100.0 + 8 * i, 200.0 + 5 * i) for i in range(100)]
     cleaned, _ = rallies.suppress_static(_track(fixture + real))
     assert rallies.shuttle_density(cleaned) == pytest.approx(0.10)
 

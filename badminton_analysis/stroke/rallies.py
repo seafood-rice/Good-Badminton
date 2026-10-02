@@ -246,6 +246,12 @@ SHUTTLE_DENSITY_MIN = 0.50
 STATIC_FRAC_MAX = 0.25
 STATIC_SPREAD_PX = 25.0
 STATIC_GRID_PX = 50.0
+STATIC_MIN_POINTS = 300
+"""Absolute floor on a static cluster's size, in addition to STATIC_FRAC_MAX.
+The fraction alone is relative to the track, so on a short or sparse track a
+serve hold, an apex hover, or three close detections out of ten would be
+called a fixture. A real shuttle never holds a 25 px spot for ~5 s of
+continuous detection at 60 fps (300 points); the DJI 0010 fixture has 3,941."""
 STATIC_DROP_RADIUS_PX = 1.5 * STATIC_SPREAD_PX
 """A static cluster is judged on the 90th percentile of its spread, so up to
 10% of its points may lie beyond STATIC_SPREAD_PX of its median. Points are
@@ -277,8 +283,9 @@ def _p90(values):
 def suppress_static(track):
     """Drop shuttle detections that are a fixture rather than a shuttle.
 
-    A cluster holding more than STATIC_FRAC_MAX of all detections whose robust
-    spread is under STATIC_SPREAD_PX is a light fitting, a line marking, or a
+    A cluster holding at least STATIC_MIN_POINTS points and more than
+    STATIC_FRAC_MAX of all detections, whose robust spread is under
+    STATIC_SPREAD_PX, is a light fitting, a line marking, or a
     pole-mounted decoy -- not a shuttle, which never sits inside a 25 px disc
     for minutes. On the owner's footage this is 86% of the ball model's output
     (§0.7), so without this the density gate would be fooled into choosing a
@@ -316,7 +323,7 @@ def suppress_static(track):
         block = [i for dx in (-1, 0, 1) for dy in (-1, 0, 1)
                  for i in cells.get((key[0] + dx, key[1] + dy), ())
                  if i not in drop]
-        if len(block) <= STATIC_FRAC_MAX * total:
+        if len(block) < STATIC_MIN_POINTS or len(block) <= STATIC_FRAC_MAX * total:
             continue
         mx = _median([points[i][0] for i in block])
         my = _median([points[i][1] for i in block])
