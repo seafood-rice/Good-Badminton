@@ -133,6 +133,47 @@ non-regression with no weights present; full committed suite green.
   - Tested commit: parent `d280bec` plus working tree (`scripts/score_rally_labels.py`,
     `tests/test_rally_segmentation.py`, this file); the commit that lands them is the one whose
     message is `test(rallies): score the shipped swing signal against the human labels`.
+- **B11 Task 12 validation harness (2026-10-02).** `scripts/check_rally_gate.py` (new; prints
+  only, writes nothing under `outputs/`). Reuses production code: `--gate` builds
+  `BadmintonAnalysisSystem.__new__` (no weights) and calls `_load_template`,
+  `_calibrate_court_view` (timed alone; a counting `cv2.VideoCapture` proxy reports frames
+  grabbed/decoded) and `_court_view_downscaled` per frame; `--replay` uses
+  `rallies.wrists_from_hands` and `rallies.segment_rallies(quad=corners)` with fps and corners
+  from the run's `metadata.json` (shuttle key is `shuttlecock.image`). Command form:
+  `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B scripts/check_rally_gate.py --gate <video> --template <png>`
+  / `--replay <detections.jsonl>`.
+  - **Contention:** another python process (PID 20108, ~2.4 GB, the long analysis job) was
+    running throughout and was not stopped; all timings below are inflated by an unknown amount.
+  - `--gate` DJI 0010 (3840x2160, 59.94 fps, 17,234 frames): calibration `median-4mad`,
+    median 0.9428, MAD 0.01083, cut 0.8786, 575 samples. **Gate pass fraction 0.8754
+    (15,086 / 17,234) - NOT the ~0.98 the plan expected to be preserved**: the old fixed 0.75
+    gate recorded 16,889 / 17,234 = 0.980 frames for this clip. The calibrated cut sits well
+    above 0.75, so this clip loses ~12% of frames to the gate. Recorded as a finding, not
+    tuned; the cause (heavy low tail of whole-frame NCC, e.g. occlusion or camera shake) is not
+    investigated. Calibration pre-scan 51.3 s (17,234 frames grabbed, 575 decoded); per-frame
+    gate pass 475.5 s total (391.8 s decoding, 83.7 s grayscale + score).
+  - `--gate` Axelsen broadcast (1080p, 60 fps, 64,085 frames): calibration `median-4mad`,
+    median 0.6359, MAD 0.02349, cut 0.4966, 1,491 samples. **Gate pass fraction 0.9812
+    (62,881 / 64,085)**, up from 0.0066 at the old 0.75 gate. Calibration pre-scan 30.6 s
+    (64,085 grabbed, 1,491 decoded); per-frame gate pass 373.2 s total (199.3 s decoding,
+    173.8 s grayscale + score).
+  - `--replay` DJI 0010 pre-#7 (`outputs/Dji 20260718111111 0010 D/detections.jsonl`, 16,889
+    records): `suppressed_static_shuttle` = 1 cluster at (473.0, 846.0), 3,941 points (R11
+    fixture suppression confirmed on real data); signal `swing`, not degraded; 20 segments
+    (median 5.37 s, shortest 2.05 s, longest 12.61 s); `shuttle_density` 0.00101;
+    `caps_source` `quad`; `gated_outside_court` 236.
+  - `--replay` post-#7 (`outputs/b11-post7-dji0010/detections.jsonl`, 16,889 records):
+    identical suppression (1 cluster, (473.0, 846.0), 3,941 points), `swing`, not degraded;
+    21 segments (median 4.20 s, shortest 2.34 s, longest 14.03 s); `shuttle_density` 0.00101;
+    `caps_source` `quad`; `gated_outside_court` 236.
+  - **not run:** Axelsen segmentation replay - its recorded `detections.jsonl` has ~426 records
+    (recorded at the old 0.75 gate), so a replay is meaningless; it requires a full Axelsen
+    re-run with the new gate (owner-run Step 4). Task 11 shot-boundary real-footage validation
+    - no on-disk sample contains a cut (hermetic tests only).
+  - Suite: `--ignore=tests/test_ai_handoff.py` 922 passed.
+  - Tested commit: parent `f9aaf62` plus working tree (`scripts/check_rally_gate.py`, this
+    file); the commit that lands them is `test(b11): staged gate and segmenter-replay
+    validation harness`.
 
 ## Blockers
 
