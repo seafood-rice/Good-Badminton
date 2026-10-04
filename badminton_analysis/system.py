@@ -5,12 +5,13 @@ from tkinter import filedialog
 import tkinter as tk
 import time
 import argparse
+import threading
 
-# TrackNetV3 dense pre-pass is only feasible on short clips: eval_mode='weight'
-# runs ~0.4s/frame, so a full-length match (tens of thousands of frames) would
-# take hours. Above this frame budget we skip the pre-pass and fall back to the
-# yolo shuttle so match analysis stays responsive.
-SHUTTLE_PRETRACK_MAX_FRAMES = 2000
+# TrackNetV3 dense pre-pass modes. 'weight' (upstream default, temporal
+# ensemble) costs ~0.48 s/frame at 1080p on an RTX 4090; 'nonoverlap' ~0.18 s/frame.
+# The whole video is tracked whenever TrackNetV3 weights are present
+# (learned-hit-detection spec 8.1); the cache makes re-runs free.
+TRACKNET_MODES = ("weight", "nonoverlap")
 
 # Interval of the *pinned* gate only: when court_view_threshold is pinned the gate
 # stays exactly today's full-resolution match, recomputed every N frames with the
@@ -235,6 +236,43 @@ def load_runtime_dependencies():
     write_json = _write_json
     SCHEMA_VERSION = _SCHEMA_VERSION
 
+class _ProgressHeartbeat:
+    """Rewrites progress.json every ``interval`` s from a background thread.
+
+    A whole-match TrackNetV3 pass runs for hours with batches that can take longer
+    than the UI's staleness window; this keeps "updated Ns ago" fresh and carries the
+    latest frame count, independent of how often the tracker reports.
+    """
+
+    def __init__(self, write, stage, interval=2.0):
+        self._write = write
+        self._stage = stage
+        self._interval = interval
+        self.current = 0
+        self._stop = threading.Event()
+        self._thread = None
+
+    def update(self, done, total=None):
+        self.current = int(done)
+
+    def __enter__(self):
+        self._write(self._stage, current_frame=0)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            self._write(self._stage, current_frame=self.current)
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._write(self._stage, current_frame=self.current)
+        return False
+
+
 class BadmintonAnalysisSystem:
     def __init__(self, video_path, show_display=True,
                  show_skeletons=True, show_player_trajectories=True,
@@ -246,6 +284,7 @@ class BadmintonAnalysisSystem:
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
+                 tracknet_mode="weight",
                  analysis_quality="accurate", court_view_threshold=None,
                  rally_signal="auto"):
         self.video_path = video_path
@@ -282,6 +321,7 @@ class BadmintonAnalysisSystem:
         self.bst_weights = bst_weights
         self.tracknet_weights = tracknet_weights
         self.inpaintnet_weights = inpaintnet_weights
+        self.tracknet_mode = self._normalize_tracknet_mode(tracknet_mode)
         self._shuttle_trajectory = None
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
@@ -1247,6 +1287,14 @@ class BadmintonAnalysisSystem:
             "player_side": side, "shuttle": shuttle, "players": players_data,
         }
 
+    @staticmethod
+    def _normalize_tracknet_mode(mode):
+        if mode in TRACKNET_MODES:
+            return mode
+        if mode is not None:
+            print(f"Unknown TrackNetV3 mode {mode!r}; using 'weight'.")
+        return "weight"
+
     def _run_shuttle_pretrack(self):
         """Offline TrackNetV3 dense-shuttle pre-pass. Never fatal.
 
@@ -1254,25 +1302,17 @@ class BadmintonAnalysisSystem:
         ``frame_count`` = TrackNet 0-based frame + 1) and sets
         ``self._shuttle_source = 'tracknet'``. On any failure or when weights
         are absent, leaves the trajectory None so ``_capture_analysis_frame``
-        falls back to the yolo shuttle (byte-identical to today).
+        falls back to the yolo shuttle (byte-identical to today). The whole video is
+        tracked; progress stage ``tracking_shuttle``.
         """
         if not (self.tracknet_weights and self.analyze_technique):
             return
-        try:
-            _cap = cv2.VideoCapture(self.video_path)
-            n_frames = int(_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            _cap.release()
-        except Exception:
-            n_frames = 0
-        if n_frames > SHUTTLE_PRETRACK_MAX_FRAMES:
-            print(f"TrackNetV3 pre-pass skipped: {n_frames} frames > "
-                  f"{SHUTTLE_PRETRACK_MAX_FRAMES} budget; using yolo shuttle.")
-            return
+        mode = getattr(self, "tracknet_mode", "weight")
         try:
             from .shuttle_track import tracknet as tnmod
             from .shuttle_track import trajectory as tjmod
 
-            params = {"eval_mode": "weight",
+            params = {"eval_mode": mode,
                       "inpaint": bool(self.inpaintnet_weights),
                       "roi": self.court_roi_corners}
             cache_path = os.path.join(self.save_dir, "shuttle_trajectory.json")
@@ -1280,13 +1320,16 @@ class BadmintonAnalysisSystem:
             traj0 = tjmod.load_cache(cache_path, key)
             if traj0 is None:
                 models = tnmod.load_tracknet(self.tracknet_weights, self.inpaintnet_weights)
-                traj0 = tnmod.track_video(self.video_path, models, court_roi=self.court_roi_corners)
+                with _ProgressHeartbeat(self._write_progress, "tracking_shuttle") as beat:
+                    traj0 = tnmod.track_video(self.video_path, models,
+                                              court_roi=self.court_roi_corners,
+                                              eval_mode=mode, progress=beat.update)
                 tjmod.save_cache(cache_path, key, traj0)
             # Align TrackNet 0-based frames to the match loop's 1-based frame_count.
             self._shuttle_trajectory = {f + 1: pt for f, pt in traj0.items()}
             self._shuttle_source = "tracknet"
             detected = sum(1 for pt in traj0.values() if pt is not None)
-            print(f"Dense shuttle tracking: {detected}/{len(traj0)} frames via TrackNetV3")
+            print(f"Dense shuttle tracking ({mode}): {detected}/{len(traj0)} frames via TrackNetV3")
         except Exception as e:  # never fatal
             print(f"TrackNetV3 pre-pass unavailable ({e}); using yolo shuttle.")
             self._shuttle_trajectory = None
@@ -1476,6 +1519,7 @@ class BadmintonAnalysisSystem:
     # Per-stage fixed pct for non-analyzing stages; analyzing derives from frames.
     _PROGRESS_STAGE_PCT = {
         "initializing": 1, "court_setup": 3, "calibrating_court_view": 3,
+        "tracking_shuttle": 3,
         "analyzing": None,
         "visualizing": 97, "encoding": 99, "done": 100,
     }

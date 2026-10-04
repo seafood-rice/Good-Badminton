@@ -178,6 +178,11 @@ verbatim. It contains:
      branch). `run_prediction` instead ends with `return inpaint_pred_dict
      if inpaintnet is not None else tracknet_pred_dict`.
 
+  8. `run_prediction(..., progress=None)`: optional callback `progress(done_frames, total_frames)`
+     called after each TrackNet batch (both eval modes), so the match pipeline can show a live
+     "Tracking shuttle" stage during a whole-match pass (learned-hit-detection spec 8.1). No
+     effect on predictions.
+
   Everything else — the non-overlap/overlap dataset branching, the
   large/small-video branching, the temporal-ensemble buffer bookkeeping, and
   the two-pass TrackNet → InpaintNet refinement structure — carries over
