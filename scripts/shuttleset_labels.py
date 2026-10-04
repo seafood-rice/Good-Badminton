@@ -26,7 +26,8 @@ TYPE_TO_STROKE7 = {
     "長球": "clear",
     "挑球": "lift", "防守回挑": "lift",
     "殺球": "smash", "點扣": "smash",
-    "切球": "drop", "過渡切球": "drop",
+    # The README spells this as 過渡切球; the CSVs use 過度切球 (both mean "passive drop")
+    "切球": "drop", "過渡切球": "drop", "過度切球": "drop",
     "放小球": "net", "擋小球": "net", "勾球": "net", "撲球": "net",
     "平球": "drive", "小平球": "drive", "後場抽平球": "drive", "推球": "drive", "防守回抽": "drive",
 }

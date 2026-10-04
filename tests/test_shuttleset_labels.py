@@ -19,10 +19,20 @@ SET_CSV = (
 
 
 def test_all_18_types_map_and_unknown_is_none():
-    assert len(sl.TYPE_TO_STROKE7) == 18
+    # The README lists 18 types; the CSVs add 過度切球 (alternate spelling of 過渡切球)
+    # so the mapping has 19 total.
+    readme_types = {
+        "發短球", "發長球", "長球", "挑球", "防守回挑", "殺球", "點扣",
+        "切球", "過渡切球", "放小球", "擋小球", "勾球", "撲球",
+        "平球", "小平球", "後場抽平球", "推球", "防守回抽"
+    }
+    assert len(readme_types) == 18
+    assert readme_types == set(sl.TYPE_TO_STROKE7.keys()) - {"過度切球"}
+    assert len(sl.TYPE_TO_STROKE7) == 19
     assert set(sl.TYPE_TO_STROKE7.values()) == set(sl.STROKE7)
     assert sl.stroke7_of("挑球") == "lift" and sl.stroke7_of("長球") == "clear"
     assert sl.stroke7_of("推球") == "drive" and sl.stroke7_of("撲球") == "net"
+    assert sl.stroke7_of("過度切球") == "drop"
     assert sl.stroke7_of("未知球種") is None and sl.stroke7_of("") is None
 
 
