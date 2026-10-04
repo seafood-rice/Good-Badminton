@@ -286,7 +286,7 @@ class BadmintonAnalysisSystem:
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
                  tracknet_mode="weight",
                  analysis_quality="accurate", court_view_threshold=None,
-                 rally_signal="auto"):
+                 rally_signal="auto", hit_model_path=None):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -311,6 +311,8 @@ class BadmintonAnalysisSystem:
         # writes the legacy in-loop court-view segments. Anything else is "auto".
         self.rally_signal = rally_signal
         self.rally_detection = None   # the detection block written to rally_segments.json
+        self.hit_model_path = hit_model_path
+        self.rally_list = []          # the rallies written to rally_segments.json
         # Frames the court-view gate evaluated / passed, for the provenance block.
         self._gate_frames = 0
         self._gate_court_frames = 0
@@ -516,10 +518,11 @@ class BadmintonAnalysisSystem:
         print(f"处理速度比: {processing_time/video_duration:.2f}x")
 
         self._write_progress("visualizing")
+        hits = self._run_hit_detection(fps, frame_count)
         if self.analyze_technique:
-            self._run_technique_analysis()
+            self._run_technique_analysis(hits)
 
-        self._run_stroke_recognition()
+        self._run_stroke_recognition(hits)
 
         self._cleanup(cap)
 
@@ -779,7 +782,8 @@ class BadmintonAnalysisSystem:
                 print(f"Rally segments could not be written: {write_exc!r}")
 
         self.rally_detection = detection
-        line = (f"Rally segmentation: signal={detection.get('signal')}, "
+        self.rally_list = list(rallies)
+        line =(f"Rally segmentation: signal={detection.get('signal')}, "
                 f"{len(rallies)} segments")
         if error is not None:
             line += f", error: {detection['reason']}"
@@ -1335,7 +1339,110 @@ class BadmintonAnalysisSystem:
             self._shuttle_trajectory = None
             self._shuttle_source = "yolo"
 
-    def _run_technique_analysis(self):
+    _HIT_OUTPUTS = ("hits.json", "hit_signals.npz")
+
+    def _run_hit_detection(self, fps, last_frame):
+        """Build the shared hit list. Returns learned hits, or None (contact rule).
+
+        Writes hit_signals.npz (the detector's raw input, also harvested by the
+        ShuttleSet dataset builder) and hits.json. Never fatal: every failure
+        falls back to today's contact rule with the reason recorded. Without
+        technique analysis there are no per-frame poses, so nothing is written and
+        a previous run's hit outputs are removed (they would describe another run).
+        """
+        if not self.analyze_technique or not last_frame:
+            for name in self._HIT_OUTPUTS:
+                try:
+                    os.remove(os.path.join(self.save_dir, name))
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    print(f"Could not remove the previous run's {name}: {exc}")
+            return None
+
+        from .stroke import hit_detector as hd
+        from .stroke import hit_signals as hs
+        from .stroke_recog.hits import hit_events
+
+        signals = None
+        try:
+            shuttle = (self._shuttle_trajectory if self._shuttle_trajectory is not None
+                       else {r["frame"]: r["shuttle"] for r in self._analysis_track_both})
+            signals = hs.build_signals(fps, last_frame, self._analysis_frames, shuttle,
+                                       self.court_corners, (self.frame_width, self.frame_height))
+            hs.save_signals(os.path.join(self.save_dir, "hit_signals.npz"), signals)
+        except Exception as exc:
+            print(f"Hit signals unavailable: {exc!r}")
+
+        coverage = hd.shuttle_coverage(signals, self._in_play_frames()) if signals is not None else 0.0
+        reason, hits, model_info = None, None, None
+        if not getattr(self, "hit_model_path", None):
+            reason = "no hit model"
+        elif signals is None:
+            reason = "hit signals unavailable"
+        elif self._shuttle_source != "tracknet":
+            reason = "no dense shuttle track"
+        elif coverage < hd.MIN_SHUTTLE_COVERAGE:
+            reason = (f"dense shuttle track covers {coverage:.0%} of in-play frames "
+                      f"(needs {hd.MIN_SHUTTLE_COVERAGE:.0%})")
+        else:
+            try:
+                from .stroke import hit_model as hm
+                model, meta = hm.load_hit_model(self.hit_model_path)
+                hits = hd.detect_hits(signals, model, meta)
+                model_info = {"sha256": hm.file_sha256(self.hit_model_path),
+                              "schema": meta.get("schema"), "threshold": meta.get("threshold"),
+                              "min_spacing_sec": meta.get("min_spacing_sec")}
+            except Exception as exc:
+                print(f"Hit detector failed, using the contact rule: {exc!r}")
+                reason = f"hit detector failed: {type(exc).__name__}"
+                hits = None
+
+        if hits is None:
+            listed = [{"frame": e["frame"], "hitter": e["hitter"], "confidence": None}
+                      for e in hit_events(self._analysis_track_both)]
+            source = "contact_rule"
+        else:
+            listed, source = hits, "learned"
+        self._write_hits_json(fps, source, reason, model_info, coverage, listed)
+        print(f"Hit detection: {len(listed)} hits ({source}"
+              f"{'; ' + reason if reason else ''})")
+        return hits
+
+    def _in_play_frames(self):
+        """Frames inside B11 rally segments; all analysed frames when there are none."""
+        frames = set()
+        for r in getattr(self, "rally_list", None) or []:
+            frames.update(range(int(r["start_frame"]), int(r["end_frame"]) + 1))
+        return sorted(frames) if frames else sorted(self._analysis_frames)
+
+    def _write_hits_json(self, fps, source, reason, model_info, coverage, hits):
+        from .data.writer import write_json as _write_json
+
+        rallies = getattr(self, "rally_list", None) or []
+
+        def rally_id(frame):
+            for r in rallies:
+                if int(r["start_frame"]) <= frame <= int(r["end_frame"]):
+                    return r["id"]
+            return None
+
+        payload = {
+            "source": source, "reason": reason, "model": model_info,
+            "shuttle_source": self._shuttle_source,
+            "shuttle_coverage_in_play": round(float(coverage), 4),
+            "fps": fps,
+            "hits": [{"frame": int(h["frame"]),
+                      "time_sec": round((int(h["frame"]) - 1) / fps, 4) if fps else None,
+                      "hitter": h["hitter"], "confidence": h.get("confidence"),
+                      "rally_id": rally_id(int(h["frame"]))} for h in hits],
+        }
+        try:
+            _write_json(os.path.join(self.save_dir, "hits.json"), payload)
+        except Exception as exc:
+            print(f"hits.json could not be written: {exc!r}")
+
+    def _run_technique_analysis(self, hits=None):
         from .analysis.biomechanics import BiomechanicalAnalyzer
         from .analysis.technique_writer import write_stroke_reports, build_match_summary
         runner = TechniqueAnalysisRunner(
@@ -1345,14 +1452,19 @@ class BadmintonAnalysisSystem:
             fps=self.fps,
             court_corners=getattr(self, "court_corners", None),
         )
-        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get)
+        if hits is not None:
+            # The runner reads single-player pose fields (the frame's tracked
+            # player), so it only gets that player's hits (B spec open question F).
+            hits = [h for h in hits
+                    if (self._analysis_frames.get(h["frame"]) or {}).get("player_side") == h["hitter"]]
+        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get, hits=hits)
         strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
         summary_path = os.path.join(self.save_dir, "technique_summary.json")
         write_stroke_reports(strokes_path, reports)
         write_json(summary_path, build_match_summary(reports))
         print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
 
-    def _run_stroke_recognition(self):
+    def _run_stroke_recognition(self, hits=None):
         """Post-loop BST coarse stroke labeling -- entirely optional.
 
         No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
@@ -1413,12 +1525,15 @@ class BadmintonAnalysisSystem:
             labels = StrokeRecognizer(self.bst_weights).label_rally(
                 self._analysis_track_both, self._analysis_frames.get,
                 self.court_corners, (self.frame_width, self.frame_height),
+                hits=hits,
             )
             if not labels:
                 return
             strokes_path = os.path.join(self.save_dir, "strokes.json")
             distribution = dict(Counter(label["stroke"] for label in labels))
             payload = {"strokes": labels, "distribution": distribution}
+            if hits is not None:
+                payload["hit_source"] = "learned"
             if self._shuttle_source == "tracknet":
                 payload["shuttle_source"] = "tracknet"
             write_json(strokes_path, payload)
@@ -1715,13 +1830,21 @@ class TechniqueAnalysisRunner:
             })
         return frames
 
-    def run(self, track, frame_lookup):
+    def run(self, track, frame_lookup, hits=None):
+        """``hits`` (optional): the shared hit list, already filtered to the player this
+        runner analyses; when given it replaces the contact rule."""
         from .stroke.events import CONTACT_M, detect_contacts, StrokeEvent
         from .stroke.classifier import classify_stroke
-        contacts = detect_contacts(
-            track, window_pre=self.window_pre, window_post=self.window_post,
-            contact_m=CONTACT_M if self.scale is not None else None,
-            scale=self.scale)
+        if hits is None:
+            contacts = detect_contacts(
+                track, window_pre=self.window_pre, window_post=self.window_post,
+                contact_m=CONTACT_M if self.scale is not None else None,
+                scale=self.scale)
+        else:
+            contacts = [{"contact_frame": int(h["frame"]),
+                         "window_start": max(0, int(h["frame"]) - self.window_pre),
+                         "window_end": int(h["frame"]) + self.window_post}
+                        for h in sorted(hits, key=lambda h: int(h["frame"]))]
         reports = []
         events = []
         for c in contacts:
