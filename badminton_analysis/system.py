@@ -9,8 +9,12 @@ import threading
 
 # TrackNetV3 dense pre-pass modes. 'weight' (upstream default, temporal
 # ensemble) costs ~0.48 s/frame at 1080p on an RTX 4090; 'nonoverlap' ~0.18 s/frame.
-# The whole video is tracked whenever TrackNetV3 weights are present
-# (learned-hit-detection spec 8.1); the cache makes re-runs free.
+# A video longer than this is not tracked by TrackNetV3 (the pre-pass is skipped and the
+# yolo shuttle is used) -- but only when no hit model is configured and
+# ``dense_whole_video`` is False. With either set the whole video is tracked, because the
+# learned hit detector needs a dense track (learned-hit-detection spec 8.1); the cache
+# makes re-runs free.
+SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 TRACKNET_MODES = ("weight", "nonoverlap")
 
 # Interval of the *pinned* gate only: when court_view_threshold is pinned the gate
@@ -286,7 +290,8 @@ class BadmintonAnalysisSystem:
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
                  tracknet_mode="weight",
                  analysis_quality="accurate", court_view_threshold=None,
-                 rally_signal="auto", hit_model_path=None):
+                 rally_signal="auto", hit_model_path=None,
+                 dense_whole_video=False):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -312,6 +317,9 @@ class BadmintonAnalysisSystem:
         self.rally_signal = rally_signal
         self.rally_detection = None   # the detection block written to rally_segments.json
         self.hit_model_path = hit_model_path
+        # True makes the TrackNetV3 pre-pass track the whole video regardless of
+        # length (the hit-dataset builder needs dense shuttle on every rally).
+        self.dense_whole_video = dense_whole_video
         self.rally_list = []          # the rallies written to rally_segments.json
         # Frames the court-view gate evaluated / passed, for the provenance block.
         self._gate_frames = 0
@@ -783,7 +791,7 @@ class BadmintonAnalysisSystem:
 
         self.rally_detection = detection
         self.rally_list = list(rallies)
-        line =(f"Rally segmentation: signal={detection.get('signal')}, "
+        line = (f"Rally segmentation: signal={detection.get('signal')}, "
                 f"{len(rallies)} segments")
         if error is not None:
             line += f", error: {detection['reason']}"
@@ -1306,10 +1314,25 @@ class BadmintonAnalysisSystem:
         ``frame_count`` = TrackNet 0-based frame + 1) and sets
         ``self._shuttle_source = 'tracknet'``. On any failure or when weights
         are absent, leaves the trajectory None so ``_capture_analysis_frame``
-        falls back to the yolo shuttle (byte-identical to today). The whole video is
-        tracked; progress stage ``tracking_shuttle``.
+        falls back to the yolo shuttle (byte-identical to today). Progress stage
+        ``tracking_shuttle``. A video over ``SHUTTLE_PRETRACK_MAX_FRAMES`` is
+        skipped unless a hit model is configured or ``dense_whole_video`` is set,
+        because the learned hit detector needs a whole-video dense track.
         """
         if not (self.tracknet_weights and self.analyze_technique):
+            return
+        try:
+            _cap = cv2.VideoCapture(self.video_path)
+            n_frames = int(_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            _cap.release()
+        except Exception:
+            n_frames = 0
+        if (n_frames > SHUTTLE_PRETRACK_MAX_FRAMES
+                and not getattr(self, "hit_model_path", None)
+                and not getattr(self, "dense_whole_video", False)):
+            print(f"TrackNetV3 pre-pass skipped: {n_frames} frames > "
+                  f"{SHUTTLE_PRETRACK_MAX_FRAMES} budget (no hit model configured); "
+                  f"using yolo shuttle.")
             return
         mode = getattr(self, "tracknet_mode", "weight")
         try:
@@ -1349,20 +1372,26 @@ class BadmintonAnalysisSystem:
         falls back to today's contact rule with the reason recorded. Without
         technique analysis there are no per-frame poses, so nothing is written and
         a previous run's hit outputs are removed (they would describe another run).
+        The previous run's outputs are removed first in every case, so a run that
+        fails before writing leaves no stale files behind.
         """
+        for name in self._HIT_OUTPUTS:
+            try:
+                os.remove(os.path.join(self.save_dir, name))
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"Could not remove the previous run's {name}: {exc}")
         if not self.analyze_technique or not last_frame:
-            for name in self._HIT_OUTPUTS:
-                try:
-                    os.remove(os.path.join(self.save_dir, name))
-                except FileNotFoundError:
-                    pass
-                except OSError as exc:
-                    print(f"Could not remove the previous run's {name}: {exc}")
             return None
 
-        from .stroke import hit_detector as hd
-        from .stroke import hit_signals as hs
-        from .stroke_recog.hits import hit_events
+        try:
+            from .stroke import hit_detector as hd
+            from .stroke import hit_signals as hs
+            from .stroke_recog.hits import hit_events
+        except Exception as exc:  # never fatal: fall back to the contact rule
+            print(f"Hit detection unavailable, using the contact rule: {exc!r}")
+            return None
 
         signals = None
         try:
@@ -1390,10 +1419,16 @@ class BadmintonAnalysisSystem:
                 try:
                     from .stroke import hit_model as hm
                     model, meta = hm.load_hit_model(self.hit_model_path)
-                    hits = hd.detect_hits(signals, model, meta)
-                    model_info = {"sha256": hm.file_sha256(self.hit_model_path),
-                                  "schema": meta.get("schema"), "threshold": meta.get("threshold"),
-                                  "min_spacing_sec": meta.get("min_spacing_sec")}
+                    trained_on = meta.get("pose_family")
+                    run_family = getattr(self, "pose_family", None)
+                    if trained_on and run_family and trained_on != run_family:
+                        reason = (f"hit model trained on {trained_on} keypoints; "
+                                  f"this run used {run_family}")
+                    else:
+                        hits = hd.detect_hits(signals, model, meta)
+                        model_info = {"sha256": hm.file_sha256(self.hit_model_path),
+                                      "schema": meta.get("schema"), "threshold": meta.get("threshold"),
+                                      "min_spacing_sec": meta.get("min_spacing_sec")}
                 except Exception as exc:
                     print(f"Hit detector failed, using the contact rule: {exc!r}")
                     reason = f"hit detector failed: {type(exc).__name__}"
@@ -1440,6 +1475,7 @@ class BadmintonAnalysisSystem:
                 "shuttle_source": self._shuttle_source,
                 "shuttle_coverage_in_play": round(float(coverage), 4),
                 "fps": fps,
+                "pose_family": getattr(self, "pose_family", None),
                 "hits": [{"frame": int(h["frame"]),
                           "time_sec": round((int(h["frame"]) - 1) / fps, 4) if fps else None,
                           "hitter": h["hitter"], "confidence": h.get("confidence"),

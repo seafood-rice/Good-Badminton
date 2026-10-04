@@ -55,6 +55,7 @@ def test_train_learns_an_easy_synthetic_task():
     assert meta["val_metrics"]["recall"] >= 0.8
     assert meta["feature_dim"] == 90 and meta["hidden"] == 16
     assert 0.0 < meta["threshold"] < 1.0
+    assert meta["pose_family"] == "rtmpose" and meta["pose_mode"] == "balanced"
 
 
 def _write_rally(path, match="m", rally=1):

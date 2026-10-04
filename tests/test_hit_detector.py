@@ -54,3 +54,16 @@ def test_detect_hits_spacing_is_in_seconds(monkeypatch):
     monkeypatch.setattr(hd, "predict_scores", lambda model, feats, **k: (hit, np.zeros(120)))
     assert len(hd.detect_hits(sig, object(), {"threshold": 0.5, "min_spacing_sec": 0.3})) == 1
     assert len(hd.detect_hits(sig, object(), {"threshold": 0.5, "min_spacing_sec": 0.1})) == 2
+
+
+def test_detect_hits_context_covers_the_receptive_field(monkeypatch):
+    sig = make_signals(n=120, fps=30.0)
+    seen = {}
+
+    def spy(model, feats, **kw):
+        seen.update(kw)
+        return np.zeros(len(feats)), np.zeros(len(feats))
+
+    monkeypatch.setattr(hd, "predict_scores", spy)
+    hd.detect_hits(sig, object(), {"threshold": 0.5, "min_spacing_sec": 0.3, "levels": 6})
+    assert seen["context"] >= 126

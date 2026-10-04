@@ -101,6 +101,71 @@ def test_learned_hits_written_with_provenance_time_and_rally(tmp_path, monkeypat
     assert payload["hits"][1]["rally_id"] is None
 
 
+def _learned_setup(monkeypatch, meta_extra=None):
+    meta = {"threshold": 0.4, "min_spacing_sec": 0.3, "schema": 1}
+    meta.update(meta_extra or {})
+    monkeypatch.setattr(hm, "load_hit_model", lambda *a, **k: (object(), meta))
+    monkeypatch.setattr(hm, "file_sha256", lambda p: "a" * 64)
+    ran = []
+    monkeypatch.setattr(hd, "detect_hits",
+                        lambda sig, model, meta: ran.append(1) or [{"frame": 31, "hitter": "upper", "confidence": 0.9}])
+    return ran
+
+
+def test_pose_family_mismatch_falls_back_without_detecting(tmp_path, monkeypatch):
+    s = _system(tmp_path, monkeypatch)
+    s.pose_family = "yolo-pose"
+    ran = _learned_setup(monkeypatch, {"pose_family": "rtmpose"})
+    assert s._run_hit_detection(30.0, N) is None
+    payload = _hits_json(tmp_path)
+    assert payload["source"] == "contact_rule" and not ran
+    assert payload["reason"] == "hit model trained on rtmpose keypoints; this run used yolo-pose"
+    assert payload["pose_family"] == "yolo-pose"
+
+
+def test_pose_family_match_stays_learned_and_is_recorded(tmp_path, monkeypatch):
+    s = _system(tmp_path, monkeypatch)
+    s.pose_family = "rtmpose"
+    _learned_setup(monkeypatch, {"pose_family": "rtmpose"})
+    assert s._run_hit_detection(30.0, N) is not None
+    payload = _hits_json(tmp_path)
+    assert payload["source"] == "learned" and payload["pose_family"] == "rtmpose"
+
+
+def test_unknown_pose_family_skips_the_check(tmp_path, monkeypatch):
+    s = _system(tmp_path, monkeypatch)
+    s.pose_family = "yolo-pose"
+    _learned_setup(monkeypatch)            # an older model without pose_family
+    assert s._run_hit_detection(30.0, N) is not None
+
+
+def test_failed_signals_leave_no_stale_outputs(tmp_path, monkeypatch):
+    from badminton_analysis.stroke import hit_signals as hs
+
+    (tmp_path / "hits.json").write_text('{"source": "learned", "reason": null}')
+    (tmp_path / "hit_signals.npz").write_bytes(b"old")
+    s = _system(tmp_path, monkeypatch)
+    monkeypatch.setattr(hs, "build_signals", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert s._run_hit_detection(30.0, N) is None
+    assert not (tmp_path / "hit_signals.npz").exists()
+    assert _hits_json(tmp_path)["reason"] == "hit signals unavailable"
+
+
+def test_import_failure_is_not_fatal(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if fromlist and "hit_signals" in fromlist:
+            raise ImportError("no hit_signals")
+        return real_import(name, globals, locals, fromlist, level)
+
+    s = _system(tmp_path, monkeypatch)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert s._run_hit_detection(30.0, N) is None
+
+
 def test_fast_mode_removes_stale_hit_outputs(tmp_path, monkeypatch):
     (tmp_path / "hits.json").write_text("{}")
     (tmp_path / "hit_signals.npz").write_bytes(b"old")

@@ -52,7 +52,9 @@ def predict_scores(model, feats, chunk=2048, context=64):
 
 def detect_hits(sig, model, meta):
     feats, idx = compute_features(sig)
-    hit, far = predict_scores(model, feats)
+    # Context covers the model's receptive field: a chunk edge must not change a score.
+    context = 2 * (2 ** int(meta.get("levels", 4)) - 1) + 4
+    hit, far = predict_scores(model, feats, context=context)
     spacing = max(1, int(round(float(meta["min_spacing_sec"]) * TARGET_HZ)))
     return [{"frame": sig.frame_number(idx[k]),
              "hitter": "upper" if far[k] >= 0.5 else "lower",

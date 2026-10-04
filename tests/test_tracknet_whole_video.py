@@ -2,6 +2,8 @@ import inspect
 import json
 import re
 import time
+
+import cv2
 from pathlib import Path
 
 import badminton_analysis.system as sysmod
@@ -27,8 +29,23 @@ def _system(tmp_path, **kw):
     return s
 
 
+def _fake_frame_count(monkeypatch, n):
+    class _Cap:
+        def get(self, prop):
+            return n
+
+        def release(self):
+            pass
+
+    # system.py's cv2 global is normally set by load_runtime_dependencies().
+    monkeypatch.setattr(sysmod, "cv2", cv2, raising=False)
+    monkeypatch.setattr(cv2, "VideoCapture", lambda p: _Cap())
+
+
 def test_long_video_is_tracked_not_skipped(tmp_path, monkeypatch):
     s = _system(tmp_path)
+    s.hit_model_path = "weights/hit-detector.pt"
+    _fake_frame_count(monkeypatch, 64085)
     calls = {}
     monkeypatch.setattr(tnmod, "load_tracknet", lambda *a, **k: {"tracknet_file": "tn.pt"})
 
@@ -40,7 +57,28 @@ def test_long_video_is_tracked_not_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr(tnmod, "track_video", fake_track)
     s._run_shuttle_pretrack()
     assert s._shuttle_source == "tracknet" and calls["mode"] == "weight"
-    assert not hasattr(sysmod, "SHUTTLE_PRETRACK_MAX_FRAMES")
+
+
+def test_long_video_without_a_detector_is_skipped(tmp_path, monkeypatch):
+    s = _system(tmp_path)
+    s.hit_model_path, s.dense_whole_video = None, False
+    _fake_frame_count(monkeypatch, 64085)
+    called = []
+    monkeypatch.setattr(tnmod, "load_tracknet", lambda *a, **k: called.append("load") or {})
+    monkeypatch.setattr(tnmod, "track_video", lambda *a, **k: called.append("track") or {0: (1.0, 2.0)})
+    s._run_shuttle_pretrack()
+    assert not called
+    assert s._shuttle_trajectory is None and s._shuttle_source == "yolo"
+
+
+def test_long_video_with_dense_whole_video_is_tracked(tmp_path, monkeypatch):
+    s = _system(tmp_path)
+    s.hit_model_path, s.dense_whole_video = None, True
+    _fake_frame_count(monkeypatch, 64085)
+    monkeypatch.setattr(tnmod, "load_tracknet", lambda *a, **k: {"tracknet_file": "tn.pt"})
+    monkeypatch.setattr(tnmod, "track_video", lambda *a, **k: {0: (1.0, 2.0)})
+    s._run_shuttle_pretrack()
+    assert s._shuttle_source == "tracknet"
 
 
 def test_mode_reaches_tracker_and_cache_key(tmp_path, monkeypatch):

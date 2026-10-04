@@ -91,7 +91,8 @@ def _evaluate(model, samples):
 
 
 def train(train_samples, val_samples, epochs=40, hidden=64, levels=4, window=256, batch=32,
-          lr=1e-3, seed=0, device=None, log=print, init=None):
+          lr=1e-3, seed=0, device=None, log=print, init=None,
+          pose_family="rtmpose", pose_mode="balanced"):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
@@ -143,6 +144,7 @@ def train(train_samples, val_samples, epochs=40, hidden=64, levels=4, window=256
             "val_matches": sorted({s.match for s in val_samples}),
             "val_metrics": {k: best[k] for k in ("truth", "detected", "matched", "recall",
                                                   "precision", "f1", "hitter_correct")},
+            "pose_family": pose_family, "pose_mode": pose_mode,
             "epochs": epochs, "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     return model, meta
 
