@@ -49,6 +49,16 @@ def main(argv=None):
     cap.release()
     if not fps or fps <= 0:
         raise SystemExit(f"cannot read {video}")
+    if not sl.fps_ok(fps):
+        reason = "fps below 30 (resampling would repeat frames)"
+        result = {"accepted": False, "reason": reason, "video": a.match, "fps": fps,
+                  "width": size[0], "height": size[1]}
+        out = os.path.join(a.data, "alignment", f"{a.match}.json")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, indent=2)
+        print(f"{a.match}: REJECTED {reason} ({fps:.2f} fps) -> {out}")
+        return 3
 
     corners = sl.load_corners(os.path.join(a.data, "labels", "homography.csv"), a.match)
     hits = sl.parse_match_hits(os.path.join(a.data, "labels", a.match), corners)

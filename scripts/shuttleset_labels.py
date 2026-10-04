@@ -106,6 +106,14 @@ def rally_spans(hits, pre_sec=1.0, post_sec=1.5):
     return sorted(spans, key=lambda s: s["start"])
 
 
+MIN_FPS = 29.5
+
+
+def fps_ok(fps):
+    """True when a video is at least ~30 fps (the pipeline's 30 Hz base needs no repeated frames)."""
+    return bool(fps) and fps >= MIN_FPS
+
+
 def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_sec=0.1,
                 min_frac=0.6, peak_ratio=1.5, exclusion_sec=0.5):
     """Video-time offset o maximising labels t with an event within tol of t + o."""

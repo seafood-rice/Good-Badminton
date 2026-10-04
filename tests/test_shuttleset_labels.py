@@ -75,3 +75,30 @@ def test_best_offset_is_the_plateau_centre_for_noise_free_labels():
         r = sl.best_offset(labels.tolist(), (labels + shift).tolist(), tol_sec=0.1)
         assert abs(r["offset"] - shift) <= 1 / 60, (shift, r)
         assert r["accepted"] is True
+
+
+def test_fps_ok_accepts_30_and_rejects_slower_videos():
+    assert sl.fps_ok(29.97) and sl.fps_ok(30) and sl.fps_ok(60)
+    assert not sl.fps_ok(25) and not sl.fps_ok(0) and not sl.fps_ok(None)
+
+
+def test_alignment_script_rejects_a_25_fps_video_without_tracking(tmp_path, monkeypatch, capsys):
+    import json
+
+    import check_shuttleset_alignment as chk
+
+    class Cap:
+        def get(self, prop):
+            return {chk.cv2.CAP_PROP_FPS: 25.0, chk.cv2.CAP_PROP_FRAME_WIDTH: 1280.0,
+                    chk.cv2.CAP_PROP_FRAME_HEIGHT: 720.0}[prop]
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(chk.cv2, "VideoCapture", lambda p: Cap())
+    monkeypatch.setattr(chk.tn, "load_tracknet", lambda *a, **k: (_ for _ in ()).throw(AssertionError("tracked")))
+    assert chk.main(["--match", "m1", "--data", str(tmp_path)]) == 3
+    written = json.loads((tmp_path / "alignment" / "m1.json").read_text())
+    assert written["accepted"] is False and written["fps"] == 25.0 and written["width"] == 1280
+    assert written["reason"] == "fps below 30 (resampling would repeat frames)"
+    assert "REJECTED" in capsys.readouterr().out
