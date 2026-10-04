@@ -265,6 +265,13 @@ def _inpaintnet_weights(base=None):
     return str(p) if p.is_file() else None
 
 
+def _hit_model_weights(base=None):
+    """Path to the learned hit detector when installed (weights + sidecar), else None."""
+    base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
+    p = base / 'hit-detector.pt'
+    return str(p) if p.is_file() and (base / 'hit-detector.json').is_file() else None
+
+
 def _read_progress_file(save_dir):
     """Read <save_dir>/progress.json written by the analysis subprocess, or None."""
     p = os.path.join(str(save_dir), 'progress.json')
@@ -640,12 +647,13 @@ def api_stats():
 
 @app.route('/api/models')
 def api_models():
-    """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer, 3D pose lifter) are installed."""
+    """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer, 3D pose lifter, learned hit detector) are installed."""
     return jsonify({'racket': _racket_weights() is not None,
                     'quality': _quality_weights() is not None,
                     'bst': _bst_weights() is not None,
                     'tracknet': _tracknet_weights() is not None,
-                    'lift': _lift_weights() is not None})
+                    'lift': _lift_weights() is not None,
+                    'hit_detector': _hit_model_weights() is not None})
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -850,6 +858,10 @@ def api_analyze():
     inpaintnet_weights = _inpaintnet_weights()
     if inpaintnet_weights:
         cmd += ['--inpaintnet-model', inpaintnet_weights]
+
+    hit_weights = _hit_model_weights()
+    if hit_weights:
+        cmd += ['--hit-model', hit_weights]
 
     job_id = video_path.stem
     jobs[job_id] = {
