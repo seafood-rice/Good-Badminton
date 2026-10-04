@@ -49,8 +49,18 @@ class CourtGeometry:
     def __init__(self, corners):
         c = np.asarray(corners, dtype=np.float32).reshape(4, 2)
         dst = np.array([[0, 0], [COURT_W, 0], [COURT_W, COURT_L], [0, COURT_L]], np.float32)
+        if not np.isfinite(c).all():
+            raise ValueError("degenerate court corners")
+        # Check for strictly convex quadrilateral: all cross products must be non-zero,
+        # same sign, and |cross| >= 1.0 px^2. This rejects collinear and self-intersecting quads.
+        edges = np.array([c[(i+1) % 4] - c[i] for i in range(4)], dtype=np.float64)
+        crosses = np.array([float(np.cross(edges[i], edges[(i+1) % 4])) for i in range(4)])
+        if not np.all(np.isfinite(crosses)) or np.any(np.abs(crosses) < 1.0):
+            raise ValueError("degenerate court corners")
+        if not (np.all(crosses > 0) or np.all(crosses < 0)):
+            raise ValueError("degenerate court corners")
         area = 0.5 * abs(float(np.cross(c[2] - c[0], c[3] - c[1])))
-        if not np.isfinite(c).all() or area < 1.0:
+        if area < 1.0:
             raise ValueError("degenerate court corners")
         try:
             self.to_court = cv2.getPerspectiveTransform(c, dst).astype(np.float64)

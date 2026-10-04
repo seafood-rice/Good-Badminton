@@ -84,6 +84,28 @@ def test_degenerate_corners_raise():
         CourtGeometry(np.array([[0, 0], [10, 0], [20, 0], [30, 0]], np.float32))
 
 
+def test_collinear_corners_raise():
+    with pytest.raises(ValueError):
+        CourtGeometry(np.array([[0, 0], [10, 0], [20, 0], [15, 100]], np.float32))
+
+
+def test_bowtie_corners_raise():
+    with pytest.raises(ValueError):
+        CourtGeometry(np.array([[440, 260], [840, 260], [220, 660], [1060, 660]], np.float32))
+
+
+def test_mirrored_corners_work():
+    # Original corners construct fine
+    geo_orig = CourtGeometry(CORNERS)
+    assert geo_orig.length_px > 300
+    # Mirrored and reordered corners should also work: x -> 1279 - x, then order [1,0,3,2]
+    mirrored = CORNERS.copy().astype(np.float32)
+    mirrored[:, 0] = 1279 - mirrored[:, 0]
+    mirrored_reordered = mirrored[[1, 0, 3, 2]]
+    geo_mirror = CourtGeometry(mirrored_reordered)
+    assert geo_mirror.length_px > 300
+
+
 def test_court_geometry_net_midpoint_lies_between_baselines():
     geo = CourtGeometry(CORNERS)
     assert 260 < geo.net_mid[1] < 660
