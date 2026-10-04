@@ -87,8 +87,14 @@ def run_pipeline_on_clip(clip, run_dir, corners, tracknet_mode):
     return load_signals(os.path.join(run_dir, "hit_signals.npz"))
 
 
+def clip_window(span_start, span_end, offset_sec):
+    """Video-time (start, duration) of a rally clip, clamped to the video start."""
+    start = max(0.0, span_start + offset_sec)
+    return start, (span_end + offset_sec) - start
+
+
 def _cut(video, start, duration, out):
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, start):.3f}", "-i", video,
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-i", video,
                     "-t", f"{duration:.3f}", "-an", "-c:v", "libx264", "-crf", "12",
                     "-preset", "fast", out], check=True)
 
@@ -126,20 +132,25 @@ def main(argv=None):
         if os.path.exists(target):
             continue
         run_dir = os.path.join(a.out, "_runs", a.match, f"s{span['set']}_r{span['rally']}")
-        clip_start = span["start"] + float(align["offset"])
+        offset = float(align["offset"])
+        clip_start, duration = clip_window(span["start"], span["end"], offset)
         os.makedirs(run_dir, exist_ok=True)
         clip = os.path.join(run_dir, "clip.mp4")
+        tmp = target[:-4] + ".part.npz"      # numpy keeps a name that already ends in .npz
         try:
-            _cut(video, clip_start, span["end"] - span["start"], clip)
+            _cut(video, clip_start, duration, clip)
             sig = run_pipeline_on_clip(clip, run_dir, corners, a.tracknet_mode)
-            labels = encode_hits(span["hits"], float(align["offset"]), clip_start, sig.fps, sig.n_frames)
-            np.savez_compressed(target, fps=sig.fps, first_frame=sig.first_frame, shuttle=sig.shuttle,
+            labels = encode_hits(span["hits"], offset, clip_start, sig.fps, sig.n_frames)
+            np.savez_compressed(tmp, fps=sig.fps, first_frame=sig.first_frame, shuttle=sig.shuttle,
                                 keypoints=sig.keypoints, court_corners=sig.court_corners,
                                 image_size=np.asarray(sig.image_size), match=a.match,
                                 set=span["set"], rally=span["rally"], **labels)
+            os.replace(tmp, target)          # a killed write never leaves a truncated target
         except Exception as exc:  # one bad rally must not stop a 10-hour build
             print(f"  rally s{span['set']} r{span['rally']} failed: {exc!r}")
         finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
             shutil.rmtree(run_dir, ignore_errors=True)
         print(f"[{k}/{len(spans)}] s{span['set']} r{span['rally']} "
               f"({(time.time() - t0) / 3600:.2f} h elapsed)", flush=True)
