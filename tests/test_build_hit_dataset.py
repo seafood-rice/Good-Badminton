@@ -1,6 +1,9 @@
 # tests/test_build_hit_dataset.py
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import build_hit_dataset as bd  # noqa: E402
@@ -61,3 +64,52 @@ def test_clip_window_clamps_negative_start_and_shortens_duration():
     hits = [{"t": 1.5, "side": "lower", "stroke7": "serve", "type_raw": "x"}]
     enc = bd.encode_hits(hits, -1.0, start, 30.0, 150)
     assert enc["hit_frames"].tolist() == [16]
+
+
+def _tiny_clip(path):
+    import cv2
+    import numpy as np
+
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
+    for _ in range(3):
+        writer.write(np.zeros((48, 48 + 16, 3), np.uint8))
+    writer.release()
+    return str(path)
+
+
+def _fake_system(source):
+    from badminton_analysis.stroke import hit_signals as hs
+    from tests.hit_fixtures import make_signals
+
+    class FakeSystem:
+        def __init__(self, clip, output_dir=None, **kw):
+            self.output_dir, self.kw = output_dir, kw
+            self._shuttle_source = "yolo"
+
+        def process_video(self):
+            self._shuttle_source = source
+            hs.save_signals(os.path.join(self.output_dir, "hit_signals.npz"), make_signals(n=60))
+
+    return FakeSystem
+
+
+def test_run_pipeline_rejects_a_rally_without_tracknet(tmp_path, monkeypatch):
+    import badminton_analysis.system as sysmod
+
+    monkeypatch.setattr(sysmod, "BadmintonAnalysisSystem", _fake_system("yolo"))
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    with pytest.raises(RuntimeError, match="TrackNetV3 did not run"):
+        bd.run_pipeline_on_clip(clip, str(tmp_path / "run"), CORNERS, "weight")
+
+
+def test_run_pipeline_returns_signals_when_tracknet_ran(tmp_path, monkeypatch):
+    import badminton_analysis.system as sysmod
+
+    fake = _fake_system("tracknet")
+    seen = {}
+    monkeypatch.setattr(sysmod, "BadmintonAnalysisSystem",
+                        lambda clip, **kw: seen.update(kw) or fake(clip, **kw))
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    sig = bd.run_pipeline_on_clip(clip, str(tmp_path / "run"), CORNERS, "weight")
+    assert sig.n_frames == 60
+    assert seen["dense_whole_video"] is True

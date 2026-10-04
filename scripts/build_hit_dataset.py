@@ -81,9 +81,13 @@ def run_pipeline_on_clip(clip, run_dir, corners, tracknet_mode):
         analyze_technique=True, racket_model_path=None,
         tracknet_weights=os.path.join(ROOT, "weights", "tracknet.pt"),
         inpaintnet_weights=os.path.join(ROOT, "weights", "inpaintnet.pt"),
-        tracknet_mode=tracknet_mode, court_view_threshold=0.0)
+        tracknet_mode=tracknet_mode, court_view_threshold=0.0, dense_whole_video=True)
     system.keep_audio = False
     system.process_video()
+    if getattr(system, "_shuttle_source", None) != "tracknet":
+        # Without TrackNetV3 the stored signals would train the model on yolo shuttle data.
+        raise RuntimeError(f"TrackNetV3 did not run for {clip} (shuttle source "
+                           f"{getattr(system, '_shuttle_source', None)}); rally rejected")
     return load_signals(os.path.join(run_dir, "hit_signals.npz"))
 
 
