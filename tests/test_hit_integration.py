@@ -165,3 +165,19 @@ def test_contact_rule_strokes_json_unchanged(tmp_path, monkeypatch):
     assert set(payload) == {"strokes", "distribution"}
     s._run_stroke_recognition([{"frame": 3, "hitter": "lower", "confidence": 0.9}])
     assert json.loads((tmp_path / "strokes.json").read_text())["hit_source"] == "learned"
+
+
+def test_contact_rule_listing_failure_is_not_fatal(tmp_path, monkeypatch):
+    import badminton_analysis.stroke_recog.hits as hits_mod
+
+    s = _system(tmp_path, monkeypatch, hit_model_path=None)
+    monkeypatch.setattr(hits_mod, "hit_events", lambda track: (_ for _ in ()).throw(RuntimeError("bad track")))
+    assert s._run_hit_detection(30.0, N) is None
+
+
+def test_malformed_learned_hit_is_not_fatal(tmp_path, monkeypatch):
+    s = _system(tmp_path, monkeypatch)
+    monkeypatch.setattr(hm, "load_hit_model", lambda *a, **k: (object(), {"threshold": 0.4, "min_spacing_sec": 0.3, "schema": 1}))
+    monkeypatch.setattr(hm, "file_sha256", lambda p: "a" * 64)
+    monkeypatch.setattr(hd, "detect_hits", lambda sig, model, meta: [{"frame": 31, "confidence": 0.9}])
+    assert s._run_hit_detection(30.0, N) is None

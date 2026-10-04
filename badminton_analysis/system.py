@@ -1374,40 +1374,47 @@ class BadmintonAnalysisSystem:
         except Exception as exc:
             print(f"Hit signals unavailable: {exc!r}")
 
-        coverage = hd.shuttle_coverage(signals, self._in_play_frames()) if signals is not None else 0.0
-        reason, hits, model_info = None, None, None
-        if not getattr(self, "hit_model_path", None):
-            reason = "no hit model"
-        elif signals is None:
-            reason = "hit signals unavailable"
-        elif self._shuttle_source != "tracknet":
-            reason = "no dense shuttle track"
-        elif coverage < hd.MIN_SHUTTLE_COVERAGE:
-            reason = (f"dense shuttle track covers {coverage:.0%} of in-play frames "
-                      f"(needs {hd.MIN_SHUTTLE_COVERAGE:.0%})")
-        else:
-            try:
-                from .stroke import hit_model as hm
-                model, meta = hm.load_hit_model(self.hit_model_path)
-                hits = hd.detect_hits(signals, model, meta)
-                model_info = {"sha256": hm.file_sha256(self.hit_model_path),
-                              "schema": meta.get("schema"), "threshold": meta.get("threshold"),
-                              "min_spacing_sec": meta.get("min_spacing_sec")}
-            except Exception as exc:
-                print(f"Hit detector failed, using the contact rule: {exc!r}")
-                reason = f"hit detector failed: {type(exc).__name__}"
-                hits = None
+        try:
+            coverage = hd.shuttle_coverage(signals, self._in_play_frames()) if signals is not None else 0.0
+            reason, hits, model_info = None, None, None
+            if not getattr(self, "hit_model_path", None):
+                reason = "no hit model"
+            elif signals is None:
+                reason = "hit signals unavailable"
+            elif self._shuttle_source != "tracknet":
+                reason = "no dense shuttle track"
+            elif coverage < hd.MIN_SHUTTLE_COVERAGE:
+                reason = (f"dense shuttle track covers {coverage:.0%} of in-play frames "
+                          f"(needs {hd.MIN_SHUTTLE_COVERAGE:.0%})")
+            else:
+                try:
+                    from .stroke import hit_model as hm
+                    model, meta = hm.load_hit_model(self.hit_model_path)
+                    hits = hd.detect_hits(signals, model, meta)
+                    model_info = {"sha256": hm.file_sha256(self.hit_model_path),
+                                  "schema": meta.get("schema"), "threshold": meta.get("threshold"),
+                                  "min_spacing_sec": meta.get("min_spacing_sec")}
+                except Exception as exc:
+                    print(f"Hit detector failed, using the contact rule: {exc!r}")
+                    reason = f"hit detector failed: {type(exc).__name__}"
+                    hits = None
 
-        if hits is None:
-            listed = [{"frame": e["frame"], "hitter": e["hitter"], "confidence": None}
-                      for e in hit_events(self._analysis_track_both)]
-            source = "contact_rule"
-        else:
-            listed, source = hits, "learned"
-        self._write_hits_json(fps, source, reason, model_info, coverage, listed)
-        print(f"Hit detection: {len(listed)} hits ({source}"
-              f"{'; ' + reason if reason else ''})")
-        return hits
+            if hits is None:
+                listed = [{"frame": e["frame"], "hitter": e["hitter"], "confidence": None}
+                          for e in hit_events(self._analysis_track_both)]
+                source = "contact_rule"
+            else:
+                listed, source = hits, "learned"
+            # A malformed hit would break every consumer, so reject the whole list here.
+            for h in listed:
+                int(h["frame"]), h["hitter"]
+            self._write_hits_json(fps, source, reason, model_info, coverage, listed)
+            print(f"Hit detection: {len(listed)} hits ({source}"
+                  f"{'; ' + reason if reason else ''})")
+            return hits
+        except Exception as exc:
+            print(f"Hit detection bookkeeping failed, using the contact rule: {exc!r}")
+            return None
 
     def _in_play_frames(self):
         """Frames inside B11 rally segments; all analysed frames when there are none."""
@@ -1427,17 +1434,17 @@ class BadmintonAnalysisSystem:
                     return r["id"]
             return None
 
-        payload = {
-            "source": source, "reason": reason, "model": model_info,
-            "shuttle_source": self._shuttle_source,
-            "shuttle_coverage_in_play": round(float(coverage), 4),
-            "fps": fps,
-            "hits": [{"frame": int(h["frame"]),
-                      "time_sec": round((int(h["frame"]) - 1) / fps, 4) if fps else None,
-                      "hitter": h["hitter"], "confidence": h.get("confidence"),
-                      "rally_id": rally_id(int(h["frame"]))} for h in hits],
-        }
         try:
+            payload = {
+                "source": source, "reason": reason, "model": model_info,
+                "shuttle_source": self._shuttle_source,
+                "shuttle_coverage_in_play": round(float(coverage), 4),
+                "fps": fps,
+                "hits": [{"frame": int(h["frame"]),
+                          "time_sec": round((int(h["frame"]) - 1) / fps, 4) if fps else None,
+                          "hitter": h["hitter"], "confidence": h.get("confidence"),
+                          "rally_id": rally_id(int(h["frame"]))} for h in hits],
+            }
             _write_json(os.path.join(self.save_dir, "hits.json"), payload)
         except Exception as exc:
             print(f"hits.json could not be written: {exc!r}")
