@@ -26,6 +26,8 @@ from badminton_analysis.stroke.hit_metrics import summarize  # noqa: E402
 DONE_BAR = {"recall": 0.60, "precision": 0.70, "hitter": 0.85}
 _HEADING = re.compile(r"^###\s+rally(\d+)\.mp4\s+\(([\d.]+)\s*s\s*[–-]\s*([\d.]+)\s*s\)")
 _SIDE = {"lower": "near", "upper": "far"}
+_NUMBER = re.compile(r"^\d+(\.\d+)?$")
+_TABLE_FURNITURE = re.compile(r"^(hit_sec|:?-+:?)$", re.IGNORECASE)
 
 
 def parse_labels(text):
@@ -38,20 +40,33 @@ def parse_labels(text):
             spans[section] = (float(m.group(2)), float(m.group(3)))
             hits[section] = []
             continue
-        if line.startswith("## "):
+        if line.startswith("#"):
+            # Any other heading ends the clip section: its table must not be
+            # attributed to the previous clip.
             section = "unusable" if line.lower().startswith("## unusable") else None
             continue
         if not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if not cells or not re.match(r"^\d", cells[0]):
-            continue
         if section == "unusable":
-            if len(cells) > 1 and re.match(r"^\d", cells[1]):
+            if cells and re.match(r"^\d", cells[0]) and len(cells) > 1 and re.match(r"^\d", cells[1]):
                 unusable.append((float(cells[0]), float(cells[1])))
         elif isinstance(section, int):
-            hits[section].append({"t": float(cells[0]),
-                                  "player": (cells[1] if len(cells) > 1 else "").lower() or None,
+            first = cells[0] if cells else ""
+            if not first or _TABLE_FURNITURE.match(first):
+                continue                      # blank template row, header or separator
+            row = line.strip()
+            if not _NUMBER.match(first):
+                raise ValueError(f"rally{section}.mp4: hit time {first!r} is not a number: {row}")
+            player = (cells[1] if len(cells) > 1 else "").lower()
+            if player not in ("", "near", "far"):
+                raise ValueError(f"rally{section}.mp4: player {player!r} must be near, far or blank: {row}")
+            t = float(first)
+            start, end = spans[section]
+            if not start <= t <= end:
+                raise ValueError(f"rally{section}.mp4: hit time {t} is outside the clip span "
+                                 f"{start} s - {end} s: {row}")
+            hits[section].append({"t": t, "player": player or None,
                                   "stroke": (cells[2] if len(cells) > 2 else "").lower() or None})
     return spans, hits, unusable
 
@@ -74,13 +89,20 @@ def baseline_hits(run_dir, span_start):
             for i in shuttle_turn_events(sig.shuttle, sig.fps)]
 
 
-def score(labels_text, runs_dir, suffix, tol=0.2, baseline=False):
+def run_source(run_dir):
+    """(source, reason) recorded in a run's hits.json."""
+    with open(os.path.join(run_dir, "hits.json"), encoding="utf-8") as fh:
+        payload = json.load(fh)
+    return payload.get("source"), payload.get("reason")
+
+
+def score(labels_text, runs_dir, suffix, tol=0.2, baseline=False, expect_source=None):
     spans, hits, unusable = parse_labels(labels_text)
 
     def usable(t):
         return not any(a <= t <= b for a, b in unusable)
 
-    truth, det, per_clip = [], [], {}
+    truth, det, per_clip, mismatch = [], [], {}, []
     for n, (start, end) in sorted(spans.items()):
         clip_truth = [h for h in hits.get(n, []) if usable(h["t"])]
         if not clip_truth:
@@ -90,12 +112,19 @@ def score(labels_text, runs_dir, suffix, tol=0.2, baseline=False):
         clip_det = [d for d in found if start <= d["t"] <= end and usable(d["t"])]
         per_clip[n] = summarize([h["t"] for h in clip_truth], [d["t"] for d in clip_det], tol,
                                 [h["player"] for h in clip_truth], [d["side"] for d in clip_det])
+        source, reason = ("baseline", None) if baseline else run_source(run_dir)
+        per_clip[n]["source"], per_clip[n]["reason"] = source, reason
+        if expect_source and source != expect_source:
+            mismatch.append(n)
         truth += clip_truth
         det += clip_det
     summary = summarize([h["t"] for h in truth], [d["t"] for d in det], tol,
                         [h["player"] for h in truth], [d["side"] for d in det])
-    return {"suffix": suffix, "baseline": baseline, "tol": tol, "summary": summary,
-            "per_clip": per_clip}
+    result = {"suffix": suffix, "baseline": baseline, "tol": tol, "summary": summary,
+              "per_clip": per_clip}
+    if expect_source:
+        result["source_mismatch"] = mismatch
+    return result
 
 
 def meets_bar(summary):
@@ -111,17 +140,31 @@ def main(argv=None):
     p.add_argument("--suffix", required=True)
     p.add_argument("--tol", type=float, default=0.2)
     p.add_argument("--baseline", action="store_true")
+    p.add_argument("--expect-source", choices=["learned", "contact_rule"],
+                   help="flag clips whose hits.json source differs (a fallback run is not a learned result)")
     p.add_argument("--json")
     a = p.parse_args(argv)
     with open(a.labels, encoding="utf-8") as fh:
-        result = score(fh.read(), a.runs_dir, a.suffix, a.tol, a.baseline)
+        result = score(fh.read(), a.runs_dir, a.suffix, a.tol, a.baseline, a.expect_source)
     s = result["summary"]
-    hitter = "n/a" if s["hitter_correct"] is None else f"{s['hitter_correct']:.2f}"
+    mismatch = result.get("source_mismatch") or []
+    if s["hitter_correct"] is None:
+        hitter = "n/a"
+    else:
+        hitter = f"{s['hitter_correct']:.2f} ({round(s['hitter_correct'] * s['hitter_compared'])}/{s['hitter_compared']})"
+    bar_met = meets_bar(s) and not mismatch
     print(f"{a.suffix}{' (baseline)' if a.baseline else ''}: truth {s['truth']} detected "
           f"{s['detected']} matched {s['matched']} recall {s['recall']:.2f} precision "
-          f"{s['precision']:.2f} hitter {hitter} -> done bar {'MET' if meets_bar(s) else 'not met'}")
+          f"{s['precision']:.2f} hitter {hitter} -> done bar {'MET' if bar_met else 'not met'}")
+    if s["truth"] == 0:
+        print("no labelled hits found — fill in LABELS.md")
     for n, c in result["per_clip"].items():
-        print(f"  clip {n}: truth {c['truth']} det {c['detected']} matched {c['matched']}")
+        reason = f" ({c['reason']})" if c.get("reason") else ""
+        print(f"  clip {n}: truth {c['truth']} det {c['detected']} matched {c['matched']} "
+              f"source {c.get('source')}{reason}")
+    if mismatch:
+        print(f"SOURCE MISMATCH clips {', '.join(str(n) for n in mismatch)}: expected "
+              f"{a.expect_source}; the done bar is not met on fallback output")
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fh:
             json.dump(result, fh, indent=2)
