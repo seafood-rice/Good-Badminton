@@ -67,3 +67,11 @@ def test_best_offset_recovers_a_shift_and_rejects_noise():
     noise = sl.best_offset(labels.tolist(), np.sort(rng.uniform(0, 300, 110)).tolist())
     assert noise["accepted"] is False
     assert sl.best_offset([], [1.0])["accepted"] is False
+
+
+def test_best_offset_is_the_plateau_centre_for_noise_free_labels():
+    labels = np.sort(np.random.default_rng(1).uniform(0, 300, 60))   # aperiodic, or shifted copies tie
+    for shift in (2.0, -3.0):
+        r = sl.best_offset(labels.tolist(), (labels + shift).tolist(), tol_sec=0.1)
+        assert abs(r["offset"] - shift) <= 1 / 60, (shift, r)
+        assert r["accepted"] is True

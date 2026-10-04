@@ -115,6 +115,7 @@ def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_
         return {"offset": 0.0, "matched": 0, "runner_up": 0, "matched_frac": 0.0, "accepted": False}
     n_steps = int(round(search_sec / step_sec))
     offsets = [k * step_sec for k in range(-n_steps, n_steps + 1)]
+    tol_sec += 1e-9          # a match exactly at the tolerance edge must not hinge on float noise
     counts = []
     for o in offsets:
         c = 0
@@ -123,11 +124,18 @@ def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_
             c += lo < len(events) and events[lo] <= t + o + tol_sec
         counts.append(c)
     best_i = max(range(len(offsets)), key=lambda i: counts[i])
-    best = offsets[best_i]
+    # Noise-free labels match over a whole plateau of offsets; max() returns its first
+    # index, so take the centre of the contiguous run of equal counts instead.
+    lo_i = hi_i = best_i
+    while lo_i > 0 and counts[lo_i - 1] == counts[best_i]:
+        lo_i -= 1
+    while hi_i < len(counts) - 1 and counts[hi_i + 1] == counts[best_i]:
+        hi_i += 1
+    best = round((offsets[lo_i] + offsets[hi_i]) / 2, 4)
     runner = max([c for o, c in zip(offsets, counts) if abs(o - best) > exclusion_sec] or [0])
     frac = counts[best_i] / len(labels)
     accepted = counts[best_i] >= peak_ratio * runner and frac >= min_frac
-    return {"offset": round(best, 4), "matched": counts[best_i], "runner_up": runner,
+    return {"offset": best, "matched": counts[best_i], "runner_up": runner,
             "matched_frac": round(frac, 4), "accepted": bool(accepted)}
 
 
