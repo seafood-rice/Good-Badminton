@@ -29,6 +29,9 @@ No line of these five files was reformatted, "cleaned up", or otherwise
 changed — this is intentional third-party vendoring. Verified identical via
 `diff` against the pinned clone at copy time.
 
+Exception: `dataset.py` was identical at copy time but now carries one project fix to
+`Video_IterableDataset.__iter__`; see item 9 under "edits vs upstream" below.
+
 **Not vendored** (inference path does not need them, and `test.py` imports
 `pycocotools` at module load which is not an installed dependency — importing
 it would break):
@@ -127,7 +130,7 @@ library, used only by their training/data-prep helpers — e.g.
 calls, but the import must still resolve at module load time). Added `parse`
 (no version pin; upstream itself does not pin it) to `requirements.txt`.
 
-## `infer.py` edits vs upstream (Task 2)
+## `infer.py` and `dataset.py` edits vs upstream (Task 2; `dataset.py` fix is item 9)
 
 `third_party/tracknet/infer.py` is our own extraction, not vendored
 verbatim. It contains:
