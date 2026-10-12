@@ -183,6 +183,11 @@ verbatim. It contains:
      "Tracking shuttle" stage during a whole-match pass (learned-hit-detection spec 8.1). No
      effect on predictions.
 
+  9. `dataset.py` `Video_IterableDataset.__iter__`: stop when a window would be empty (frame
+     count a multiple of `sliding_step` in nonoverlap mode) instead of raising `IndexError` on
+     `frame_list[-1]`. Upstream bug; predictions for every frame are unchanged. Covered by
+     `tests/test_tracknet_reader.py`.
+
   Everything else — the non-overlap/overlap dataset branching, the
   large/small-video branching, the temporal-ensemble buffer bookkeeping, and
   the two-pass TrackNet → InpaintNet refinement structure — carries over
