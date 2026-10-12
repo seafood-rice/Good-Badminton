@@ -96,29 +96,53 @@ def test_best_offset_accepts_a_real_rally_whose_one_beat_echo_is_strong():
     assert r["accepted"] is True
 
 
-def _win(offset, frac):
-    return {"offset": offset, "matched": int(frac * 10), "runner_up": 0,
-            "matched_frac": frac, "accepted": True}
+def _rally_labels(rng, n=60):
+    return np.cumsum(1.0 + rng.uniform(-0.15, 0.15, n))
 
 
-def test_windows_agree_when_every_window_is_within_tolerance_of_the_pooled_offset():
-    wins = [_win(-0.10, 0.8), _win(-0.07, 0.7), _win(-0.13, 0.75)]
-    assert sl.windows_agree(wins, -0.10) is True
+def _noise_events(rng, span, rate=1.5):
+    return rng.uniform(0, span, int(rate * span))
 
 
-def test_windows_agree_rejects_a_window_one_beat_away():
-    wins = [_win(-0.10, 0.8), _win(-0.07, 0.7), _win(0.9, 0.75)]
-    assert sl.windows_agree(wins, -0.10) is False
+def test_alignment_verdict_accepts_an_aligned_upload_with_a_small_detector_bias():
+    rng = np.random.default_rng(11)
+    labels = _rally_labels(rng)
+    events = np.sort(np.concatenate([labels - 0.1 + rng.normal(0, 0.02, labels.size), _noise_events(rng, labels[-1])]))
+    v = sl.alignment_verdict(labels.tolist(), events.tolist())
+    assert v["accepted"] is True and v["offset"] == 0.0, v
+    assert abs(v["measured_offset"] + 0.1) <= 1 / 30, v
+    assert v["z"] >= 3.5 and v["labels"] == 60 and v["matched"] <= 60
 
 
-def test_windows_agree_rejects_a_poorly_matched_window():
-    wins = [_win(-0.10, 0.8), _win(-0.10, 0.3), _win(-0.10, 0.75)]
-    assert sl.windows_agree(wins, -0.10) is False
+def test_alignment_verdict_rejects_a_shifted_upload():
+    rng = np.random.default_rng(12)
+    labels = _rally_labels(rng)
+    events = np.sort(np.concatenate([labels + 4.0 + rng.normal(0, 0.02, labels.size), _noise_events(rng, labels[-1] + 5)]))
+    v = sl.alignment_verdict(labels.tolist(), events.tolist())
+    assert v["accepted"] is False, v
+    assert abs(v["measured_offset"] - 4.0) <= 1 / 30, v
+    assert v["offset"] == v["measured_offset"]
 
 
-def test_windows_agree_needs_at_least_two_windows():
-    assert sl.windows_agree([_win(-0.10, 0.9)], -0.10) is False
-    assert sl.windows_agree([], -0.10) is False
+def test_alignment_verdict_rejects_noise_only_events():
+    rng = np.random.default_rng(13)
+    labels = _rally_labels(rng)
+    v = sl.alignment_verdict(labels.tolist(), np.sort(_noise_events(rng, labels[-1], 2.5)).tolist())
+    assert v["accepted"] is False, v
+
+
+def test_alignment_verdict_ties_resolve_to_the_offset_nearest_zero():
+    labels = [10.0, 20.0, 30.0, 40.0]
+    events = [10.0 - 1 / 30, 20.0 - 1 / 30, 30.5, 40.5]      # two matches at -1/30, two at +0.5
+    v = sl.alignment_verdict(labels, events, tol_sec=1e-6)
+    assert v["matched"] == 2
+    assert abs(v["measured_offset"] + 1 / 30) < 1e-3, v
+
+
+def test_alignment_verdict_handles_empty_inputs():
+    for lab, ev in (([], [1.0]), ([1.0], [])):
+        v = sl.alignment_verdict(lab, ev)
+        assert v["accepted"] is False and v["matched"] == 0
 
 
 def test_best_offset_is_the_plateau_centre_for_noise_free_labels():

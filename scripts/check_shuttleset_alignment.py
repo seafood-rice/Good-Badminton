@@ -2,11 +2,13 @@
 
 Usage:
   python scripts/check_shuttleset_alignment.py --match <video> [--data data/shuttleset]
-      [--samples 3] [--tracknet-mode nonoverlap]
+      [--samples 6] [--tracknet-mode nonoverlap]
 
-Cuts windows around a few labelled rallies (+-12 s), runs TrackNetV3 on each,
-finds shuttle turn events, and searches a +-10 s offset between label time and
-video time. Writes data/shuttleset/alignment/<video>.json; exit 0 if accepted, 3 if not.
+Cuts windows around 6 labelled rallies (+-12 s), runs TrackNetV3 on each,
+finds shuttle turn events, pools them and searches a +-10 s offset between label
+time and video time. Accepted when the best offset is within 0.2 s of zero and
+stands out from the whole offset curve (robust z >= 3.5); offset applied is 0.
+Writes data/shuttleset/alignment/<video>.json; exit 0 if accepted, 3 if not.
 """
 import argparse
 import json
@@ -38,7 +40,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--match", required=True)
     p.add_argument("--data", default=os.path.join(ROOT, "data", "shuttleset"))
-    p.add_argument("--samples", type=int, default=3)
+    p.add_argument("--samples", type=int, default=6)
     p.add_argument("--tracknet-mode", default="nonoverlap", choices=["weight", "nonoverlap"])
     a = p.parse_args(argv)
 
@@ -69,7 +71,7 @@ def main(argv=None):
     os.makedirs(tmp, exist_ok=True)
     models = tn.load_tracknet(os.path.join(ROOT, "weights", "tracknet.pt"),
                               os.path.join(ROOT, "weights", "inpaintnet.pt"))
-    label_t, event_t, win_labels, win_events = [], [], [], []
+    label_t, event_t = [], []
     for k, span in enumerate(picks):
         w0 = max(0.0, span["start"] - MARGIN_SEC)
         dur = span["end"] - span["start"] + 2 * MARGIN_SEC
@@ -83,29 +85,23 @@ def main(argv=None):
                 arr[f] = pt
         w_events = [w0 + i / fps for i in shuttle_turn_events(arr, fps)]
         w_labels = [h["t"] for h in span["hits"]]
-        win_events.append(w_events)
-        win_labels.append(w_labels)
         event_t += w_events
         label_t += w_labels
         os.remove(clip)
 
-    result = sl.best_offset(label_t, event_t)
-    per_window = [sl.best_offset(lt, et) for lt, et in zip(win_labels, win_events)]
-    result["accepted"] = bool(result["accepted"] and sl.windows_agree(per_window, result["offset"]))
-    result.update({"video": a.match, "fps": fps, "width": size[0], "height": size[1],
-                   "rule": "pooled_frac>=0.6 and per-window offsets agree within 0.1 s",
-                   "sampled_rallies": [[s["set"], s["rally"]] for s in picks],
-                   "windows": [{"set": s["set"], "rally": s["rally"], "offset": w["offset"],
-                                "matched": w["matched"], "labels": len(lt),
-                                "matched_frac": w["matched_frac"]}
-                               for s, w, lt in zip(picks, per_window, win_labels)]})
+    v = sl.alignment_verdict(label_t, event_t)
+    result = {"accepted": v["accepted"], "offset": v["offset"], "measured_offset": v["measured_offset"],
+              "z": v["z"], "matched": v["matched"], "labels": v["labels"],
+              "matched_frac": v["matched_frac"],
+              "rule": "|best offset| <= 0.2 s and robust z >= 3.5 (tol 2 frames); offset applied = 0",
+              "fps": fps, "width": size[0], "height": size[1], "video": a.match,
+              "sampled_rallies": [[s["set"], s["rally"]] for s in picks]}
     out = os.path.join(a.data, "alignment", f"{a.match}.json")
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2)
-    offsets = ", ".join(f"{w['offset']:+.2f}" for w in per_window)
-    print(f"{a.match}: {'ACCEPTED' if result['accepted'] else 'REJECTED'} offset "
-          f"{result['offset']:+.2f}s matched {result['matched']}/{len(label_t)} "
-          f"(runner-up {result['runner_up']}) window offsets [{offsets}] -> {out}")
+    print(f"{a.match}: {'ACCEPTED' if result['accepted'] else 'REJECTED'} measured offset "
+          f"{v['measured_offset']:+.2f}s z {v['z']:.1f} matched {v['matched']}/{v['labels']} "
+          f"({v['matched_frac']:.2f}) -> {out}")
     return 0 if result["accepted"] else 3
 
 

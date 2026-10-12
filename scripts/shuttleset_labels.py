@@ -12,6 +12,8 @@ import math
 import os
 import sys
 
+import numpy as np
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -123,7 +125,7 @@ def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_
     test (best >= 1.5x the best count more than ``exclusion_sec`` away) is gone: rallies have
     a near-regular rhythm, so shifting the labels by one beat lines them up with neighbouring
     hits and the echo peak sits at about 0.7x the best even on a clean curve (spec 6.2,
-    amended). Per-window agreement (``windows_agree``) replaces it. ``peak_ratio`` is kept as
+    amended). ``alignment_verdict`` replaces it. ``peak_ratio`` is kept as
     an accepted-but-unused argument for compatibility; ``runner_up`` is informational.
     """
     labels = sorted(label_times)
@@ -156,15 +158,44 @@ def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_
             "matched_frac": round(frac, 4), "accepted": bool(accepted)}
 
 
-def windows_agree(window_results, pooled_offset, tol_sec=0.1, min_window_frac=0.5, min_windows=2):
-    """True when every window's best offset is within tol_sec of the pooled offset,
-    each window matched >= min_window_frac of its own labels, and there are >= min_windows windows.
-    window_results: list of best_offset() dicts, one per sampled window."""
-    if len(window_results) < min_windows:
-        return False
-    tol = tol_sec + 1e-9
-    return all(abs(w["offset"] - pooled_offset) <= tol and w["matched_frac"] >= min_window_frac
-               for w in window_results)
+def alignment_verdict(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_sec=2 / 30,
+                      max_abs_offset=0.2, min_z=3.5):
+    """Return {"measured_offset", "z", "matched", "labels", "matched_frac", "accepted", "offset"}.
+
+    Curve = for each offset o in [-search, +search] (step), the number of labels t with an event in
+    [t + o - tol, t + o + tol]. Best = argmax, and ties take the offset nearest 0. z = robust z of the best
+    count against the whole curve (median, 1.4826 * MAD; if the MAD is 0, z = inf when best > median, else 0).
+    accepted = |best offset| <= max_abs_offset and z >= min_z. "offset" is 0.0 when accepted (the
+    human labels are the timing ground truth; the ~-0.1 s seen on every upload is turn-detector bias),
+    else the measured offset (never used, because rejected matches are not built).
+    """
+    labels = np.sort(np.asarray(list(label_times), dtype=float))
+    events = np.sort(np.asarray(list(event_times), dtype=float))
+    if labels.size == 0 or events.size == 0:
+        return {"measured_offset": 0.0, "z": 0.0, "matched": 0, "labels": int(labels.size),
+                "matched_frac": 0.0, "accepted": False, "offset": 0.0}
+    n_steps = int(round(search_sec / step_sec))
+    offsets = np.arange(-n_steps, n_steps + 1) * step_sec
+    tol = tol_sec + 1e-9     # a match exactly at the tolerance edge must not hinge on float noise
+    counts = np.empty(offsets.size, dtype=int)
+    for i, o in enumerate(offsets):
+        lo = np.searchsorted(events, labels + o - tol, side="left")
+        hi = np.searchsorted(events, labels + o + tol, side="right")
+        counts[i] = int(np.count_nonzero(hi > lo))
+    best = int(counts.max())
+    tied = np.flatnonzero(counts == best)
+    best_i = int(tied[np.argmin(np.abs(offsets[tied]))])
+    measured = float(offsets[best_i])
+    med = float(np.median(counts))
+    mad = float(np.median(np.abs(counts - med)))
+    if mad > 0:
+        z = (best - med) / (1.4826 * mad)
+    else:
+        z = float("inf") if best > med else 0.0
+    accepted = bool(abs(measured) <= max_abs_offset + 1e-9 and z >= min_z)
+    return {"measured_offset": round(measured, 4), "z": z, "matched": best, "labels": int(labels.size),
+            "matched_frac": round(best / labels.size, 4), "accepted": accepted,
+            "offset": 0.0 if accepted else round(measured, 4)}
 
 
 def parse_matrix(text):
