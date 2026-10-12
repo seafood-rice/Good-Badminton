@@ -75,8 +75,50 @@ def test_best_offset_recovers_a_shift_and_rejects_noise():
     r = sl.best_offset(labels.tolist(), events.tolist())
     assert abs(r["offset"] - 2.0) < 0.05 and r["accepted"] is True
     noise = sl.best_offset(labels.tolist(), np.sort(rng.uniform(0, 300, 110)).tolist())
-    assert noise["accepted"] is False
+    assert noise["accepted"] is False and noise["matched_frac"] < 0.6   # rejected on the matched fraction alone
     assert sl.best_offset([], [1.0])["accepted"] is False
+
+
+def test_best_offset_accepts_a_real_rally_whose_one_beat_echo_is_strong():
+    # Real failure mode: a regular ~1 s rhythm makes the label train line up with its own
+    # one-beat shift, so the old best/runner-up >= 1.5 ratio rejected correct alignments.
+    rng = np.random.default_rng(3)
+    labels = np.cumsum(1.0 + rng.uniform(-0.15, 0.15, 40))
+    hit = rng.random(40) < 0.85
+    echo = rng.random(40) < 0.70
+    events = np.sort(np.concatenate([labels[hit] + 0.1,
+                                     labels[echo] + 1.1,
+                                     rng.uniform(0, labels[-1], 10)]))
+    r = sl.best_offset(labels.tolist(), events.tolist())
+    assert abs(r["offset"] - 0.1) <= 0.05
+    assert r["runner_up"] * 1.5 > r["matched"], r      # the old peak-ratio rule would have rejected this
+    assert r["matched_frac"] >= 0.6
+    assert r["accepted"] is True
+
+
+def _win(offset, frac):
+    return {"offset": offset, "matched": int(frac * 10), "runner_up": 0,
+            "matched_frac": frac, "accepted": True}
+
+
+def test_windows_agree_when_every_window_is_within_tolerance_of_the_pooled_offset():
+    wins = [_win(-0.10, 0.8), _win(-0.07, 0.7), _win(-0.13, 0.75)]
+    assert sl.windows_agree(wins, -0.10) is True
+
+
+def test_windows_agree_rejects_a_window_one_beat_away():
+    wins = [_win(-0.10, 0.8), _win(-0.07, 0.7), _win(0.9, 0.75)]
+    assert sl.windows_agree(wins, -0.10) is False
+
+
+def test_windows_agree_rejects_a_poorly_matched_window():
+    wins = [_win(-0.10, 0.8), _win(-0.10, 0.3), _win(-0.10, 0.75)]
+    assert sl.windows_agree(wins, -0.10) is False
+
+
+def test_windows_agree_needs_at_least_two_windows():
+    assert sl.windows_agree([_win(-0.10, 0.9)], -0.10) is False
+    assert sl.windows_agree([], -0.10) is False
 
 
 def test_best_offset_is_the_plateau_centre_for_noise_free_labels():

@@ -117,7 +117,15 @@ def fps_ok(fps):
 
 def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_sec=0.1,
                 min_frac=0.6, peak_ratio=1.5, exclusion_sec=0.5):
-    """Video-time offset o maximising labels t with an event within tol of t + o."""
+    """Video-time offset o maximising labels t with an event within tol of t + o.
+
+    ``accepted`` is the matched fraction alone (``frac >= min_frac``). The former peak-ratio
+    test (best >= 1.5x the best count more than ``exclusion_sec`` away) is gone: rallies have
+    a near-regular rhythm, so shifting the labels by one beat lines them up with neighbouring
+    hits and the echo peak sits at about 0.7x the best even on a clean curve (spec 6.2,
+    amended). Per-window agreement (``windows_agree``) replaces it. ``peak_ratio`` is kept as
+    an accepted-but-unused argument for compatibility; ``runner_up`` is informational.
+    """
     labels = sorted(label_times)
     events = sorted(event_times)
     if not labels or not events:
@@ -143,9 +151,20 @@ def best_offset(label_times, event_times, search_sec=10.0, step_sec=1 / 30, tol_
     best = round((offsets[lo_i] + offsets[hi_i]) / 2, 4)
     runner = max([c for o, c in zip(offsets, counts) if abs(o - best) > exclusion_sec] or [0])
     frac = counts[best_i] / len(labels)
-    accepted = counts[best_i] >= peak_ratio * runner and frac >= min_frac
+    accepted = frac >= min_frac
     return {"offset": best, "matched": counts[best_i], "runner_up": runner,
             "matched_frac": round(frac, 4), "accepted": bool(accepted)}
+
+
+def windows_agree(window_results, pooled_offset, tol_sec=0.1, min_window_frac=0.5, min_windows=2):
+    """True when every window's best offset is within tol_sec of the pooled offset,
+    each window matched >= min_window_frac of its own labels, and there are >= min_windows windows.
+    window_results: list of best_offset() dicts, one per sampled window."""
+    if len(window_results) < min_windows:
+        return False
+    tol = tol_sec + 1e-9
+    return all(abs(w["offset"] - pooled_offset) <= tol and w["matched_frac"] >= min_window_frac
+               for w in window_results)
 
 
 def parse_matrix(text):

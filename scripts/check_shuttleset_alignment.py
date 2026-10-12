@@ -69,7 +69,7 @@ def main(argv=None):
     os.makedirs(tmp, exist_ok=True)
     models = tn.load_tracknet(os.path.join(ROOT, "weights", "tracknet.pt"),
                               os.path.join(ROOT, "weights", "inpaintnet.pt"))
-    label_t, event_t = [], []
+    label_t, event_t, win_labels, win_events = [], [], [], []
     for k, span in enumerate(picks):
         w0 = max(0.0, span["start"] - MARGIN_SEC)
         dur = span["end"] - span["start"] + 2 * MARGIN_SEC
@@ -81,19 +81,31 @@ def main(argv=None):
         for f, pt in traj.items():
             if pt is not None:
                 arr[f] = pt
-        event_t += [w0 + i / fps for i in shuttle_turn_events(arr, fps)]
-        label_t += [h["t"] for h in span["hits"]]
+        w_events = [w0 + i / fps for i in shuttle_turn_events(arr, fps)]
+        w_labels = [h["t"] for h in span["hits"]]
+        win_events.append(w_events)
+        win_labels.append(w_labels)
+        event_t += w_events
+        label_t += w_labels
         os.remove(clip)
 
     result = sl.best_offset(label_t, event_t)
+    per_window = [sl.best_offset(lt, et) for lt, et in zip(win_labels, win_events)]
+    result["accepted"] = bool(result["accepted"] and sl.windows_agree(per_window, result["offset"]))
     result.update({"video": a.match, "fps": fps, "width": size[0], "height": size[1],
-                   "sampled_rallies": [[s["set"], s["rally"]] for s in picks]})
+                   "rule": "pooled_frac>=0.6 and per-window offsets agree within 0.1 s",
+                   "sampled_rallies": [[s["set"], s["rally"]] for s in picks],
+                   "windows": [{"set": s["set"], "rally": s["rally"], "offset": w["offset"],
+                                "matched": w["matched"], "labels": len(lt),
+                                "matched_frac": w["matched_frac"]}
+                               for s, w, lt in zip(picks, per_window, win_labels)]})
     out = os.path.join(a.data, "alignment", f"{a.match}.json")
     with open(out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2)
+    offsets = ", ".join(f"{w['offset']:+.2f}" for w in per_window)
     print(f"{a.match}: {'ACCEPTED' if result['accepted'] else 'REJECTED'} offset "
           f"{result['offset']:+.2f}s matched {result['matched']}/{len(label_t)} "
-          f"(runner-up {result['runner_up']}) -> {out}")
+          f"(runner-up {result['runner_up']}) window offsets [{offsets}] -> {out}")
     return 0 if result["accepted"] else 3
 
 
