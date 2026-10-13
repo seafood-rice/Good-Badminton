@@ -134,7 +134,7 @@ def predict(indices, y_pred=None, c_pred=None, img_scaler=(1, 1)):
     return pred_dict
 
 
-def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16, eval_mode='weight', large_video=True, max_sample_num=1800, video_range=None, device=None):
+def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16, eval_mode='weight', large_video=True, max_sample_num=1800, video_range=None, device=None, progress=None):
     """ Run TrackNet (+ optional InpaintNet refinement) prediction on a video.
 
         Extracted from upstream `predict.py`'s `__main__` block. Edits vs
@@ -150,6 +150,8 @@ def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16,
             max_sample_num (int, optional): maximum number of frames to sample for generating median image
             video_range (Tuple, optional): range of start second and end second of the video for generating median image
             device (str, optional): torch device to run inference on; defaults to cuda if available else cpu
+            progress (callable, optional): called as progress(done_frames, total_frames)
+                after each TrackNet batch. Project addition, see CONTRACT.md.
 
         Returns:
             pred_dict (Dict): dictionary of predicted coordinates
@@ -201,6 +203,7 @@ def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16,
                                                  frame_arr=np.array(frame_list)[:, :, :, ::-1], padding=True)
             data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, drop_last=False)
 
+        total_frames = dataset.video_len if large_video else len(frame_list)
         for step, (i, x) in enumerate(tqdm(data_loader)):
             x = x.float().to(device)
             with torch.no_grad():
@@ -210,6 +213,8 @@ def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16,
             tmp_pred = predict(i, y_pred=y_pred, img_scaler=img_scaler)
             for key in tmp_pred.keys():
                 tracknet_pred_dict[key].extend(tmp_pred[key])
+            if progress is not None:
+                progress(len(tracknet_pred_dict['Frame']), total_frames)
     else:
         # Create dataset with overlap sampling for temporal ensemble
         if large_video:
@@ -234,6 +239,7 @@ def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16,
         frame_i = torch.arange(seq_len-1, -1, -1) # [7, 6, 5, 4, 3, 2, 1, 0]
         y_pred_buffer = torch.zeros((buffer_size, seq_len, HEIGHT, WIDTH), dtype=torch.float32)
         weight = get_ensemble_weight(seq_len, eval_mode)
+        total_frames = video_len
         for step, (i, x) in enumerate(tqdm(data_loader)):
             x = x.float().to(device)
             b_size, seq_len = i.shape[0], i.shape[1]
@@ -274,6 +280,9 @@ def run_prediction(video_file, tracknet_file, inpaintnet_file='', batch_size=16,
 
             # Update buffer, keep last predictions for ensemble in next iteration
             y_pred_buffer = y_pred_buffer[-buffer_size:]
+
+            if progress is not None:
+                progress(len(tracknet_pred_dict['Frame']), total_frames)
 
     #assert video_len == len(tracknet_pred_dict['Frame']), 'Prediction length mismatch'
     # Test on TrackNetV3 (TrackNet + InpaintNet)

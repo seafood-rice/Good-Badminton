@@ -36,6 +36,10 @@ def main():
                         help='TrackNetV3 追踪模型路径（可选，密集羽毛球轨迹）')
     parser.add_argument('--inpaintnet-model', default=None, type=str,
                         help='TrackNetV3 InpaintNet 轨迹修补模型路径（可选）')
+    parser.add_argument('--hit-model', default=None, type=str,
+                        help='学习型击球检测模型路径（可选；需同名 .json 说明文件）')
+    parser.add_argument('--tracknet-mode', default='weight', choices=['weight', 'nonoverlap'],
+                        help="TrackNetV3 模式：weight（默认，较慢较稳）或 nonoverlap（约快 2.7 倍）")
     parser.add_argument('--analysis-quality', default='accurate', choices=['accurate', 'fast'],
                         help='accurate=每帧分析（默认）；fast=抽帧快速预览（密集分析关闭）')
     parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
@@ -69,6 +73,8 @@ def main():
         bst_weights=args.bst_model,
         tracknet_weights=args.tracknet_model,
         inpaintnet_weights=args.inpaintnet_model,
+        tracknet_mode=args.tracknet_mode,
+        hit_model_path=args.hit_model,
         analysis_quality=args.analysis_quality,
     )
 

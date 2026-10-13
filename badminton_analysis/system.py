@@ -5,12 +5,17 @@ from tkinter import filedialog
 import tkinter as tk
 import time
 import argparse
+import threading
 
-# TrackNetV3 dense pre-pass is only feasible on short clips: eval_mode='weight'
-# runs ~0.4s/frame, so a full-length match (tens of thousands of frames) would
-# take hours. Above this frame budget we skip the pre-pass and fall back to the
-# yolo shuttle so match analysis stays responsive.
+# TrackNetV3 dense pre-pass modes. 'weight' (upstream default, temporal
+# ensemble) costs ~0.48 s/frame at 1080p on an RTX 4090; 'nonoverlap' ~0.18 s/frame.
+# A video longer than this is not tracked by TrackNetV3 (the pre-pass is skipped and the
+# yolo shuttle is used) -- but only when no hit model is configured and
+# ``dense_whole_video`` is False. With either set the whole video is tracked, because the
+# learned hit detector needs a dense track (learned-hit-detection spec 8.1); the cache
+# makes re-runs free.
 SHUTTLE_PRETRACK_MAX_FRAMES = 2000
+TRACKNET_MODES = ("weight", "nonoverlap")
 
 # Interval of the *pinned* gate only: when court_view_threshold is pinned the gate
 # stays exactly today's full-resolution match, recomputed every N frames with the
@@ -235,6 +240,43 @@ def load_runtime_dependencies():
     write_json = _write_json
     SCHEMA_VERSION = _SCHEMA_VERSION
 
+class _ProgressHeartbeat:
+    """Rewrites progress.json every ``interval`` s from a background thread.
+
+    A whole-match TrackNetV3 pass runs for hours with batches that can take longer
+    than the UI's staleness window; this keeps "updated Ns ago" fresh and carries the
+    latest frame count, independent of how often the tracker reports.
+    """
+
+    def __init__(self, write, stage, interval=2.0):
+        self._write = write
+        self._stage = stage
+        self._interval = interval
+        self.current = 0
+        self._stop = threading.Event()
+        self._thread = None
+
+    def update(self, done, total=None):
+        self.current = int(done)
+
+    def __enter__(self):
+        self._write(self._stage, current_frame=0)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            self._write(self._stage, current_frame=self.current)
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        self._write(self._stage, current_frame=self.current)
+        return False
+
+
 class BadmintonAnalysisSystem:
     def __init__(self, video_path, show_display=True,
                  show_skeletons=True, show_player_trajectories=True,
@@ -246,8 +288,10 @@ class BadmintonAnalysisSystem:
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
                  bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
+                 tracknet_mode="weight",
                  analysis_quality="accurate", court_view_threshold=None,
-                 rally_signal="auto"):
+                 rally_signal="auto", hit_model_path=None,
+                 dense_whole_video=False):
         self.video_path = video_path
         self.show_display = show_display
         self.language = language
@@ -272,6 +316,11 @@ class BadmintonAnalysisSystem:
         # writes the legacy in-loop court-view segments. Anything else is "auto".
         self.rally_signal = rally_signal
         self.rally_detection = None   # the detection block written to rally_segments.json
+        self.hit_model_path = hit_model_path
+        # True makes the TrackNetV3 pre-pass track the whole video regardless of
+        # length (the hit-dataset builder needs dense shuttle on every rally).
+        self.dense_whole_video = dense_whole_video
+        self.rally_list = []          # the rallies written to rally_segments.json
         # Frames the court-view gate evaluated / passed, for the provenance block.
         self._gate_frames = 0
         self._gate_court_frames = 0
@@ -282,6 +331,7 @@ class BadmintonAnalysisSystem:
         self.bst_weights = bst_weights
         self.tracknet_weights = tracknet_weights
         self.inpaintnet_weights = inpaintnet_weights
+        self.tracknet_mode = self._normalize_tracknet_mode(tracknet_mode)
         self._shuttle_trajectory = None
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
@@ -476,10 +526,11 @@ class BadmintonAnalysisSystem:
         print(f"处理速度比: {processing_time/video_duration:.2f}x")
 
         self._write_progress("visualizing")
+        hits = self._run_hit_detection(fps, frame_count)
         if self.analyze_technique:
-            self._run_technique_analysis()
+            self._run_technique_analysis(hits)
 
-        self._run_stroke_recognition()
+        self._run_stroke_recognition(hits)
 
         self._cleanup(cap)
 
@@ -739,6 +790,7 @@ class BadmintonAnalysisSystem:
                 print(f"Rally segments could not be written: {write_exc!r}")
 
         self.rally_detection = detection
+        self.rally_list = list(rallies)
         line = (f"Rally segmentation: signal={detection.get('signal')}, "
                 f"{len(rallies)} segments")
         if error is not None:
@@ -1247,6 +1299,14 @@ class BadmintonAnalysisSystem:
             "player_side": side, "shuttle": shuttle, "players": players_data,
         }
 
+    @staticmethod
+    def _normalize_tracknet_mode(mode):
+        if mode in TRACKNET_MODES:
+            return mode
+        if mode is not None:
+            print(f"Unknown TrackNetV3 mode {mode!r}; using 'weight'.")
+        return "weight"
+
     def _run_shuttle_pretrack(self):
         """Offline TrackNetV3 dense-shuttle pre-pass. Never fatal.
 
@@ -1254,7 +1314,10 @@ class BadmintonAnalysisSystem:
         ``frame_count`` = TrackNet 0-based frame + 1) and sets
         ``self._shuttle_source = 'tracknet'``. On any failure or when weights
         are absent, leaves the trajectory None so ``_capture_analysis_frame``
-        falls back to the yolo shuttle (byte-identical to today).
+        falls back to the yolo shuttle (byte-identical to today). Progress stage
+        ``tracking_shuttle``. A video over ``SHUTTLE_PRETRACK_MAX_FRAMES`` is
+        skipped unless a hit model is configured or ``dense_whole_video`` is set,
+        because the learned hit detector needs a whole-video dense track.
         """
         if not (self.tracknet_weights and self.analyze_technique):
             return
@@ -1264,15 +1327,19 @@ class BadmintonAnalysisSystem:
             _cap.release()
         except Exception:
             n_frames = 0
-        if n_frames > SHUTTLE_PRETRACK_MAX_FRAMES:
+        if (n_frames > SHUTTLE_PRETRACK_MAX_FRAMES
+                and not getattr(self, "hit_model_path", None)
+                and not getattr(self, "dense_whole_video", False)):
             print(f"TrackNetV3 pre-pass skipped: {n_frames} frames > "
-                  f"{SHUTTLE_PRETRACK_MAX_FRAMES} budget; using yolo shuttle.")
+                  f"{SHUTTLE_PRETRACK_MAX_FRAMES} budget (no hit model configured); "
+                  f"using yolo shuttle.")
             return
+        mode = getattr(self, "tracknet_mode", "weight")
         try:
             from .shuttle_track import tracknet as tnmod
             from .shuttle_track import trajectory as tjmod
 
-            params = {"eval_mode": "weight",
+            params = {"eval_mode": mode,
                       "inpaint": bool(self.inpaintnet_weights),
                       "roi": self.court_roi_corners}
             cache_path = os.path.join(self.save_dir, "shuttle_trajectory.json")
@@ -1280,19 +1347,145 @@ class BadmintonAnalysisSystem:
             traj0 = tjmod.load_cache(cache_path, key)
             if traj0 is None:
                 models = tnmod.load_tracknet(self.tracknet_weights, self.inpaintnet_weights)
-                traj0 = tnmod.track_video(self.video_path, models, court_roi=self.court_roi_corners)
+                with _ProgressHeartbeat(self._write_progress, "tracking_shuttle") as beat:
+                    traj0 = tnmod.track_video(self.video_path, models,
+                                              court_roi=self.court_roi_corners,
+                                              eval_mode=mode, progress=beat.update)
                 tjmod.save_cache(cache_path, key, traj0)
             # Align TrackNet 0-based frames to the match loop's 1-based frame_count.
             self._shuttle_trajectory = {f + 1: pt for f, pt in traj0.items()}
             self._shuttle_source = "tracknet"
             detected = sum(1 for pt in traj0.values() if pt is not None)
-            print(f"Dense shuttle tracking: {detected}/{len(traj0)} frames via TrackNetV3")
+            print(f"Dense shuttle tracking ({mode}): {detected}/{len(traj0)} frames via TrackNetV3")
         except Exception as e:  # never fatal
             print(f"TrackNetV3 pre-pass unavailable ({e}); using yolo shuttle.")
             self._shuttle_trajectory = None
             self._shuttle_source = "yolo"
 
-    def _run_technique_analysis(self):
+    _HIT_OUTPUTS = ("hits.json", "hit_signals.npz")
+
+    def _run_hit_detection(self, fps, last_frame):
+        """Build the shared hit list. Returns learned hits, or None (contact rule).
+
+        Writes hit_signals.npz (the detector's raw input, also harvested by the
+        ShuttleSet dataset builder) and hits.json. Never fatal: every failure
+        falls back to today's contact rule with the reason recorded. Without
+        technique analysis there are no per-frame poses, so nothing is written and
+        a previous run's hit outputs are removed (they would describe another run).
+        The previous run's outputs are removed first in every case, so a run that
+        fails before writing leaves no stale files behind.
+        """
+        for name in self._HIT_OUTPUTS:
+            try:
+                os.remove(os.path.join(self.save_dir, name))
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"Could not remove the previous run's {name}: {exc}")
+        if not self.analyze_technique or not last_frame:
+            return None
+
+        try:
+            from .stroke import hit_detector as hd
+            from .stroke import hit_signals as hs
+            from .stroke_recog.hits import hit_events
+        except Exception as exc:  # never fatal: fall back to the contact rule
+            print(f"Hit detection unavailable, using the contact rule: {exc!r}")
+            return None
+
+        signals = None
+        try:
+            shuttle = (self._shuttle_trajectory if self._shuttle_trajectory is not None
+                       else {r["frame"]: r["shuttle"] for r in self._analysis_track_both})
+            signals = hs.build_signals(fps, last_frame, self._analysis_frames, shuttle,
+                                       self.court_corners, (self.frame_width, self.frame_height))
+            hs.save_signals(os.path.join(self.save_dir, "hit_signals.npz"), signals)
+        except Exception as exc:
+            print(f"Hit signals unavailable: {exc!r}")
+
+        try:
+            coverage = hd.shuttle_coverage(signals, self._in_play_frames()) if signals is not None else 0.0
+            reason, hits, model_info = None, None, None
+            if not getattr(self, "hit_model_path", None):
+                reason = "no hit model"
+            elif signals is None:
+                reason = "hit signals unavailable"
+            elif self._shuttle_source != "tracknet":
+                reason = "no dense shuttle track"
+            elif coverage < hd.MIN_SHUTTLE_COVERAGE:
+                reason = (f"dense shuttle track covers {coverage:.0%} of in-play frames "
+                          f"(needs {hd.MIN_SHUTTLE_COVERAGE:.0%})")
+            else:
+                try:
+                    from .stroke import hit_model as hm
+                    model, meta = hm.load_hit_model(self.hit_model_path)
+                    trained_on = meta.get("pose_family")
+                    run_family = getattr(self, "pose_family", None)
+                    if trained_on and run_family and trained_on != run_family:
+                        reason = (f"hit model trained on {trained_on} keypoints; "
+                                  f"this run used {run_family}")
+                    else:
+                        hits = hd.detect_hits(signals, model, meta)
+                        model_info = {"sha256": hm.file_sha256(self.hit_model_path),
+                                      "schema": meta.get("schema"), "threshold": meta.get("threshold"),
+                                      "min_spacing_sec": meta.get("min_spacing_sec")}
+                except Exception as exc:
+                    print(f"Hit detector failed, using the contact rule: {exc!r}")
+                    reason = f"hit detector failed: {type(exc).__name__}"
+                    hits = None
+
+            if hits is None:
+                listed = [{"frame": e["frame"], "hitter": e["hitter"], "confidence": None}
+                          for e in hit_events(self._analysis_track_both)]
+                source = "contact_rule"
+            else:
+                listed, source = hits, "learned"
+            # A malformed hit would break every consumer, so reject the whole list here.
+            for h in listed:
+                int(h["frame"]), h["hitter"]
+            self._write_hits_json(fps, source, reason, model_info, coverage, listed)
+            print(f"Hit detection: {len(listed)} hits ({source}"
+                  f"{'; ' + reason if reason else ''})")
+            return hits
+        except Exception as exc:
+            print(f"Hit detection bookkeeping failed, using the contact rule: {exc!r}")
+            return None
+
+    def _in_play_frames(self):
+        """Frames inside B11 rally segments; all analysed frames when there are none."""
+        frames = set()
+        for r in getattr(self, "rally_list", None) or []:
+            frames.update(range(int(r["start_frame"]), int(r["end_frame"]) + 1))
+        return sorted(frames) if frames else sorted(self._analysis_frames)
+
+    def _write_hits_json(self, fps, source, reason, model_info, coverage, hits):
+        from .data.writer import write_json as _write_json
+
+        rallies = getattr(self, "rally_list", None) or []
+
+        def rally_id(frame):
+            for r in rallies:
+                if int(r["start_frame"]) <= frame <= int(r["end_frame"]):
+                    return r["id"]
+            return None
+
+        try:
+            payload = {
+                "source": source, "reason": reason, "model": model_info,
+                "shuttle_source": self._shuttle_source,
+                "shuttle_coverage_in_play": round(float(coverage), 4),
+                "fps": fps,
+                "pose_family": getattr(self, "pose_family", None),
+                "hits": [{"frame": int(h["frame"]),
+                          "time_sec": round((int(h["frame"]) - 1) / fps, 4) if fps else None,
+                          "hitter": h["hitter"], "confidence": h.get("confidence"),
+                          "rally_id": rally_id(int(h["frame"]))} for h in hits],
+            }
+            _write_json(os.path.join(self.save_dir, "hits.json"), payload)
+        except Exception as exc:
+            print(f"hits.json could not be written: {exc!r}")
+
+    def _run_technique_analysis(self, hits=None):
         from .analysis.biomechanics import BiomechanicalAnalyzer
         from .analysis.technique_writer import write_stroke_reports, build_match_summary
         runner = TechniqueAnalysisRunner(
@@ -1302,14 +1495,19 @@ class BadmintonAnalysisSystem:
             fps=self.fps,
             court_corners=getattr(self, "court_corners", None),
         )
-        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get)
+        if hits is not None:
+            # The runner reads single-player pose fields (the frame's tracked
+            # player), so it only gets that player's hits (B spec open question F).
+            hits = [h for h in hits
+                    if (self._analysis_frames.get(h["frame"]) or {}).get("player_side") == h["hitter"]]
+        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get, hits=hits)
         strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
         summary_path = os.path.join(self.save_dir, "technique_summary.json")
         write_stroke_reports(strokes_path, reports)
         write_json(summary_path, build_match_summary(reports))
         print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
 
-    def _run_stroke_recognition(self):
+    def _run_stroke_recognition(self, hits=None):
         """Post-loop BST coarse stroke labeling -- entirely optional.
 
         No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
@@ -1370,12 +1568,15 @@ class BadmintonAnalysisSystem:
             labels = StrokeRecognizer(self.bst_weights).label_rally(
                 self._analysis_track_both, self._analysis_frames.get,
                 self.court_corners, (self.frame_width, self.frame_height),
+                hits=hits,
             )
             if not labels:
                 return
             strokes_path = os.path.join(self.save_dir, "strokes.json")
             distribution = dict(Counter(label["stroke"] for label in labels))
             payload = {"strokes": labels, "distribution": distribution}
+            if hits is not None:
+                payload["hit_source"] = "learned"
             if self._shuttle_source == "tracknet":
                 payload["shuttle_source"] = "tracknet"
             write_json(strokes_path, payload)
@@ -1476,6 +1677,7 @@ class BadmintonAnalysisSystem:
     # Per-stage fixed pct for non-analyzing stages; analyzing derives from frames.
     _PROGRESS_STAGE_PCT = {
         "initializing": 1, "court_setup": 3, "calibrating_court_view": 3,
+        "tracking_shuttle": 3,
         "analyzing": None,
         "visualizing": 97, "encoding": 99, "done": 100,
     }
@@ -1671,13 +1873,21 @@ class TechniqueAnalysisRunner:
             })
         return frames
 
-    def run(self, track, frame_lookup):
+    def run(self, track, frame_lookup, hits=None):
+        """``hits`` (optional): the shared hit list, already filtered to the player this
+        runner analyses; when given it replaces the contact rule."""
         from .stroke.events import CONTACT_M, detect_contacts, StrokeEvent
         from .stroke.classifier import classify_stroke
-        contacts = detect_contacts(
-            track, window_pre=self.window_pre, window_post=self.window_post,
-            contact_m=CONTACT_M if self.scale is not None else None,
-            scale=self.scale)
+        if hits is None:
+            contacts = detect_contacts(
+                track, window_pre=self.window_pre, window_post=self.window_post,
+                contact_m=CONTACT_M if self.scale is not None else None,
+                scale=self.scale)
+        else:
+            contacts = [{"contact_frame": int(h["frame"]),
+                         "window_start": max(0, int(h["frame"]) - self.window_pre),
+                         "window_end": int(h["frame"]) + self.window_post}
+                        for h in sorted(hits, key=lambda h: int(h["frame"]))]
         reports = []
         events = []
         for c in contacts:

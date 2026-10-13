@@ -1321,7 +1321,7 @@ def test_the_constructor_accepts_rally_signal_and_defaults_to_auto():
 def test_process_video_writes_segments_after_the_frame_loop():
     src = inspect.getsource(sysmod.BadmintonAnalysisSystem.process_video)
     assert (src.index("self._process_frame(") < src.index("self._write_rally_segments(")
-            < src.index("self._run_stroke_recognition()"))
+            < src.index("self._run_stroke_recognition("))
 
 
 # --- R20: rally_signal="courtview" reproduces today's rally_segments.json ----------
@@ -1428,7 +1428,7 @@ def _bare_system_for_recognition(tmp_path, monkeypatch, rally_detection, missing
         def __init__(self, weights):
             calls.append(("init", weights))
 
-        def label_rally(self, *args):
+        def label_rally(self, *args, **kwargs):
             calls.append(("label_rally",))
             return [{"stroke": "smash"}, {"stroke": "smash"}, {"stroke": "clear"}]
 

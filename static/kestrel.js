@@ -953,13 +953,14 @@ window.Kestrel = (function () {
     loading: ['加载模型', 'Loading model'], analyzing: ['分析动作', 'Analyzing'],
     initializing: ['初始化', 'Initializing'],
     court_setup: ['球场设置', 'Court setup'], calibrating_court_view: ['校准球场画面', 'Calibrating court view'],
+    tracking_shuttle: ['追踪羽毛球', 'Tracking shuttle'],
     visualizing: ['生成可视化', 'Visualizing'],
     scoring: ['评分', 'Scoring'], report: ['生成报告', 'Building report'],
     encoding: ['转码视频', 'Encoding video'], done: ['完成', 'Done'], error: ['失败', 'Failed']
   };
   function progressStages() {
     return wiz.mode === 'posture' ? ['loading','analyzing','scoring','report','encoding','done']
-                                  : ['initializing','court_setup','calibrating_court_view','analyzing','visualizing','encoding','done'];
+                                  : ['initializing','court_setup','calibrating_court_view','tracking_shuttle','analyzing','visualizing','encoding','done'];
   }
   function renderStepProgress(body) {
     var zh = state.lang === 'zh';

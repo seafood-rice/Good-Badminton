@@ -48,7 +48,7 @@ class StrokeRecognizer:
                     self._model = None
         return self._model
 
-    def label_rally(self, track, frame_lookup, court_corners, video_wh):
+    def label_rally(self, track, frame_lookup, court_corners, video_wh, hits=None):
         """Label every hit in ``track`` with a coarse stroke, frame-sorted.
 
         ``track`` is the both-player contact track (see hits.hit_events /
@@ -58,6 +58,10 @@ class StrokeRecognizer:
         the actual hitter and person-1 the actual opponent -- no longer
         permanently zero-filled.
 
+        ``hits`` (optional) is the pipeline's shared hit list
+        (``[{frame, hitter, confidence}]``); when given it replaces
+        ``hit_events(track)`` and each label carries ``hit_confidence``.
+
         Returns ``[]`` when the model is unavailable. Hits whose window has
         too little pose signal are labeled ``"uncertain"`` with confidence
         0.0 rather than skipped.
@@ -66,10 +70,13 @@ class StrokeRecognizer:
         if model is None:
             return []
 
+        events = hits if hits is not None else hit_events(track)
         results = []
-        for hit in hit_events(track):
+        for hit in events:
             frame = hit["frame"]
             hitter = hit["hitter"]
+            extra = ({"hit_confidence": float(hit["confidence"])}
+                     if hit.get("confidence") is not None else {})
             built = build_inputs(frame, frame_lookup, court_corners, video_wh, hitter=hitter)
             if built is None:
                 results.append({
@@ -78,6 +85,7 @@ class StrokeRecognizer:
                     "stroke": "uncertain",
                     "confidence": 0.0,
                     "uncertain": True,
+                    **extra,
                 })
                 continue
 
@@ -89,6 +97,7 @@ class StrokeRecognizer:
                 "stroke": label,
                 "confidence": float(conf),
                 "uncertain": label == "uncertain",
+                **extra,
             })
 
         results.sort(key=lambda r: r["frame"])

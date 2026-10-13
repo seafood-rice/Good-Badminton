@@ -103,7 +103,7 @@ def test_run_stroke_recognition_writes_strokes_json_and_distribution(tmp_path, m
     ]
     seen = {}
 
-    def _fake_label_rally(self, track, frame_lookup, court_corners, video_wh):
+    def _fake_label_rally(self, track, frame_lookup, court_corners, video_wh, hits=None):
         seen["weights_path"] = self.weights_path
         seen["court_corners"] = court_corners
         seen["video_wh"] = video_wh

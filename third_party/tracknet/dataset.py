@@ -729,6 +729,12 @@ class Video_IterableDataset(IterableDataset):
                 frame_list.append(frame)
                 end_f_id += 1
 
+            if start_f_id >= end_f_id:
+                # Project fix: nothing new was read (frame count is a multiple of
+                # sliding_step in nonoverlap mode) -- stop instead of padding an
+                # empty window. See CONTRACT.md.
+                break
+
             # Form a sequence
             data_idx = [(0, i) for i in range(start_f_id, end_f_id)]
             if len(data_idx) < self.seq_len:

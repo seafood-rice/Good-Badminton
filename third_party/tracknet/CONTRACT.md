@@ -29,6 +29,9 @@ No line of these five files was reformatted, "cleaned up", or otherwise
 changed — this is intentional third-party vendoring. Verified identical via
 `diff` against the pinned clone at copy time.
 
+Exception: `dataset.py` was identical at copy time but now carries one project fix to
+`Video_IterableDataset.__iter__`; see item 9 under "edits vs upstream" below.
+
 **Not vendored** (inference path does not need them, and `test.py` imports
 `pycocotools` at module load which is not an installed dependency — importing
 it would break):
@@ -127,7 +130,7 @@ library, used only by their training/data-prep helpers — e.g.
 calls, but the import must still resolve at module load time). Added `parse`
 (no version pin; upstream itself does not pin it) to `requirements.txt`.
 
-## `infer.py` edits vs upstream (Task 2)
+## `infer.py` and `dataset.py` edits vs upstream (Task 2; `dataset.py` fix is item 9)
 
 `third_party/tracknet/infer.py` is our own extraction, not vendored
 verbatim. It contains:
@@ -177,6 +180,16 @@ verbatim. It contains:
      `write_pred_csv`/`write_pred_video` calls and the `--output_video`
      branch). `run_prediction` instead ends with `return inpaint_pred_dict
      if inpaintnet is not None else tracknet_pred_dict`.
+
+  8. `run_prediction(..., progress=None)`: optional callback `progress(done_frames, total_frames)`
+     called after each TrackNet batch (both eval modes), so the match pipeline can show a live
+     "Tracking shuttle" stage during a whole-match pass (learned-hit-detection spec 8.1). No
+     effect on predictions.
+
+  9. `dataset.py` `Video_IterableDataset.__iter__`: stop when a window would be empty (frame
+     count a multiple of `sliding_step` in nonoverlap mode) instead of raising `IndexError` on
+     `frame_list[-1]`. Upstream bug; predictions for every frame are unchanged. Covered by
+     `tests/test_tracknet_reader.py`.
 
   Everything else — the non-overlap/overlap dataset branching, the
   large/small-video branching, the temporal-ensemble buffer bookkeeping, and

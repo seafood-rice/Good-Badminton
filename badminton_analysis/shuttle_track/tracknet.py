@@ -80,12 +80,14 @@ def _in_roi(x, y, court_roi):
     return lo_x <= x <= hi_x and lo_y <= y <= hi_y
 
 
-def track_video(video_path, models, court_roi=None):
+def track_video(video_path, models, court_roi=None, eval_mode="weight", progress=None):
     pred = _run_prediction(
         video_file=str(video_path),
         tracknet_file=models["tracknet_file"],
-        inpaintnet_file=models["inpaintnet_file"] or "",
+        inpaintnet_file=models.get("inpaintnet_file") or "",
         device=models.get("device"),
+        eval_mode=eval_mode,
+        progress=progress,
     )
     traj = {}
     for f, x, y, vis in zip(pred["Frame"], pred["X"], pred["Y"], pred["Visibility"]):
