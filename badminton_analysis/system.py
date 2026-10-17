@@ -1493,7 +1493,7 @@ class BadmintonAnalysisSystem:
         """Post-loop doubles analysis. Singles: only removes stale doubles outputs."""
         try:
             from .tracking import doubles as dbl
-            dbl.remove_doubles_outputs(self.save_dir)
+            dbl.remove_doubles_outputs(self.save_dir, getattr(self, "video_name", None))
             if getattr(self, "match_format", "singles") != "doubles":
                 return
             collector = getattr(self, "_doubles", None)
@@ -1506,7 +1506,7 @@ class BadmintonAnalysisSystem:
             from .visualization.doubles_render import render_identity_video, write_heatmaps
             write_heatmaps(self.save_dir, payload, collector.identity_tracks)
             if os.path.exists(self.video_path):
-                out = os.path.join(self.save_dir, f"detect_{self.video_name}_players.mp4")
+                out = os.path.join(self.save_dir, dbl.players_video_name(self.video_name))
                 if render_identity_video(self.video_path, out, collector.identity_tracks,
                                          payload.get("players") or [], fps=fps):
                     print(f"Identity video: {out}")

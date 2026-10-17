@@ -115,6 +115,46 @@ def test_finalize_augments_hits_json(tmp_path):
         assert key in h
 
 
+def test_hits_named_share_counts_only_evidenced_hits(tmp_path, monkeypatch):
+    # A single_candidate guess (confidence 0.5) is not a named hit: the share and
+    # the per-player hits_named must agree, and the guesses are counted apart.
+    attributed = [{"frame": 10, "hitter": "lower", "hitter_id": "P1", "hitter_evidence": "shuttle"},
+                  {"frame": 20, "hitter": "lower", "hitter_id": "P1",
+                   "hitter_evidence": "single_candidate"},
+                  {"frame": 30, "hitter": "lower", "hitter_id": None, "hitter_evidence": "swing"},
+                  {"frame": 40, "hitter": "upper", "hitter_id": "P3", "hitter_evidence": "swing"}]
+    monkeypatch.setattr(dbl, "attribute_hitters", lambda hits, *a, **k: [dict(h) for h in attributed])
+    (tmp_path / "hits.json").write_text(json.dumps(
+        {"source": "contact_rule", "hits": [{"frame": h["frame"], "hitter": h["hitter"]}
+                                            for h in attributed]}), encoding="utf-8")
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    st = payload["stats"]
+    assert st["hits_total"] == 4
+    assert st["hits_named_share"] == 0.5             # shuttle P1 + swing P3
+    assert st["hits_single_candidate"] == 1
+    rows = {p["id"]: p for p in payload["players"]}
+    assert (rows["P1"]["hits"], rows["P1"]["hits_named"], rows["P1"]["hits_single_candidate"]) == (2, 1, 1)
+    assert (rows["P3"]["hits_named"], rows["P3"]["hits_single_candidate"]) == (1, 0)
+    named = sum(p["hits_named"] for p in payload["players"])
+    assert named / st["hits_total"] == st["hits_named_share"]
+    assert make()._payload("degraded", "x", [], [], {})["stats"]["hits_single_candidate"] == 0
+
+
+def test_attribution_failure_keeps_identities(tmp_path, capsys):
+    c = make()
+    feed(c, range(1, 91))
+    doc = {"source": "contact_rule", "hits": [{"hitter": "lower"}, {"frame": 45, "hitter": "upper"}]}
+    (tmp_path / "hits.json").write_text(json.dumps(doc), encoding="utf-8")
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    assert payload["status"] != "error"
+    assert len(payload["players"]) == 4
+    assert payload["stats"]["hits_total"] == 2 and payload["stats"]["hits_named_share"] == 0.0
+    assert json.loads((tmp_path / "hits.json").read_text(encoding="utf-8")) == doc   # un-augmented
+    assert "Hitter attribution failed" in capsys.readouterr().out
+
+
 def test_names_are_copied(tmp_path):
     (tmp_path / "player_names.json").write_text(json.dumps({"P1": "Alice"}), encoding="utf-8")
     c = make()
@@ -158,10 +198,18 @@ def test_keypoints_from_pose_data_shifts_offsets():
 
 def test_remove_doubles_outputs(tmp_path):
     for name in ("players.json", "tracklets.jsonl", "heatmap_P1.png", "heatmap_team1.png",
-                 "detect_v_players.mp4", "keep.json"):
+                 "detect_v_players.mp4", "detect_other_players.mp4", "keep.json"):
+        (tmp_path / name).write_text("x")
+    dbl.remove_doubles_outputs(str(tmp_path), "v")
+    # Only this video's identity video goes; another video's in the same folder stays.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["detect_other_players.mp4", "keep.json"]
+
+
+def test_remove_doubles_outputs_without_video_name_keeps_videos(tmp_path):
+    for name in ("players.json", "detect_v_players.mp4"):
         (tmp_path / name).write_text("x")
     dbl.remove_doubles_outputs(str(tmp_path))
-    assert [p.name for p in tmp_path.iterdir()] == ["keep.json"]
+    assert [p.name for p in tmp_path.iterdir()] == ["detect_v_players.mp4"]
 
 
 def test_finalize_passes_constraint_frames(tmp_path, monkeypatch):

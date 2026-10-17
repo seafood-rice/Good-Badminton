@@ -19,16 +19,26 @@ from .identity import assign_identities
 from .multi import Detection, MultiTracker, filter_tracklets
 
 DOUBLES_OUTPUTS = ("tracklets.jsonl", "players.json")
-DOUBLES_GLOBS = ("heatmap_P*.png", "heatmap_team*.png", "detect_*_players.mp4")
+DOUBLES_GLOBS = ("heatmap_P*.png", "heatmap_team*.png")
+PLAYERS_VIDEO = "detect_{video_name}_players.mp4"
 STROKES_WITHHELD = "doubles: BST is a singles model"
 SPEED_CAP_MPS = 8.0
 JITTER_M = 0.05
+NAMED_EVIDENCE = ("shuttle", "swing")
 
 
-def remove_doubles_outputs(save_dir):
+def players_video_name(video_name):
+    return PLAYERS_VIDEO.format(video_name=video_name)
+
+
+def remove_doubles_outputs(save_dir, video_name=None):
+    """Remove a previous run's doubles outputs. The identity video is matched by
+    exact name (another video's in a shared folder is kept); skipped without one."""
     paths = [os.path.join(save_dir, n) for n in DOUBLES_OUTPUTS]
     for g in DOUBLES_GLOBS:
         paths += glob.glob(os.path.join(save_dir, g))
+    if video_name:
+        paths.append(os.path.join(save_dir, players_video_name(video_name)))
     for p in paths:
         try:
             os.remove(p)
@@ -54,6 +64,28 @@ def keypoints_from_pose_data(pose_data, n):
         kp[valid, 1] += oy
         out.append(kp)
     return out
+
+
+def make_payload(status, reason, players=(), teams=(), stats=None):
+    """players.json payload; stats default to zeros."""
+    base = {"tracklets_total": 0, "tracklets_used": 0, "tracklets_dropped": 0,
+            "median_confidence": 0.0, "hits_total": 0, "hits_named_share": 0.0,
+            "hits_single_candidate": 0}
+    base.update(stats or {})
+    return {"schema_version": "1.0", "match_format": "doubles", "status": status,
+            "reason": reason, "players": list(players), "teams": list(teams), "stats": base,
+            "stroke_labels_withheld": STROKES_WITHHELD, "validated": False}
+
+
+def _is_named(h, pid=None):
+    """A hit named from evidence (shuttle or swing); single_candidate guesses are not."""
+    return (bool(h.get("hitter_id")) and h.get("hitter_evidence") in NAMED_EVIDENCE
+            and (pid is None or h.get("hitter_id") == pid))
+
+
+def _is_single_candidate(h, pid=None):
+    return (bool(h.get("hitter_id")) and h.get("hitter_evidence") == "single_candidate"
+            and (pid is None or h.get("hitter_id") == pid))
 
 
 def _n_valid(kp):
@@ -180,12 +212,13 @@ class DoublesCollector:
                   "coverage_heatmap": f"heatmap_team{k}.png"}
                  for k in (1, 2) if any(tk == k for tk in ident["teams"].values())]
         confs = list(ident["confidence"].values())
-        named = sum(1 for h in hits if h.get("hitter_id"))
+        named = sum(1 for h in hits if _is_named(h))
         stats = {"tracklets_total": len(raw), "tracklets_used": len(ident["assignment"]),
                  "tracklets_dropped": len(raw) - len(ident["assignment"]),
                  "median_confidence": round(float(np.median(confs)), 4) if confs else 0.0,
                  "hits_total": len(hits),
-                 "hits_named_share": round(named / len(hits), 4) if hits else 0.0}
+                 "hits_named_share": round(named / len(hits), 4) if hits else 0.0,
+                 "hits_single_candidate": sum(1 for h in hits if _is_single_candidate(h))}
         payload = self._payload(ident["status"], ident["reason"], players, teams, stats)
         write_json(os.path.join(save_dir, "players.json"), payload)
         print(f"Doubles: status {payload['status']}, {len(players)} players, "
@@ -193,13 +226,9 @@ class DoublesCollector:
               f"{named}/{len(hits)} hits named")
         return payload
 
-    def _payload(self, status, reason, players, teams, stats):
-        base = {"tracklets_total": 0, "tracklets_used": 0, "tracklets_dropped": 0,
-                "median_confidence": 0.0, "hits_total": 0, "hits_named_share": 0.0}
-        base.update(stats or {})
-        return {"schema_version": "1.0", "match_format": "doubles", "status": status,
-                "reason": reason, "players": players, "teams": teams, "stats": base,
-                "stroke_labels_withheld": STROKES_WITHHELD, "validated": False}
+    @staticmethod
+    def _payload(status, reason, players, teams, stats):
+        return make_payload(status, reason, players, teams, stats)
 
     def _write_tracklets(self, save_dir, tracklets):
         os.makedirs(save_dir, exist_ok=True)
@@ -226,8 +255,14 @@ class DoublesCollector:
             print(f"hits.json unreadable, no hitter attribution: {exc!r}")
             return []
         teams = {p: t for p, t in ident["teams"].items()}
-        doc["hits"] = attribute_hitters(hits, self.identity_tracks, self.fps,
-                                        teams=teams, shuttle=shuttle, scale=self.scale)
+        # Isolated: a bad hit entry must not cost the identities and player rows.
+        try:
+            attributed = attribute_hitters(hits, self.identity_tracks, self.fps,
+                                           teams=teams, shuttle=shuttle, scale=self.scale)
+        except Exception as exc:
+            print(f"Hitter attribution failed, hits.json left un-augmented: {exc!r}")
+            return hits
+        doc["hits"] = attributed
         doc["hitter_attribution"] = {"validated": False}
         write_json(path, doc)
         return doc["hits"]
@@ -254,8 +289,8 @@ class DoublesCollector:
                 "avg_speed_mps": round(dist / secs, 2) if secs > 0 else 0.0,
                 "max_speed_mps": round(maxv, 2),
                 "hits": sum(1 for h in hits if h.get("hitter_id") == pid),
-                "hits_named": sum(1 for h in hits if h.get("hitter_id") == pid
-                                  and h.get("hitter_evidence") in ("shuttle", "swing")),
+                "hits_named": sum(1 for h in hits if _is_named(h, pid)),
+                "hits_single_candidate": sum(1 for h in hits if _is_single_candidate(h, pid)),
                 "heatmap": f"heatmap_{pid}.png",
                 "tracklets": [{"id": t["id"], "start_frame": t["frames"][0],
                                "end_frame": t["frames"][-1],
