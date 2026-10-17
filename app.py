@@ -809,6 +809,9 @@ def api_analyze():
     pose_family = data.get('pose_family', 'yolo-pose')
     analyze_technique = data.get('analyze_technique', True)
     quality = data.get('analysis_quality', 'accurate')
+    match_format = data.get('match_format', 'singles')
+    if match_format not in ('singles', 'doubles'):
+        return jsonify({'error': 'invalid match_format'}), 400
 
     video_path = VIDEOS / video_name
     if not video_path.exists():
@@ -841,6 +844,7 @@ def api_analyze():
         '--performance-stats',
     ]
     cmd += ['--analysis-quality', quality]
+    cmd += ['--match-format', match_format]
     if analyze_technique:
         cmd.append('--analyze-technique')
 

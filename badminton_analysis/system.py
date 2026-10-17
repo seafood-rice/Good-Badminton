@@ -16,6 +16,7 @@ import threading
 # makes re-runs free.
 SHUTTLE_PRETRACK_MAX_FRAMES = 2000
 TRACKNET_MODES = ("weight", "nonoverlap")
+MATCH_FORMATS = ("singles", "doubles")
 
 # Interval of the *pinned* gate only: when court_view_threshold is pinned the gate
 # stays exactly today's full-resolution match, recomputed every N frames with the
@@ -291,8 +292,9 @@ class BadmintonAnalysisSystem:
                  tracknet_mode="weight",
                  analysis_quality="accurate", court_view_threshold=None,
                  rally_signal="auto", hit_model_path=None,
-                 dense_whole_video=False):
+                 dense_whole_video=False, match_format="singles"):
         self.video_path = video_path
+        self.match_format = self._normalize_match_format(match_format)
         self.show_display = show_display
         self.language = language
         self.template_path = template_path
@@ -656,6 +658,15 @@ class BadmintonAnalysisSystem:
               + (f", capped from {self.court_view_calibration['calibrated_cut']}"
                  if capped else "") + ")")
 
+    @staticmethod
+    def _normalize_match_format(value):
+        """None -> "singles"; anything outside MATCH_FORMATS raises ValueError."""
+        if value is None:
+            return "singles"
+        if value not in MATCH_FORMATS:
+            raise ValueError(f"match_format must be one of {MATCH_FORMATS}, got {value!r}")
+        return value
+
     def _court_view_metadata(self):
         """The ``court.court_view`` record for metadata.json.
 
@@ -805,6 +816,7 @@ class BadmintonAnalysisSystem:
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
         metadata = {
             "schema_version": SCHEMA_VERSION,
+            "match_format": getattr(self, "match_format", "singles"),
             "video": {
                 "path": self.video_path,
                 "name": self.video_name,
