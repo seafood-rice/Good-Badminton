@@ -8,8 +8,6 @@ confidence and evidence fields let consumers say so.
 """
 import math
 
-import numpy as np
-
 HITTER_MIN_CONF = 0.6
 SWING_WINDOW_SEC = 0.3
 NEAR_FRAMES = 2
@@ -77,15 +75,15 @@ def attribute_hitters(hits, tracks, fps, *, teams=None, shuttle=None, scale=None
         h = dict(h)
         frame, side = int(h["frame"]), h.get("hitter")
         cands = []
-        for pid, track in (tracks or {}).items():
-            obs = _obs_near(track, frame)
-            if obs is not None and obs.get("side") == side:
-                cands.append((pid, obs))
+        if side is not None:
+            for pid, track in (tracks or {}).items():
+                obs = _obs_near(track, frame)
+                if obs is not None and obs.get("side") == side:
+                    cands.append((pid, obs, track))
         pid, conf, evidence = None, None, "none"
         if len(cands) == 1:
             pid, conf, evidence = cands[0][0], 0.5, "single_candidate"
         elif len(cands) >= 2:
-            cands = cands[:2]
             pt = None
             if shuttle:
                 for d in range(NEAR_FRAMES + 1):
@@ -94,14 +92,15 @@ def attribute_hitters(hits, tracks, fps, *, teams=None, shuttle=None, scale=None
                         break
             scores = None
             if pt is not None:
-                ss = [_shuttle_score(o, pt, scale) for _, o in cands]
+                ss = [_shuttle_score(o, pt, scale) for _, o, _ in cands]
                 if all(s is not None for s in ss):
                     scores, evidence = ss, "shuttle"
             if scores is None:
-                scores = [_swing_score(tracks[p], frame, fps, scale) for p, _ in cands]
+                scores = [_swing_score(t, frame, fps, scale) for _, _, t in cands]
                 evidence = "swing"
-            best = int(np.argmax(scores))
-            conf = round(_confidence(*scores), 4)
+            ranked = sorted(range(len(cands)), key=lambda i: scores[i], reverse=True)
+            best = ranked[0]
+            conf = round(_confidence(scores[best], scores[ranked[1]]), 4)
             pid = cands[best][0] if conf >= HITTER_MIN_CONF else None
         h["hitter_id"] = pid
         h["hitter_team"] = teams.get(pid) if pid else None

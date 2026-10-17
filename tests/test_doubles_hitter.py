@@ -76,3 +76,23 @@ def test_input_hits_are_not_mutated():
     hits = [{"frame": 30, "hitter": "lower"}]
     attribute_hitters(hits, {}, FPS)
     assert hits == [{"frame": 30, "hitter": "lower"}]
+
+
+def test_three_candidates_best_swing_wins():
+    # The swinging partner is last in dict order: a truncation to the first two
+    # candidates would drop it and wrongly report no clear hitter.
+    tracks = {"P2": still(450, 420, FR), "P3": still(300, 300, FR),
+              "P1": swinging(200, 400, FR, 30)}
+    (h,) = attribute_hitters([{"frame": 30, "hitter": "lower"}], tracks, FPS, teams=TEAMS)
+    assert h["hitter_id"] == "P1" and h["hitter_team"] == 1
+    assert h["hitter_evidence"] == "swing"
+    assert h["hitter_confidence"] >= HITTER_MIN_CONF
+
+
+def test_hit_without_side_is_not_attributed():
+    # Observations with side None must not match a hit that has no side.
+    tracks = {"P1": still(200, 400, FR, side=None)}
+    for hit in ({"frame": 30, "hitter": None}, {"frame": 30}):
+        (h,) = attribute_hitters([hit], tracks, FPS, teams=TEAMS)
+        assert h["hitter_id"] is None and h["hitter_team"] is None
+        assert h["hitter_confidence"] is None and h["hitter_evidence"] == "none"
