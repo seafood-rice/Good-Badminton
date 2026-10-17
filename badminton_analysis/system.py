@@ -1018,8 +1018,9 @@ class BadmintonAnalysisSystem:
         x1, y1 = roi_corners[0]
         x2, y2 = roi_corners[1]
         roi = frame[y1:y2, x1:x2]
-        # Appearance histograms need pixels with no overlay drawn on them.
-        clean = frame.copy() if getattr(self, "_doubles", None) is not None else None
+        # Appearance histograms need pixels with no overlay drawn on them: copy
+        # before the pose-ROI rectangle, and only on frames the collector samples.
+        clean = self._doubles_clean_frame(frame, frame_count)
         if self.show_pose_roi:
             cv2.rectangle(frame, roi_corners[0], roi_corners[1], (255, 0, 0), 2)
             cv2.putText(frame, "Pose ROI", (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2, cv2.LINE_AA)
@@ -1061,7 +1062,7 @@ class BadmintonAnalysisSystem:
         self._record_rally_frame(frame_count, centroids, players,
                                  point_left_hands, point_right_hands, ball_position)
 
-        if clean is not None:
+        if getattr(self, "_doubles", None) is not None:
             self._doubles_frames += 1
             self._observe_doubles(frame_count, clean, centroids)
 
@@ -1412,6 +1413,20 @@ class BadmintonAnalysisSystem:
             print("Doubles collection enabled")
         except Exception as exc:
             print(f"Doubles collection unavailable: {exc!r}")
+
+    def _doubles_clean_frame(self, frame, frame_count):
+        """Overlay-free copy of frame when the doubles collector will sample it, else None."""
+        collector = getattr(self, "_doubles", None)
+        if collector is None or not self._analyze_this_frame(frame_count):
+            return None
+        try:
+            wanted = collector.wants_frame()
+        except Exception as exc:
+            if not getattr(self, "_doubles_observe_logged", False):
+                self._doubles_observe_logged = True
+                print(f"Doubles observation failed (frame {frame_count}): {exc!r}")
+            return None
+        return frame.copy() if wanted else None
 
     def _observe_doubles(self, frame_count, frame, centroids):
         collector = getattr(self, "_doubles", None)

@@ -124,6 +124,22 @@ def test_names_are_copied(tmp_path):
     assert names["P1"] == "Alice" and names["P2"] is None
 
 
+def test_wants_frame_follows_the_appearance_cadence():
+    c = make()                                  # APPEARANCE_EVERY = 5
+    img = np.zeros((1400, 700, 3), np.uint8)
+    seq = []
+    for f in range(1, 12):
+        seq.append(c.wants_frame())
+        # The system passes a frame only when it is wanted; otherwise None.
+        c.observe(f, img if seq[-1] else None, [POS["a"]], [kp_for(*POS["a"])])
+    assert seq == [True, False, False, False, False, True, False, False, False, False, True]
+    (t,) = c.tracker.finish()
+    assert len(t["frames"]) == 11               # frame None still drives the tracker
+    assert len(t["appearance"]) == 3            # one signature per wanted frame
+    every = dbl.DoublesCollector(CourtMapper(QUAD), QUAD, FPS, appearance_every=1)
+    assert every.wants_frame() and (every.observe(1, None, [], []) or every.wants_frame())
+
+
 def test_observe_never_raises():
     c = make()
     c.observe(1, None, [(1, 2)], [None])

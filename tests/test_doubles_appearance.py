@@ -76,6 +76,50 @@ def test_median_signature_and_json_roundtrip():
     assert ap.median_signature([]) is None
 
 
+def _full_frame_hist(frame, poly):
+    """The original whole-frame computation, kept here as the reference."""
+    import cv2
+    mask = np.zeros(frame.shape[:2], np.uint8)
+    cv2.fillConvexPoly(mask, cv2.convexHull(poly.astype(np.int32)), 255)
+    if int(np.count_nonzero(mask)) < ap.MIN_REGION_PX:
+        return None
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1], mask, [ap.H_BINS, ap.S_BINS], [0, 180, 0, 256]).flatten()
+    return (hist / float(hist.sum())).astype(np.float64)
+
+
+@pytest.mark.parametrize("poly", [
+    [[300, 150], [340, 150], [335, 210], [305, 210]],         # inside
+    [[-30, 400], [40, 380], [60, 520], [-10, 530]],           # off the left / bottom edges
+    [[600, -20], [660, -10], [650, 40], [610, 30]],           # off the top-right corner
+    [[100, 100], [101, 100], [101, 101], [100, 101]],         # below the pixel floor
+    [[700, 500], [760, 500], [760, 560], [700, 560]],         # wholly outside
+])
+def test_region_hist_matches_full_frame_computation(poly):
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, (480, 640, 3), dtype=np.uint8)
+    poly = np.array(poly, np.float32)
+    got, ref = ap._region_hist(frame, poly), _full_frame_hist(frame, poly)
+    if ref is None:
+        assert got is None
+    else:
+        assert np.array_equal(got, ref)
+
+
+def test_region_hist_converts_only_the_crop(monkeypatch):
+    seen = []
+    real = ap.cv2.cvtColor
+
+    def spy(img, code):
+        seen.append(img.shape[:2])
+        return real(img, code)
+
+    monkeypatch.setattr(ap.cv2, "cvtColor", spy)
+    frame = np.zeros((480, 640, 3), np.uint8)
+    ap._region_hist(frame, np.array([[300, 150], [340, 150], [335, 210], [305, 210]], np.float32))
+    assert seen and all(h <= 61 and w <= 41 for h, w in seen)
+
+
 def test_distance_without_terms_is_one():
     assert ap.distance({"torso": None, "legs": None, "height": None, "embed": None},
                        {"torso": None, "legs": None, "height": None, "embed": None}) == 1.0

@@ -58,6 +58,44 @@ def test_doubles_stage_writes_players_json(tmp_path, monkeypatch, capsys):
     assert "Identity video skipped: source video missing" in capsys.readouterr().out
 
 
+def test_clean_copy_precedes_pose_roi_overlay_and_observe_runs_every_frame():
+    import inspect
+
+    src = inspect.getsource(sysmod.BadmintonAnalysisSystem._process_frame)
+    # The pose-ROI rectangle is drawn before the fast-mode early return, so the
+    # clean (overlay-free) copy must be taken before it.
+    assert src.index("self._doubles_clean_frame(") < src.index("if self.show_pose_roi:")
+    # observe() drives the tracker and the sampling counter: it must run on every
+    # analysed frame, whether or not a clean copy was taken.
+    assert "if clean is not None" not in src
+    i = src.index("self._observe_doubles(frame_count, clean, centroids)")
+    assert "self._doubles_frames += 1" in src[src.rindex("if ", 0, i):i]
+
+
+def test_doubles_clean_frame_only_when_wanted(tmp_path):
+    class C:
+        def __init__(self, wants):
+            self.wants = wants
+
+        def wants_frame(self):
+            return self.wants
+
+    s = bare(tmp_path, "doubles")
+    frame = np.arange(48, dtype=np.uint8).reshape(4, 4, 3)
+    s._doubles = None
+    assert s._doubles_clean_frame(frame, 3) is None
+    s._doubles = C(False)
+    assert s._doubles_clean_frame(frame, 3) is None
+    s._doubles = C(True)
+    out = s._doubles_clean_frame(frame, 3)
+    assert out is not frame and np.array_equal(out, frame)
+    s.analysis_quality = "fast"                          # outside the fast-mode stride
+    assert s._doubles_clean_frame(frame, sysmod.FAST_FRAME_STRIDE + 1) is None
+    assert s._doubles_clean_frame(frame, sysmod.FAST_FRAME_STRIDE) is not None
+    s._doubles = object()                                # broken collector: no copy, no raise
+    assert s._doubles_clean_frame(frame, sysmod.FAST_FRAME_STRIDE) is None
+
+
 def test_doubles_stage_never_raises(tmp_path):
     s = bare(tmp_path, "doubles")
     s._doubles = object()          # broken collector

@@ -26,13 +26,26 @@ def _polygon(kp, idx):
 
 
 def _region_hist(frame, poly):
+    """Normalised H x S histogram of the pixels inside poly's convex hull, or None.
+
+    Works on the hull's bounding box (clipped to the frame) only: the same
+    pixels and histogram as a whole-frame mask, without converting a 4K frame
+    to HSV per region.
+    """
     if poly is None:
         return None
-    mask = np.zeros(frame.shape[:2], np.uint8)
-    cv2.fillConvexPoly(mask, cv2.convexHull(poly.astype(np.int32)), 255)
+    hull = cv2.convexHull(poly.astype(np.int32))
+    x, y, w, h = cv2.boundingRect(hull)
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(frame.shape[1], x + w), min(frame.shape[0], y + h)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    crop = frame[y0:y1, x0:x1]
+    mask = np.zeros(crop.shape[:2], np.uint8)
+    cv2.fillConvexPoly(mask, hull - np.array([x0, y0], np.int32), 255)
     if int(np.count_nonzero(mask)) < MIN_REGION_PX:
         return None
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     hist = cv2.calcHist([hsv], [0, 1], mask, [H_BINS, S_BINS], [0, 180, 0, 256]).flatten()
     total = float(hist.sum())
     if total <= 0:

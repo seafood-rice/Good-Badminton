@@ -81,7 +81,20 @@ class DoublesCollector:
         self.assignment = {}
 
     # -- in-loop -----------------------------------------------------------
+    def _samples_at(self, n):
+        return self.appearance_every == 1 or n % self.appearance_every == 1
+
+    def wants_frame(self):
+        """True when the NEXT observe() samples appearance (needs overlay-free pixels).
+
+        The caller copies the frame only then and passes None otherwise: a 4K
+        copy on every analysed frame is wasted on the 4 in 5 that are not sampled.
+        """
+        return self._samples_at(self._n_observed + 1)
+
     def observe(self, frame_index, frame_bgr, centroids, keypoints_list):
+        """Track one analysed frame. Call on EVERY analysed frame: it drives the
+        tracker and the sampling cadence. frame_bgr may be None (no signatures)."""
         try:
             self._observe(int(frame_index), frame_bgr, list(centroids or []),
                           list(keypoints_list or []))
@@ -93,7 +106,7 @@ class DoublesCollector:
 
     def _observe(self, frame_index, frame_bgr, centroids, keypoints_list):
         self._n_observed += 1
-        sample = self._n_observed % self.appearance_every == 1 or self.appearance_every == 1
+        sample = self._samples_at(self._n_observed)
         cands = []
         for i, cen in enumerate(centroids):
             try:
