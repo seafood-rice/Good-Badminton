@@ -126,7 +126,12 @@ def _draw_label(frame, text, x, y, color, width):
         _blit(frame, sprite, x + 6, y - 6 - sprite[0].shape[0])
 
 
-def render_identity_video(video_path, out_path, identity_tracks, players, fps=None):
+def render_identity_video(video_path, out_path, identity_tracks, players, fps=None,
+                          progress=None):
+    """Draw each identity's marker and label on a copy of the video. True on success.
+
+    ``progress(frames_done)`` is called after every written frame when given.
+    """
     from ..media import video_audio as vap
 
     cap = None
@@ -160,6 +165,8 @@ def render_identity_video(video_path, out_path, identity_tracks, players, fps=No
                 cv2.circle(frame, (x, y), max(4, w // 160), color, -1, cv2.LINE_AA)
                 _draw_label(frame, labels.get(pid, pid), x, y, color, w)
             writer.write(frame)
+            if progress is not None:
+                progress(frame_no)
         writer.release()
         writer = None
         # The helper reports its own failures as False rather than raising; the raw

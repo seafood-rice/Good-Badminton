@@ -277,3 +277,36 @@ def test_clean_frame_and_observe_failures_each_log_once(tmp_path, capsys):
     # A clean-frame failure must not silence the (different) observe failure.
     assert out.count("RuntimeError('wants')") == 1
     assert out.count("RuntimeError('observe')") == 1
+
+
+def test_doubles_stage_reports_progress_substages(tmp_path, monkeypatch):
+    from badminton_analysis.visualization import doubles_render as dr
+
+    s = bare(tmp_path, "doubles")
+    (tmp_path / "v.mp4").write_text("x")
+    seen = []
+    s._write_progress = lambda stage, current_frame=None, substage=None: seen.append(
+        (stage, substage, current_frame))
+
+    class Fake:
+        identity_tracks = {}
+
+        def finalize(self, *a, **k):
+            seen.append("finalize")
+            return {"match_format": "doubles", "players": []}
+
+    def render(*a, progress=None, **k):
+        progress(5)
+        return True
+
+    s._doubles = Fake()
+    monkeypatch.setattr(dr, "write_heatmaps", lambda *a, **k: seen.append("heatmaps") or [])
+    monkeypatch.setattr(dr, "render_identity_video", render)
+    s._run_doubles_stage(30.0, 5)
+    assert seen.index(("visualizing", "doubles_identity", None)) < seen.index("finalize")
+    assert seen.index(("visualizing", "doubles_heatmaps", None)) < seen.index("heatmaps")
+    assert ("visualizing", "doubles_video", 5) in seen
+    singles = bare(tmp_path, "singles")
+    singles._write_progress = lambda *a, **k: seen.append("singles")
+    singles._run_doubles_stage(30.0, 5)
+    assert "singles" not in seen

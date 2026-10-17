@@ -284,6 +284,26 @@ def _read_progress_file(save_dir):
         return None
 
 
+# Steps inside a long stage, written as progress.json "substage" (bilingual message).
+_PROGRESS_SUBSTAGES = {
+    'doubles_identity': ('识别球员身份', 'Identifying players'),
+    'doubles_heatmaps': ('生成球员热图', 'Drawing player heatmaps'),
+    'doubles_video': ('渲染球员视频', 'Rendering the players video'),
+}
+
+
+def _progress_message(prog):
+    """Job message for a progress.json payload: frame counts, plus the sub-stage if known."""
+    done, total = prog.get('current_frame', 0), prog.get('total_frames', 0)
+    sub = _PROGRESS_SUBSTAGES.get(prog.get('substage'))
+    if sub is None:
+        return f"分析中... {done}/{total} 帧"
+    msg = f'{sub[0]}... / {sub[1]}...'
+    if done:
+        msg += f' {done}/{total} 帧'
+    return msg
+
+
 def _reset_progress_file(save_dir):
     """Remove a stale progress.json before a (re-)run so the UI starts clean."""
     try:
@@ -919,7 +939,7 @@ def api_analyze():
                 job['progress'] = int(prog.get('pct', job.get('progress', 0)))
                 job['stage'] = prog.get('stage', job.get('stage'))
                 job['updated'] = prog.get('updated')
-                job['message'] = f"分析中... {prog.get('current_frame', 0)}/{prog.get('total_frames', 0)} 帧"
+                job['message'] = _progress_message(prog)
             time.sleep(1.0)
 
         proc.wait()
@@ -933,6 +953,7 @@ def api_analyze():
             job['stage'] = 'encoding'
             job['progress'] = 99
             job['message'] = '正在转码为浏览器兼容格式...'
+            job['updated'] = time.time()
 
             # FFmpeg 转码为 H.264（浏览器兼容）
             vs = video_path.stem
@@ -953,6 +974,9 @@ def api_analyze():
 
             # Doubles identity video (mp4v from the renderer): same transcode,
             # but never fatal and never reflected in the job's main status.
+            if os.path.exists(os.path.join(sd, f'detect_{vs}_players.mp4')):
+                job['message'] = '正在转码球员视频... / Encoding the players video...'
+                job['updated'] = time.time()
             _reencode_players_video(sd, vs, ffmpeg_bin, _run_duration_sec(sd))
 
             job['status'] = 'completed'

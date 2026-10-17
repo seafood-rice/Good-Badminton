@@ -249,10 +249,12 @@ class _ProgressHeartbeat:
     latest frame count, independent of how often the tracker reports.
     """
 
-    def __init__(self, write, stage, interval=2.0):
+    def __init__(self, write, stage, interval=2.0, substage=None):
         self._write = write
         self._stage = stage
         self._interval = interval
+        # Passed only when set, so callers without sub-stages see the old call.
+        self._extra = {"substage": substage} if substage else {}
         self.current = 0
         self._stop = threading.Event()
         self._thread = None
@@ -261,20 +263,20 @@ class _ProgressHeartbeat:
         self.current = int(done)
 
     def __enter__(self):
-        self._write(self._stage, current_frame=0)
+        self._write(self._stage, current_frame=0, **self._extra)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
 
     def _run(self):
         while not self._stop.wait(self._interval):
-            self._write(self._stage, current_frame=self.current)
+            self._write(self._stage, current_frame=self.current, **self._extra)
 
     def __exit__(self, *exc):
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
-        self._write(self._stage, current_frame=self.current)
+        self._write(self._stage, current_frame=self.current, **self._extra)
         return False
 
 
@@ -1512,15 +1514,22 @@ class BadmintonAnalysisSystem:
                 _write_json(os.path.join(self.save_dir, "players.json"),
                             dbl.make_payload("error", "doubles collector unavailable"))
                 return
+            self._write_progress("visualizing", substage="doubles_identity")
             payload = collector.finalize(self.save_dir, analysed_frames,
                                          shuttle=self._doubles_shuttle(),
                                          constraint_frames=self._doubles_constraint_frames())
             from .visualization.doubles_render import render_identity_video, write_heatmaps
+            self._write_progress("visualizing", substage="doubles_heatmaps")
             write_heatmaps(self.save_dir, payload, collector.identity_tracks)
             if os.path.exists(self.video_path):
                 out = os.path.join(self.save_dir, dbl.players_video_name(self.video_name))
-                if render_identity_video(self.video_path, out, collector.identity_tracks,
-                                         payload.get("players") or [], fps=fps):
+                # Re-reads and re-encodes the whole video: minutes on 4K, so beat.
+                with _ProgressHeartbeat(self._write_progress, "visualizing",
+                                        substage="doubles_video") as beat:
+                    rendered = render_identity_video(
+                        self.video_path, out, collector.identity_tracks,
+                        payload.get("players") or [], fps=fps, progress=beat.update)
+                if rendered:
                     print(f"Identity video: {out}")
                 else:
                     print("Identity video skipped: render failed")
@@ -1849,8 +1858,12 @@ class BadmintonAnalysisSystem:
         "visualizing": 97, "encoding": 99, "done": 100,
     }
 
-    def _write_progress(self, stage, current_frame=None):
-        """Write a progress heartbeat to <save_dir>/progress.json. Never fatal."""
+    def _write_progress(self, stage, current_frame=None, substage=None):
+        """Write a progress heartbeat to <save_dir>/progress.json. Never fatal.
+
+        ``substage`` names a step inside a long stage (the doubles identity solve
+        and identity-video render run under "visualizing"); it is omitted when None.
+        """
         try:
             total = int(getattr(self, "_total_frames", 0) or 0)
             fixed = self._PROGRESS_STAGE_PCT.get(stage)
@@ -1867,6 +1880,8 @@ class BadmintonAnalysisSystem:
                 "pct": int(pct),
                 "updated": time.time(),
             }
+            if substage:
+                payload["substage"] = substage
             with open(os.path.join(self.save_dir, "progress.json"), "w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
         except Exception:

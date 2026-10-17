@@ -1008,7 +1008,7 @@ window.Kestrel = (function () {
         if (hb) {
           var now = Date.now() / 1000;
           var age = d.updated ? Math.max(0, Math.round(now - d.updated)) : null;
-          hb.textContent = (d.status === 'running')
+          hb.textContent = (d.status === 'running' || d.status === 'reencoding')
             ? (state.lang === 'zh'
                 ? '分析进行中… ' + (d.message || '') + (age !== null ? '（' + age + '秒前更新）' : '')
                 : 'Analysis in progress… ' + (d.message || '') + (age !== null ? ' (updated ' + age + 's ago)' : ''))

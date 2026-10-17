@@ -174,3 +174,12 @@ def test_identity_video_draws_cjk_label(tmp_path, monkeypatch):
         dr._label_sprite.cache_clear()
     assert cjk.max() > 100                          # label drawn up-right of the marker
     assert np.abs(cjk - fallback).mean() > 5        # real glyphs, not question marks
+
+
+def test_render_identity_video_reports_progress(tmp_path):
+    src = tmp_path / "src.mp4"
+    _tiny_video(src, n=6)
+    done = []
+    assert dr.render_identity_video(str(src), str(tmp_path / "o_players.mp4"), TRACKS,
+                                    PAYLOAD["players"], progress=done.append) is True
+    assert done == [1, 2, 3, 4, 5, 6]
