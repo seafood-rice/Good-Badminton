@@ -372,7 +372,12 @@ class BadmintonAnalysisSystem:
             self.rtmpose_processor = RTMPoseProcessor(mode=self.pose_mode, pose_family=self.pose_family)
         self.yolo_ball_model = YOLO(self.ball_model_path)
 
-        if self.analyze_technique:
+        self._capture_frames = self._capture_frames_for(
+            self.analyze_technique, self.match_format, self.analysis_quality)
+        self._doubles = None
+        self._doubles_frames = 0
+
+        if self._capture_frames:
             from .detection.racket import RacketDetector
             try:
                 self._racket_detector = RacketDetector(model_path=self.racket_model_path)
@@ -496,6 +501,7 @@ class BadmintonAnalysisSystem:
         
 
         self._init_far_pose(corners, (self.frame_height, self.frame_width), fps)
+        self._init_doubles(corners, fps)
 
         self.stats_visualizer = StatsVisualizer(
             frame_width=self.frame_width,
@@ -529,10 +535,13 @@ class BadmintonAnalysisSystem:
 
         self._write_progress("visualizing")
         hits = self._run_hit_detection(fps, frame_count)
-        if self.analyze_technique:
-            self._run_technique_analysis(hits)
-
-        self._run_stroke_recognition(hits)
+        if self.match_format == "doubles":
+            self._withhold_singles_outputs_for_doubles()
+        else:
+            if self.analyze_technique:
+                self._run_technique_analysis(hits)
+            self._run_stroke_recognition(hits)
+        self._run_doubles_stage(fps, self._doubles_frames)
 
         self._cleanup(cap)
 
@@ -1009,6 +1018,8 @@ class BadmintonAnalysisSystem:
         x1, y1 = roi_corners[0]
         x2, y2 = roi_corners[1]
         roi = frame[y1:y2, x1:x2]
+        # Appearance histograms need pixels with no overlay drawn on them.
+        clean = frame.copy() if getattr(self, "_doubles", None) is not None else None
         if self.show_pose_roi:
             cv2.rectangle(frame, roi_corners[0], roi_corners[1], (255, 0, 0), 2)
             cv2.putText(frame, "Pose ROI", (x1, max(24, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2, cv2.LINE_AA)
@@ -1050,7 +1061,11 @@ class BadmintonAnalysisSystem:
         self._record_rally_frame(frame_count, centroids, players,
                                  point_left_hands, point_right_hands, ball_position)
 
-        if self.analyze_technique:
+        if clean is not None:
+            self._doubles_frames += 1
+            self._observe_doubles(frame_count, clean, centroids)
+
+        if getattr(self, "_capture_frames", self.analyze_technique):
             self._capture_analysis_frame(frame_count, frame, roi_corners, ball_position)
 
         if frame_count == 1 or not self.cached_movement_stats:
@@ -1374,6 +1389,119 @@ class BadmintonAnalysisSystem:
             self._shuttle_trajectory = None
             self._shuttle_source = "yolo"
 
+    @staticmethod
+    def _capture_frames_for(analyze_technique, match_format, analysis_quality):
+        """Per-frame pose/racket capture: technique analysis, or doubles (not fast mode).
+
+        Doubles needs the side-level hit list (learned model or contact rule),
+        which is built from the per-frame capture, even when technique scoring
+        (which doubles withholds) is off.
+        """
+        if analyze_technique:
+            return True
+        return match_format == "doubles" and analysis_quality != "fast"
+
+    def _init_doubles(self, corners, fps):
+        self._doubles = None
+        if getattr(self, "match_format", "singles") != "doubles":
+            return
+        try:
+            from .court.mapper import CourtMapper
+            from .tracking.doubles import DoublesCollector
+            self._doubles = DoublesCollector(CourtMapper(corners), corners, fps)
+            print("Doubles collection enabled")
+        except Exception as exc:
+            print(f"Doubles collection unavailable: {exc!r}")
+
+    def _observe_doubles(self, frame_count, frame, centroids):
+        collector = getattr(self, "_doubles", None)
+        if collector is None:
+            return
+        try:
+            from .tracking.doubles import keypoints_from_pose_data
+            pose = self.player_pose_visualizer.get_current_pose_data()
+            kps = keypoints_from_pose_data(pose, len(centroids))
+            collector.observe(frame_count, frame, centroids, kps)
+        except Exception as exc:
+            if not getattr(self, "_doubles_observe_logged", False):
+                self._doubles_observe_logged = True
+                print(f"Doubles observation failed (frame {frame_count}): {exc!r}")
+
+    def _withhold_singles_outputs_for_doubles(self):
+        from .tracking.doubles import STROKES_WITHHELD
+        print(f"Stroke labels and technique scoring withheld: {STROKES_WITHHELD}")
+        for name in ("strokes.json", "strokes.jsonl", "technique_summary.json"):
+            try:
+                os.remove(os.path.join(self.save_dir, name))
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"Could not remove the previous run's {name}: {exc}")
+
+    def _doubles_constraint_frames(self):
+        """In-play frames (inclusive rally spans) for the identity constraints, or None.
+
+        Players only cross the net between rallies (end changes), so the identity
+        constraints must use in-play frames. Returned only when rally detection
+        ran and is trustworthy; otherwise None (no constraint).
+        """
+        detection = getattr(self, "rally_detection", None)
+        if not isinstance(detection, dict):
+            return None
+        if detection.get("signal") in ("error", "none") or detection.get("degraded"):
+            return None
+        frames = set()
+        for rally in getattr(self, "rally_list", None) or []:
+            try:
+                start, end = int(rally["start_frame"]), int(rally["end_frame"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            frames.update(range(start, end + 1))
+        return frames or None
+
+    def _doubles_shuttle(self):
+        """Dense shuttle track as {frame: (x, y)}, skipping frames with no detection."""
+        traj = getattr(self, "_shuttle_trajectory", None)
+        if traj is None:
+            return None
+        out = {}
+        for k, v in traj.items():
+            if v is None:
+                continue
+            x, y = float(v[0]), float(v[1])
+            if x == 0.0 and y == 0.0:
+                continue
+            out[int(k)] = (x, y)
+        return out
+
+    def _run_doubles_stage(self, fps, analysed_frames):
+        """Post-loop doubles analysis. Singles: only removes stale doubles outputs."""
+        try:
+            from .tracking import doubles as dbl
+            dbl.remove_doubles_outputs(self.save_dir)
+            if getattr(self, "match_format", "singles") != "doubles":
+                return
+            collector = getattr(self, "_doubles", None)
+            if collector is None:
+                print("Doubles stage skipped: no collector")
+                return
+            payload = collector.finalize(self.save_dir, analysed_frames,
+                                         shuttle=self._doubles_shuttle(),
+                                         constraint_frames=self._doubles_constraint_frames())
+            from .visualization.doubles_render import render_identity_video, write_heatmaps
+            write_heatmaps(self.save_dir, payload, collector.identity_tracks)
+            if os.path.exists(self.video_path):
+                out = os.path.join(self.save_dir, f"detect_{self.video_name}_players.mp4")
+                if render_identity_video(self.video_path, out, collector.identity_tracks,
+                                         payload.get("players") or [], fps=fps):
+                    print(f"Identity video: {out}")
+                else:
+                    print("Identity video skipped: render failed")
+            else:
+                print("Identity video skipped: source video missing")
+        except Exception as exc:
+            print(f"Doubles stage failed: {exc!r}")
+
     _HIT_OUTPUTS = ("hits.json", "hit_signals.npz")
 
     def _run_hit_detection(self, fps, last_frame):
@@ -1394,7 +1522,7 @@ class BadmintonAnalysisSystem:
                 pass
             except OSError as exc:
                 print(f"Could not remove the previous run's {name}: {exc}")
-        if not self.analyze_technique or not last_frame:
+        if not getattr(self, "_capture_frames", self.analyze_technique) or not last_frame:
             return None
 
         try:
