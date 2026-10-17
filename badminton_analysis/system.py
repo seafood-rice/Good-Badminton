@@ -1422,9 +1422,9 @@ class BadmintonAnalysisSystem:
         try:
             wanted = collector.wants_frame()
         except Exception as exc:
-            if not getattr(self, "_doubles_observe_logged", False):
-                self._doubles_observe_logged = True
-                print(f"Doubles observation failed (frame {frame_count}): {exc!r}")
+            if not getattr(self, "_doubles_clean_frame_logged", False):
+                self._doubles_clean_frame_logged = True
+                print(f"Doubles frame sampling failed (frame {frame_count}): {exc!r}")
             return None
         return frame.copy() if wanted else None
 

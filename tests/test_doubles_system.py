@@ -252,3 +252,28 @@ def test_shuttle_falls_back_to_yolo_points_without_tracknet(tmp_path):
     s._shuttle_trajectory = {7: (1.0, 1.0)}
     s._analysis_track_both = [{"frame": 8, "shuttle": (2.0, 2.0)}]
     assert s._doubles_shuttle() == {7: (1.0, 1.0)}
+
+
+def test_clean_frame_and_observe_failures_each_log_once(tmp_path, capsys):
+    class Broken:
+        def wants_frame(self):
+            raise RuntimeError("wants")
+
+        def observe(self, *a):
+            raise RuntimeError("observe")
+
+    class Pose:
+        def get_current_pose_data(self):
+            return None
+
+    s = bare(tmp_path, "doubles")
+    s._doubles = Broken()
+    s.player_pose_visualizer = Pose()
+    frame = np.zeros((4, 4, 3), np.uint8)
+    for f in (1, 2):
+        s._doubles_clean_frame(frame, f)
+        s._observe_doubles(f, None, [])
+    out = capsys.readouterr().out
+    # A clean-frame failure must not silence the (different) observe failure.
+    assert out.count("RuntimeError('wants')") == 1
+    assert out.count("RuntimeError('observe')") == 1
