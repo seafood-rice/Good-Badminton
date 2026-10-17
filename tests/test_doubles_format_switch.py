@@ -70,6 +70,9 @@ def analyze_client(tmp_path, monkeypatch):
         captured["cmd"] = list(cmd)
         return _FakeProc()
 
+    # A private job table: the fake process never finishes, so a job left in the
+    # real table keeps "clip" busy and later /api/delete/clip calls get a 409.
+    monkeypatch.setattr(webapp, "jobs", {})
     monkeypatch.setattr(webapp, "VIDEOS", tmp_path)
     monkeypatch.setattr(webapp, "OUTPUTS", tmp_path / "out")
     (tmp_path / "out").mkdir()
