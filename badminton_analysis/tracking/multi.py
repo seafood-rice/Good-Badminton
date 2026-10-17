@@ -12,6 +12,8 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 NET_Y = 6.7
+GATE_GROWTH_CAP = 2.0      # the gate widens with sqrt(missed strides), at most 2x
+_BIG = 1e6                 # cost of a gated-out (forbidden) track/detection pair
 
 
 @dataclass
@@ -134,10 +136,15 @@ class MultiTracker:
             preds = [t.predicted(frame) for t in tracks]
             cost = np.array([[np.hypot(p[0] - d.court[0], p[1] - d.court[1]) for d in dets]
                              for p in preds])
+            # Gate BEFORE the assignment: gating after it lets a stale track (wide
+            # gate) win a fresh neighbour's detection when that is the global optimum.
+            for r, t in enumerate(tracks):
+                gap = max(1.0, (frame - t.last_frame) / (self._stride or 1))
+                gate = self.gate_m * min(np.sqrt(gap), GATE_GROWTH_CAP)
+                cost[r, cost[r] > gate] = _BIG
             rows, cols = linear_sum_assignment(cost)
             for r, c in zip(rows, cols):
-                gap = max(1, (frame - tracks[r].last_frame) / (self._stride or 1))
-                if cost[r, c] <= self.gate_m * np.sqrt(gap):
+                if cost[r, c] < _BIG:
                     matches.append((r, c))
                     unmatched_t.discard(r)
                     unmatched_d.discard(c)

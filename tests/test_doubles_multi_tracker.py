@@ -142,6 +142,20 @@ def test_new_person_far_from_existing_does_not_cut():
     assert len(main["frames"]) == 60
 
 
+def test_stale_track_does_not_steal_a_gated_neighbour():
+    # B was last seen at frame 3, so its gate has grown; A is fresh. At frame 7 the
+    # unconstrained optimum gives A's person to B and leaves A an out-of-gate
+    # detection. Gating must happen before the assignment, not after it.
+    frames = [(f, [det(1.0, 10), det(2.3, 10)]) for f in range(1, 4)]
+    frames += [(f, [det(1.0, 10)]) for f in range(4, 7)]
+    frames.append((7, [det(1.3, 10), det(-0.2, 10)]))
+    tr = run(frames)
+    for t in tr:
+        has_b = any(f <= 3 and c == [2.3, 10] for f, c in zip(t["frames"], t["court"]))
+        has_a7 = any(f == 7 and c == [1.3, 10] for f, c in zip(t["frames"], t["court"]))
+        assert not (has_b and has_a7), t["frames"]
+
+
 def test_empty_and_none_detections():
     assert MultiTracker(FPS).finish() == []
     t = MultiTracker(FPS)
