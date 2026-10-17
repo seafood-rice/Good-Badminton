@@ -98,3 +98,44 @@ def test_indistinguishable_teams_degraded_teams():
     r = assign_identities(t, 110)
     assert r["status"] == "degraded_teams"
     assert all(v is None for v in r["teams"].values())
+
+
+def _walk_around_scenario():
+    # Frames 50-59 are the end-change walk-around: A1 is still on the lower side while B1
+    # has already crossed to it. Their lower-side tracklets share frames 52-59, which the
+    # plain same-side-means-same-team rule would read as "partners".
+    t = [tl(0, "lower", 0, 60, sig(1)), tl(1, "lower", 0, 50, sig(2)),        # A1, A2
+         tl(2, "upper", 0, 50, sig(10)), tl(3, "upper", 0, 50, sig(11)),      # B1, B2
+         tl(4, "upper", 60, 111, sig(1)), tl(5, "upper", 60, 111, sig(2)),    # A1, A2
+         tl(6, "lower", 52, 111, sig(10)), tl(7, "lower", 60, 111, sig(11))]  # B1, B2
+    person = {0: 1, 1: 2, 2: 10, 3: 11, 4: 1, 5: 2, 6: 10, 7: 11}
+    return t, person
+
+
+def _matches_truth(r, person):
+    by_colour = {}
+    for tid, colour in person.items():
+        by_colour.setdefault(colour, set()).add(r["assignment"].get(tid))
+    ids = [next(iter(v)) for v in by_colour.values() if len(v) == 1]
+    return len(ids) == 4 and len(set(ids)) == 4
+
+
+def test_walk_around_outside_constraint_frames_does_not_merge_teams():
+    t, person = _walk_around_scenario()
+    play = set(range(0, 50)) | set(range(60, 111))
+    r = assign_identities(t, 111, constraint_frames=play)
+    assert _matches_truth(r, person)
+    team_of = lambda colour: r["teams"][r["assignment"][next(k for k, c in person.items() if c == colour)]]
+    assert team_of(1) == team_of(2) == 1
+    assert team_of(10) == team_of(11) == 2
+    # Without the in-play restriction the walk-around overlap merges A1 with B1/B2.
+    assert not _matches_truth(assign_identities(t, 111), person)
+
+
+def test_tracklet_wholly_outside_constraint_frames_is_placed_by_appearance():
+    t = [tl(0, "lower", 0, 50, sig(1)), tl(1, "lower", 0, 50, sig(2)),
+         tl(2, "upper", 0, 50, sig(10)), tl(3, "upper", 0, 50, sig(11)),
+         tl(4, "lower", 50, 60, sig(2))]               # entirely in the walk-around
+    r = assign_identities(t, 60, constraint_frames=set(range(0, 50)))
+    assert r["assignment"][4] == r["assignment"][1]
+    assert 0.0 < r["confidence"][4] <= 1.0

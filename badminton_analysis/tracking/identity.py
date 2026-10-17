@@ -9,6 +9,14 @@ deciding only what the constraints leave open:
 
 Constraint-forced placements get confidence 1.0; appearance-decided ones get
 the margin between the two choices.
+
+Constraints only hold while the rally is in play. Between rallies players walk
+around and cross the net at different times (end changes), so one player of each
+team can briefly stand on the same side and would be wrongly read as partners.
+``constraint_frames`` (a set of frame numbers) restricts the coexistence used by
+every constraint to those frames; coverage and labelling still use each
+tracklet's full frame set. A tracklet with no frame inside it has no constraints
+and is placed purely by appearance. ``None`` applies constraints to all frames.
 """
 from collections import defaultdict
 
@@ -32,7 +40,7 @@ class _UF:
 
 
 def _coexist(a, b):
-    return bool(a["_fs"] & b["_fs"])
+    return bool(a["_cs"] & b["_cs"])
 
 
 def _sig(members):
@@ -51,7 +59,7 @@ def _same_side_triple(tl, ids):
                  if tl[b]["side"] == tl[a]["side"] and _coexist(tl[a], tl[b])]
         for x, b in enumerate(peers):
             for c in peers[x + 1:]:
-                if tl[a]["_fs"] & tl[b]["_fs"] & tl[c]["_fs"]:
+                if tl[a]["_cs"] & tl[b]["_cs"] & tl[c]["_cs"]:
                     return min((a, b, c), key=lambda k: len(tl[k]["frames"]))
     return None
 
@@ -123,10 +131,16 @@ def _sig_nodes(nodes, sig_of):
     return ap.median_signature(samples)
 
 
-def assign_identities(tracklets, analysed_frames, *, min_coverage=0.2, team_conf_min=0.3):
+def assign_identities(tracklets, analysed_frames, *, min_coverage=0.2, team_conf_min=0.3,
+                    constraint_frames=None):
     result = {"status": "degraded", "reason": None, "assignment": {}, "teams": {},
               "confidence": {}, "coverage": {}, "dropped": []}
-    tl = {t["id"]: dict(t, _fs=set(t["frames"])) for t in tracklets if t.get("frames")}
+    cf = None if constraint_frames is None else set(constraint_frames)
+    tl = {}
+    for t in tracklets:
+        if t.get("frames"):
+            fs = set(t["frames"])
+            tl[t["id"]] = dict(t, _fs=fs, _cs=fs if cf is None else fs & cf)
     if not tl:
         result["reason"] = "no tracklets"
         return result
