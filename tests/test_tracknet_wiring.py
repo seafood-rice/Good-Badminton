@@ -26,7 +26,7 @@ def test_main_has_tracknet_flags():
     # Simpler: assert the flags exist by parsing --help-free known args.
     # (Structural: main defines --tracknet-model / --inpaintnet-model.)
     import inspect
-    src = inspect.getsource(main.main)
+    src = inspect.getsource(main.build_parser) + inspect.getsource(main.main)
     assert "--tracknet-model" in src and "--inpaintnet-model" in src
     assert "tracknet_weights=args.tracknet_model" in src
     assert "inpaintnet_weights=args.inpaintnet_model" in src
