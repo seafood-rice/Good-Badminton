@@ -6,7 +6,7 @@ from badminton_analysis.visualization.player_positions import analyze_player_pos
 
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description='羽毛球比赛视频分析系统')
     parser.add_argument('--video-path', default='videos/demo1.mp4', type=str, help='输入视频文件路径')
     parser.add_argument('--template-path', default='templates/demo1.png', type=str, help='球场模板图像路径；不提供时会弹出文件选择框')
@@ -44,8 +44,14 @@ def main():
                         help='accurate=每帧分析（默认）；fast=抽帧快速预览（密集分析关闭）')
     parser.add_argument('--dominant-hand', default='right', choices=['right', 'left'],
                         help='球员持拍手，默认 right')
+    parser.add_argument('--match-format', default='singles', choices=['singles', 'doubles'],
+                        help='比赛类型：singles（单打）/ doubles（双打）')
     parser.add_argument('--language', default='zh', choices=['zh', 'en'], help='选择界面语言 (zh/en)')
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     load_runtime_dependencies()
 
@@ -76,6 +82,7 @@ def main():
         tracknet_mode=args.tracknet_mode,
         hit_model_path=args.hit_model,
         analysis_quality=args.analysis_quality,
+        match_format=args.match_format,
     )
 
     system.keep_audio = args.audio == 'true'
