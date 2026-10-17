@@ -1478,10 +1478,15 @@ class BadmintonAnalysisSystem:
         return frames or None
 
     def _doubles_shuttle(self):
-        """Dense shuttle track as {frame: (x, y)}, skipping frames with no detection."""
+        """Shuttle track as {frame: (x, y)}, skipping frames with no detection, or None.
+
+        The dense TrackNet track when it ran; otherwise the per-frame YOLO shuttle
+        points recorded in ``_analysis_track_both`` (sparser, but still evidence).
+        """
         traj = getattr(self, "_shuttle_trajectory", None)
         if traj is None:
-            return None
+            traj = {r["frame"]: r.get("shuttle")
+                    for r in getattr(self, "_analysis_track_both", None) or []}
         out = {}
         for k, v in traj.items():
             if v is None:
@@ -1490,7 +1495,7 @@ class BadmintonAnalysisSystem:
             if x == 0.0 and y == 0.0:
                 continue
             out[int(k)] = (x, y)
-        return out
+        return out or None
 
     def _run_doubles_stage(self, fps, analysed_frames):
         """Post-loop doubles analysis. Singles: only removes stale doubles outputs."""

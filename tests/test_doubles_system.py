@@ -236,3 +236,19 @@ def _pretrack_probe(tmp_path, monkeypatch, capture):
 def test_tracknet_pretrack_runs_for_doubles_capture(tmp_path, monkeypatch):
     assert _pretrack_probe(tmp_path, monkeypatch, True) is True
     assert _pretrack_probe(tmp_path, monkeypatch, False) is False
+
+
+def test_shuttle_falls_back_to_yolo_points_without_tracknet(tmp_path):
+    s = bare(tmp_path, "doubles")
+    s._shuttle_trajectory = None
+    s._analysis_track_both = [{"frame": 1, "shuttle": (10.0, 20.0)},
+                              {"frame": 2, "shuttle": None},
+                              {"frame": 3, "shuttle": [0, 0]},
+                              {"frame": 4, "shuttle": [5, 6]}]
+    assert s._doubles_shuttle() == {1: (10.0, 20.0), 4: (5.0, 6.0)}
+    s._analysis_track_both = [{"frame": 1, "shuttle": None}]
+    assert s._doubles_shuttle() is None
+    # TrackNet ran: its track wins, YOLO points are not mixed in.
+    s._shuttle_trajectory = {7: (1.0, 1.0)}
+    s._analysis_track_both = [{"frame": 8, "shuttle": (2.0, 2.0)}]
+    assert s._doubles_shuttle() == {7: (1.0, 1.0)}

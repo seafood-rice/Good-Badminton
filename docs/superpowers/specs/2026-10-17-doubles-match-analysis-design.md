@@ -185,7 +185,8 @@ tracklet confidence, and a status.
 ### 6.5 Who hit (`hitter.py`)
 
 Input: the run's side-level hit list (learned or contact rule, as written to `hits.json`
-today), the identity tracks, fps, and the shuttle track if any.
+today), the identity tracks, fps, and the shuttle track if any: the dense TrackNet track when it ran, otherwise the per-frame
+YOLO shuttle points (amended 2026-10-18).
 
 For each hit with side `s` at frame `f`, candidates = identities on side `s` at `f`
 (within +/- 2 frames).
