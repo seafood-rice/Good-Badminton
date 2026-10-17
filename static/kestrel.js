@@ -1246,10 +1246,21 @@ window.Kestrel = (function () {
       }
     }).catch(function () {});
 
+    // A doubles run withholds technique scoring, so its empty technique box says
+    // so. The players and technique fetches race: whichever resolves second wins.
+    var doublesRun = false;
+    function techEmptyText() {
+      return doublesRun ? (zh ? '双打不提供技术评分' : 'Technique scoring withheld for doubles')
+                        : (zh ? '暂无技术分析数据' : 'No technique data yet');
+    }
+
     // Doubles players panel (players.json exists only for doubles runs). Absent or
     // malformed -> nothing renders. Every value from the file goes through escHTML.
     fetch('/api/output/' + stem + '/players.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d || d.match_format !== 'doubles') return;
+      doublesRun = true;
+      var techStatus = document.getElementById('tech-status');
+      if (techStatus && techStatus.style.display !== 'none') techStatus.textContent = techEmptyText();
       var box = document.getElementById('players-box'); if (!box) return;
       var colors = { P1: '#008cff', P2: '#78dcff', P3: '#ff5000', P4: '#ffb478' };
       var base = '/api/output/' + encodeURIComponent(stem) + '/';
@@ -1292,7 +1303,7 @@ window.Kestrel = (function () {
     // Technique analysis.
     fetch('/api/technique/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       var status = document.getElementById('tech-status');
-      if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = zh?'暂无技术分析数据':'No technique data yet'; return; }
+      if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = techEmptyText(); return; }
       status.style.display = 'none';
       var s = d.summary;
       var chips = Object.keys(s.by_type || {}).map(function (k) {
