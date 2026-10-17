@@ -198,7 +198,9 @@ For each hit with side `s` at frame `f`, candidates = identities on side `s` at 
     plus 0.5 if a racket box is assigned to the player and moves more than its partner's.
   - Confidence = `softmax` margin `|p1 - p2|` over the two scores (temperature 1 on the
     normalised scale).
-- Confidence below `HITTER_MIN_CONF = 0.6` gives `hitter_id` null; the side is kept.
+- For two-candidate scoring, confidence below `HITTER_MIN_CONF = 0.6` gives `hitter_id`
+  null; the side is kept. The single-candidate case is named with confidence 0.5 and
+  evidence `single_candidate`, so a consumer can tell it apart and discount it.
 
 `hits.json` keeps every existing field (`hitter` stays the side) and gains, on doubles runs
 only, per hit: `hitter_id` (e.g. `"P3"` or null), `hitter_team` (1, 2 or null),
