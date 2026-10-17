@@ -151,6 +151,14 @@ class MultiTracker:
                     if (np.hypot(*(preds[i] - preds[j])) < self.cross_m
                             and (i in unmatched_t or j in unmatched_t)):
                         cut.update((i, j))
+        # Proximity: two tracks whose matched detections are within cross_m
+        # this frame, even though both are detected. Partners that touch and
+        # recoil are indistinguishable by position alone, so end both.
+        for a in range(len(matches)):
+            for b in range(a + 1, len(matches)):
+                ca, cb = dets[matches[a][1]].court, dets[matches[b][1]].court
+                if np.hypot(ca[0] - cb[0], ca[1] - cb[1]) < self.cross_m:
+                    cut.update((matches[a][0], matches[b][0]))
         # Re-emergence: a detection that would start a new track lies within
         # cross_m of a detection matched this frame (a person splitting out of
         # a merged blob). Which person the old track follows is arbitrary, so

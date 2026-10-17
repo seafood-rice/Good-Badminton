@@ -117,3 +117,36 @@ def test_reemergence_from_merged_blob_cuts_tracklet():
         assert not (39 in t["frames"] and 41 in t["frames"])
     # Both re-emerged people are tracked.
     assert sum(1 for t in tr if t["frames"][0] == 40) == 2
+
+
+def test_close_partners_both_detected_do_not_swap():
+    # Two partners converge to the same point and recoil; both are detected
+    # every frame, so only the proximity itself can reveal the ambiguity.
+    frames = []
+    for f in range(60):
+        k = f / 30 if f <= 30 else (60 - f) / 30        # 0 -> 1 -> 0
+        frames.append((f, [det(1.5 + 1.5 * k, 9.0), det(4.5 - 1.5 * k, 9.0)]))
+    tr = run(frames)
+    for t in tr:
+        xs = [c[0] for c in t["court"]]
+        if all(abs(x - 3.0) <= 0.3 for x in xs):
+            continue
+        assert (xs[0] < 3.0) == (xs[-1] < 3.0), (t["frames"][0], t["frames"][-1], xs[0], xs[-1])
+
+
+def test_new_person_far_from_existing_does_not_cut():
+    frames = [(f, [det(3, 10)]) for f in range(20)]
+    frames += [(f, [det(3, 10), det(0.5, 12.5)]) for f in range(20, 60)]
+    tr = run(frames)
+    (main,) = [t for t in tr if t["court"][0] == [3, 10]]
+    assert len(main["frames"]) == 60
+
+
+def test_empty_and_none_detections():
+    assert MultiTracker(FPS).finish() == []
+    t = MultiTracker(FPS)
+    for f in range(3):
+        t.step(f, [])
+    t.step(3, [Detection(court=None, image=(0, 0))])
+    t.step(4, [None])
+    assert t.finish() == []
