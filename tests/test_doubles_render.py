@@ -95,3 +95,82 @@ def test_write_heatmaps_dollar_in_name(tmp_path):
                "teams": [{"id": 1, "players": ["P1"]}, {"id": 2, "players": ["P3"]}]}
     written = dr.write_heatmaps(str(tmp_path), payload, TRACKS)
     assert set(written) == {"heatmap_P1.png", "heatmap_P3.png", "heatmap_team1.png", "heatmap_team2.png"}
+
+
+def _failing_savefig(monkeypatch, fail_on):
+    """Make the fail_on-th Figure.savefig call raise; earlier calls save normally."""
+    from matplotlib.figure import Figure
+
+    real, calls = Figure.savefig, {"n": 0}
+
+    def savefig(self, path, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == fail_on:
+            with open(path, "wb") as fh:
+                fh.write(b"partial")
+            raise OSError("disk full")
+        return real(self, path, *a, **k)
+
+    monkeypatch.setattr(Figure, "savefig", savefig)
+
+
+def test_heatmap_figure_closed_when_save_fails(tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+
+    _failing_savefig(monkeypatch, 1)
+    before = set(plt.get_fignums())
+    try:
+        dr._heatmap_png(str(tmp_path / "h.png"), [(1.0, 2.0)], "P1")
+    except OSError:
+        pass
+    assert set(plt.get_fignums()) == before
+
+
+def test_write_heatmaps_abort_leaves_no_partial_pngs(tmp_path, monkeypatch):
+    _failing_savefig(monkeypatch, 3)
+    assert dr.write_heatmaps(str(tmp_path), PAYLOAD, TRACKS) == []
+    assert list(tmp_path.glob("heatmap_*.png")) == []
+
+
+def test_label_sprite_renders_cjk_with_simhei():
+    assert dr.FONT_PATH is not None and dr.FONT_PATH.endswith("simhei.ttf")
+    cjk, _ = dr._label_sprite("张三", (255, 255, 255), 24)
+    qq, _ = dr._label_sprite("??", (255, 255, 255), 24)
+    assert cjk.shape != qq.shape or not np.array_equal(cjk, qq)
+    assert cjk.max() > 0.5                          # glyphs, not empty boxes
+
+
+def test_label_sprite_without_font_falls_back(monkeypatch):
+    monkeypatch.setattr(dr, "FONT_PATH", None)
+    dr._label_sprite.cache_clear()
+    try:
+        assert dr._label_sprite("张三", (255, 255, 255), 24) is None
+    finally:
+        dr._label_sprite.cache_clear()
+
+
+def _label_region(tmp_path, name):
+    tmp_path.mkdir()
+    src = tmp_path / "src.mp4"
+    _tiny_video(src, n=2)
+    out = tmp_path / "detect_src_players.mp4"
+    tracks = {"P1": {1: {"court": (1.5, 10.0), "image": (20, 70)}}}
+    assert dr.render_identity_video(str(src), str(out), tracks,
+                                    [{"id": "P1", "team": 1, "name": name}]) is True
+    cap = cv2.VideoCapture(str(out))
+    ok, frame = cap.read()
+    cap.release()
+    assert ok
+    return frame[30:70, 26:110].astype(int)
+
+
+def test_identity_video_draws_cjk_label(tmp_path, monkeypatch):
+    cjk = _label_region(tmp_path / "pil", "张三")
+    monkeypatch.setattr(dr, "FONT_PATH", None)        # the old cv2.putText path: "??????"
+    dr._label_sprite.cache_clear()
+    try:
+        fallback = _label_region(tmp_path / "cv2", "张三")
+    finally:
+        dr._label_sprite.cache_clear()
+    assert cjk.max() > 100                          # label drawn up-right of the marker
+    assert np.abs(cjk - fallback).mean() > 5        # real glyphs, not question marks
