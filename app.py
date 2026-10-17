@@ -395,6 +395,28 @@ def _reencode_to_h264(raw_video, h264_video, ffmpeg_bin, duration_sec):
     return None
 
 
+def _reencode_players_video(save_dir, video_stem, ffmpeg_bin, duration_sec):
+    """Browser-compat transcode of the doubles identity video, if one exists.
+
+    The renderer writes mp4v for ``detect_<stem>_players.mp4``, which no browser
+    decodes. Best effort by design: returns None when there is nothing to do or
+    on success, or an error string after printing a warning. It never raises
+    and the caller must not let it change the job's main status or message.
+    """
+    raw = os.path.join(str(save_dir), f'detect_{video_stem}_players.mp4')
+    if not os.path.exists(raw):
+        return None
+    h264 = os.path.join(str(save_dir), f'detect_{video_stem}_players_h264.mp4')
+    try:
+        warning = _reencode_to_h264(raw, h264, ffmpeg_bin, duration_sec)
+    except Exception as exc:
+        warning = f'ffmpeg failed: {exc}'
+    if warning:
+        print(f'FFmpeg re-encode of the players video failed: {warning}; '
+              f'it will not play in a browser')
+    return warning
+
+
 def _video_duration_sec(path):
     """Best-effort video duration in seconds; None if it can't be read."""
     try:
@@ -928,6 +950,10 @@ def api_analyze():
                 # and reporting plain success is what hid that for a whole run.
                 print(f'FFmpeg re-encode failed: {video_warning}; '
                       f'the analysed video will not play in a browser')
+
+            # Doubles identity video (mp4v from the renderer): same transcode,
+            # but never fatal and never reflected in the job's main status.
+            _reencode_players_video(sd, vs, ffmpeg_bin, _run_duration_sec(sd))
 
             job['status'] = 'completed'
             job['stage'] = 'done'
