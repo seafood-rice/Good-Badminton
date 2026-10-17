@@ -18,7 +18,7 @@ def test_api_models_reports_hit_detector():
 
 def test_main_has_hit_model_and_tracknet_mode_flags():
     import main
-    src = inspect.getsource(main.main)
+    src = inspect.getsource(main.build_parser) + inspect.getsource(main.main)
     assert "--hit-model" in src and "hit_model_path=args.hit_model" in src
     assert "--tracknet-mode" in src and "tracknet_mode=args.tracknet_mode" in src
 

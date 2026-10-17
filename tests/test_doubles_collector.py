@@ -1,0 +1,228 @@
+import json
+
+import numpy as np
+
+from badminton_analysis.court.mapper import CourtMapper
+from badminton_analysis.tracking import doubles as dbl
+
+# Image quad mapping 1 px = 1 cm: TL (0,0) .. BR (610,1340).
+QUAD = [[0, 0], [610, 0], [610, 1340], [0, 1340]]
+FPS = 30
+
+
+def kp_for(foot_x, foot_y):
+    kp = np.zeros((17, 2))
+    kp[5], kp[6] = (foot_x - 20, foot_y - 130), (foot_x + 20, foot_y - 130)
+    kp[11], kp[12] = (foot_x - 15, foot_y - 70), (foot_x + 15, foot_y - 70)
+    kp[13], kp[14] = (foot_x - 15, foot_y - 35), (foot_x + 15, foot_y - 35)
+    kp[15], kp[16] = (foot_x - 10, foot_y - 10), (foot_x + 10, foot_y - 10)
+    kp[9], kp[10] = (foot_x - 30, foot_y - 90), (foot_x + 30, foot_y - 90)
+    return kp
+
+
+POS = {"a": (150, 1000), "b": (450, 1100), "c": (150, 300), "d": (450, 200)}
+
+
+def feed(collector, frames, people=("a", "b", "c", "d"), extra=()):
+    img = np.zeros((1400, 700, 3), np.uint8)
+    img[:, :350] = (0, 0, 200)
+    img[:, 350:] = (200, 0, 0)
+    for f in frames:
+        cents, kps = [], []
+        for p in people:
+            x, y = POS[p]
+            cents.append((x, y))
+            kps.append(kp_for(x, y))
+        for (x, y) in extra:
+            cents.append((x, y))
+            kps.append(kp_for(x, y))
+        collector.observe(f, img, cents, kps)
+
+
+def make():
+    return dbl.DoublesCollector(CourtMapper(QUAD), QUAD, FPS)
+
+
+def test_finalize_writes_players_and_tracklets(tmp_path):
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    assert (tmp_path / "tracklets.jsonl").exists()
+    saved = json.loads((tmp_path / "players.json").read_text(encoding="utf-8"))
+    assert saved["match_format"] == "doubles" and saved["validated"] is False
+    assert saved["status"] == payload["status"]
+    assert len(saved["players"]) == 4
+    assert {p["id"] for p in saved["players"]} == {"P1", "P2", "P3", "P4"}
+    assert saved["stroke_labels_withheld"].startswith("doubles")
+
+
+def test_tracklets_jsonl_keypoints_rounded_and_tracks_share_arrays(tmp_path):
+    c = make()
+    img = np.zeros((1400, 700, 3), np.uint8)
+    for f in range(1, 61):
+        cents = [POS[p] for p in "abcd"]
+        kps = [kp_for(x + 0.123456, y + 0.987654) for x, y in cents]
+        c.observe(f, img, cents, kps)
+    c.finalize(str(tmp_path), analysed_frames=60)
+    row = json.loads((tmp_path / "tracklets.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    values = [v for kp in row["keypoints"] if kp is not None for pt in kp for v in pt]
+    assert values and all(round(v, 1) == v for v in values)
+    assert any(v != int(v) for v in values)               # rounded, not truncated to ints
+    # identity_tracks references the tracker's float32 arrays (no per-frame copies).
+    t = c.tracklets[0]
+    pid = c.assignment[t["id"]]
+    obs = c.identity_tracks[pid][t["frames"][0]]
+    assert obs["keypoints"] is t["keypoints"][0]
+    assert obs["keypoints"].dtype == np.float32
+
+
+def test_observe_dedupes_near_duplicate_detections(tmp_path):
+    c = make()
+    # A duplicate of "c" 20 cm away (far player seen by both passes).
+    feed(c, range(1, 91), extra=[(POS["c"][0] + 20, POS["c"][1])])
+    c.finalize(str(tmp_path), analysed_frames=90)
+    lines = (tmp_path / "tracklets.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 4
+
+
+def test_finalize_with_no_observations(tmp_path):
+    payload = make().finalize(str(tmp_path), analysed_frames=0)
+    assert payload["status"] == "degraded"
+    assert payload["players"] == []
+    assert (tmp_path / "players.json").exists()
+
+
+def test_finalize_without_hits_json(tmp_path):
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    assert payload["stats"]["hits_total"] == 0
+    assert not (tmp_path / "hits.json").exists()
+
+
+def test_finalize_augments_hits_json(tmp_path):
+    c = make()
+    feed(c, range(1, 91))
+    (tmp_path / "hits.json").write_text(json.dumps(
+        {"source": "contact_rule", "hits": [{"frame": 45, "hitter": "lower", "confidence": None}]}),
+        encoding="utf-8")
+    c.finalize(str(tmp_path), analysed_frames=90)
+    hits = json.loads((tmp_path / "hits.json").read_text(encoding="utf-8"))
+    assert hits["hitter_attribution"] == {"validated": False}
+    h = hits["hits"][0]
+    assert h["hitter"] == "lower"
+    for key in ("hitter_id", "hitter_team", "hitter_confidence", "hitter_evidence"):
+        assert key in h
+
+
+def test_hits_named_share_counts_only_evidenced_hits(tmp_path, monkeypatch):
+    # A single_candidate guess (confidence 0.5) is not a named hit: the share and
+    # the per-player hits_named must agree, and the guesses are counted apart.
+    attributed = [{"frame": 10, "hitter": "lower", "hitter_id": "P1", "hitter_evidence": "shuttle"},
+                  {"frame": 20, "hitter": "lower", "hitter_id": "P1",
+                   "hitter_evidence": "single_candidate"},
+                  {"frame": 30, "hitter": "lower", "hitter_id": None, "hitter_evidence": "swing"},
+                  {"frame": 40, "hitter": "upper", "hitter_id": "P3", "hitter_evidence": "swing"}]
+    monkeypatch.setattr(dbl, "attribute_hitters", lambda hits, *a, **k: [dict(h) for h in attributed])
+    (tmp_path / "hits.json").write_text(json.dumps(
+        {"source": "contact_rule", "hits": [{"frame": h["frame"], "hitter": h["hitter"]}
+                                            for h in attributed]}), encoding="utf-8")
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    st = payload["stats"]
+    assert st["hits_total"] == 4
+    assert st["hits_named_share"] == 0.5             # shuttle P1 + swing P3
+    assert st["hits_single_candidate"] == 1
+    rows = {p["id"]: p for p in payload["players"]}
+    assert (rows["P1"]["hits"], rows["P1"]["hits_named"], rows["P1"]["hits_single_candidate"]) == (2, 1, 1)
+    assert (rows["P3"]["hits_named"], rows["P3"]["hits_single_candidate"]) == (1, 0)
+    named = sum(p["hits_named"] for p in payload["players"])
+    assert named / st["hits_total"] == st["hits_named_share"]
+    assert make()._payload("degraded", "x", [], [], {})["stats"]["hits_single_candidate"] == 0
+
+
+def test_attribution_failure_keeps_identities(tmp_path, capsys):
+    c = make()
+    feed(c, range(1, 91))
+    doc = {"source": "contact_rule", "hits": [{"hitter": "lower"}, {"frame": 45, "hitter": "upper"}]}
+    (tmp_path / "hits.json").write_text(json.dumps(doc), encoding="utf-8")
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    assert payload["status"] != "error"
+    assert len(payload["players"]) == 4
+    assert payload["stats"]["hits_total"] == 2 and payload["stats"]["hits_named_share"] == 0.0
+    assert json.loads((tmp_path / "hits.json").read_text(encoding="utf-8")) == doc   # un-augmented
+    assert "Hitter attribution failed" in capsys.readouterr().out
+
+
+def test_names_are_copied(tmp_path):
+    (tmp_path / "player_names.json").write_text(json.dumps({"P1": "Alice"}), encoding="utf-8")
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    names = {p["id"]: p["name"] for p in payload["players"]}
+    assert names["P1"] == "Alice" and names["P2"] is None
+
+
+def test_wants_frame_follows_the_appearance_cadence():
+    c = make()                                  # APPEARANCE_EVERY = 5
+    img = np.zeros((1400, 700, 3), np.uint8)
+    seq = []
+    for f in range(1, 12):
+        seq.append(c.wants_frame())
+        # The system passes a frame only when it is wanted; otherwise None.
+        c.observe(f, img if seq[-1] else None, [POS["a"]], [kp_for(*POS["a"])])
+    assert seq == [True, False, False, False, False, True, False, False, False, False, True]
+    (t,) = c.tracker.finish()
+    assert len(t["frames"]) == 11               # frame None still drives the tracker
+    assert len(t["appearance"]) == 3            # one signature per wanted frame
+    every = dbl.DoublesCollector(CourtMapper(QUAD), QUAD, FPS, appearance_every=1)
+    assert every.wants_frame() and (every.observe(1, None, [], []) or every.wants_frame())
+
+
+def test_observe_never_raises():
+    c = make()
+    c.observe(1, None, [(1, 2)], [None])
+    c.observe(2, np.zeros((10, 10, 3), np.uint8), [("x", None)], [object()])
+
+
+def test_keypoints_from_pose_data_shifts_offsets():
+    kp = np.zeros((1, 17, 2))
+    kp[0, 5] = (10, 10)
+    out = dbl.keypoints_from_pose_data({"keypoints": kp, "offset_x": 100, "offset_y": 50}, 1)
+    assert tuple(out[0][5]) == (110, 60)
+    assert tuple(out[0][0]) == (0, 0)                     # missing stays missing
+    assert dbl.keypoints_from_pose_data(None, 2) == [None, None]
+    assert dbl.keypoints_from_pose_data({"keypoints": kp, "offset_x": 0, "offset_y": 0}, 3) == [None, None, None]
+
+
+def test_remove_doubles_outputs(tmp_path):
+    for name in ("players.json", "tracklets.jsonl", "heatmap_P1.png", "heatmap_team1.png",
+                 "detect_v_players.mp4", "detect_other_players.mp4", "keep.json"):
+        (tmp_path / name).write_text("x")
+    dbl.remove_doubles_outputs(str(tmp_path), "v")
+    # Only this video's identity video goes; another video's in the same folder stays.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["detect_other_players.mp4", "keep.json"]
+
+
+def test_remove_doubles_outputs_without_video_name_keeps_videos(tmp_path):
+    for name in ("players.json", "detect_v_players.mp4"):
+        (tmp_path / name).write_text("x")
+    dbl.remove_doubles_outputs(str(tmp_path))
+    assert [p.name for p in tmp_path.iterdir()] == ["detect_v_players.mp4"]
+
+
+def test_finalize_passes_constraint_frames(tmp_path, monkeypatch):
+    seen = {}
+    real = dbl.assign_identities
+
+    def wrapper(*args, **kwargs):
+        seen["constraint_frames"] = kwargs.get("constraint_frames", "missing")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("badminton_analysis.tracking.doubles.assign_identities", wrapper)
+    c = make()
+    feed(c, range(1, 91))
+    frames = {10, 20, 30}
+    c.finalize(str(tmp_path), analysed_frames=90, constraint_frames=frames)
+    assert seen["constraint_frames"] == frames
