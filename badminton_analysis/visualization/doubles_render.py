@@ -23,7 +23,8 @@ def _heatmap_png(path, points, title):
     ax.set_xlim(-0.3, COURT_W + 0.3)
     ax.set_ylim(COURT_L + 0.3, -0.3)
     ax.set_facecolor("black")
-    ax.set_title(title, fontsize=9)
+    # Escape $: matplotlib reads an even count as mathtext, and a player name can break the parse.
+    ax.set_title(title.replace("$", r"\$"), fontsize=9)
     ax.set_xticks([])
     ax.set_yticks([])
     fig.tight_layout()
@@ -53,12 +54,27 @@ def write_heatmaps(save_dir, payload, identity_tracks):
     return written
 
 
+def _remove_file(path):
+    """True when `path` is gone afterwards; prints when a file exists and cannot be removed."""
+    if not os.path.exists(path):
+        return True
+    try:
+        os.remove(path)
+        return True
+    except OSError as exc:
+        print(f"Could not remove {path}: {exc!r}")
+        return False
+
+
 def render_identity_video(video_path, out_path, identity_tracks, players, fps=None):
     from ..media import video_audio as vap
 
     cap = None
     writer = None
     temp = os.path.join(os.path.dirname(out_path) or ".", "temp_" + os.path.basename(out_path))
+    # A file left by an earlier run must never be reported as this run's output.
+    if not _remove_file(out_path):
+        return False
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -87,14 +103,11 @@ def render_identity_video(video_path, out_path, identity_tracks, players, fps=No
             writer.write(frame)
         writer.release()
         writer = None
-        try:
-            vap.process_video_without_audio(temp_video_path=temp, output_path=out_path)
-        except Exception as exc:
-            print(f"Identity video transcode failed, keeping the raw encode: {exc!r}")
+        # The helper reports its own failures as False rather than raising; the raw
+        # encode is still playable, so keep it when the copy step fails.
+        if not vap.process_video_without_audio(temp_video_path=temp, output_path=out_path):
             os.replace(temp, out_path)
-        if os.path.exists(temp):
-            os.remove(temp)
-        return os.path.exists(out_path)
+        return os.path.isfile(out_path) and os.path.getsize(out_path) > 0
     except Exception as exc:
         print(f"Identity video failed: {exc!r}")
         return False
@@ -103,3 +116,4 @@ def render_identity_video(video_path, out_path, identity_tracks, players, fps=No
             writer.release()
         if cap is not None:
             cap.release()
+        _remove_file(temp)

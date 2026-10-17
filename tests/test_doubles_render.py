@@ -43,3 +43,55 @@ def test_render_identity_video(tmp_path):
 def test_render_identity_video_missing_source(tmp_path):
     assert dr.render_identity_video(str(tmp_path / "none.mp4"), str(tmp_path / "o.mp4"),
                                     TRACKS, PAYLOAD["players"]) is False
+
+
+def test_render_identity_video_stale_output(tmp_path):
+    out = tmp_path / "detect_src_players.mp4"
+    out.write_bytes(b"junk from an earlier run")
+    assert dr.render_identity_video(str(tmp_path / "none.mp4"), str(out),
+                                    TRACKS, PAYLOAD["players"]) is False
+    assert not out.exists()
+
+
+def test_render_identity_video_uses_replace_when_copy_fails(tmp_path, monkeypatch):
+    src = tmp_path / "src.mp4"
+    _tiny_video(src)
+    out = tmp_path / "detect_src_players.mp4"
+    monkeypatch.setattr("badminton_analysis.media.video_audio.process_video_without_audio",
+                        lambda **kwargs: False)
+    assert dr.render_identity_video(str(src), str(out), TRACKS, PAYLOAD["players"]) is True
+    cap = cv2.VideoCapture(str(out))
+    ok, _ = cap.read()
+    cap.release()
+    assert ok
+    assert not (tmp_path / ("temp_" + out.name)).exists()
+
+
+def test_render_identity_video_failure_leaves_no_temp(tmp_path, monkeypatch):
+    src = tmp_path / "src.mp4"
+    _tiny_video(src)
+    out = tmp_path / "detect_src_players.mp4"
+
+    class _BrokenWriter:
+        def __init__(self, path):
+            with open(path, "wb") as fh:
+                fh.write(b"partial")
+
+        def write(self, frame):
+            raise RuntimeError("disk full")
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr("badminton_analysis.media.video_audio.setup_video_writer",
+                        lambda frame_width, frame_height, fps, temp_output_path: _BrokenWriter(temp_output_path))
+    assert dr.render_identity_video(str(src), str(out), TRACKS, PAYLOAD["players"]) is False
+    assert not out.exists()
+    assert not (tmp_path / ("temp_" + out.name)).exists()
+
+
+def test_write_heatmaps_dollar_in_name(tmp_path):
+    payload = {"players": [{"id": "P1", "team": 1, "name": "$a^$b_"}],
+               "teams": [{"id": 1, "players": ["P1"]}, {"id": 2, "players": ["P3"]}]}
+    written = dr.write_heatmaps(str(tmp_path), payload, TRACKS)
+    assert set(written) == {"heatmap_P1.png", "heatmap_P3.png", "heatmap_team1.png", "heatmap_team2.png"}
