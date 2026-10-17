@@ -1468,7 +1468,8 @@ def api_posture_report(video_name):
 
 @app.route('/')
 def index():
-    return (PROJECT_ROOT / 'web_ui.html').read_text(encoding='utf-8')
+    # return (PROJECT_ROOT / 'web_ui.html').read_text(encoding='utf-8')
+    return (PROJECT_ROOT / 'kestrel.html').read_text(encoding='utf-8')
 
 
 @app.route('/kestrel')
@@ -1480,7 +1481,7 @@ if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('--port', type=int, default=5050)
-    p.add_argument('--host', default='127.0.0.1')
+    p.add_argument('--host', default='0.0.0.0')
     args = p.parse_args()
 
     print(f'''
