@@ -188,16 +188,20 @@ today), the identity tracks, fps, and the shuttle track if any.
 For each hit with side `s` at frame `f`, candidates = identities on side `s` at `f`
 (within +/- 2 frames).
 
-- 0 candidates: `hitter_id` null, reason `no player on side`.
+- 0 candidates (or the hit has no side): `hitter_id` null, evidence `none`.
 - 1 candidate: that identity, confidence 0.5 (the partner may simply be undetected).
-- 2 candidates: score each.
-  - **Shuttle available** within +/- 2 frames of `f`: score = `-min(distance(shuttle, wrist),
-    distance(shuttle, racket head))` in court-scaled pixels.
-  - **Otherwise swing evidence** in `[f - 0.3 s, f + 0.3 s]`: peak wrist speed normalised by
-    the px/m at the player's court-y, plus 0.5 if the faster wrist rises above the shoulder,
-    plus 0.5 if a racket box is assigned to the player and moves more than its partner's.
-  - Confidence = `softmax` margin `|p1 - p2|` over the two scores (temperature 1 on the
-    normalised scale).
+- 2 or more candidates (more than 2 only when identity is degraded): score every candidate;
+  the best wins and the confidence is the margin between the best two.
+  - **Shuttle available** within +/- 2 frames of `f`: score = `-min(distance(shuttle, wrist))`
+    over both wrists, in metres (pixels / px-per-m at the player's row).
+  - **Otherwise swing evidence** in `[f - 0.3 s, f + 0.3 s]`: peak wrist speed in m/s / 10
+    (capped at 2), plus 0.5 if a wrist rises above its shoulder within the window.
+  - Confidence = `softmax` margin `|p1 - p2|` over the best two scores (temperature 1),
+    i.e. `tanh(|s1 - s2| / 2)`.
+  - *As built (2026-10-17):* the racket-box terms of the original design are dropped in v1:
+    the pipeline stores racket points per side, not per person, so they cannot be scored per
+    partner. The "faster wrist" qualifier became "a wrist", which is less sensitive to pose
+    jitter.
 - For two-candidate scoring, confidence below `HITTER_MIN_CONF = 0.6` gives `hitter_id`
   null; the side is kept. The single-candidate case is named with confidence 0.5 and
   evidence `single_candidate`, so a consumer can tell it apart and discount it.
