@@ -176,3 +176,17 @@ def test_empty_and_none_detections():
     t.step(3, [Detection(court=None, image=(0, 0))])
     t.step(4, [None])
     assert t.finish() == []
+
+
+def test_split_seeds_kalman_with_real_frame_gaps():
+    # Fast mode (stride 3): the split-off track's velocity must be per frame, not per
+    # stride. Seeding with dt=1 tripled it, overshot the gate and cut the track again.
+    t = MultiTracker(FPS)
+    split_vy = None
+    for f in range(0, 90, 3):
+        t.step(f, [det(3, 4.0 + f * 0.2)])
+        if split_vy is None and t._done and t._active:
+            split_vy = t._active[0].kf.x[3]
+    tr = t.finish()
+    assert split_vy is not None and abs(split_vy - 0.2) < 0.05
+    assert len(tr) == 2
