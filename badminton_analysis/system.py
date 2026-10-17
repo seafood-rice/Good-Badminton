@@ -1458,12 +1458,15 @@ class BadmintonAnalysisSystem:
 
         Players only cross the net between rallies (end changes), so the identity
         constraints must use in-play frames. Returned only when rally detection
-        ran and is trustworthy; otherwise None (no constraint).
+        ran and is trustworthy; otherwise None (no constraint). The court-view
+        signal is not trusted: a fixed camera yields one whole-video window,
+        which would apply the team rule through every walk-around.
         """
         detection = getattr(self, "rally_detection", None)
         if not isinstance(detection, dict):
             return None
-        if detection.get("signal") in ("error", "none") or detection.get("degraded"):
+        if (detection.get("signal") in ("error", "none", "courtview")
+                or detection.get("degraded")):
             return None
         frames = set()
         for rally in getattr(self, "rally_list", None) or []:
@@ -1498,7 +1501,11 @@ class BadmintonAnalysisSystem:
                 return
             collector = getattr(self, "_doubles", None)
             if collector is None:
+                # Say why in players.json, so the UI does not just show nothing.
                 print("Doubles stage skipped: no collector")
+                from .data.writer import write_json as _write_json
+                _write_json(os.path.join(self.save_dir, "players.json"),
+                            dbl.make_payload("error", "doubles collector unavailable"))
                 return
             payload = collector.finalize(self.save_dir, analysed_frames,
                                          shuttle=self._doubles_shuttle(),

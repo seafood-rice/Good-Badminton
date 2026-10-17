@@ -96,6 +96,29 @@ def test_doubles_clean_frame_only_when_wanted(tmp_path):
     assert s._doubles_clean_frame(frame, sysmod.FAST_FRAME_STRIDE) is None
 
 
+def test_doubles_stage_without_collector_writes_error_payload(tmp_path):
+    s = bare(tmp_path, "doubles")
+    s._doubles = None                  # collector failed to start
+    s._run_doubles_stage(30.0, 10)
+    payload = json.loads((tmp_path / "players.json").read_text(encoding="utf-8"))
+    assert payload["match_format"] == "doubles"
+    assert payload["status"] == "error"
+    assert payload["reason"] == "doubles collector unavailable"
+    assert payload["players"] == []
+
+
+def test_singles_stage_leaves_hits_json_untouched(tmp_path):
+    raw = json.dumps({"source": "contact_rule",
+                      "hits": [{"frame": 12, "hitter": "lower", "confidence": None}]},
+                     indent=2).encode("utf-8") + b"\n"
+    (tmp_path / "hits.json").write_bytes(raw)
+    s = bare(tmp_path, "singles")
+    s._doubles = None
+    s._run_doubles_stage(30.0, 100)
+    assert (tmp_path / "hits.json").read_bytes() == raw
+    assert not (tmp_path / "players.json").exists()
+
+
 def test_doubles_stage_never_raises(tmp_path):
     s = bare(tmp_path, "doubles")
     s._doubles = object()          # broken collector
@@ -121,6 +144,8 @@ def test_constraint_frames_from_rallies(tmp_path):
     {"signal": "swing", "degraded": True},
     {"signal": "error", "degraded": False},
     {"signal": "none", "degraded": False},
+    # A fixed camera yields one whole-video court-view window: no in-play signal.
+    {"signal": "courtview", "degraded": False},
     None,
 ])
 def test_constraint_frames_none_when_degraded(tmp_path, detection):
