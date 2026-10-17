@@ -97,3 +97,23 @@ def test_appearance_samples_are_kept():
         t.step(f, [Detection((3, 10), (300, 1000), None, sig if f % 5 == 0 else None)])
     (tr,) = t.finish()
     assert len(tr["appearance"]) == 8
+
+
+def test_reemergence_from_merged_blob_cuts_tracklet():
+    # Mirror of the occlusion case: two people converge, one blob is visible
+    # (frames 30-39), then two people re-emerge from the same spot. Which
+    # person the surviving track follows is arbitrary, so nothing may span
+    # both the merged stretch and the separated stretch.
+    frames = []
+    for f in range(30):
+        frames.append((f, [det(1.0 + f * 0.05, 9.0), det(4.0 - f * 0.05, 9.0)]))
+    for f in range(30, 40):
+        frames.append((f, [det(2.5, 9.0)]))
+    for f in range(40, 70):
+        frames.append((f, [det(2.5 - (f - 40) * 0.05, 9.0), det(2.5 + (f - 40) * 0.05, 9.0)]))
+    tr = run(frames)
+    for t in tr:
+        assert t["frames"][-1] <= 40 or t["frames"][0] >= 40
+        assert not (39 in t["frames"] and 41 in t["frames"])
+    # Both re-emerged people are tracked.
+    assert sum(1 for t in tr if t["frames"][0] == 40) == 2
