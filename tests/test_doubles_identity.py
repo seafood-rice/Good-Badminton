@@ -250,3 +250,30 @@ def test_weighted_median_matches_plain_median_for_equal_weights():
         assert _weighted_median(vals, [1] * len(vals)) == float(np.median(vals))
     assert _weighted_median([0.0, 1.0], [1, 3]) == 1.0
     assert _weighted_median([0.0, 1.0], [3, 1]) == 0.0
+
+
+def test_coverage_values_per_identity():
+    t = [tl(0, "lower", 0, 100, sig(1)), tl(1, "lower", 0, 60, sig(2)),
+         tl(2, "upper", 0, 100, sig(10)), tl(3, "upper", 0, 80, sig(11))]
+    r = assign_identities(t, 200)
+    assert r["coverage"] == {"P1": 0.5, "P2": 0.3, "P3": 0.5, "P4": 0.4}
+    assert [person_of(r, k) for k in range(4)] == ["P1", "P2", "P3", "P4"]
+    assert r["status"] == "ok"
+
+
+def test_stage_two_partner_triangle_drops_the_shortest():
+    # A, B and C are pairwise present together (so same team and pairwise different
+    # partners) but never all three at once, so the same-side triple check keeps
+    # them. Three mutually exclusive partners cannot exist: the 50-frame C goes.
+    a, b = tl(0, "lower", 0, 100, sig(1)), tl(1, "lower", 50, 150, sig(2))
+    c = tl(2, "lower", 0, 0, sig(3))
+    c["frames"] = list(range(20, 50)) + list(range(110, 130))
+    c["court"] = [[3.0, 10.0]] * 50
+    c["image"] = [[300.0, 500.0]] * 50
+    c["keypoints"] = [None] * 50
+    t = [a, b, c, tl(3, "upper", 0, 150, sig(10)), tl(4, "upper", 0, 150, sig(11))]
+    r = assign_identities(t, 150)
+    assert r["dropped"] == [2]
+    assert 2 not in r["assignment"]
+    assert person_of(r, 0) != person_of(r, 1)
+    assert r["teams"][person_of(r, 0)] == r["teams"][person_of(r, 1)]

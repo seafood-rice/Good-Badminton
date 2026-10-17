@@ -183,3 +183,23 @@ def test_render_identity_video_reports_progress(tmp_path):
     assert dr.render_identity_video(str(src), str(tmp_path / "o_players.mp4"), TRACKS,
                                     PAYLOAD["players"], progress=done.append) is True
     assert done == [1, 2, 3, 4, 5, 6]
+
+
+def test_identity_video_marker_only_on_its_frame(tmp_path):
+    # Observation frames are 1-based like the analysis loop's frame_count.
+    src = tmp_path / "src.mp4"
+    _tiny_video(src, n=5)
+    out = tmp_path / "detect_src_players.mp4"
+    tracks = {"P1": {3: {"court": (1.5, 10.0), "image": (40, 60)}}}
+    assert dr.render_identity_video(str(src), str(out), tracks, [{"id": "P1"}]) is True
+    cap = cv2.VideoCapture(str(out))
+    sums = []
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        sums.append(int(frame[57:64, 37:44].sum()))
+    cap.release()
+    assert len(sums) == 5
+    lit = [i + 1 for i, v in enumerate(sums) if v > 1000]
+    assert lit == [3]

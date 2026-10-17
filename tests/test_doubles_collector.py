@@ -226,3 +226,32 @@ def test_finalize_passes_constraint_frames(tmp_path, monkeypatch):
     frames = {10, 20, 30}
     c.finalize(str(tmp_path), analysed_frames=90, constraint_frames=frames)
     assert seen["constraint_frames"] == frames
+
+
+def test_malformed_hits_json_keeps_identities(tmp_path, capsys):
+    (tmp_path / "hits.json").write_text("{not json", encoding="utf-8")
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    assert len(payload["players"]) == 4 and payload["stats"]["hits_total"] == 0
+    assert "hits.json unreadable" in capsys.readouterr().out
+    assert (tmp_path / "hits.json").read_text(encoding="utf-8") == "{not json"
+
+
+def test_hits_json_without_a_hit_list_is_left_alone(tmp_path):
+    raw = json.dumps({"source": "contact_rule", "hits": {"frame": 3}})
+    (tmp_path / "hits.json").write_text(raw, encoding="utf-8")
+    c = make()
+    feed(c, range(1, 91))
+    payload = c.finalize(str(tmp_path), analysed_frames=90)
+    assert payload["stats"]["hits_total"] == 0
+    assert (tmp_path / "hits.json").read_text(encoding="utf-8") == raw
+
+
+def test_malformed_player_names_are_ignored(tmp_path):
+    for raw in ("{not json", json.dumps(["Alice", "Bob"])):
+        (tmp_path / "player_names.json").write_text(raw, encoding="utf-8")
+        assert dbl.DoublesCollector._read_names(str(tmp_path)) == {}
+    (tmp_path / "player_names.json").write_text(
+        json.dumps({"P1": 5, "P2": "  ", "P3": "Cara", "P4": None}), encoding="utf-8")
+    assert dbl.DoublesCollector._read_names(str(tmp_path)) == {"P3": "Cara"}
