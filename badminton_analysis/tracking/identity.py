@@ -10,13 +10,23 @@ deciding only what the constraints leave open:
 Constraint-forced placements get confidence 1.0; appearance-decided ones get
 the margin between the two choices.
 
-Constraints only hold while the rally is in play. Between rallies players walk
-around and cross the net at different times (end changes), so one player of each
-team can briefly stand on the same side and would be wrongly read as partners.
-``constraint_frames`` (a set of frame numbers) restricts the coexistence used by
-every constraint to those frames; coverage and labelling still use each
-tracklet's full frame set. A tracklet with no frame inside it has no constraints
-and is placed purely by appearance. ``None`` applies constraints to all frames.
+The team rule only holds while the rally is in play. Between rallies players
+walk around and cross the net at different times (end changes), so one player of
+each team can briefly stand on the same side and would be wrongly read as
+partners. ``constraint_frames`` (a set of frame numbers) restricts the
+coexistence used by the stage-1 team rule to those frames; a tracklet with no
+frame inside it gets no team constraint and is placed by appearance. ``None``
+applies the team rule to all frames.
+
+"Present at the same frame => different people" holds at every frame, so the
+same-side triple check, the stage-2 partner cannot-links and the final check
+that no identity holds two tracklets at once all use each tracklet's FULL frame
+set, as do coverage and labelling.
+
+Coexisting pairs are computed once (interval sweep plus an exact set test for
+interval-overlapping pairs); dropped tracklets are removed from those
+structures rather than rebuilt, so long matches (thousands of tracklets) stay
+fast.
 """
 from collections import defaultdict
 
@@ -39,29 +49,88 @@ class _UF:
         self.p[self.find(a)] = self.find(b)
 
 
-def _coexist(a, b):
-    return bool(a["_cs"] & b["_cs"])
-
-
 def _sig(members):
     samples = [s for m in members for s in m.get("appearance") or []]
     return ap.median_signature(samples)
 
 
-def _same_side_triple(tl, ids):
-    """Shortest of the first three same-side tracklets that share a frame, or None.
+def _memo(fn):
+    cache = {}
 
-    Three people on one side at once is impossible in doubles, so one of them
-    (the shortest, i.e. the cheapest to lose) is a bystander or a duplicate.
+    def wrapped(key):
+        if key not in cache:
+            cache[key] = fn(key)
+        return cache[key]
+    return wrapped
+
+
+def _coexisting_pairs(tl):
+    """Sorted pairs (a, b), a < b, of tracklets sharing at least one frame (full sets).
+
+    Interval sweep over (first, last) frame; the exact set test runs only for
+    pairs whose intervals overlap.
     """
-    for i, a in enumerate(ids):
-        peers = [b for b in ids[i + 1:]
-                 if tl[b]["side"] == tl[a]["side"] and _coexist(tl[a], tl[b])]
+    pairs, active = [], []
+    for n in sorted(tl, key=lambda k: (tl[k]["_lo"], k)):
+        lo, fs = tl[n]["_lo"], tl[n]["_fs"]
+        active = [(hi, m) for hi, m in active if hi >= lo]
+        for _, m in active:
+            if not fs.isdisjoint(tl[m]["_fs"]):
+                pairs.append((min(n, m), max(n, m)))
+        active.append((tl[n]["_hi"], n))
+    pairs.sort()
+    return pairs
+
+
+class _Graph:
+    """Live tracklets plus their coexistence pairs; drops remove nodes in place."""
+
+    def __init__(self, tl, cf, dropped):
+        self.tl = tl
+        self.dropped = dropped
+        self.full = _coexisting_pairs(tl)
+        self.team_pairs = (self.full if cf is None else
+                           [(a, b) for a, b in self.full
+                            if not tl[a]["_cs"].isdisjoint(tl[b]["_cs"])])
+        self.nbr = defaultdict(set)
+        for a, b in self.full:
+            self.nbr[a].add(b)
+            self.nbr[b].add(a)
+
+    def alive(self, pairs):
+        return [(a, b) for a, b in pairs if a in self.tl and b in self.tl]
+
+    def drop(self, n):
+        self.dropped.append(n)
+        del self.tl[n]
+        for m in self.nbr.pop(n, ()):
+            self.nbr[m].discard(n)
+
+    def drop_same_side_triples(self):
+        """Drop the shortest of every three same-side tracklets sharing a frame.
+
+        Three people on one side at once is impossible in doubles, so one of them
+        (the shortest, i.e. the cheapest to lose) is a bystander or a duplicate.
+        Triples are visited in id order; removing a node never creates a triple,
+        so one pass (re-checking the current node after each drop) finds them all.
+        """
+        tl = self.tl
+        for a in sorted(tl):
+            while a in tl:
+                found = self._first_triple(a)
+                if found is None:
+                    break
+                self.drop(min(found, key=lambda k: len(tl[k]["frames"])))
+
+    def _first_triple(self, a):
+        tl = self.tl
+        peers = sorted(b for b in self.nbr[a] if b > a and tl[b]["side"] == tl[a]["side"])
         for x, b in enumerate(peers):
+            ab = tl[a]["_fs"] & tl[b]["_fs"]
             for c in peers[x + 1:]:
-                if tl[a]["_cs"] & tl[b]["_cs"] & tl[c]["_cs"]:
-                    return min((a, b, c), key=lambda k: len(tl[k]["frames"]))
-    return None
+                if c in self.nbr[b] and not ab.isdisjoint(tl[c]["_fs"]):
+                    return a, b, c
+        return None
 
 
 def _margin(d_own, d_other):
@@ -140,59 +209,58 @@ def assign_identities(tracklets, analysed_frames, *, min_coverage=0.2, team_conf
     for t in tracklets:
         if t.get("frames"):
             fs = set(t["frames"])
-            tl[t["id"]] = dict(t, _fs=fs, _cs=fs if cf is None else fs & cf)
+            tl[t["id"]] = dict(t, _fs=fs, _cs=fs if cf is None else fs & cf,
+                               _lo=min(fs), _hi=max(fs))
     if not tl:
         result["reason"] = "no tracklets"
         return result
+    g = _Graph(tl, cf, result["dropped"])
+    no_left = "no tracklets after resolving conflicts"
 
     # --- Stage 1: teams ---------------------------------------------------
+    # Three simultaneous same-side people is impossible at any frame.
+    g.drop_same_side_triples()
+    if not tl:
+        result["reason"] = no_left
+        return result
     while True:
         ids = sorted(tl)
         uf = _UF(ids)
-        for i, a in enumerate(ids):
-            for b in ids[i + 1:]:
-                if tl[a]["side"] == tl[b]["side"] and _coexist(tl[a], tl[b]):
-                    uf.union(a, b)
+        same, opposite = [], []
+        for a, b in g.alive(g.team_pairs):
+            (same if tl[a]["side"] == tl[b]["side"] else opposite).append((a, b))
+        for a, b in same:
+            uf.union(a, b)
         comps = defaultdict(list)
         for i in ids:
             comps[uf.find(i)].append(i)
-        # A component with 3+ simultaneous same-side members is impossible.
+        # Opposite sides at once inside one same-team component is impossible:
+        # take the last such pair of the first (lowest-id) offending component.
         bad = None
-        for members in comps.values():
-            for i, a in enumerate(members):
-                for b in members[i + 1:]:
-                    if tl[a]["side"] != tl[b]["side"] and _coexist(tl[a], tl[b]):
-                        bad = (a, b)
-            if bad:
-                break
+        inner = [(a, b) for a, b in opposite if uf.find(a) == uf.find(b)]
+        if inner:
+            first = min(comps[uf.find(a)][0] for a, _ in inner)
+            bad = max(p for p in inner if comps[uf.find(p[0])][0] == first)
         if bad is None:
-            shortest = _same_side_triple(tl, ids)
-            if shortest is not None:
-                bad = (shortest, shortest)
-        cannot = set()
-        if bad is None:
-            for i, a in enumerate(ids):
-                for b in ids[i + 1:]:
-                    if tl[a]["side"] != tl[b]["side"] and _coexist(tl[a], tl[b]):
-                        ca, cb = uf.find(a), uf.find(b)
-                        if ca != cb:
-                            cannot.add((min(ca, cb), max(ca, cb)))
+            cannot = set()
+            for a, b in opposite:
+                ca, cb = uf.find(a), uf.find(b)
+                if ca != cb:
+                    cannot.add((min(ca, cb), max(ca, cb)))
             groups, conflict = _two_colour(sorted(comps), cannot)
             if conflict is not None:
                 bad = conflict
         if bad is None:
             break
         a, b = bad
-        drop = min({a, b}, key=lambda k: len(tl[k]["frames"]))
-        result["dropped"].append(drop)
-        del tl[drop]
+        g.drop(min({a, b}, key=lambda k: len(tl[k]["frames"])))
         if not tl:
-            result["reason"] = "no tracklets after resolving conflicts"
+            result["reason"] = no_left
             return result
 
     comp_members = {c: comps[c] for c in comps}
     weight = lambda c: sum(len(tl[m]["frames"]) for m in comp_members[c])
-    sig_of_comp = lambda c: _sig([tl[m] for m in comp_members[c]])
+    sig_of_comp = _memo(lambda c: _sig([tl[m] for m in comp_members[c]]))
     comp_conf = {}
     team_of_comp = _orient(groups, weight, sig_of_comp, comp_conf)
     team = {m: team_of_comp[c] for c, ms in comp_members.items() for m in ms}
@@ -201,27 +269,34 @@ def assign_identities(tracklets, analysed_frames, *, min_coverage=0.2, team_conf
     unforced_conf = [comp_conf[c] for c in comp_members if c not in forced_comps]
 
     # --- Stage 2: partners within each team ------------------------------
+    # Coexisting at ANY frame (full frame sets) => different partners.
     partner = {}
+    sig_of_node = _memo(lambda n: _sig([tl[n]]))
     for k in (0, 1):
         members = sorted(m for m in tl if team[m] == k)
         if not members:
             continue
         while True:
-            edges = [(a, b) for i, a in enumerate(members) for b in members[i + 1:]
-                     if _coexist(tl[a], tl[b])]
+            edges = [(a, b) for a, b in g.alive(g.full) if team[a] == k and team[b] == k]
             pgroups, conflict = _two_colour(members, edges)
             if conflict is None:
                 break
             drop = min(conflict, key=lambda n: len(tl[n]["frames"]))
-            result["dropped"].append(drop)
             members.remove(drop)
-            del tl[drop]
+            g.drop(drop)
         pconf = {}
-        oriented = _orient(pgroups, lambda n: len(tl[n]["frames"]),
-                           lambda n: _sig([tl[n]]), pconf)
+        oriented = _orient(pgroups, lambda n: len(tl[n]["frames"]), sig_of_node, pconf)
         for n, c in oriented.items():
             partner[n] = c
             conf[n] = min(conf.get(n, 1.0), pconf.get(n, 1.0))
+
+    # Safety net: one identity can never hold two tracklets at the same frame.
+    for a, b in g.full:
+        if a in tl and b in tl and (team[a], partner[a]) == (team[b], partner[b]):
+            g.drop(min((a, b), key=lambda n: len(tl[n]["frames"])))
+    if not tl:
+        result["reason"] = no_left
+        return result
 
     # --- Labels -------------------------------------------------------------
     lower_first = min((t for t in tl.values() if t["side"] == "lower"),
