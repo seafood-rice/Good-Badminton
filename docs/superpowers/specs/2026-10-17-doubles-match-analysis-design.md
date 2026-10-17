@@ -175,9 +175,11 @@ tracklet confidence, and a status.
    - `ok` - 4 identities each covering at least 20% of the analysed frames.
    - `degraded` - fewer than 4 identities meet that bar (e.g. the far back-court is not
      visible, or bystanders dominate). Identities are still reported with their coverage.
-   - `degraded_teams` - median team-placement confidence among unforced tracklets below
+   - `degraded_teams` - median team-placement confidence among unforced components below
      0.3: teams cannot be told apart by appearance; identities are reported per side only
-     (team field null).
+     (team field null). The median is weighted by each component's frame count
+     (amended 2026-10-18): unweighted, a few short orphan tracklets placed with
+     confidence 0 could outvote long, confidently placed components and flip a whole run.
    - `error` - the stage raised; the message is recorded and every earlier output stands.
 
 ### 6.5 Who hit (`hitter.py`)

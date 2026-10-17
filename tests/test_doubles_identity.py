@@ -208,3 +208,45 @@ def test_tracklet_wholly_outside_constraint_frames_is_placed_by_appearance():
     r = assign_identities(t, 60, constraint_frames=set(range(0, 50)))
     assert r["assignment"][4] == r["assignment"][1]
     assert 0.0 < r["confidence"][4] <= 1.0
+
+
+def _orphan(tid, start, end):
+    """A short lower-side tracklet with no appearance samples: placed with confidence 0."""
+    t = tl(tid, "lower", start, end, None)
+    t["appearance"] = []
+    return t
+
+
+def test_short_orphans_do_not_outvote_long_confident_components():
+    # Two well-separated halves; the second is placed by appearance with confidence 1.
+    # Three 40-frame orphans with no appearance get confidence 0. By component count
+    # they are the majority (3 of 5); by frames they are 120 of 1720 unforced frames.
+    t = [tl(0, "lower", 0, 400, sig(1)), tl(1, "lower", 0, 400, sig(2)),
+         tl(2, "upper", 0, 400, sig(10)), tl(3, "upper", 0, 400, sig(11)),
+         tl(4, "lower", 500, 900, sig(1)), tl(5, "lower", 500, 900, sig(2)),
+         tl(6, "upper", 500, 900, sig(10)), tl(7, "upper", 500, 900, sig(11))]
+    t += [_orphan(8 + k, 950 + 50 * k, 990 + 50 * k) for k in range(3)]
+    r = assign_identities(t, 1090)
+    assert [r["confidence"][k] for k in (8, 9, 10)] == [0.0, 0.0, 0.0]
+    assert r["status"] == "ok"
+    assert r["teams"][person_of(r, 4)] == 1
+
+
+def test_long_ambiguous_component_outweighs_short_confident_ones():
+    # The reverse: one long orphan-like component with no appearance (confidence 0)
+    # dominates the unforced frames, so teams are reported as indistinguishable.
+    t = [tl(0, "lower", 0, 400, sig(1)), tl(1, "lower", 0, 400, sig(2)),
+         tl(2, "upper", 0, 400, sig(10)), tl(3, "upper", 0, 400, sig(11)),
+         tl(4, "lower", 500, 540, sig(1)), tl(5, "lower", 500, 540, sig(2)),
+         tl(6, "upper", 500, 540, sig(10)), tl(7, "upper", 500, 540, sig(11)),
+         _orphan(8, 600, 1400), _orphan(9, 600, 1400)]
+    r = assign_identities(t, 1400)
+    assert r["status"] == "degraded_teams"
+
+
+def test_weighted_median_matches_plain_median_for_equal_weights():
+    from badminton_analysis.tracking.identity import _weighted_median
+    for vals in ([0.2], [0.1, 0.9], [0.0, 0.5, 1.0], [0.3, 0.1, 0.8, 0.4]):
+        assert _weighted_median(vals, [1] * len(vals)) == float(np.median(vals))
+    assert _weighted_median([0.0, 1.0], [1, 3]) == 1.0
+    assert _weighted_median([0.0, 1.0], [3, 1]) == 0.0
