@@ -28,6 +28,20 @@ def _side(y, net_y=NET_Y):
     return "upper" if float(y) < net_y else "lower"
 
 
+def _compact_keypoints(kp):
+    """Own (17, 2) float32 copy of a keypoint array, or None.
+
+    One observation per person per analysed frame adds up on long runs: a
+    float32 array is ~250 bytes where nested Python float lists cost ~2.8 KB.
+    """
+    if kp is None:
+        return None
+    a = np.asarray(kp, dtype=np.float32)
+    if a.ndim == 2:
+        a = a[:17, :2]
+    return np.array(a, dtype=np.float32)
+
+
 class _Kalman:
     """2-D constant-velocity Kalman filter, time in frames."""
 
@@ -69,8 +83,7 @@ class _Track:
         self.frames.append(int(frame))
         self.court.append([float(d.court[0]), float(d.court[1])])
         self.image.append([float(d.image[0]), float(d.image[1])])
-        kp = d.keypoints
-        self.keypoints.append(None if kp is None else np.asarray(kp, float).tolist())
+        self.keypoints.append(_compact_keypoints(d.keypoints))
         if d.appearance is not None:
             self.appearance.append(d.appearance)
         self.last_frame = int(frame)

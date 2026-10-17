@@ -56,6 +56,26 @@ def test_finalize_writes_players_and_tracklets(tmp_path):
     assert saved["stroke_labels_withheld"].startswith("doubles")
 
 
+def test_tracklets_jsonl_keypoints_rounded_and_tracks_share_arrays(tmp_path):
+    c = make()
+    img = np.zeros((1400, 700, 3), np.uint8)
+    for f in range(1, 61):
+        cents = [POS[p] for p in "abcd"]
+        kps = [kp_for(x + 0.123456, y + 0.987654) for x, y in cents]
+        c.observe(f, img, cents, kps)
+    c.finalize(str(tmp_path), analysed_frames=60)
+    row = json.loads((tmp_path / "tracklets.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    values = [v for kp in row["keypoints"] if kp is not None for pt in kp for v in pt]
+    assert values and all(round(v, 1) == v for v in values)
+    assert any(v != int(v) for v in values)               # rounded, not truncated to ints
+    # identity_tracks references the tracker's float32 arrays (no per-frame copies).
+    t = c.tracklets[0]
+    pid = c.assignment[t["id"]]
+    obs = c.identity_tracks[pid][t["frames"][0]]
+    assert obs["keypoints"] is t["keypoints"][0]
+    assert obs["keypoints"].dtype == np.float32
+
+
 def test_observe_dedupes_near_duplicate_detections(tmp_path):
     c = make()
     # A duplicate of "c" 20 cm away (far player seen by both passes).

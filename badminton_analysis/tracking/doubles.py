@@ -147,14 +147,17 @@ class DoublesCollector:
                                   constraint_frames=constraint_frames)
         self.assignment = ident["assignment"]
 
+        # Each observation is a small dict REFERENCING the tracklet's own court /
+        # image lists and float32 keypoint array: no per-frame copies.
         tracks = defaultdict(dict)
         for t in self.tracklets:
             pid = ident["assignment"].get(t["id"])
             if pid is None:
                 continue
+            side, tid = t["side"], t["id"]
             for f, c, im, kp in zip(t["frames"], t["court"], t["image"], t["keypoints"]):
-                tracks[pid][f] = {"court": tuple(c), "image": tuple(im), "keypoints": kp,
-                                  "side": t["side"], "tracklet": t["id"]}
+                tracks[pid][f] = {"court": c, "image": im, "keypoints": kp,
+                                  "side": side, "tracklet": tid}
         self.identity_tracks = dict(tracks)
 
         hits = self._augment_hits(save_dir, ident, shuttle)
@@ -189,7 +192,11 @@ class DoublesCollector:
         os.makedirs(save_dir, exist_ok=True)
         with open(os.path.join(save_dir, "tracklets.jsonl"), "w", encoding="utf-8") as fh:
             for t in tracklets:
-                row = dict(t, appearance=[ap.to_json(s) for s in t.get("appearance") or []])
+                # Keypoints to 0.1 px: plenty for pixels, and it keeps the file small.
+                kps = [None if k is None else np.round(np.asarray(k, np.float64), 1).tolist()
+                       for k in t.get("keypoints") or []]
+                row = dict(t, keypoints=kps,
+                           appearance=[ap.to_json(s) for s in t.get("appearance") or []])
                 fh.write(json.dumps(clean_value(row), separators=(",", ":")) + "\n")
 
     def _augment_hits(self, save_dir, ident, shuttle):

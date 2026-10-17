@@ -156,6 +156,18 @@ def test_stale_track_does_not_steal_a_gated_neighbour():
         assert not (has_b and has_a7), t["frames"]
 
 
+def test_keypoints_are_stored_as_float32_arrays():
+    kp = np.arange(34, dtype=float).reshape(17, 2) + 0.123456789
+    t = MultiTracker(FPS)
+    for f in range(5):
+        t.step(f, [Detection((3, 10), (300, 1000), kp if f != 2 else None, None)])
+    (tr,) = t.finish()
+    stored = [k for k in tr["keypoints"] if k is not None]
+    assert len(stored) == 4 and tr["keypoints"][2] is None
+    for k in stored:
+        assert isinstance(k, np.ndarray) and k.dtype == np.float32 and k.shape == (17, 2)
+
+
 def test_empty_and_none_detections():
     assert MultiTracker(FPS).finish() == []
     t = MultiTracker(FPS)
