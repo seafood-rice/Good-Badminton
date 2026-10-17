@@ -1346,7 +1346,7 @@ class BadmintonAnalysisSystem:
         skipped unless a hit model is configured or ``dense_whole_video`` is set,
         because the learned hit detector needs a whole-video dense track.
         """
-        if not (self.tracknet_weights and self.analyze_technique):
+        if not (self.tracknet_weights and getattr(self, "_capture_frames", self.analyze_technique)):
             return
         try:
             _cap = cv2.VideoCapture(self.video_path)

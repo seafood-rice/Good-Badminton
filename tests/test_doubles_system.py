@@ -146,3 +146,30 @@ def test_identity_video_outcome_lines(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(dr, "render_identity_video", lambda *a, **k: False)
     s._run_doubles_stage(30.0, 5)
     assert "Identity video skipped: render failed" in capsys.readouterr().out
+
+
+def _pretrack_probe(tmp_path, monkeypatch, capture):
+    """Run _run_shuttle_pretrack on a bare instance; return whether it got past the gate."""
+    s = bare(tmp_path, "doubles")
+    s.tracknet_weights = "w.pt"
+    s.inpaintnet_weights = None
+    s._capture_frames = capture
+    s._shuttle_trajectory = None
+    calls = []
+
+    class FakeCV2:
+        CAP_PROP_FRAME_COUNT = 7
+
+        @staticmethod
+        def VideoCapture(path):
+            calls.append(path)
+            raise RuntimeError("probe")      # caught by the pre-pass's own guard
+
+    monkeypatch.setattr(sysmod, "cv2", FakeCV2, raising=False)
+    s._run_shuttle_pretrack()
+    return bool(calls)
+
+
+def test_tracknet_pretrack_runs_for_doubles_capture(tmp_path, monkeypatch):
+    assert _pretrack_probe(tmp_path, monkeypatch, True) is True
+    assert _pretrack_probe(tmp_path, monkeypatch, False) is False
