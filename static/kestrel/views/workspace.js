@@ -18,6 +18,7 @@ export const RALLY_PAD_SEC = 0.5;
 export const JOIN_FRAMES = 3;
 const DEFAULT_REF = Object.freeze({ lo: 70, hi: 100 });
 const LONG = { timeout: 60000 };
+const SETTLE_MS = 2600;
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -135,7 +136,8 @@ export function buildWorkspaceModel(input = {}) {
   const base = hasFile ? summariseRallyPayload(payload) : summaryFromInsights(insights) || summariseRallyPayload(null);
   const f = resolveFps(fps, payload, insights);
   const det = obj(obj(payload).detection);
-  const withheld = det.stroke_labels_withheld === true;
+  // Degraded runs withhold stroke labels unless the file says otherwise (older files carry no flag).
+  const withheld = typeof det.stroke_labels_withheld === 'boolean' ? det.stroke_labels_withheld : !!det.degraded;
   const units = hasFile && !base.failed ? rallyEntries(payload, f) : [];
   const side = SIDES.includes(athleteSide) ? athleteSide : null;
 
@@ -151,7 +153,7 @@ export function buildWorkspaceModel(input = {}) {
     const mapped = STROKE_MAP[raw] || raw;
     const known = TECHNIQUE_IDS.includes(mapped);
     const uncertain = withheld || s.uncertain === true || !known;
-    const opponent = side !== null && hitter !== side;
+    const opponent = side !== null && hitter !== null && hitter !== side;
     let report = null;
     if (!opponent && hitter !== null && frame !== null) {
       let bestD = Infinity;
@@ -194,6 +196,18 @@ export function buildWorkspaceModel(input = {}) {
       reference: { ...DEFAULT_REF },
     },
   };
+}
+
+/**
+ * The date a match is shown under: the match record's date, else the insights sidecar's `date.value` (filename
+ * date, or the video's mtime when the name has none). Never the run files' own mtime. ISO string or null.
+ */
+export function matchDate(record, insights) {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  const r = obj(record).date;
+  if (typeof r === 'string' && iso.test(r)) return r;
+  const v = obj(obj(insights).date).value;
+  return typeof v === 'string' && iso.test(v.slice(0, 10)) ? v.slice(0, 10) : null;
 }
 
 // ---------- text helpers shared by the DOM layer ----------
@@ -254,6 +268,31 @@ function reducedMotion() {
   }
 }
 
+/** ctx.reduced may be a boolean (main.js getter) or a function; otherwise the media query decides. */
+export function readReduced(ctx) {
+  const r = obj(ctx).reduced;
+  if (typeof r === 'function') return !!r();
+  if (typeof r === 'boolean') return r;
+  return reducedMotion();
+}
+
+/** Strokes per page in the strip and the list: 1000+ strokes never become 1000 tab stops at once. */
+export const STROKE_PAGE = 200;
+
+/**
+ * Pure: the first `limit` items (grown in whole pages so the selected item, when `isSelected` finds one, is
+ * always included). Returns {items, rest, limit}.
+ */
+export function capItems(items, limit = STROKE_PAGE, isSelected = null) {
+  const list = Array.isArray(items) ? items : [];
+  let lim = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : STROKE_PAGE;
+  if (typeof isSelected === 'function') {
+    const k = list.findIndex(isSelected);
+    if (k >= lim) lim = Math.ceil((k + 1) / STROKE_PAGE) * STROKE_PAGE;
+  }
+  return { items: list.slice(0, lim), rest: Math.max(0, list.length - lim), limit: lim };
+}
+
 /** GET that never throws: {ok, data, status, error}. */
 function soft(promise) {
   return promise.then((data) => ({ ok: true, data, status: 200, error: null }))
@@ -290,16 +329,18 @@ export function mount(container, ctx = {}) {
     unit: null, // rally id, or 'all'
     sel: null, // stroke i
     filter: 'all',
-    firstPaint: true,
+    stripLimit: STROKE_PAGE,
+    listLimit: STROKE_PAGE,
   };
   const refs = {};
   let ctl = null;
   let sections = [];
+  let settleTimer = null;
 
   const root = h('div', { class: 'page ws', 'data-view': 'workspace' });
   container.appendChild(root);
   const clock = createClock({
-    reduced: () => (typeof ctx.reduced === 'function' ? ctx.reduced() : reducedMotion()),
+    reduced: () => readReduced(ctx),
     onFrame: (p) => sections.forEach((el, i) => revealStyle(el, local(p, i * 1.5), { dy: 10 })),
   });
 
@@ -369,9 +410,8 @@ export function mount(container, ctx = {}) {
     const rec = obj(state.record);
     const res = obj(rec.result);
     const ins = obj(state.insights);
-    const dateIso = typeof rec.date === 'string' ? rec.date : obj(ins.date).value;
+    const dateIso = matchDate(rec, ins);
     const date = fmtDate(dateIso, lang);
-    const title = t('ws.title', lang, { a: sideName(a), b: sideName(b) });
     const meta = h('div', { class: 'ws-meta' });
     if (Array.isArray(res.sets) && res.sets.length) {
       const pairs = res.sets.filter((p) => Array.isArray(p) && p.length === 2)
@@ -403,7 +443,6 @@ export function mount(container, ctx = {}) {
         h('a', { href: formatHash('results', { stem }, { mode: 'match' }), class: 'ov-btn' }, t('ws.results_link', lang)),
       ]),
     ]);
-    refs.title = title;
     return head;
   }
 
@@ -452,7 +491,12 @@ export function mount(container, ctx = {}) {
       setText(msg, t(key, lang));
       for (const b of ctlRow.querySelectorAll('button,input')) b.disabled = true;
     };
-    video.addEventListener('error', () => fail(gotStatus ? 'ws.video_unplayable' : 'ws.video_missing'));
+    // MediaError codes: 2 network, 3 decode, 4 source not supported (a 404 also lands here). A file that
+    // reached loadedmetadata exists, so a later failure is a playback problem, not a missing video.
+    video.addEventListener('error', () => {
+      const code = video.error && video.error.code;
+      fail(code === 2 ? 'ws.video_network' : gotStatus || code === 3 ? 'ws.video_unplayable' : 'ws.video_missing');
+    });
     video.addEventListener('loadedmetadata', () => {
       gotStatus = true;
       // An undecodable MPEG-4 Part 2 track loads with the right duration but no picture.
@@ -535,7 +579,38 @@ export function mount(container, ctx = {}) {
     refs.sig.hidden = !refs.sig.textContent;
   }
 
-  // ----- timeline + strip -----
+  // ----- in-place helpers -----
+  function setPressed(el, on) {
+    if (!el) return;
+    el.classList.toggle('on', !!on);
+    if (el.hasAttribute('aria-pressed')) el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  function focusNode(node) {
+    if (!node || typeof node.focus !== 'function') return;
+    try { node.focus({ preventScroll: true }); } catch (e) { node.focus(); }
+  }
+
+  /** Scroll `child` into view inside the scroll box `box` only (never the page). */
+  function revealIn(box, child, axis) {
+    if (!box || !child) return;
+    if (axis === 'x') {
+      const l = child.offsetLeft;
+      const r = l + child.offsetWidth;
+      if (l < box.scrollLeft || r > box.scrollLeft + box.clientWidth) box.scrollLeft = Math.max(0, l - box.clientWidth / 2);
+      return;
+    }
+    const top = child.offsetTop;
+    const bottom = top + child.offsetHeight;
+    if (top < box.scrollTop + 32 || bottom > box.scrollTop + box.clientHeight) box.scrollTop = Math.max(0, top - box.clientHeight / 2);
+  }
+
+  function unitLabelText() {
+    const l = state.model.summary.label;
+    return t(l === 'windows' ? 'ws.label.windows' : l === 'segments' ? 'ws.label.segments' : 'ws.label.rallies', lang);
+  }
+
+  // ----- timeline (lane built once per load; selection updates it in place) -----
   function buildTimeline() {
     const m = state.model;
     const sec = h('section', { class: 'card hud ws-timeline', 'aria-label': t('ws.timeline', lang) });
@@ -543,97 +618,177 @@ export function mount(container, ctx = {}) {
       : h('span', { class: 'k-chip mid' }, t(m.summary.label === 'windows' ? 'ws.label.windows' : 'ws.label.segments', lang));
     sec.appendChild(h('div', { class: 'ws-sec-head' }, [h('h2', { class: 'card-title' }, t('ws.timeline', lang)), chip]));
     const lane = h('div', { class: 'ws-lane', role: 'group', 'aria-label': t('ws.timeline', lang) });
+    refs.laneBtns = new Map();
     m.rallies.forEach((r, i) => {
       const title = unitTitle(r);
-      const pressed = state.unit === r.id;
-      lane.appendChild(h('button', {
+      const btn = h('button', {
         type: 'button',
-        class: 'ws-rb rb' + (m.summary.label === 'windows' || r.degraded ? ' coarse' : '') + (pressed ? ' on' : ''),
-        'data-k': 'r' + r.id,
-        'aria-pressed': pressed ? 'true' : 'false',
+        class: 'ws-rb rb' + (m.summary.label === 'windows' || r.degraded ? ' coarse' : ''),
+        'aria-pressed': 'false',
         'aria-label': t('ws.unit_aria', lang, { title, n: r.strokeCount, sec: num1(r.len) }),
         title: `${title} · ${clockText(r.start)}–${clockText(r.end)}`,
-        style: { flex: `${Math.max(r.len, 0.5)} 1 0`, animationDelay: state.firstPaint ? `${Math.min(0.2 + i * 0.03, 1.2).toFixed(2)}s` : '0s' },
-        onclick: () => selectUnit(r.id, true, 'r' + r.id),
-      }, String(r.n)));
+        style: { flex: `${Math.max(r.len, 0.5)} 1 0`, animationDelay: `${Math.min(0.2 + i * 0.03, 1.2).toFixed(2)}s` },
+        onclick: () => selectUnit(r.id, true),
+      }, String(r.n));
+      refs.laneBtns.set(r.id, btn);
+      lane.appendChild(btn);
     });
-    const allPressed = state.unit === 'all';
-    const allBtn = h('button', {
-      type: 'button', class: 'ws-chip' + (allPressed ? ' on' : ''), 'data-k': 'rall', 'aria-pressed': allPressed ? 'true' : 'false',
-      onclick: () => selectUnit('all', false, 'rall'),
+    refs.allBtn = h('button', {
+      type: 'button', class: 'ws-chip', 'aria-pressed': 'false', onclick: () => selectUnit('all', false),
     }, t('ws.all_strokes', lang));
-    if (m.rallies.length) sec.appendChild(h('div', { class: 'ws-lane-scroll' }, lane));
+    refs.laneScroll = m.rallies.length ? h('div', { class: 'ws-lane-scroll' }, lane) : null;
+    if (refs.laneScroll) sec.appendChild(refs.laneScroll);
     sec.appendChild(h('div', { class: 'ws-lane-foot' }, [
-      allBtn,
+      refs.allBtn,
       h('span', { class: 'card-sub' }, m.rallies.length ? `${t('ws.timeline_hint', lang)} ${t('ws.timeline_lane', lang)}` : signalNote(m.summary, lang, 0)),
     ]));
-
-    // stroke strip for the selected unit
-    const strokes = unitStrokes();
-    const u = currentUnit();
-    const head = u
-      ? t('ws.unit_strokes', lang, { title: unitTitle(u), n: strokes.length })
-      : t('ws.all_strokes_title', lang, { n: strokes.length });
-    const strip = h('div', { class: 'ws-strip' });
-    strokes.forEach((s) => {
-      const pressed = state.sel === s.i;
-      strip.appendChild(h('button', {
-        type: 'button',
-        class: `ws-st tc-${s.label}` + (s.uncertain ? ' unc' : '') + (s.opponent ? ' opp' : '') + (pressed ? ' on' : ''),
-        'data-k': 's' + s.i,
-        'aria-pressed': pressed ? 'true' : 'false',
-        'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: techLabel(s.label, lang) }) + ', ' + (s.hitter ? sideName(s.hitter) : '—'),
-        title: `${techLabel(s.label, lang)} · ${clockText(s.time)}`,
-        onclick: () => selectStroke(s.i, 's' + s.i),
-      }, techCode(s.label, lang)));
-    });
-    const stripSec = h('div', { class: 'ws-strip-wrap' }, [
-      h('div', { class: 'ws-sec-head' }, [h('h3', { class: 'ws-h3' }, head), h('span', { class: 'card-sub' }, t('ws.pick_stroke', lang))]),
-      strokes.length ? strip : h('div', { class: 'kw-note' }, t('ws.no_strokes', lang)),
-    ]);
-    sec.appendChild(stripSec);
-    if (m.summary.outside && state.unit !== 'all') {
-      sec.appendChild(h('div', { class: 'kw-foot-muted' }, t('ws.outside_note', lang, {
-        n: m.summary.outside, label: t(m.summary.label === 'windows' ? 'ws.label.windows' : m.summary.label === 'segments' ? 'ws.label.segments' : 'ws.label.rallies', lang),
-      })));
-    }
+    refs.stripHost = h('div', { class: 'ws-strip-wrap' });
+    sec.appendChild(refs.stripHost);
+    refs.outsideNote = m.summary.outside
+      ? h('div', { class: 'kw-foot-muted' }, t('ws.outside_note', lang, { n: m.summary.outside, label: unitLabelText() }))
+      : null;
+    if (refs.outsideNote) sec.appendChild(refs.outsideNote);
     return sec;
   }
 
-  // ----- stroke list -----
+  function paintLane() {
+    for (const [id, btn] of refs.laneBtns || []) setPressed(btn, state.unit === id);
+    setPressed(refs.allBtn, state.unit === 'all');
+    if (refs.outsideNote) refs.outsideNote.hidden = state.unit === 'all';
+    const on = refs.laneBtns && refs.laneBtns.get(state.unit);
+    if (on) revealIn(refs.laneScroll, on, 'x');
+  }
+
+  /** "Show N more" button for a capped list. */
+  function moreButton(rest, onMore) {
+    return h('button', { type: 'button', class: 'ws-chip ws-more', onclick: onMore },
+      t('ws.show_more', lang, { n: fmtNumber(Math.min(STROKE_PAGE, rest)), rest: fmtNumber(rest) }));
+  }
+
+  // ----- stroke strip (rebuilt when the unit changes; capped) -----
+  function renderStrip(focusFirstNew) {
+    const host = refs.stripHost;
+    if (!host) return;
+    const strokes = unitStrokes();
+    const u = currentUnit();
+    const head = u ? t('ws.unit_strokes', lang, { title: unitTitle(u), n: strokes.length }) : t('ws.all_strokes_title', lang, { n: strokes.length });
+    const before = refs.stripBtns ? refs.stripBtns.size : 0;
+    const cap = capItems(strokes, state.stripLimit, (s) => s.i === state.sel);
+    state.stripLimit = cap.limit;
+    host.textContent = '';
+    host.appendChild(h('div', { class: 'ws-sec-head' }, [h('h3', { class: 'ws-h3' }, head), h('span', { class: 'card-sub' }, t('ws.pick_stroke', lang))]));
+    refs.stripBtns = new Map();
+    if (!strokes.length) {
+      host.appendChild(h('div', { class: 'kw-note' }, t('ws.no_strokes', lang)));
+      return;
+    }
+    const strip = h('div', { class: 'ws-strip' });
+    cap.items.forEach((s) => {
+      const btn = h('button', {
+        type: 'button',
+        class: `ws-st tc-${s.label}` + (s.uncertain ? ' unc' : '') + (s.opponent ? ' opp' : '') + (state.sel === s.i ? ' on' : ''),
+        'aria-pressed': state.sel === s.i ? 'true' : 'false',
+        'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: techLabel(s.label, lang) }) + ', ' + (s.hitter ? sideName(s.hitter) : '—'),
+        title: `${techLabel(s.label, lang)} · ${clockText(s.time)}`,
+        onclick: () => selectStroke(s.i, 'strip'),
+      }, techCode(s.label, lang));
+      refs.stripBtns.set(s.i, btn);
+      strip.appendChild(btn);
+    });
+    if (cap.rest) {
+      strip.appendChild(moreButton(cap.rest, () => {
+        state.stripLimit += STROKE_PAGE;
+        renderStrip(true);
+      }));
+    }
+    host.appendChild(strip);
+    if (focusFirstNew) focusNode([...refs.stripBtns.values()][before]);
+  }
+
+  // ----- stroke list (shell built once; filters rebuilt per unit; rows capped) -----
   function buildList() {
-    const all = unitStrokes();
-    const present = [...new Set(all.map((s) => s.label))];
-    const ids = ['all', ...TECHNIQUE_IDS.filter((id) => present.includes(id)), ...(present.includes('uncertain') ? ['uncertain'] : [])];
-    if (!ids.includes(state.filter)) state.filter = 'all';
     const sec = h('section', { class: 'card hud ws-list', 'aria-label': t('ws.strokes_in_rally', lang) });
-    const filters = h('div', { class: 'ws-filters', role: 'group', 'aria-label': t('ws.filter_aria', lang) }, ids.map((id) => h('button', {
-      type: 'button', class: 'ws-chip' + (state.filter === id ? ' on' : ''), 'data-k': 'f' + id, 'aria-pressed': state.filter === id ? 'true' : 'false',
-      onclick: () => { state.filter = id; refresh('f' + id); },
-    }, id === 'all' ? t('ws.filter.all', lang) : techLabel(id, lang))));
-    sec.appendChild(h('div', { class: 'ws-sec-head' }, [h('h2', { class: 'card-title' }, t('ws.strokes_in_rally', lang)), filters]));
+    refs.filterHost = h('div', { class: 'ws-filters', role: 'group', 'aria-label': t('ws.filter_aria', lang) });
+    sec.appendChild(h('div', { class: 'ws-sec-head' }, [h('h2', { class: 'card-title' }, t('ws.strokes_in_rally', lang)), refs.filterHost]));
+    refs.tableWrap = h('div', { class: 'ws-table-wrap' });
+    sec.appendChild(refs.tableWrap);
+    return sec;
+  }
+
+  function renderFilters() {
+    const all = unitStrokes();
+    const present = new Set(all.map((s) => s.label));
+    const ids = ['all', ...TECHNIQUE_IDS.filter((id) => present.has(id)), ...(present.has('uncertain') ? ['uncertain'] : [])];
+    if (!ids.includes(state.filter)) state.filter = 'all';
+    refs.filterHost.textContent = '';
+    refs.filterBtns = new Map();
+    ids.forEach((id) => {
+      const btn = h('button', {
+        type: 'button', class: 'ws-chip' + (state.filter === id ? ' on' : ''), 'aria-pressed': state.filter === id ? 'true' : 'false',
+        onclick: () => {
+          if (state.filter === id) return;
+          state.filter = id;
+          state.listLimit = STROKE_PAGE;
+          for (const [k, b] of refs.filterBtns) setPressed(b, k === id);
+          renderRows();
+        },
+      }, id === 'all' ? t('ws.filter.all', lang) : techLabel(id, lang));
+      refs.filterBtns.set(id, btn);
+      refs.filterHost.appendChild(btn);
+    });
+  }
+
+  function renderRows(focusFirstNew) {
+    const wrap = refs.tableWrap;
+    if (!wrap) return;
+    const all = unitStrokes();
     const shown = state.filter === 'all' ? all : all.filter((s) => s.label === state.filter);
+    const before = refs.listRows ? refs.listRows.size : 0;
+    const keepTop = focusFirstNew ? wrap.scrollTop : 0;
+    const cap = capItems(shown, state.listLimit, (s) => s.i === state.sel);
+    state.listLimit = cap.limit;
     const lo = state.model.summary.reference.lo;
-    const rows = shown.map((s) => h('tr', { class: 'ws-row' + (state.sel === s.i ? ' on' : '') + (s.uncertain ? ' unc' : '') }, [
-      h('td', { class: 'mono kw-muted' }, String(s.i)),
-      h('td', { class: 'mono kw-muted' }, clockText(s.time)),
-      h('td', null, h('button', {
-        type: 'button', class: 'ws-row-btn', 'data-k': 'l' + s.i,
+    refs.listRows = new Map();
+    const rows = cap.items.map((s) => {
+      const btn = h('button', {
+        type: 'button', class: 'ws-row-btn',
         'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: techLabel(s.label, lang) }),
-        onclick: () => selectStroke(s.i, 'l' + s.i),
-      }, [h('span', { class: `ws-dot tc-${s.label}`, 'aria-hidden': 'true' }), techLabel(s.label, lang)])),
-      h('td', { class: 'kw-muted' }, [s.hitter ? sideName(s.hitter) : '—', s.opponent ? h('span', { class: 'ws-opp' }, t('ws.opponent_tag', lang)) : null]),
-      h('td', { class: 'mono kw-num' + (s.score !== null && s.score < lo ? ' ws-bad' : '') + (s.score === null ? ' kw-muted' : '') }, s.score === null ? '—' : num1(s.score)),
-    ]));
-    const table = h('table', { class: 'table ws-table' }, [
+        'aria-current': state.sel === s.i ? 'true' : null,
+        onclick: () => selectStroke(s.i, 'list'),
+      }, [h('span', { class: `ws-dot tc-${s.label}`, 'aria-hidden': 'true' }), techLabel(s.label, lang)]);
+      const tr = h('tr', { class: 'ws-row' + (state.sel === s.i ? ' on' : '') + (s.uncertain ? ' unc' : '') }, [
+        h('td', { class: 'mono kw-muted' }, String(s.i)),
+        h('td', { class: 'mono kw-muted' }, clockText(s.time)),
+        h('td', null, btn),
+        h('td', { class: 'kw-muted' }, [s.hitter ? sideName(s.hitter) : '—', s.opponent ? h('span', { class: 'ws-opp' }, t('ws.opponent_tag', lang)) : null]),
+        h('td', { class: 'mono kw-num' + (s.score !== null && s.score < lo ? ' ws-bad' : '') + (s.score === null ? ' kw-muted' : '') }, s.score === null ? '—' : num1(s.score)),
+      ]);
+      refs.listRows.set(s.i, { tr, btn });
+      return tr;
+    });
+    wrap.textContent = '';
+    if (!shown.length) {
+      wrap.appendChild(h('div', { class: 'kw-note ws-empty' }, t('ws.no_strokes', lang)));
+      return;
+    }
+    wrap.appendChild(h('table', { class: 'table ws-table' }, [
       h('thead', null, h('tr', null, [
         h('th', { scope: 'col' }, '#'), h('th', { scope: 'col' }, t('ws.col.time', lang)), h('th', { scope: 'col' }, t('ws.col.technique', lang)),
         h('th', { scope: 'col' }, t('ws.col.player', lang)), h('th', { scope: 'col', class: 'kw-num' }, t('ws.col.score', lang)),
       ])),
       h('tbody', null, rows),
-    ]);
-    sec.appendChild(h('div', { class: 'ws-table-wrap' }, shown.length ? table : h('div', { class: 'kw-note ws-empty' }, t('ws.no_strokes', lang))));
-    return sec;
+    ]));
+    if (cap.rest) {
+      wrap.appendChild(h('div', { class: 'ws-more-row' }, moreButton(cap.rest, () => {
+        state.listLimit += STROKE_PAGE;
+        renderRows(true);
+      })));
+    }
+    wrap.scrollTop = keepTop;
+    if (focusFirstNew) {
+      const added = [...refs.listRows.values()][before];
+      if (added) focusNode(added.btn);
+    }
   }
 
   // ----- inspector -----
@@ -648,7 +803,7 @@ export function mount(container, ctx = {}) {
   function buildInspector() {
     const st = currentStroke();
     const { lo, hi } = state.model.summary.reference;
-    const sec = h('section', { class: 'card hud ws-insp', 'aria-label': t('ws.inspector', lang), 'aria-live': 'polite' });
+    const sec = h('section', { class: 'card hud ws-insp', 'aria-label': t('ws.inspector', lang) });
     sec.appendChild(h('div', { class: 'k-label' }, t('ws.inspector', lang)));
     if (!st) {
       sec.appendChild(h('div', { class: 'kw-note' }, state.model.strokes.length ? t('ws.pick_none', lang) : t('ws.empty.body', lang)));
@@ -724,52 +879,90 @@ export function mount(container, ctx = {}) {
   function renderAll() {
     if (state.destroyed) return;
     root.textContent = '';
+    root.classList.remove('settled');
     root.appendChild(breadcrumb(t('ws.title', lang, { a: sideName(titleSides()[0]), b: sideName(titleSides()[1]) })));
     const head = buildHead();
     root.appendChild(head);
     const video = buildVideo();
-    refs.timelineHost = h('div', { class: 'ws-slot' });
-    refs.listHost = h('div', { class: 'ws-slot' });
+    const timeline = buildTimeline();
+    const list = buildList();
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
-    const main = h('div', { class: 'ws-main' }, [video, refs.timelineHost, refs.listHost]);
+    // One persistent polite live region: a short line per selection, not the whole inspector.
+    refs.live = h('div', { class: 'ws-sr', role: 'status', 'aria-live': 'polite' });
+    const main = h('div', { class: 'ws-main' }, [video, timeline, list]);
     const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [refs.inspHost, refs.sumHost]);
     root.appendChild(h('div', { class: 'ws-grid' }, [main, side]));
-    sections = [head, video, refs.timelineHost, refs.inspHost, refs.listHost, refs.sumHost];
-    refresh(null);
-    state.firstPaint = false;
+    root.appendChild(refs.live);
+    sections = [head, video, timeline, refs.inspHost, list, refs.sumHost];
+    paintLane();
+    renderStrip();
+    renderFilters();
+    renderRows();
+    renderSide(false);
     clock.start();
+    // Entrance animations play once; anything built after this (a new strip, more rows) appears at once.
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(settle, SETTLE_MS);
   }
 
-  function refresh(focusKey) {
-    if (state.destroyed || !refs.timelineHost) return;
+  function settle() {
+    clearTimeout(settleTimer);
+    settleTimer = null;
+    root.classList.add('settled');
+  }
+
+  function renderSide(announce) {
     const swap = (host, node) => { host.textContent = ''; host.appendChild(node); };
-    swap(refs.timelineHost, buildTimeline());
-    swap(refs.listHost, buildList());
     swap(refs.inspHost, buildInspector());
     swap(refs.sumHost, buildSummary());
     paintVideoTags();
-    if (focusKey) {
-      const safe = String(focusKey).replace(/["\\]/g, '');
-      const node = root.querySelector(`[data-k="${safe}"]`);
-      if (node && typeof node.focus === 'function') {
-        try { node.focus({ preventScroll: true }); } catch (e) { node.focus(); }
-      }
+    if (announce && refs.live) {
+      const st = currentStroke();
+      setText(refs.live, st
+        ? [t('ws.stroke_title', lang, { n: st.i, technique: techLabel(st.label, lang) }), st.score !== null ? num1(st.score) : null].filter(Boolean).join(', ')
+        : '');
     }
   }
 
-  function selectUnit(id, seek, focusKey) {
-    state.unit = id;
-    const list = unitStrokes();
-    if (!list.some((s) => s.i === state.sel)) state.sel = list.length ? list[0].i : null;
-    refresh(focusKey);
+  function selectUnit(id, seek) {
+    settle();
+    if (state.unit !== id) {
+      state.unit = id;
+      state.stripLimit = STROKE_PAGE;
+      state.listLimit = STROKE_PAGE;
+      const list = unitStrokes();
+      if (!list.some((s) => s.i === state.sel)) state.sel = list.length ? list[0].i : null;
+      paintLane();
+      renderStrip();
+      renderFilters();
+      renderRows();
+      renderSide(true);
+    }
     const u = currentUnit();
     if (seek && u) seekTo(u.start, false);
   }
 
-  function selectStroke(i, focusKey) {
+  function selectStroke(i, from) {
+    settle();
+    const prev = state.sel;
     state.sel = i;
-    refresh(focusKey);
+    if (prev !== i) {
+      setPressed(refs.stripBtns && refs.stripBtns.get(prev), false);
+      const p = refs.listRows && refs.listRows.get(prev);
+      if (p) { p.tr.classList.remove('on'); p.btn.removeAttribute('aria-current'); }
+      if (refs.stripBtns && !refs.stripBtns.has(i)) renderStrip();
+      else setPressed(refs.stripBtns && refs.stripBtns.get(i), true);
+      const visible = state.filter === 'all' || (currentStroke() && currentStroke().label === state.filter);
+      if (visible && refs.listRows && !refs.listRows.has(i)) renderRows();
+      const n = refs.listRows && refs.listRows.get(i);
+      if (n) {
+        n.tr.classList.add('on');
+        n.btn.setAttribute('aria-current', 'true');
+        if (from !== 'list') revealIn(refs.tableWrap, n.tr, 'y');
+      }
+      renderSide(true);
+    }
     const st = currentStroke();
     if (st && st.time !== null) seekTo(st.time, true);
   }
@@ -779,7 +972,7 @@ export function mount(container, ctx = {}) {
     if (!rs.length) return;
     const pos = rs.findIndex((r) => r.id === state.unit);
     const next = pos < 0 ? (dir > 0 ? 0 : rs.length - 1) : Math.max(0, Math.min(rs.length - 1, pos + dir));
-    selectUnit(rs[next].id, true, null);
+    selectUnit(rs[next].id, true);
   }
 
   // ----- data -----
@@ -836,6 +1029,7 @@ export function mount(container, ctx = {}) {
     if (state.destroyed) return;
     state.destroyed = true;
     clock.cancel();
+    clearTimeout(settleTimer);
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
     const v = refs.video;
     if (v) {

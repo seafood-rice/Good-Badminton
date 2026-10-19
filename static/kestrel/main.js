@@ -353,8 +353,10 @@ export function start(root) {
         VIEW_LOADERS.matches()
           .then((mod) => {
             if (!mod || typeof mod.buildMatchPeek !== 'function') throw new Error('no match peek');
-            const node = mod.buildMatchPeek({ stem }, { ...makeCtx(store.get().route), anchorEl: anchor });
-            peek.open(node, { label: t('peek.aria', store.get().lang) });
+            // Closing the drawer aborts the peek's fetches.
+            const ac = typeof AbortController === 'function' ? new AbortController() : null;
+            const node = mod.buildMatchPeek({ stem }, { ...makeCtx(store.get().route), anchorEl: anchor, signal: ac ? ac.signal : null });
+            peek.open(node, { label: t('peek.aria', store.get().lang), onClose: () => { if (ac) ac.abort(); } });
           })
           .catch((e) => {
             console.warn('Kestrel: match peek unavailable', e);

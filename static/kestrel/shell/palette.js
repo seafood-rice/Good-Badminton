@@ -85,10 +85,14 @@ export function buildIndex({ pages, athletes, videos, actions, lang } = {}) {
 /** Case-insensitive substring match over label, kind (code and label) and hint. Empty query => a copy of all. */
 export function filterIndex(index, query) {
   if (!Array.isArray(index)) return [];
-  const q = str(query).trim().toLowerCase();
-  if (!q) return index.slice();
-  return index.filter((item) => item
-    && [item.label, item.kind, item.kindLabel, item.hint].map(str).join(' ').toLowerCase().includes(q));
+  // Every whitespace-separated word must appear somewhere (any order): "dji 0005" finds "Dji 20260919104815 0005 D".
+  const words = str(query).trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return index.slice();
+  return index.filter((item) => {
+    if (!item) return false;
+    const hay = [item.label, item.kind, item.kindLabel, item.hint].map(str).join(' ').toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
 }
 
 /**

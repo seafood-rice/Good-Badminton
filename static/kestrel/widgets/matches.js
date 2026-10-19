@@ -42,15 +42,16 @@ export function build(data, ctx = {}) {
       onclick: () => open(r.stem, btn),
     }, [
       h('td', null, btn),
-      h('td', { class: 'mono kw-muted' }, r.date || '—'),
-      h('td', null, h('span', { class: 'mono kw-res' + (r.result === 'W' ? ' win' : r.result === 'L' ? ' loss' : ' none') }, r.resultText || '')),
-      h('td', { class: 'mono kw-num' }, r.tech || '—'),
+      h('td', { class: 'mono kw-muted kw-col-date' }, r.date || '—'),
+      h('td', { class: 'kw-col-res' }, h('span', { class: 'mono kw-res' + (r.result === 'W' ? ' win' : r.result === 'L' ? ' loss' : ' none') }, r.resultText || '')),
+      h('td', { class: 'mono kw-num kw-col-tech' }, r.tech || '—'),
       h('td', null, h('span', { class: 'k-chip' + (r.statusTone ? ' ' + r.statusTone : '') }, [h('span', { class: 'kw-dot', 'aria-hidden': 'true' }), r.statusText || ''])),
     ]);
   });
-  const table = h('table', { class: 'table kw-table' }, [
+  const table = h('table', { class: 'table kw-table kw-match-table' }, [
     h('thead', null, h('tr', null, [
-      th('matches.col.opponent'), th('matches.col.date'), th('matches.col.result'), th('matches.col.tech', 'kw-num'), th('matches.col.status'),
+      th('matches.col.opponent'), th('matches.col.date', 'kw-col-date'), th('matches.col.result', 'kw-col-res'), th('matches.col.tech', 'kw-num kw-col-tech'),
+      th('matches.col.status'),
     ])),
     h('tbody', null, trs),
   ]);

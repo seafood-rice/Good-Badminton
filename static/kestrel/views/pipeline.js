@@ -90,14 +90,59 @@ function stateText(row, lang) {
   return t('job.state.running', lang, { pct: row.progress });
 }
 
+/** Pure: identity of a job list for in-place updates (order, id, status, stage; progress and message excluded). */
+export function jobsKey(groups) {
+  const g = obj(groups);
+  return [...(Array.isArray(g.active) ? g.active : []), ...(Array.isArray(g.finished) ? g.finished : [])]
+    .map((r) => `${r.id}:${r.status}:${r.stage}`).join('|');
+}
+
+/**
+ * Poll loop with injectable timers: fetch(), then onData(data) / onError(err), each returning whether a job is
+ * in flight; the next poll is FAST_MS away while one is (and the page is visible), SLOW_MS otherwise. A poll
+ * never overlaps another; stop() cancels the pending timer and ignores any response still in flight.
+ * Returns {poll(), stop(), isStopped()}.
+ */
+export function createPoller({ fetch, onData, onError, isHidden = () => false, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  let timer = null;
+  let inFlight = false;
+  let stopped = false;
+  function schedule(active) {
+    if (stopped) return;
+    timer = setTimer(poll, active && !isHidden() ? FAST_MS : SLOW_MS);
+  }
+  async function poll() {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+    if (inFlight || stopped) return;
+    inFlight = true;
+    let active = false;
+    try {
+      const data = await fetch();
+      if (stopped) return;
+      active = !!onData(data);
+    } catch (e) {
+      if (stopped) return;
+      active = typeof onError === 'function' ? !!onError(e) : false;
+    } finally {
+      inFlight = false;
+    }
+    schedule(active);
+  }
+  function stop() {
+    stopped = true;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  }
+  return { poll, stop, isStopped: () => stopped };
+}
+
 /** Mount the pipeline view. Returns {destroy()}. */
 export function mount(container, ctx = {}) {
   const noop = { destroy() {} };
   if (!container || !hasDOM()) return noop;
   const lang = ctx.lang === 'en' ? 'en' : 'zh';
   const state = { groups: null, error: null, destroyed: false };
-  let timer = null;
-  let inFlight = false;
   const root = h('div', { class: 'page pv', 'data-view': 'pipeline' });
   container.appendChild(root);
   const bars = new Map(); // job id -> {bar, pctEl, stateEl, row}
@@ -118,8 +163,9 @@ export function mount(container, ctx = {}) {
     const title = stageText(r.stage, lang) || t('job.kind.' + r.kind, lang);
     const bar = h('i', { class: 'kw-bar-' + r.tone, style: { width: r.progress + '%' } });
     const stateEl = h('span', { class: 'k-chip ' + (r.tone === 'queued' ? '' : r.tone) }, stateText(r, lang));
-    const updated = r.updated !== null ? t('pv.updated', lang, { time: ago(Math.max(0, Date.now() / 1000 - r.updated)) }) : '';
-    const msg = messageText(r.message, lang);
+    // Message and "updated" text always get a node, so a poll can change them in place.
+    const msgEl = h('div', { class: 'pv-msg' + (r.status === 'error' ? ' bad' : '') });
+    const updEl = h('span', { class: 'mono kw-muted' });
     const li = h('li', { class: 'pv-job' + (r.status === 'error' ? ' err' : '') }, [
       h('div', { class: 'pv-top' }, [
         h('div', { class: 'pv-titles' }, [
@@ -133,14 +179,24 @@ export function mount(container, ctx = {}) {
         'aria-label': t('job.progress_aria', lang, { stage: title }),
       }, bar),
       r.status === 'detached' ? h('div', { class: 'kw-foot-muted' }, t('pv.detached_note', lang)) : null,
-      msg ? h('div', { class: 'pv-msg' + (r.status === 'error' ? ' bad' : '') }, msg) : null,
+      msgEl,
       h('div', { class: 'pv-foot' }, [
-        updated ? h('span', { class: 'mono kw-muted' }, updated) : null,
+        updEl,
         r.resultsHash ? h('a', { href: r.resultsHash, class: 'kw-link', 'data-xf': '' }, t('pv.open_results', lang)) : null,
       ]),
     ]);
-    bars.set(r.id, { bar, stateEl, row: r });
+    const refs = { bar, stateEl, msgEl, updEl, row: r };
+    paintText(refs, r);
+    bars.set(r.id, refs);
     return li;
+  }
+
+  function paintText(refs, r) {
+    const msg = messageText(r.message, lang);
+    setText(refs.msgEl, msg);
+    refs.msgEl.hidden = !msg;
+    setText(refs.updEl, r.updated !== null ? t('pv.updated', lang, { time: ago(Math.max(0, Date.now() / 1000 - r.updated)) }) : '');
+    refs.updEl.hidden = r.updated === null;
   }
 
   function section(key, rows) {
@@ -182,27 +238,24 @@ export function mount(container, ctx = {}) {
   function patch(next) {
     const prev = state.groups;
     if (!prev || state.error) return false;
-    const ids = (g) => [...g.active, ...g.finished].map((r) => `${r.id}:${r.status}:${r.stage}:${r.message}`).join('|');
-    if (ids(prev) !== ids(next)) return false;
-    for (const r of [...next.active, ...next.finished]) {
+    if (jobsKey(prev) !== jobsKey(next)) return false;
+    const rows = [...next.active, ...next.finished];
+    if (!rows.every((r) => bars.has(r.id))) return false;
+    for (const r of rows) {
       const b = bars.get(r.id);
-      if (!b) return false;
       setStyle(b.bar, 'width', r.progress + '%');
       if (b.bar.parentNode) b.bar.parentNode.setAttribute('aria-valuenow', String(r.progress));
       setText(b.stateEl, stateText(r, lang));
+      paintText(b, r);
+      b.row = r;
     }
     state.groups = next;
     return true;
   }
 
-  async function poll() {
-    clearTimeout(timer);
-    timer = null;
-    if (inFlight || state.destroyed) return;
-    inFlight = true;
-    try {
-      const data = await api.jobs({ timeout: 10000 });
-      if (state.destroyed) return;
+  const poller = createPoller({
+    fetch: () => api.jobs({ timeout: 10000 }),
+    onData: (data) => {
       const next = groupJobs(data);
       const wasActive = !!(state.groups && state.groups.anyActive);
       if (!patch(next)) {
@@ -212,18 +265,16 @@ export function mount(container, ctx = {}) {
       }
       // A job started or finished: let the shell's badge catch up now rather than at its next 15 s poll.
       if (typeof ctx.refreshJobs === 'function' && wasActive !== next.anyActive) ctx.refreshJobs();
-    } catch (e) {
-      if (state.destroyed) return;
+      return next.anyActive;
+    },
+    onError: (e) => {
       state.error = e;
       render();
-    } finally {
-      inFlight = false;
-      if (!state.destroyed) {
-        const hidden = typeof document !== 'undefined' && document.hidden;
-        timer = setTimeout(poll, !hidden && state.groups && state.groups.anyActive ? FAST_MS : SLOW_MS);
-      }
-    }
-  }
+      return !!(state.groups && state.groups.anyActive);
+    },
+    isHidden: () => typeof document !== 'undefined' && !!document.hidden,
+  });
+  const poll = () => poller.poll();
 
   const onVisible = () => { if (typeof document !== 'undefined' && !document.hidden) poll(); };
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', onVisible);
@@ -235,7 +286,7 @@ export function mount(container, ctx = {}) {
     destroy() {
       if (state.destroyed) return;
       state.destroyed = true;
-      clearTimeout(timer);
+      poller.stop();
       if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') document.removeEventListener('visibilitychange', onVisible);
       if (root.parentNode) root.parentNode.removeChild(root);
     },

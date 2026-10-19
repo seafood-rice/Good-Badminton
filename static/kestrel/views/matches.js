@@ -136,7 +136,7 @@ function registryName(athletes, id) {
 
 /**
  * Pure: the peek summary for one stem from its match record, its insights sidecar and the athlete registry.
- * {stem, date, side, names{upper, lower}, winner, result 'W'|'L'|null, sets, techIndex, techBySide,
+ * {stem, date, side, first, names{upper, lower}, winner, result 'W'|'L'|null, sets (oriented to `first`), techIndex, techBySide,
  *  rally{count, label, suppressed, signal, failed, available}, strokes{classified,total}|null}.
  */
 export function peekModel({ stem, record, insights, athletes, athleteId } = {}) {
@@ -165,7 +165,9 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}) 
     names,
     winner,
     result: side && winner ? (winner === side ? 'W' : 'L') : null,
-    sets: side === 'lower' ? sets.map((p) => [p[1], p[0]]) : sets,
+    // Sets read from the first-named side (the athlete's, else the lower side, as the title does).
+    first: side || 'lower',
+    sets: (side || 'lower') === 'lower' ? sets.map((p) => [p[1], p[0]]) : sets,
     techIndex: side ? idx(side) : null,
     techBySide: { upper: idx('upper'), lower: idx('lower') },
     rally: rallyOk
@@ -173,6 +175,19 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}) 
       : { available: false, count: null, label: null, suppressed: false, signal: null, failed: false },
     strokes: sIns.status !== 'unavailable' && isNum(sv.total) ? { classified: isNum(sv.classified) ? sv.classified : 0, total: sv.total } : null,
   };
+}
+
+/**
+ * Pure: {title, sub} for a matches row. With a name on either side the title is "A vs. B" (a missing name
+ * falls back to its side label) and the video name is the subtitle; with no names at all every row would read
+ * "Lower side vs. Upper side", so the video name is the title and the side labels the muted subtitle.
+ */
+export function rowTitle(row, lang) {
+  const r = obj(row);
+  const a = r.side || 'lower';
+  const sides = { a: t('ws.side.' + a, lang), b: t('ws.side.' + otherSide(a), lang) };
+  if (!r.athlete && !r.opponent) return { title: str(r.stem), sub: t('mv.sides_sub', lang, sides) };
+  return { title: t('mv.vs', lang, { a: r.athlete || sides.a, b: r.opponent || sides.b }), sub: str(r.stem) };
 }
 
 // ---------- shared DOM helpers ----------
@@ -209,9 +224,14 @@ export function buildMatchPeek(row, ctx = {}) {
   const root = h('div', { class: 'mp' });
   const hash = formatHash('matches', { stem });
 
-  function paint(pm, loading) {
+  /** mode: 'loading' | 'ok' | 'failed' (both fetches failed) | 'partial' (the record could not be read). */
+  function paint(pm, mode) {
+    const loading = mode === 'loading';
+    const had = document.activeElement && root.contains(document.activeElement)
+      ? (document.activeElement.classList.contains('mp-open') ? '.mp-open' : document.activeElement.hasAttribute('data-peek-close') ? '[data-peek-close]' : null)
+      : null;
     root.textContent = '';
-    const [a, b] = pm.side ? [pm.side, otherSide(pm.side)] : ['lower', 'upper'];
+    const [a, b] = [pm.first, otherSide(pm.first)];
     const nm = (s) => pm.names[s] || sideLabel(s, lang);
     root.appendChild(h('div', null, [
       h('div', { class: 'mono k-label' }, t('peek.match', lang, { date: fmtDate(pm.date, lang).toUpperCase() })),
@@ -220,7 +240,8 @@ export function buildMatchPeek(row, ctx = {}) {
     const chips = h('div', { class: 'mp-chips' });
     if (pm.result) chips.appendChild(h('span', { class: 'k-chip ' + (pm.result === 'W' ? 'good' : 'bad') }, t(pm.result === 'W' ? 'ws.result.win' : 'ws.result.loss', lang)));
     else if (pm.winner) chips.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: nm(pm.winner) })));
-    else chips.appendChild(h('span', { class: 'k-chip' }, t('matches.no_result', lang)));
+    else if (mode === 'ok') chips.appendChild(h('span', { class: 'k-chip' }, t('matches.no_result', lang)));
+    if (mode === 'failed' || mode === 'partial') chips.appendChild(h('span', { class: 'kw-foot-muted', role: 'status' }, t('peek.load_failed', lang)));
     if (pm.sets.length) chips.appendChild(h('span', { class: 'mono kw-muted' }, pm.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ')));
     root.appendChild(chips);
 
@@ -261,6 +282,9 @@ export function buildMatchPeek(row, ctx = {}) {
       },
     }, t('peek.open', lang));
     root.appendChild(h('div', { class: 'mp-actions' }, [open, h('button', { type: 'button', class: 'ov-btn', 'data-peek-close': '' }, t('btn.close', lang))]));
+    // A repaint replaces the buttons: keep keyboard focus where it was.
+    const back = had ? root.querySelector(had) : null;
+    if (back) back.focus();
   }
 
   const s = storeState(ctx);
@@ -272,16 +296,25 @@ export function buildMatchPeek(row, ctx = {}) {
     base.names = { [sd]: str(seed.athlete) || null, [otherSide(sd)]: str(seed.opponent) || null };
   }
   if (seed.date) base.date = seed.date;
-  paint(base, true);
+  paint(base, 'loading');
 
-  if (stem && typeof (ctx.api || api).videoInsights === 'function') {
-    const A = ctx.api || api;
-    Promise.all([
-      A.videoInsights(stem, LONG).catch(() => null),
-      A.match(stem, LONG).catch(() => ({})),
-    ]).then(([insights, record]) => {
-      // Writing into a closed (detached) drawer is harmless; it is simply never seen.
-      paint(peekModel({ stem, record, insights, athletes: storeState(ctx).athletes, athleteId }), false);
+  // ctx.signal (main.js aborts it when the drawer closes) cancels both fetches.
+  const signal = ctx.signal || null;
+  const A = ctx.api || api;
+  if (stem && typeof A.videoInsights === 'function') {
+    const o = { ...LONG, ...(signal ? { signal } : {}) };
+    const settle = (p) => p.then((data) => ({ ok: true, data }), (error) => ({ ok: false, error }));
+    Promise.all([settle(A.videoInsights(stem, o)), settle(A.match(stem, o))]).then(([ins, rec]) => {
+      if ((signal && signal.aborted) || [ins, rec].some((r) => !r.ok && r.error && r.error.kind === 'aborted')) return;
+      // GET /api/matches returns {} without a record; a 404 is an unknown video, i.e. no record either.
+      const recOk = rec.ok || (rec.error && rec.error.status === 404);
+      const mode = !ins.ok && !recOk ? 'failed' : !recOk ? 'partial' : 'ok';
+      const pm = peekModel({ stem, record: rec.ok ? rec.data : {}, insights: ins.ok ? ins.data : null, athletes: storeState(ctx).athletes, athleteId });
+      if (mode === 'failed') {
+        pm.names = base.names;
+        pm.date = base.date;
+      }
+      paint(pm, mode);
     });
   }
   return root;
@@ -291,7 +324,9 @@ export function buildMatchPeek(row, ctx = {}) {
 
 function reducedMotion(ctx) {
   try {
-    if (typeof obj(ctx).reduced === 'function') return !!ctx.reduced();
+    const r = obj(ctx).reduced;
+    if (typeof r === 'function') return !!r();
+    if (typeof r === 'boolean') return r;
     return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   } catch (e) {
     return false;
@@ -321,12 +356,6 @@ export function mount(container, ctx = {}) {
     return { athlete: q.athlete || s.athlete || '', squad: q.squad || s.squad || '' };
   }
 
-  function rowName(r) {
-    return t('mv.vs', lang, {
-      a: r.athlete || (r.side ? sideLabel(r.side, lang) : sideLabel('lower', lang)),
-      b: r.opponent || (r.side ? sideLabel(otherSide(r.side), lang) : sideLabel('upper', lang)),
-    });
-  }
 
   function header() {
     const n = state.rows ? state.rows.length : 0;
@@ -393,7 +422,7 @@ export function mount(container, ctx = {}) {
     const th = (key, cls) => h('th', { scope: 'col', class: cls || null }, t(key, lang));
     const body = h('tbody');
     state.rows.forEach((r) => {
-      const name = rowName(r);
+      const { title: name, sub } = rowTitle(r, lang);
       const tr = h('tr', {
         class: 'trow mv-row' + (state.editing === r.stem ? ' open' : ''),
         onclick: (e) => {
@@ -408,8 +437,8 @@ export function mount(container, ctx = {}) {
         onclick: () => toggleEditor(r.stem),
       }, t('mv.record_btn', lang));
       [
-        h('td', null, openBtn),
-        h('td', { class: 'mono kw-muted' }, fmtDate(r.date, lang)),
+        h('td', { class: 'mv-name' }, [openBtn, h('div', { class: 'mv-sub' }, sub)]),
+        h('td', { class: 'mono kw-muted kw-col-date' }, fmtDate(r.date, lang)),
         h('td', null, resultChip(r)),
         h('td', { class: 'mono kw-muted' }, r.sets.length ? r.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ') : '—'),
         h('td', { class: 'mono kw-num' }, num1(r.techIndex)),
@@ -426,7 +455,7 @@ export function mount(container, ctx = {}) {
     });
     const table = h('table', { class: 'table kw-table mv-table' }, [
       h('thead', null, h('tr', null, [
-        th('mv.col.match'), th('matches.col.date'), th('matches.col.result'), th('mv.col.sets'), th('matches.col.tech', 'kw-num'),
+        th('mv.col.match'), th('matches.col.date', 'kw-col-date'), th('matches.col.result'), th('mv.col.sets'), th('matches.col.tech', 'kw-num'),
         th('matches.col.status'), th('mv.col.record', 'kw-num'),
       ])),
       body,
@@ -526,7 +555,10 @@ export function mount(container, ctx = {}) {
       fields, formErr,
       h('div', { class: 'mv-actions' }, [
         saveBtn,
-        hasRecord ? h('button', { type: 'button', class: 'ov-btn small', onclick: () => submit({}) }, t('record.clear', lang)) : null,
+        hasRecord ? h('button', {
+          type: 'button', class: 'ov-btn small danger',
+          onclick: () => { if (typeof confirm !== 'function' || confirm(t('record.clear_confirm', lang))) submit({}); },
+        }, t('record.clear', lang)) : null,
         h('button', { type: 'button', class: 'ov-btn small', onclick: () => toggleEditor(row.stem) }, t('btn.cancel', lang)),
       ]),
     ]);

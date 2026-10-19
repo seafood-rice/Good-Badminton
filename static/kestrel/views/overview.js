@@ -108,7 +108,7 @@ function shareTile(id, labelKey, noteKey, ins, lang) {
   };
 }
 
-function overviewTiles(kpis, ref, range, lang) {
+function overviewTiles(kpis, ref, range, lang, hasAthlete) {
   const out = [];
   // Technique index: ring against the reference band, delta from the first to the last session.
   {
@@ -137,7 +137,10 @@ function overviewTiles(kpis, ref, range, lang) {
   {
     const ins = insight(kpis.match_win_rate);
     const label = t('tile.match_win_rate', lang);
-    if (!usable(ins) || !isNum(ins.value.rate)) out.push(gapTile('match_win_rate', label, ins, lang, 'no_results_entered'));
+    if ((!usable(ins) || !isNum(ins.value.rate)) && !hasAthlete) {
+      // A win rate belongs to one athlete: with none in scope the backend has nothing to report (no_data).
+      out.push({ ...gapTile('match_win_rate', label, ins, lang, 'no_results_entered'), reason: t('gap.win_rate_no_athlete', lang), fix: null });
+    } else if (!usable(ins) || !isNum(ins.value.rate)) out.push(gapTile('match_win_rate', label, ins, lang, 'no_results_entered'));
     else {
       const v = pct1(ins.value.rate);
       out.push({
@@ -157,8 +160,13 @@ function overviewTiles(kpis, ref, range, lang) {
     if (!usable(ins) || (!isNum(v.shots) && !isNum(v.seconds))) out.push(gapTile('avg_rally', label, ins, lang, 'no_rallies'));
     else {
       const shots = isNum(v.shots);
+      const base = baseTile('avg_rally', label, ins, lang);
+      // The estimate tag follows the rally signal even if the envelope itself is not marked partial.
+      if (!base.tag && (v.signal === 'swing' || v.signal === 'none' || v.signal === 'degraded')) {
+        base.tag = t(v.signal === 'swing' ? 'tag.swing_est' : 'tag.windows', lang);
+      }
       out.push({
-        ...baseTile('avg_rally', label, ins, lang),
+        ...base,
         kind: 'number', value: shots ? v.shots : v.seconds, decimals: 1,
         unit: t(shots ? 'unit.shots' : 'unit.sec', lang),
         note: shots && isNum(v.seconds) ? t('tile.rally_seconds', lang, { sec: fmtNumber(v.seconds, 1) }) : '',
@@ -380,8 +388,12 @@ function courtMode(ins, mode, lang) {
 const nameOf = (x) => (typeof x === 'string' ? x : x && typeof x.name === 'string' ? x.name : '');
 
 function matchesModel(ov, lang) {
-  const list = Array.isArray(ov.matches) ? ov.matches : [];
-  const rows = list.slice(0, MAX_ROWS).filter((m) => m && typeof m.stem === 'string').map((m) => {
+  const all = (Array.isArray(ov.matches) ? ov.matches : []).filter((m) => m && typeof m.stem === 'string');
+  // Without an athlete in scope the API lists one row per unit, i.e. both sides of every video: keep one row
+  // per stem (the first, which is the lower side). With an athlete selected every row is theirs.
+  const seen = new Set();
+  const list = obj(ov.scope).athlete ? all : all.filter((m) => (seen.has(m.stem) ? false : (seen.add(m.stem), true)));
+  const rows = list.slice(0, MAX_ROWS).map((m) => {
     const opp = nameOf(m.opponent);
     const status = m.needs_review ? 'needs_review' : ['analysed', 'processing', 'new'].includes(m.status) ? m.status : 'analysed';
     const result = m.result === 'W' || m.result === 'L' ? m.result : null;
@@ -433,7 +445,7 @@ export function viewModel(overview, lens, lang) {
   let tiles;
   if (L === 'technique') tiles = techniqueTiles(radar, kpis, lang);
   else if (L === 'tactics') tiles = tacticsTiles(kpis, lang);
-  else tiles = overviewTiles(kpis, radar.reference, range, lang);
+  else tiles = overviewTiles(kpis, radar.reference, range, lang, !!sc.athlete);
   const mv = obj(ov.movement);
   const empty = !(isNum(sc.stems) && sc.stems > 0);
   const emptyKind = sc.athlete || sc.squad ? 'scope' : 'library';

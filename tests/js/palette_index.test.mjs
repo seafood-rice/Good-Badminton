@@ -180,3 +180,15 @@ test('keepActive: a background refresh keeps the selected route active', () => {
   assert.equal(keepActive([], 0, after), 0);
   assert.equal(keepActive(null, 3, after), 0);
 });
+
+test('filterIndex requires every word, in any order (Task 11 review)', () => {
+  const videos = [
+    { name: 'Dji 20260919104815 0005 D', has_match: true, has_posture: false, status: 'analyzed' },
+    { name: 'Dji 20260919100627 0004 D', has_match: true, has_posture: false, status: 'analyzed' },
+  ];
+  const index = buildIndex({ athletes: ATHLETES, videos, lang: 'en' });
+  assert.deepEqual(filterIndex(index, 'dji 0005').map((i) => i.label), ['Dji 20260919104815 0005 D']);
+  assert.deepEqual(filterIndex(index, '0005   DJI').map((i) => i.label), ['Dji 20260919104815 0005 D']);
+  assert.equal(filterIndex(index, 'dji').length, 2);
+  assert.deepEqual(filterIndex(index, 'dji 9999'), []);
+});

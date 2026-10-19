@@ -330,7 +330,8 @@ All durations and easing from canvas Foundations. Easing `cubic-bezier(.2,.8,.2,
   up/down reorder per widget, saved in `localStorage` (`kestrel_layout_v1`).
 - **Matches:** table of the scope's matches with result chips and an inline match-record editor (date,
   upper/lower athlete or name, winner, sets); row opens `#/matches/<stem>`.
-- **Match workspace:** the annotated video (`detect_<stem>_h264.mp4`), rally timeline from
+- **Match workspace:** the annotated video (`detect_<stem>.mp4`: after a finished run the H.264 transcode
+  `detect_<stem>_h264.mp4` replaces it in place, so `_h264` is only a fallback), rally timeline from
   `rally_segments.json` (blocks sized by length; won/lost lanes are **not** drawn, no outcome exists - a
   single lane), stroke strip and list from `strokes.json` joined by time, stroke inspector from
   `strokes.jsonl` (score on the reference range, per-metric bars), summary card with the honest rally label.

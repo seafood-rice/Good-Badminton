@@ -4,10 +4,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const VIEWS = {
-  'views/matches.js': ['mount', 'matchRows', 'validateRecordForm', 'formFromRecord', 'peekModel', 'buildMatchPeek'],
-  'views/workspace.js': ['mount', 'buildWorkspaceModel', 'summariseRallyPayload', 'rallyCountText'],
+  'views/matches.js': ['mount', 'matchRows', 'validateRecordForm', 'formFromRecord', 'peekModel', 'buildMatchPeek', 'rowTitle'],
+  'views/workspace.js': ['mount', 'buildWorkspaceModel', 'summariseRallyPayload', 'rallyCountText', 'capItems', 'matchDate', 'readReduced'],
   'views/players.js': ['mount', 'groupBySquad'],
-  'views/pipeline.js': ['mount', 'groupJobs', 'messageText'],
+  'views/pipeline.js': ['mount', 'groupJobs', 'messageText', 'jobsKey', 'createPoller'],
 };
 
 for (const [rel, names] of Object.entries(VIEWS)) {

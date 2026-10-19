@@ -2,10 +2,13 @@
 // verified in the browser; these tests pin the joins and the honesty rules (no outcome, estimated rallies).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildWorkspaceModel, summariseRallyPayload } from '../../static/kestrel/views/workspace.js';
-import { matchRows, validateRecordForm, formFromRecord, peekModel } from '../../static/kestrel/views/matches.js';
+import {
+  buildWorkspaceModel, summariseRallyPayload, capItems, STROKE_PAGE, matchDate, readReduced,
+} from '../../static/kestrel/views/workspace.js';
+import { matchRows, validateRecordForm, formFromRecord, peekModel, rowTitle } from '../../static/kestrel/views/matches.js';
 import { groupBySquad } from '../../static/kestrel/views/players.js';
-import { groupJobs } from '../../static/kestrel/views/pipeline.js';
+import { groupJobs, jobsKey, createPoller, FAST_MS, SLOW_MS } from '../../static/kestrel/views/pipeline.js';
+import { viewModel } from '../../static/kestrel/views/overview.js';
 
 const FPS = 50;
 
@@ -297,4 +300,203 @@ test('groupJobs: active jobs first, finished after, newest-first order kept with
   assert.equal(g.finished[1].resultsHash, null, 'a failed job has no results link');
   assert.equal(groupJobs([]).anyActive, false);
   assert.equal(groupJobs({ jobs: [{ id: 'x', status: 'running' }] }).active.length, 1);
+});
+
+// ---------- Task 11 review fixes ----------
+
+test('workspace: the 0.5 s pad gives a stroke 0.3 s after a rally end that rally; 0.7 s after it none', () => {
+  const m = buildWorkspaceModel({
+    rallies: rallyPayload(),
+    strokes: { strokes: [
+      { frame: 6.3 * FPS, hitter: 'lower', stroke: 'net' }, // rally 1 ends at 6 s
+      { frame: 6.7 * FPS, hitter: 'lower', stroke: 'net' },
+      { frame: 9.8 * FPS, hitter: 'upper', stroke: 'net' }, // 0.2 s before rally 2 starts
+    ] },
+    fps: FPS,
+  });
+  assert.deepEqual(m.strokes.map((s) => s.rallyId), [1, null, 2]);
+  assert.equal(m.rallies[0].strokeCount, 1);
+});
+
+test('workspace: degraded runs withhold labels unless the file says otherwise; unknown hitters are not opponents', () => {
+  const deg = buildWorkspaceModel({ rallies: rallyPayload('swing', { degraded: true }), strokes: strokesPayload(), fps: FPS });
+  assert.ok(deg.strokes.every((s) => s.uncertain));
+  const kept = buildWorkspaceModel({ rallies: rallyPayload('swing', { degraded: true, stroke_labels_withheld: false }), strokes: strokesPayload(), fps: FPS });
+  assert.equal(kept.strokes[0].label, 'serve');
+  const m = buildWorkspaceModel({ strokes: { strokes: [{ frame: 10, hitter: null, stroke: 'net' }] }, fps: FPS, athleteSide: 'lower' });
+  assert.equal(m.strokes[0].opponent, false);
+  assert.equal(m.strokes[0].score, null);
+});
+
+test('capItems: pages of 200, grown so the selected stroke is always present', () => {
+  const items = Array.from({ length: 1000 }, (_, k) => ({ i: k + 1 }));
+  const a = capItems(items);
+  assert.equal(STROKE_PAGE, 200);
+  assert.equal(a.items.length, 200);
+  assert.equal(a.rest, 800);
+  const b = capItems(items, 200, (s) => s.i === 450);
+  assert.equal(b.limit, 600);
+  assert.equal(b.items.length, 600);
+  assert.ok(b.items.some((s) => s.i === 450));
+  assert.deepEqual(capItems(items.slice(0, 5)), { items: items.slice(0, 5), rest: 0, limit: 200 });
+  assert.deepEqual(capItems(null).items, []);
+  assert.equal(capItems(items, 400).items.length, 400);
+});
+
+test('matchDate: the record date, else the sidecar date, never anything else', () => {
+  assert.equal(matchDate({ date: '2026-10-11' }, { date: { value: '2026-10-10', source: 'filename' } }), '2026-10-11');
+  assert.equal(matchDate({}, { date: { value: '2026-10-10', source: 'filename' } }), '2026-10-10');
+  assert.equal(matchDate({ date: 'junk' }, { date: { value: null, source: 'mtime' } }), null);
+  assert.equal(matchDate(null, null), null);
+});
+
+test('readReduced accepts a boolean or a function', () => {
+  assert.equal(readReduced({ reduced: true }), true);
+  assert.equal(readReduced({ reduced: false }), false);
+  assert.equal(readReduced({ reduced: () => true }), true);
+  const live = { get reduced() { return true; } };
+  assert.equal(readReduced(live), true);
+});
+
+test('peekModel with no athlete side: sets read from the lower side, the first-named side of the title', () => {
+  const pm = peekModel({
+    stem: 's', record: { upper: { name: 'S. Ito' }, lower: { name: 'J. Tanaka' }, result: { winner: 'upper', sets: [[21, 18], [19, 21]] } },
+    insights: null, athletes: null, athleteId: '',
+  });
+  assert.equal(pm.side, null);
+  assert.equal(pm.first, 'lower');
+  assert.deepEqual(pm.sets, [[18, 21], [21, 19]]);
+  assert.equal(pm.result, null, 'no W/L without an athlete');
+  assert.equal(pm.winner, 'upper');
+  const up = peekModel({ record: { upper: { athlete_id: 'a1' }, result: { winner: 'upper', sets: [[21, 18]] } }, athleteId: 'a1' });
+  assert.equal(up.first, 'upper');
+  assert.deepEqual(up.sets, [[21, 18]]);
+  assert.equal(up.result, 'W');
+});
+
+test('rowTitle: names when known, else the video name with the side labels as a subtitle', () => {
+  assert.deepEqual(rowTitle({ stem: 'Dji 0005', side: 'lower', athlete: null, opponent: null }, 'en'),
+    { title: 'Dji 0005', sub: 'Lower side vs. Upper side' });
+  assert.deepEqual(rowTitle({ stem: 'v', side: 'lower', athlete: 'J. Tanaka', opponent: null }, 'en'),
+    { title: 'J. Tanaka vs. Upper side', sub: 'v' });
+  assert.equal(rowTitle({ stem: 'v', side: 'upper', athlete: 'A', opponent: 'B' }, 'zh').title, 'A 对 B');
+});
+
+test('jobsKey ignores progress and message, follows id, status and stage', () => {
+  const base = [{ id: '1', video: 'v', status: 'running', stage: 'analyzing', progress: 10, message: 'a' }];
+  const k = jobsKey(groupJobs(base));
+  assert.equal(jobsKey(groupJobs([{ ...base[0], progress: 55, message: 'b' }])), k);
+  assert.notEqual(jobsKey(groupJobs([{ ...base[0], stage: 'encoding' }])), k);
+  assert.notEqual(jobsKey(groupJobs([{ ...base[0], status: 'completed' }])), k);
+  assert.notEqual(jobsKey(groupJobs([...base, { id: '2', video: 'w', status: 'pending' }])), k);
+  assert.equal(jobsKey(null), '');
+});
+
+function fakeTimers() {
+  const pending = new Map();
+  let seq = 0;
+  return {
+    pending,
+    setTimer: (fn, ms) => { seq += 1; pending.set(seq, { fn, ms }); return seq; },
+    clearTimer: (id) => { pending.delete(id); },
+    next() { const [id, v] = [...pending.entries()][0]; pending.delete(id); return v; },
+  };
+}
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('createPoller: 2 s while a job is active, 15 s otherwise or when hidden; errors keep polling', async () => {
+  const timers = fakeTimers();
+  let active = true;
+  let hidden = false;
+  let fail = false;
+  const seen = [];
+  const p = createPoller({
+    fetch: async () => { if (fail) throw new Error('down'); return active; },
+    onData: (d) => { seen.push(d); return d; },
+    onError: () => { seen.push('err'); return false; },
+    isHidden: () => hidden,
+    setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+  });
+  await p.poll();
+  assert.equal(timers.pending.size, 1);
+  assert.equal(timers.next().ms, FAST_MS);
+  active = false;
+  await p.poll();
+  assert.equal(timers.next().ms, SLOW_MS);
+  active = true;
+  hidden = true;
+  await p.poll();
+  assert.equal(timers.next().ms, SLOW_MS);
+  hidden = false;
+  fail = true;
+  await p.poll();
+  assert.equal(timers.next().ms, SLOW_MS);
+  assert.deepEqual(seen, [true, false, true, 'err']);
+});
+
+test('createPoller: a poll never overlaps; stop() clears the timer and ignores a late response', async () => {
+  const timers = fakeTimers();
+  let release;
+  let calls = 0;
+  let data = 0;
+  const p = createPoller({
+    fetch: () => { calls += 1; return new Promise((r) => { release = r; }); },
+    onData: () => { data += 1; return true; },
+    setTimer: timers.setTimer, clearTimer: timers.clearTimer,
+  });
+  const first = p.poll();
+  p.poll(); // in flight: ignored
+  assert.equal(calls, 1);
+  release(true);
+  await first;
+  assert.equal(data, 1);
+  assert.equal(timers.pending.size, 1);
+  const second = timers.next().fn();
+  p.stop();
+  release(true);
+  await second;
+  await tick();
+  assert.equal(data, 1, 'a response after stop() is dropped');
+  assert.equal(timers.pending.size, 0, 'nothing is rescheduled after stop()');
+  assert.equal(p.isStopped(), true);
+});
+
+// ---------- overview integration fixes ----------
+
+const okIns = (value) => ({ status: 'ok', value, coverage: null, reason: null });
+const noData = { status: 'unavailable', value: null, coverage: null, reason: { code: 'no_data', params: {} } };
+
+test('overview: with no athlete in scope the win-rate gap asks for an athlete', () => {
+  const vm = viewModel({ scope: { athlete: null, squad: null, range: '30d', stems: 2 }, kpis: { match_win_rate: noData } }, 'overview', 'en');
+  const tile = vm.tiles.find((x) => x.id === 'match_win_rate');
+  assert.equal(tile.kind, 'gap');
+  assert.equal(tile.reason, 'Pick an athlete and record match results to see a win rate.');
+  const withAthlete = viewModel({ scope: { athlete: { id: 'a', name: 'A' }, range: '30d', stems: 2 }, kpis: { match_win_rate: noData } }, 'overview', 'en');
+  assert.equal(withAthlete.tiles.find((x) => x.id === 'match_win_rate').reason, 'This data could not be read.');
+});
+
+test('overview: avg rally shows seconds when shots is null, with the signal tag', () => {
+  const vm = viewModel({
+    scope: { range: '30d', stems: 1 },
+    kpis: { avg_rally: okIns({ seconds: 18.46, shots: null, signal: 'swing' }) },
+  }, 'overview', 'en');
+  const tile = vm.tiles.find((x) => x.id === 'avg_rally');
+  assert.equal(tile.value, 18.46);
+  assert.equal(tile.unit, 's');
+  assert.equal(tile.tag, 'SWING EST.');
+  const shots = viewModel({ scope: { range: '30d', stems: 1 }, kpis: { avg_rally: okIns({ seconds: 9, shots: 7.5, signal: 'shuttle' }) } }, 'overview', 'en');
+  assert.equal(shots.tiles.find((x) => x.id === 'avg_rally').unit, 'shots');
+});
+
+test('overview: recent matches keep one row per stem without an athlete, every unit with one', () => {
+  const rows = [
+    { stem: 'v1', side: 'lower', date: '2026-10-10', opponent: 'B', status: 'analysed' },
+    { stem: 'v1', side: 'upper', date: '2026-10-10', opponent: 'A', status: 'analysed' },
+    { stem: 'v2', side: 'lower', date: '2026-10-09', opponent: null, status: 'analysed' },
+  ];
+  const all = viewModel({ scope: { athlete: null, range: '30d', stems: 2 }, matches: rows }, 'overview', 'en');
+  assert.deepEqual(all.matches.rows.map((r) => r.stem), ['v1', 'v2']);
+  assert.equal(all.matches.total, 2);
+  const one = viewModel({ scope: { athlete: { id: 'a', name: 'A' }, range: '30d', stems: 2 }, matches: rows }, 'overview', 'en');
+  assert.equal(one.matches.rows.length, 3);
 });

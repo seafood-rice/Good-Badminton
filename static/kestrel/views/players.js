@@ -47,17 +47,19 @@ export function mount(container, ctx = {}) {
     if (node && typeof node.focus === 'function') node.focus();
   }
 
+  let reloadId = 0;
   async function reload(focus, refreshShell = false) {
+    const mine = ++reloadId;
     try {
       const data = await api.athletes({ timeout: 15000 });
-      if (state.destroyed) return;
+      if (state.destroyed || mine !== reloadId) return; // a newer reload owns the page
       state.data = {
         athletes: Array.isArray(obj(data).athletes) ? data.athletes : [],
         squads: Array.isArray(obj(data).squads) ? data.squads : [],
       };
       state.error = null;
     } catch (e) {
-      if (state.destroyed) return;
+      if (state.destroyed || mine !== reloadId) return;
       state.error = e;
     }
     render();
@@ -66,20 +68,32 @@ export function mount(container, ctx = {}) {
     if (refreshShell && typeof ctx.refreshAthletes === 'function') ctx.refreshAthletes();
   }
 
+  /** While a mutation runs every control is disabled (and re-enabled after), so nothing is silently ignored. */
+  function setBusy(on) {
+    state.busy = on;
+    root.setAttribute('aria-busy', on ? 'true' : 'false');
+    for (const c of root.querySelectorAll('button,select,input')) {
+      if (on && !c.disabled) { c.disabled = true; c.setAttribute('data-busy', ''); }
+      else if (!on && c.hasAttribute('data-busy')) { c.disabled = false; c.removeAttribute('data-busy'); }
+    }
+  }
+
   /** Run a mutation; on failure show the server message in `errEl` and keep the form as typed. */
   async function mutate(fn, errEl, okKey, focus) {
     if (state.busy) return false;
-    state.busy = true;
+    const active = document.activeElement;
     if (errEl) errEl.textContent = '';
+    setBusy(true);
     try {
       await fn();
     } catch (e) {
-      state.busy = false;
       if (state.destroyed) return false;
+      setBusy(false);
       if (errEl) errEl.textContent = errorText(e, lang);
+      if (active && active.isConnected && typeof active.focus === 'function') active.focus();
       return false;
     }
-    state.busy = false;
+    setBusy(false);
     if (state.destroyed) return true;
     state.renaming = null;
     if (okKey) toast(okKey);
@@ -168,9 +182,11 @@ export function mount(container, ctx = {}) {
       h('option', { value: '' }, t('players.no_squad', lang)),
       ...squads.map((s) => h('option', { value: s.id }, nameOf(s))),
     ]);
-    sel.value = squads.some((s) => s.id === a.squad_id) ? a.squad_id : '';
-    sel.addEventListener('change', () => {
-      mutate(() => api.updateAthlete(a.id, { squad_id: sel.value || null }), err, 'toast.saved', 'sq-' + a.id);
+    const current = squads.some((s) => s.id === a.squad_id) ? a.squad_id : '';
+    sel.value = current;
+    sel.addEventListener('change', async () => {
+      const ok = await mutate(() => api.updateAthlete(a.id, { squad_id: sel.value || null }), err, 'toast.saved', 'sq-' + a.id);
+      if (!ok && sel.isConnected) sel.value = current; // the server kept the old squad
     });
     const rename = renameControl('athlete', a);
     const renaming = state.renaming === `athlete:${a.id}`;

@@ -439,3 +439,28 @@
   .ws-title{font-size:38px;}
   .mp-grid{grid-template-columns:minmax(0,1fr);}
 }
+
+/* ===== Task 11 review fixes ===== */
+
+/* The legacy kestrel.css styles .trow as a flex row (its tag list); on a <tr> that breaks the table grid, so
+   header cells and row cells stop lining up. Table rows keep table layout. */
+tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
+
+/* Recent matches (Overview) and the Matches table: compact fixed columns that never wrap; the card scrolls
+   horizontally instead of squeezing. */
+.kw-match-table{min-width:560px;}
+.kw-col-date{width:84px;white-space:nowrap;}
+.kw-col-res{width:72px;white-space:nowrap;}
+.kw-col-tech{width:64px;white-space:nowrap;}
+.mv-table .kw-col-date{width:110px;}
+.mv-name{min-width:220px;}
+.mv-name .kw-row-open{overflow-wrap:anywhere;}
+.mv-sub{margin-top:2px;font-size:12px;color:var(--ink3);overflow-wrap:anywhere;}
+
+/* Workspace: entrance animations play once; nodes built after the first paint appear at once. */
+.ws.settled .ws-rb,.ws.settled .ws-st{animation:none;}
+.ws-more{border-style:dashed;}
+.ws-more-row{padding:10px 12px;border-top:1px solid var(--line);}
+.ws-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
+.ws-table-wrap{position:relative;}
+.kw-foot-muted[hidden],.pv-msg[hidden],.kw-muted[hidden]{display:none;}
