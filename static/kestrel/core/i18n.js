@@ -525,6 +525,14 @@ export const STRINGS = {
     'pv.updated': '{time} 前更新',
     'pv.open_results': '查看结果',
     'pv.load_error': '无法获取任务列表，将自动重试。',
+
+    // technique metrics (stroke inspector, Task 11)
+    'metric.elbow_extension': '肘部伸展',
+    'metric.trunk_rotation': '躯干旋转',
+    'metric.wrist_flexion': '手腕屈曲',
+    'metric.knee_flexion': '膝盖弯曲',
+    'metric.hip_shoulder_separation': '髋肩分离',
+    'metric.weight_transfer': '重心转移',
   },
 
   en: {
@@ -1037,6 +1045,14 @@ export const STRINGS = {
     'pv.updated': 'Updated {time} ago',
     'pv.open_results': 'Open results',
     'pv.load_error': 'Could not fetch the job list; retrying automatically.',
+
+    // technique metrics (stroke inspector, Task 11)
+    'metric.elbow_extension': 'Elbow extension',
+    'metric.trunk_rotation': 'Trunk rotation',
+    'metric.wrist_flexion': 'Wrist flexion',
+    'metric.knee_flexion': 'Knee flexion',
+    'metric.hip_shoulder_separation': 'Hip–shoulder separation',
+    'metric.weight_transfer': 'Weight transfer',
   },
 };
 

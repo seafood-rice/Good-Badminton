@@ -344,11 +344,22 @@ export function start(root) {
       refreshAthletes: loadAthletes,
       refreshJobs: pollJobs,
       toast,
-      // Overview contract (Task 9): a match row opens the workspace with the container transform.
+      // Overview contract (Task 9, spec 6.5): a match row opens the match peek; its "Open match workspace" link
+      // runs the container transform from the same row. If the peek cannot be built, go straight to the workspace.
       onOpenMatch: (stem, anchorEl) => {
         const active = document.activeElement;
         const anchor = anchorEl || (active && active !== document.body ? active : null);
-        transitionTo(anchor, formatHash('matches', { stem }));
+        const fallback = () => transitionTo(anchor, formatHash('matches', { stem }));
+        VIEW_LOADERS.matches()
+          .then((mod) => {
+            if (!mod || typeof mod.buildMatchPeek !== 'function') throw new Error('no match peek');
+            const node = mod.buildMatchPeek({ stem }, { ...makeCtx(store.get().route), anchorEl: anchor });
+            peek.open(node, { label: t('peek.aria', store.get().lang) });
+          })
+          .catch((e) => {
+            console.warn('Kestrel: match peek unavailable', e);
+            fallback();
+          });
       },
     };
   }
