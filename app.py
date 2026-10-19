@@ -9,7 +9,7 @@ from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
 from badminton_analysis.insights.rally import summarise_rally_payload
-from badminton_analysis.web import athletes_routes
+from badminton_analysis.web import athletes_routes, insights_routes
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -39,6 +39,11 @@ app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
 # Getters, not values: read at request time so a re-pointed ATHLETES_PATH is honoured.
 athletes_routes.register(app, store_path=lambda: ATHLETES_PATH,
                          lock=lambda: _ATHLETES_LOCK,
+                         safe_stem=lambda name: _safe_stem(name))
+insights_routes.register(app, videos=lambda: VIDEOS, outputs=lambda: OUTPUTS,
+                         athletes_path=lambda: ATHLETES_PATH,
+                         athletes_lock=lambda: _ATHLETES_LOCK,
+                         jobs=lambda: jobs,
                          safe_stem=lambda name: _safe_stem(name))
 
 # ── Job store ────────────────────────────────────────────────────────────
