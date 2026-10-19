@@ -14,7 +14,24 @@ STATIC = ROOT / "static"
 NODE = shutil.which("node")
 
 
-@pytest.mark.skipif(NODE is None, reason="node is not installed")
+def _node_major():
+    """Major version of `node`, or None when it is missing or unreadable."""
+    if NODE is None:
+        return None
+    try:
+        out = subprocess.run([NODE, "--version"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"v(\d+)\.", out.strip())
+    return int(m.group(1)) if m else None
+
+
+NODE_MAJOR = _node_major()
+
+
+# `node --test <glob>` expands the glob itself only from Node 21 on.
+@pytest.mark.skipif(NODE_MAJOR is None, reason="node is not installed")
+@pytest.mark.skipif(NODE_MAJOR is not None and NODE_MAJOR < 21, reason="node --test globs need Node 21+")
 def test_node_suite_passes():
     # Node expands the quoted glob itself (no shell), which also works on Windows.
     proc = subprocess.run(

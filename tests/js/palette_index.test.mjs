@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIndex, filterIndex } from '../../static/kestrel/shell/palette.js';
+import { buildIndex, filterIndex, keepActive } from '../../static/kestrel/shell/palette.js';
 import {
   pickSquad, pickAthlete, withRange, athletesInSquad, initials, scopeFallback, rangeOf,
 } from '../../static/kestrel/shell/topbar.js';
@@ -164,4 +164,19 @@ test('scopeFallback drops a deleted athlete or squad, else returns null', () => 
     { query: { squad: 's_1', range: '7d' }, dropped: ['athlete'] });
   assert.deepEqual(scopeFallback({ squad: 's_gone' }, ATHLETES), { query: {}, dropped: ['squad'] });
   assert.equal(scopeFallback({}, ATHLETES), null);
+});
+
+test('keepActive: a background refresh keeps the selected route active', () => {
+  const before = buildIndex({ athletes: ATHLETES, lang: 'en' });
+  const ito = before.findIndex((i) => i.label === 'S. Ito');
+  // the refresh adds videos (new rows before the actions) and keeps the athlete
+  const after = buildIndex({ athletes: ATHLETES, videos: VIDEOS, lang: 'en' });
+  assert.equal(after[keepActive(before, ito, after)].label, 'S. Ito');
+  const action = before.findIndex((i) => i.label === 'New analysis');
+  assert.equal(after[keepActive(before, action, after)].label, 'New analysis');
+  // the active row disappeared, or nothing was active: back to the first row
+  const gone = buildIndex({ lang: 'en' });
+  assert.equal(keepActive(before, ito, gone), 0);
+  assert.equal(keepActive([], 0, after), 0);
+  assert.equal(keepActive(null, 3, after), 0);
 });

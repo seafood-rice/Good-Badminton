@@ -92,6 +92,17 @@ export function filterIndex(index, query) {
 }
 
 /**
+ * Index of the option to keep active after the list is rebuilt: the same route when it is still listed
+ * (a background refresh must not move the user's selection), else 0.
+ */
+export function keepActive(prevItems, prevActive, nextItems) {
+  const prev = Array.isArray(prevItems) ? prevItems[prevActive] : null;
+  if (!prev || !Array.isArray(nextItems)) return 0;
+  const i = nextItems.findIndex((x) => x && x.route === prev.route && x.kind === prev.kind);
+  return i < 0 ? 0 : i;
+}
+
+/**
  * The palette dialog. opts: {getLang(), getSources() -> {athletes, videos}, loadSources() -> Promise,
  * navigate(hash)}. Returns {open(), close(), toggle(), isOpen()}.
  */
@@ -133,8 +144,11 @@ export function createPalette(opts) {
     opts.navigate(item.route);
   }
 
-  function renderList() {
+  // refresh: a background data refresh (keep the active option, do not replay the entrance stagger).
+  function renderList({ refresh = false } = {}) {
     if (!root) return;
+    const prevItems = items;
+    const prevActive = active;
     items = filterIndex(index(), input.value);
     list.replaceChildren();
     items.forEach((item, i) => {
@@ -151,13 +165,13 @@ export function createPalette(opts) {
       el('span', { class: 'kind', text: item.kindLabel || item.kind }),
       el('span', { class: 'lbl', text: item.label }),
       el('span', { class: 'hint', text: item.hint }));
-      const li = el('li', { role: 'none', style: { animationDelay: Math.min(i, 14) * 50 + 'ms' } }, a);
+      const li = el('li', { role: 'none', style: refresh ? { animation: 'none' } : { animationDelay: Math.min(i, 14) * 50 + 'ms' } }, a);
       list.appendChild(li);
     });
     const none = items.length === 0;
     empty.hidden = !none;
     empty.textContent = none ? t('palette.empty', lang(), { query: input.value.trim() }) : '';
-    setActive(0);
+    setActive(refresh ? keepActive(prevItems, prevActive, items) : 0);
   }
 
   function onKey(e) {
@@ -222,7 +236,7 @@ export function createPalette(opts) {
     if (opts.loadSources) {
       Promise.resolve()
         .then(() => opts.loadSources())
-        .then(() => { if (root && mine === seq) renderList(); })
+        .then(() => { if (root && mine === seq) renderList({ refresh: true }); })
         .catch(() => {});
     }
   }

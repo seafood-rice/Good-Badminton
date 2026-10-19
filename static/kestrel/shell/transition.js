@@ -11,6 +11,30 @@ const EASE = 'cubic-bezier(.7,0,.2,1)';
 
 let busy = false;
 
+const currentHash = () => (typeof location !== 'undefined' ? location.hash : '');
+
+/**
+ * Pending-navigation gate (pure; the hash reader is injected). begin() issues a ticket; any later begin() or
+ * bump() supersedes it, and allows(ticket) is false once superseded or when the hash changed meanwhile.
+ */
+export function createNavGate(getHash) {
+  let latest = 0;
+  return {
+    begin() {
+      latest += 1;
+      return { token: latest, hash: getHash() };
+    },
+    bump() {
+      latest += 1;
+    },
+    allows(ticket) {
+      return !!ticket && ticket.token === latest && ticket.hash === getHash();
+    },
+  };
+}
+
+const gate = createNavGate(currentHash);
+
 function defaultNavigate(hash) {
   if (typeof location !== 'undefined') location.hash = hash;
 }
@@ -40,11 +64,13 @@ export function navigateWithTransform(anchorEl, hashTarget, opts = {}) {
   const rect = rectOf(anchorEl);
   const hasDom = typeof document !== 'undefined' && !!document.body;
   if (isReduced(opts.reduced) || !rect || !hasDom || busy) {
+    gate.bump(); // a pending transform must not override this newer navigation
     navigate(hashTarget);
     return Promise.resolve();
   }
 
   busy = true;
+  const ticket = gate.begin();
   const layer = document.createElement('div');
   layer.className = 'xf-layer';
   layer.setAttribute('aria-hidden', 'true');
@@ -75,7 +101,8 @@ export function navigateWithTransform(anchorEl, hashTarget, opts = {}) {
 
     setTimeout(() => {
       try {
-        navigate(hashTarget);
+        // Skip when a newer transform / navigation started or the hash changed during the grow.
+        if (gate.allows(ticket)) navigate(hashTarget);
       } catch (e) {
         console.error('navigation failed', e);
       } finally {

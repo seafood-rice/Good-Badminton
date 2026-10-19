@@ -65,6 +65,28 @@ test('transition: reduced motion and missing rect navigate instantly, no DOM nee
   assert.deepEqual(went, ['#/matches/x', '#/players', '#/pipeline', '#/library']);
 });
 
+test('transition: the nav gate cancels a superseded or outdated pending navigation', async () => {
+  const { createNavGate } = await import('../../static/kestrel/shell/transition.js');
+  let hash = '#/overview';
+  const gate = createNavGate(() => hash);
+  const a = gate.begin();
+  assert.equal(gate.allows(a), true);
+  // a second transform started during the grow: only the newest may navigate
+  const b = gate.begin();
+  assert.equal(gate.allows(a), false);
+  assert.equal(gate.allows(b), true);
+  // an instant navigation (reduced motion / busy) supersedes the pending one
+  gate.bump();
+  assert.equal(gate.allows(b), false);
+  // the hash changed during the grow (Back, a rail link): the pending navigation is dropped
+  const c = gate.begin();
+  hash = '#/players';
+  assert.equal(gate.allows(c), false);
+  const d = gate.begin();
+  assert.equal(gate.allows(d), true);
+  assert.equal(gate.allows(null), false);
+});
+
 test('ground: photo choice follows the route', async () => {
   const { photoFor } = await import('../../static/kestrel/shell/ground.js');
   assert.match(photoFor({ name: 'overview', params: {}, query: {} }), /court-aerial-night\.jpg$/);

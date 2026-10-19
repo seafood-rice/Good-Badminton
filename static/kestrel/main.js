@@ -2,8 +2,8 @@
 // Views are loaded with dynamic import(); a missing or failing view renders a polite panel, never a blank page.
 // A view module exports mount(container, ctx) -> {destroy(), update?(ctx) | setQuery?(query)} (mount may be
 // async) and renders its own `.page` root; ctx is {route, query, params, scope, store, router, api, lang, theme,
-// themeAttr, reduced, transitionTo, openPeek, closePeek, openPalette, refreshAthletes, refreshJobs, toast,
-// onOpenMatch}. router.navigate/replace take a hash or (name, params, query). The store also carries flat
+// themeAttr, reduced (a live boolean getter), prefersReduced() (the same check as a function), transitionTo,
+// openPeek, closePeek, openPalette, refreshAthletes, refreshJobs, toast, onOpenMatch}. router.navigate/replace take a hash or (name, params, query). The store also carries flat
 // athlete / squad / range keys ('' when unset) next to `scope`.
 
 import { parseHash, formatHash } from './core/router.js';
@@ -43,21 +43,6 @@ const VIEW_NAV = {
   overview: 'nav.overview', matches: 'nav.matches', workspace: 'nav.matches', players: 'nav.players',
   pipeline: 'nav.pipeline', library: 'nav.library', new: 'nav.library', results: 'nav.library',
 };
-
-// Shell-only copy that core/i18n.js does not carry (zh and en, like every string).
-const LOCAL = {
-  zh: {
-    'view.unavailable.title': '此页面暂不可用',
-    'view.unavailable.body': '这个视图还没有就绪。你可以先前往总览或视频库。',
-    'view.failed.body': '这个视图加载失败。请重试，或先前往总览或视频库。',
-  },
-  en: {
-    'view.unavailable.title': 'This view is not available yet',
-    'view.unavailable.body': 'This view is not ready yet. You can go to the overview or the video library meanwhile.',
-    'view.failed.body': 'This view could not be loaded. Retry, or go to the overview or the video library.',
-  },
-};
-const local = (key, lang) => LOCAL[lang === 'en' ? 'en' : 'zh'][key] || key;
 
 /** Routes whose query carries the scope: the overview and the matches list. */
 function isScopeRoute(route) {
@@ -349,7 +334,9 @@ export function start(root) {
       lang: s.lang,
       theme: s.theme,
       themeAttr: legacyTheme(s.theme),
-      reduced: prefersReduced,
+      // Live boolean (re-read on every access); prefersReduced() is the same check as a function.
+      get reduced() { return prefersReduced(); },
+      prefersReduced,
       transitionTo,
       openPeek: (content, opts) => peek.open(content, opts),
       closePeek: () => peek.close(),
@@ -370,8 +357,8 @@ export function start(root) {
     const L = store.get().lang;
     host.replaceChildren(el('div', { class: 'page' }, el('section', { class: 'card shell-unavail', role: 'status' },
       el('div', { class: 'k-label', text: t(VIEW_NAV[key] || 'nav.overview', L) }),
-      el('h1', { class: 'shell-unavail-title', text: local('view.unavailable.title', L) }),
-      el('p', { class: 'card-sub', text: local(failed ? 'view.failed.body' : 'view.unavailable.body', L) }),
+      el('h1', { class: 'shell-unavail-title', text: t('view.unavailable.title', L) }),
+      el('p', { class: 'card-sub', text: t(failed ? 'view.failed.body' : 'view.unavailable.body', L) }),
       el('div', { class: 'shell-actions' },
         el('button', { type: 'button', class: 'shell-btn primary', text: t('btn.retry', L), onclick: () => dispatch({ force: true }) }),
         el('a', { class: 'shell-btn', href: formatHash('overview', {}, store.get().scope), text: t('nav.overview', L) }),
