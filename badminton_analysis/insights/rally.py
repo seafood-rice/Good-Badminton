@@ -77,18 +77,12 @@ def rally_windows(payload, fps=None):
 
 
 def _hit_times(run):
-    """Hit times in seconds: hits.json, else strokes.json converted with fps."""
-    if run.hits:
-        return [t for t, _frame, _hitter in run.hits]
-    fps = run.fps
-    if run.strokes and fps:
-        times = []
-        for s in run.strokes:
-            frame = number(s.get("frame"))
-            if frame is not None:
-                times.append(frame / fps)
-        return times
-    return []
+    """Hit times in seconds from hits.json only (the learned detector's hits).
+
+    strokes.json is deliberately not a fallback: its entries are sparse stroke
+    contacts, not a count of shots, and would understate shots per rally.
+    """
+    return [t for t, _frame, _hitter in run.hits] if run.hits else []
 
 
 def _round(x):

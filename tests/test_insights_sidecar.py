@@ -37,13 +37,13 @@ def _assert_envelope(env):
 
 
 def test_version_constant():
-    assert sidecar.INSIGHTS_VERSION == 2
+    assert sidecar.INSIGHTS_VERSION == 3
 
 
 def test_document_shape_and_file_written(tmp_path):
     out = _full_run(tmp_path)
     doc = sidecar.compute_video(out.name, out)
-    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 2
+    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 3
     assert doc["stem"] == out.name
     assert doc["computed_at"].endswith("Z")
     assert doc["date"] == {"value": "2026-10-10", "source": "filename"}
@@ -98,9 +98,9 @@ def test_version_change_recomputes(tmp_path, monkeypatch):
     out = _full_run(tmp_path)
     calls = _count_calls(monkeypatch, "technique_insight")
     sidecar.compute_video(out.name, out)
-    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 3)
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 4)
     doc = sidecar.compute_video(out.name, out)
-    assert len(calls) == 2 and doc["version"] == 3
+    assert len(calls) == 2 and doc["version"] == 4
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "null", '{"version": 1}', ""])
@@ -207,7 +207,7 @@ def test_version_1_cache_is_rebuilt_with_per_hitter_distribution(tmp_path):
         side.pop("distribution")
     (out / "insights.json").write_text(json.dumps(old), encoding="utf-8")
     doc = sidecar.compute_video(out.name, out)
-    assert doc["version"] == 2
+    assert doc["version"] == sidecar.INSIGHTS_VERSION
     assert doc["strokes"]["value"]["by_hitter"]["upper"]["distribution"] == {"smash": 1}
 
 

@@ -317,6 +317,7 @@ def _stem_entries(units):
 def _avg_rally(units):
     stems = _stem_entries(units)
     durations, shots, worst, signal, with_rally = [], [], 0, None, 0
+    shots_missing = False
     for u in stems:
         env = _env_of(u["insights"], "rally")
         value = _value(u["insights"], "rally")
@@ -328,8 +329,12 @@ def _avg_rally(units):
         with_rally += 1
         durations.extend(durs)
         per = value.get("shots_per_rally")
-        if isinstance(per, list):
-            shots.extend(s for s in (_bounded(x, 0.0, MAX_COUNT) for x in per) if s is not None)
+        got = ([s for s in (_bounded(x, 0.0, MAX_COUNT) for x in per) if s is not None]
+               if isinstance(per, list) else [])
+        if got:
+            shots.extend(got)
+        else:
+            shots_missing = True        # a unit without shot counts makes the mean unknown
         code = _dict(env.get("reason")).get("code")
         rank = {"signal_degraded": 2, "signal_swing": 1}.get(code, 0)
         label = {2: "degraded", 1: "swing"}.get(rank, value.get("signal"))
@@ -338,7 +343,7 @@ def _avg_rally(units):
     if not durations:
         return _unavailable(units, "no_rallies")
     value = {"seconds": round(statistics.fmean(durations), 2),
-             "shots": round(statistics.fmean(shots), 2) if shots else None,
+             "shots": None if shots_missing or not shots else round(statistics.fmean(shots), 2),
              "signal": signal}
     coverage = {"n": with_rally, "of": len(stems)}
     if worst:

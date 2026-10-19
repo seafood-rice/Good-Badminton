@@ -474,11 +474,15 @@ def test_strokes_low_coverage_is_partial():
 def test_avg_rally_pools_durations_and_flags_swing():
     data, _ = _store()
     units = [_unit("A", rally={"durations": [4.0, 6.0], "shots": [4, 6]}),
-             _unit("B", rally={"durations": [8.0], "shots": None})]
+             _unit("B", rally={"durations": [8.0], "shots": [5]})]
     ov = aggregate.overview(units, data, range_="all")
     kpi = ov["kpis"]["avg_rally"]
     assert kpi["status"] == "ok"
     assert kpi["value"] == {"seconds": 6.0, "shots": 5.0, "signal": "shuttle"}
+    # one stem without shot counts makes the shots mean unknown, never a partial mean
+    mixed = aggregate.overview([units[0], _unit("B", rally={"durations": [8.0], "shots": None})],
+                               data, range_="all")["kpis"]["avg_rally"]
+    assert mixed["value"] == {"seconds": 6.0, "shots": None, "signal": "shuttle"}
     swing = aggregate.overview([_unit("A", rally={"durations": [4.0], "signal": "swing"})],
                                data, range_="all")["kpis"]["avg_rally"]
     assert swing["status"] == "partial" and swing["reason"]["code"] == "signal_swing"

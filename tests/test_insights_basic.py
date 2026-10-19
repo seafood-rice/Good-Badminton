@@ -233,15 +233,16 @@ def test_rally_shots_join_is_inclusive_at_half_second(tmp_path):
     assert v["mean_shots"] == 1.5
 
 
-def test_rally_shots_fall_back_to_strokes_with_fps(tmp_path):
-    # frame 29 -> 0.97 s and frame 60 -> 2.0 s are inside [0.5, 3.5]; frame 300 -> 10 s is not
+def test_rally_shots_never_come_from_strokes_json(tmp_path):
+    # strokes.json holds sparse stroke contacts, not shots: without hits.json the
+    # shot counts are unknown (null), not an undercount
     out = make_run(tmp_path, fps=30.0, rallies=[(1.0, 3.0)],
-                   strokes=[("lower", "net", 29), ("upper", "net", 60), ("lower", "net", 300)])
+                   strokes=[("lower", "net", 29), ("upper", "net", 60)])
     v = rally_insight(load_run(out))["value"]
-    assert v["shots_per_rally"] == [2]
+    assert v["shots_per_rally"] is None and v["mean_shots"] is None
 
 
-def test_rally_hits_json_wins_over_strokes(tmp_path):
+def test_rally_shots_come_only_from_hits_json(tmp_path):
     out = make_run(tmp_path, rallies=[(1.0, 3.0)], hits=[(2.0, "lower")],
                    strokes=[("lower", "net", 30), ("upper", "net", 60)])
     assert rally_insight(load_run(out))["value"]["shots_per_rally"] == [1]
