@@ -250,3 +250,17 @@ def test_sidecar_written_once_and_reused(lib):
     first = json.loads(path.read_text(encoding="utf-8"))["computed_at"]
     c.get("/api/insights/overview?range=all")
     assert json.loads(path.read_text(encoding="utf-8"))["computed_at"] == first
+
+
+def test_overview_and_video_route_agree_on_which_stems_exist(lib):
+    c, tmp_path, videos, outputs, _ = lib
+    _run(tmp_path, videos, STEM_A)
+    for name in (".hidden", "clip..v2"):
+        d = outputs / name
+        d.mkdir()
+        (d / "detections.jsonl").write_text("", encoding="utf-8")
+    body = c.get("/api/insights/overview?range=all").get_json()
+    assert {m["stem"] for m in body["matches"]} == {STEM_A}
+    assert c.get("/api/insights/video/clip..v2").status_code == 404
+    assert not (outputs / "clip..v2" / "insights.json").exists()
+    assert not (outputs / ".hidden" / "insights.json").exists()

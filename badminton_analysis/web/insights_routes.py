@@ -11,7 +11,9 @@ reaches a response; the exception type is printed server-side instead.
 """
 import datetime
 import json
+import math
 import os
+import re
 import time
 from pathlib import Path
 
@@ -32,6 +34,7 @@ RUN_MARKERS = ('detections.jsonl', 'strokes.json', 'strokes.jsonl',
 VIDEO_EXTS = ('.mp4', '.mov', '.avi', '.mkv', '.webm')
 ACTIVE_STATUSES = ('pending', 'running', 'reencoding')
 DETACHED_WINDOW_SEC = 600.0
+FUTURE_SKEW_SEC = 60.0
 _MESSAGE_MAX = 200
 
 
@@ -48,11 +51,11 @@ def _epoch(value):
     if isinstance(value, str):
         try:
             when = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
-        except ValueError:
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=datetime.timezone.utc)
+            return when.timestamp()
+        except (ValueError, OverflowError, OSError):
             return None
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=datetime.timezone.utc)
-        return when.timestamp()
     return None
 
 
@@ -62,15 +65,30 @@ def _video_stem(name):
     return Path(name).stem if name.lower().endswith(VIDEO_EXTS) else name
 
 
-def _first_line(text):
-    """A job message cut to its first line: an error message carries a log tail
-    that can hold absolute paths."""
-    first = str(text or '').split('\n', 1)[0]
-    return first[:_MESSAGE_MAX]
+_ERROR_PREFIX = re.compile(r'^分析失败 \(exit=\d+\)')
+_ERROR_FALLBACK = '分析失败 / analysis failed'
+_PATH_TOKEN = re.compile(r'[A-Za-z]:[\\/][^\s]*|(?:/[^\s/]+){2,}')
+
+
+def _safe_message(text, status):
+    """A job message that cannot leak a path.
+
+    An error message carries a log tail that can hold absolute paths, so only
+    its ``分析失败 (exit=N)`` prefix survives. Any other message is cut to its
+    first line, drive-letter and POSIX path tokens are replaced, then it is
+    length-capped.
+    """
+    text = str(text or '')
+    if status == 'error':
+        found = _ERROR_PREFIX.match(text)
+        return found.group(0) if found else _ERROR_FALLBACK
+    first = text.split('\n', 1)[0]
+    return _PATH_TOKEN.sub('<path>', first)[:_MESSAGE_MAX]
 
 
 def _int_pct(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not math.isfinite(value):
         return 0
     return max(0, min(100, int(value)))
 
@@ -110,6 +128,8 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             return stems
         for path in entries:
             try:
+                if path.name.startswith('.') or safe_stem(path.name) is None:
+                    continue
                 if path.is_dir() and any((path / m).is_file() for m in RUN_MARKERS):
                     stems.append(path.name)
             except OSError:
@@ -191,7 +211,7 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             mtime = os.path.getmtime(path)
             with open(path, encoding='utf-8') as fh:
                 doc = json.load(fh)
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             try:
                 return None, os.path.getmtime(path)
             except OSError:
@@ -203,74 +223,88 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             return 'posture'
         return 'match'
 
+    def _memory_row(order, job_id, job, now):
+        video = _video_stem(job.get('video_name') or job_id)
+        status = job.get('status')
+        stage = job.get('stage')
+        updated = _epoch(job.get('updated'))
+        sort_ts = updated
+        if sort_ts is None and job.get('save_dir'):
+            doc, mtime = _progress_file(job['save_dir'])
+            sort_ts = _epoch((doc or {}).get('updated'))
+            if sort_ts is None:
+                sort_ts = mtime
+        if sort_ts is None:
+            # No timestamp: a live job is current, a finished one is old.
+            sort_ts = now if status in ACTIVE_STATUSES else 0.0
+        return (sort_ts, order, {
+            'id': str(job_id), 'video': video, 'kind': _kind(job_id, stage),
+            'status': status if isinstance(status, str) else None,
+            'stage': stage if isinstance(stage, str) else None,
+            'progress': _int_pct(job.get('progress', 0)),
+            'message': _safe_message(job.get('message'),
+                                     status if isinstance(status, str) else None),
+            'updated': updated,
+        })
+
+    def _detached_row(order, path, now):
+        doc, mtime = _progress_file(path)
+        if doc is None and mtime is None:
+            return None
+        updated = _epoch((doc or {}).get('updated'))
+        if updated is None:
+            updated = mtime
+        if updated is None or now - updated > DETACHED_WINDOW_SEC \
+                or updated - now > FUTURE_SKEW_SEC:
+            return None
+        doc = doc or {}
+        stage = doc.get('stage')
+        return (updated, order, {
+            'id': path.name, 'video': path.name, 'kind': _kind(path.name, stage),
+            'status': 'detached',
+            'stage': stage if isinstance(stage, str) else None,
+            'progress': _int_pct(doc.get('pct', 0)),
+            'message': '', 'updated': updated,
+        })
+
     @bp.route('/api/jobs', methods=['GET'])
     def list_jobs():
         now = time.time()
         rows = []  # (sort_ts, order, row)
         known = set()
         try:
-            for order, (job_id, job) in enumerate(list((jobs() or {}).items())):
-                if not isinstance(job, dict):
-                    continue
-                video = _video_stem(job.get('video_name') or job_id)
-                known.add(str(job_id))
-                known.add(video)
-                status = job.get('status')
-                stage = job.get('stage')
-                updated = _epoch(job.get('updated'))
-                sort_ts = updated
-                if sort_ts is None and job.get('save_dir'):
-                    doc, mtime = _progress_file(job['save_dir'])
-                    sort_ts = _epoch((doc or {}).get('updated'))
-                    if sort_ts is None:
-                        sort_ts = mtime
-                if sort_ts is None:
-                    # No timestamp: a live job is current, a finished one is old.
-                    sort_ts = now if status in ACTIVE_STATUSES else 0.0
-                rows.append((sort_ts, order, {
-                    'id': str(job_id), 'video': video, 'kind': _kind(job_id, stage),
-                    'status': status if isinstance(status, str) else None,
-                    'stage': stage if isinstance(stage, str) else None,
-                    'progress': _int_pct(job.get('progress', 0)),
-                    'message': _first_line(job.get('message')),
-                    'updated': updated,
-                }))
-
-            base = len(rows)
+            snapshot = list((jobs() or {}).items())
             root = Path(outputs())
             try:
                 entries = sorted(root.iterdir(), key=lambda p: p.name)
             except OSError:
                 entries = []
-            for offset, path in enumerate(entries):
-                stem = path.name
-                if stem in known or 'posture_' + stem in known:
-                    continue
-                try:
-                    if not path.is_dir():
-                        continue
-                except OSError:
-                    continue
-                doc, mtime = _progress_file(path)
-                if doc is None and mtime is None:
-                    continue
-                updated = _epoch((doc or {}).get('updated'))
-                if updated is None:
-                    updated = mtime
-                if updated is None or now - updated > DETACHED_WINDOW_SEC:
-                    continue
-                doc = doc or {}
-                stage = doc.get('stage')
-                rows.append((updated, base + offset, {
-                    'id': stem, 'video': stem, 'kind': _kind(stem, stage),
-                    'status': 'detached',
-                    'stage': stage if isinstance(stage, str) else None,
-                    'progress': _int_pct(doc.get('pct', 0)),
-                    'message': '', 'updated': updated,
-                }))
         except Exception as exc:
             _log_failure('job listing', exc)
             return jsonify(_FAILED), 500
+        # One bad row degrades only itself, never the whole listing.
+        for order, (job_id, job) in enumerate(snapshot):
+            if not isinstance(job, dict):
+                continue
+            known.add(str(job_id))
+            known.add(_video_stem(job.get('video_name') or job_id))
+            try:
+                rows.append(_memory_row(order, job_id, job, now))
+            except Exception as exc:
+                _log_failure('one job row', exc)
+        base = len(snapshot)
+        for offset, path in enumerate(entries):
+            if path.name in known or 'posture_' + path.name in known:
+                continue
+            try:
+                if not path.is_dir():
+                    continue
+                row = _detached_row(base + offset, path, now)
+            except Exception as exc:
+                _log_failure('one detached row', exc)
+                continue
+            if row is not None:
+                rows.append(row)
         rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
         return jsonify([r[2] for r in rows])
 
