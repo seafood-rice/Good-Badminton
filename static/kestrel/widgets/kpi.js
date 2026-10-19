@@ -67,10 +67,11 @@ export function build(data, ctx = {}) {
     : null;
   const note = tile.note ? h('span', { class: 'kw-tile-note' }, tile.note) : null;
 
+  // A partial insight says what limits it in visible words, not only in a hover title.
+  const reasonEl = tile.status === 'partial' && tile.reason ? h('div', { class: 'kw-tile-reason' }, tile.reason) : null;
   const el = h('div', {
     class: 'kpi hud kw-tile',
     'data-tile': tile.id || '',
-    title: tile.status === 'partial' && tile.reason ? tile.reason : null,
     style: tile.flex ? { flex: tile.flex } : null,
   }, [
     scan,
@@ -80,6 +81,7 @@ export function build(data, ctx = {}) {
     ]),
     h('div', { class: 'kw-tile-main' }, [h('div', { class: 'kw-tile-num' }, [valueEl, unitEl]), visual]),
     delta || note ? h('div', { class: 'kw-tile-foot' }, [delta, note]) : null,
+    reasonEl,
   ]);
 
   const decimals = isNum(tile.decimals) ? tile.decimals : 0;

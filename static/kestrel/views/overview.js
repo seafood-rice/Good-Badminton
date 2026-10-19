@@ -165,12 +165,8 @@ function overviewTiles(kpis, ref, range, lang) {
       });
     }
   }
-  // Rally win rate: needs a point-outcome signal, which does not exist yet.
-  {
-    const ins = insight(kpis.rally_win_rate);
-    if (usable(ins) && isNum(ins.value.rate)) out.push(shareTile('rally_win_rate', 'tile.rally_win_rate', 'tile.from_results', { ...ins, value: { share: ins.value.rate } }, lang));
-    else out.push(gapTile('rally_win_rate', t('tile.rally_win_rate', lang), ins, lang, 'no_point_outcome'));
-  }
+  // Rally win rate: spec 5.4 types it unavailable (no point-outcome signal), so it is always a gap tile.
+  out.push(gapTile('rally_win_rate', t('tile.rally_win_rate', lang), insight(kpis.rally_win_rate), lang, 'no_point_outcome'));
   return out;
 }
 
@@ -238,13 +234,8 @@ function tacticsTiles(kpis, lang) {
   }
   out.push(shareTile('net_share', 'tile.net_share', 'tile.of_classified', insight(kpis.net_share), lang));
   out.push(shareTile('pull_rear', 'tile.pull_rear', 'tile.opponent_drawn_back', insight(kpis.pull_rear), lang));
-  {
-    const ins = insight(kpis.unforced_errors);
-    const label = t('tile.unforced_errors', lang);
-    if (usable(ins) && isNum(ins.value.count)) {
-      out.push({ ...baseTile('unforced_errors', label, ins, lang), kind: 'number', value: ins.value.count, decimals: 0 });
-    } else out.push(gapTile('unforced_errors', label, ins, lang, 'no_point_outcome'));
-  }
+  // Unforced errors: spec 5.4 types it unavailable (no point-outcome signal), so it is always a gap tile.
+  out.push(gapTile('unforced_errors', t('tile.unforced_errors', lang), insight(kpis.unforced_errors), lang, 'no_point_outcome'));
   return out;
 }
 
@@ -352,6 +343,7 @@ function courtMode(ins, mode, lang) {
   }
   const available = ins.status !== 'unavailable' && max > 0;
   const modeAria = t(`heat.mode.${mode}_aria`, lang);
+  const unavailableReason = available ? '' : reasonOf(ins, lang, mode === 'pull' ? 'no_hits' : 'no_positions');
   const cells = [];
   for (let r = 0; r < 11; r++) {
     for (let c = 0; c < 10; c++) {
@@ -373,12 +365,15 @@ function courtMode(ins, mode, lang) {
     sub: t('heat.sub.' + mode, lang),
     status: ins.status,
     available,
-    reason: available ? (ins.status === 'partial' ? reasonOf(ins, lang) : '') : reasonOf(ins, lang, mode === 'pull' ? 'no_hits' : 'no_positions'),
+    reason: available ? (ins.status === 'partial' ? reasonOf(ins, lang) : '') : unavailableReason,
     tag: available ? tagFor(ins, lang) : '',
     cells,
     densest,
     readout: densest ? t('heat.densest', lang, { pct: densest.pct }) : '',
-    aria: densest ? t('heat.aria', lang, { mode: modeAria, x: densest.x, y: densest.y, pct: densest.pct }) : t('heat.aria_empty', lang, { mode: modeAria }),
+    // The label summarises the whole grid (cells are also reachable with the arrow keys); a gap names its reason.
+    aria: densest
+      ? t('heat.aria', lang, { mode: modeAria, x: densest.x, y: densest.y, pct: densest.pct })
+      : t('heat.aria_empty', lang, { mode: modeAria }) + (unavailableReason ? ' ' + unavailableReason : ''),
   };
 }
 
@@ -524,15 +519,29 @@ function pushQuery(router, query) {
   }
 }
 
+/** A cold library computes a sidecar per stem on the first overview request, so it gets a long timeout. */
+export const OVERVIEW_TIMEOUT_MS = 60000;
+
 /**
- * Mount the Overview into `container`. opts: {query, store, router, onOpenMatch?}.
+ * Mount the Overview into `container`. opts (main.js ctx): {query, store, router, api?, reduced?, onOpenMatch?}.
  * Scope (athlete, squad, range) comes from the query, else the store; lens from the query.
- * Returns {destroy(), setQuery(query)}.
+ * With a router the shell owns hashchange and calls setQuery(); with `jobs` in the store the shell owns the jobs
+ * poll and the view follows the store. Returns {destroy(), setQuery(query)}.
  */
 export function mount(container, opts = {}) {
   const noop = { destroy() {}, setQuery() {} };
   if (!container || !hasDOM()) return noop;
   const { store, router } = opts;
+  const apiImpl = opts.api && typeof opts.api.overview === 'function' && typeof opts.api.jobs === 'function' ? opts.api : api;
+  const isReduced = () => {
+    try {
+      if (typeof opts.reduced === 'function') return !!opts.reduced();
+      if (typeof opts.reduced === 'boolean') return opts.reduced;
+    } catch (e) {
+      // fall through to the media query
+    }
+    return reducedMotion();
+  };
 
   const state = {
     query: { ...obj(opts.query) },
@@ -551,6 +560,7 @@ export function mount(container, opts = {}) {
   let lastP = 1;
   let reqId = 0;
   let ctl = null;
+  let pendingKey = null; // scope key of the overview request in flight
   let jobsTimer = null;
   let activeJobs = new Set();
 
@@ -579,7 +589,7 @@ export function mount(container, opts = {}) {
   const root = h('div', { class: 'page ov', 'data-view': 'overview' });
   container.appendChild(root);
 
-  const clock = createClock({ reduced: reducedMotion, onFrame: (p) => { lastP = p; paint(p); } });
+  const clock = createClock({ reduced: isReduced, onFrame: (p) => { lastP = p; paint(p); } });
 
   function paint(p) {
     if (refs.head) {
@@ -792,8 +802,43 @@ export function mount(container, opts = {}) {
     widgets = [];
   }
 
-  function render({ reveal: doReveal = true } = {}) {
+  // A rebuild keeps what the user was doing: the pinned radar axis and the focused control
+  // (matched by data-ctl, data-fk or id after the rebuild).
+  function captureUi() {
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    let focusKey = null;
+    if (active && typeof root.contains === 'function' && root.contains(active) && typeof active.getAttribute === 'function') {
+      for (const attr of ['data-ctl', 'data-fk', 'id']) {
+        const v = active.getAttribute(attr);
+        if (v) {
+          focusKey = [attr, v];
+          break;
+        }
+      }
+    }
+    const pinned = refs.radar && typeof refs.radar.pinned === 'function' ? refs.radar.pinned() : null;
+    return { focusKey, pinned };
+  }
+
+  function focusByAttr(attr, value) {
+    if (!value || typeof root.querySelectorAll !== 'function') return;
+    for (const el of root.querySelectorAll(`[${attr}]`)) {
+      if (el.getAttribute(attr) === value) {
+        if (!el.disabled && typeof el.focus === 'function') el.focus();
+        return;
+      }
+    }
+  }
+
+  function restoreUi(ui) {
+    if (!ui) return;
+    if (ui.pinned && refs.radar && typeof refs.radar.focus === 'function') refs.radar.focus(ui.pinned);
+    if (ui.focusKey) focusByAttr(ui.focusKey[0], ui.focusKey[1]);
+  }
+
+  function render({ reveal: doReveal = true, preserve = false } = {}) {
     if (state.destroyed) return;
+    const ui = preserve ? captureUi() : null;
     const vm = viewModel(state.data, scope().lens, lang());
     destroyWidgets();
     refs = {};
@@ -815,6 +860,7 @@ export function mount(container, opts = {}) {
     }
     if (doReveal) reveal();
     else settle();
+    restoreUi(ui);
   }
 
   function renderTiles() {
@@ -828,9 +874,9 @@ export function mount(container, opts = {}) {
   }
 
   // ----- interactions -----
-  function onOpenMatch(stem) {
+  function onOpenMatch(stem, anchor) {
     if (typeof opts.onOpenMatch === 'function') {
-      opts.onOpenMatch(stem);
+      opts.onOpenMatch(stem, anchor || null);
       return;
     }
     try {
@@ -847,7 +893,7 @@ export function mount(container, opts = {}) {
     r.focus(id);
     if (r.el && typeof r.el.scrollIntoView === 'function') {
       try {
-        r.el.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+        r.el.scrollIntoView({ block: 'nearest', behavior: isReduced() ? 'auto' : 'smooth' });
       } catch (e) {
         // older browsers: no options object
       }
@@ -864,59 +910,70 @@ export function mount(container, opts = {}) {
 
   function toggleEditing() {
     state.editing = !state.editing;
-    render({ reveal: false });
-    focusCtl('customize');
+    render({ reveal: false, preserve: true });
+    focusByAttr('data-ctl', 'customize');
   }
 
   function changeLayout(next, focusKey) {
     state.layout = normalizeLayout(next);
     prefs.setJSON(PREF_KEYS.layout, state.layout);
-    render({ reveal: false });
-    focusCtl(focusKey);
-  }
-
-  function focusCtl(key) {
-    if (!key || typeof root.querySelector !== 'function') return;
-    const safe = String(key).replace(/["\\]/g, '');
-    const el = root.querySelector(`[data-ctl="${safe}"]`);
-    if (el && !el.disabled && typeof el.focus === 'function') el.focus();
+    render({ reveal: false, preserve: true });
+    focusByAttr('data-ctl', focusKey);
   }
 
   // ----- data -----
+  /** Fetch the overview for the current scope; a request for the key already in flight is not repeated. */
   async function load({ reveal: doReveal = true } = {}) {
     const sc = scope();
+    const key = scopeKey(sc);
+    if (pendingKey === key) return;
     const mine = ++reqId;
+    pendingKey = key;
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
     ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const reqOpts = { timeout: OVERVIEW_TIMEOUT_MS };
+    if (ctl) reqOpts.signal = ctl.signal;
     try {
-      const data = await api.overview({ athlete: sc.athlete, squad: sc.squad, range: sc.range }, ctl ? { signal: ctl.signal } : undefined);
+      const data = await apiImpl.overview({ athlete: sc.athlete, squad: sc.squad, range: sc.range }, reqOpts);
       if (state.destroyed || mine !== reqId) return;
+      pendingKey = null;
+      const sameScope = state.loadedKey === key;
       state.data = data && typeof data === 'object' ? data : {};
       state.error = null;
       state.lastOk = Date.now();
-      state.loadedKey = scopeKey(sc);
-      render({ reveal: doReveal });
+      state.loadedKey = key;
+      // A same-scope refresh (job finished, retry) keeps the pinned axis and focus; a new scope starts clean.
+      render({ reveal: doReveal, preserve: sameScope });
     } catch (err) {
       if (state.destroyed || mine !== reqId) return;
+      pendingKey = null;
       if (err && err.kind === 'aborted') return;
       state.error = err || { kind: 'network' };
       // Keep the last good data on screen; only the header gains the retry.
-      render({ reveal: !state.data });
+      render({ reveal: !state.data, preserve: true });
     }
   }
+
+  /** Jobs list from the shell's store or this view's poll: update the pipeline card, refetch when a job ends. */
+  function applyJobs(list) {
+    const jobs = Array.isArray(list) ? list : [];
+    const active = new Set(jobs.filter((j) => j && pipelineW.ACTIVE_STATUSES.includes(j.status)).map((j) => j.id));
+    const finished = [...activeJobs].some((id) => !active.has(id));
+    activeJobs = active;
+    state.jobs = jobs;
+    if (refs.pipeline && typeof refs.pipeline.setJobs === 'function') refs.pipeline.setJobs(pipelineW.jobsModel(jobs, lang()));
+    if (finished && state.data) load({ reveal: false });
+  }
+
+  // main.js keeps `jobs` in the store and polls /api/jobs itself; without it this view polls.
+  const shellJobs = Array.isArray(storeState().jobs);
 
   async function pollJobs() {
     jobsTimer = null;
     try {
-      const list = await api.jobs();
+      const list = await apiImpl.jobs({ timeout: 10000 });
       if (state.destroyed) return;
-      const jobs = Array.isArray(list) ? list : [];
-      const active = new Set(jobs.filter((j) => j && pipelineW.ACTIVE_STATUSES.includes(j.status)).map((j) => j.id));
-      const finished = [...activeJobs].some((id) => !active.has(id));
-      activeJobs = active;
-      state.jobs = jobs;
-      if (refs.pipeline && typeof refs.pipeline.setJobs === 'function') refs.pipeline.setJobs(pipelineW.jobsModel(jobs, lang()));
-      if (finished) load({ reveal: false });
+      applyJobs(list);
     } catch (e) {
       // the pipeline card keeps its last list; the next poll retries
     } finally {
@@ -929,7 +986,8 @@ export function mount(container, opts = {}) {
     const before = scope();
     state.query = { ...obj(query) };
     const after = scope();
-    if (scopeKey(after) !== scopeKey(before) || (state.loadedKey !== null && scopeKey(after) !== state.loadedKey)) {
+    const key = scopeKey(after);
+    if (key !== pendingKey && (key !== scopeKey(before) || (state.loadedKey !== null && key !== state.loadedKey))) {
       load({ reveal: true });
       return;
     }
@@ -939,12 +997,14 @@ export function mount(container, opts = {}) {
     }
   }
 
+  // With a router (main.js) the shell listens to hashchange and calls setQuery; standalone, the view listens.
+  const ownsHash = !(router && (typeof router.navigate === 'function' || typeof router.go === 'function'));
   const onHash = () => {
     if (typeof location === 'undefined') return;
     const route = parseHash(location.hash);
     if (route.name === 'overview') setQuery(route.query);
   };
-  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener('hashchange', onHash);
+  if (ownsHash && typeof window !== 'undefined' && typeof window.addEventListener === 'function') window.addEventListener('hashchange', onHash);
 
   let unsubscribe = null;
   if (store && typeof store.subscribe === 'function') {
@@ -952,11 +1012,13 @@ export function mount(container, opts = {}) {
       const n = obj(next);
       const p = obj(prev);
       if (n.lang !== p.lang) {
-        render({ reveal: false });
+        render({ reveal: false, preserve: true });
         return;
       }
+      if (shellJobs && n.jobs !== p.jobs) applyJobs(n.jobs);
       if (n.athlete !== p.athlete || n.squad !== p.squad || n.range !== p.range) {
-        if (scopeKey(scope()) !== state.loadedKey) load({ reveal: true });
+        const key = scopeKey(scope());
+        if (key !== state.loadedKey && key !== pendingKey) load({ reveal: true });
       }
     });
   }
@@ -964,8 +1026,12 @@ export function mount(container, opts = {}) {
   const syncTimer = setInterval(() => setText(refs.sync, syncText()), 1000);
 
   render({ reveal: false });
+  if (shellJobs) {
+    state.jobs = storeState().jobs;
+    activeJobs = new Set(state.jobs.filter((j) => j && pipelineW.ACTIVE_STATUSES.includes(j.status)).map((j) => j.id));
+  }
   load({ reveal: true });
-  pollJobs();
+  if (!shellJobs) pollJobs();
 
   function destroy() {
     if (state.destroyed) return;
@@ -973,8 +1039,9 @@ export function mount(container, opts = {}) {
     clock.cancel();
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
     if (jobsTimer) clearTimeout(jobsTimer);
+    jobsTimer = null;
     clearInterval(syncTimer);
-    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') window.removeEventListener('hashchange', onHash);
+    if (ownsHash && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') window.removeEventListener('hashchange', onHash);
     if (typeof unsubscribe === 'function') unsubscribe();
     destroyWidgets();
     if (root.parentNode) root.parentNode.removeChild(root);

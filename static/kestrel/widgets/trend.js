@@ -14,6 +14,23 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const f1 = (v) => v.toFixed(1);
 
+/**
+ * Date labels under the plot: first and last point, plus the middle point (at its own x) from three points on,
+ * so two points never repeat the last label. Returns [{i, x, anchor}].
+ */
+export function xLabels(n) {
+  if (!(n >= 1)) return [];
+  const sc = trendScale(n, { ...BOX, yMin: 0, yMax: 1 });
+  if (n === 1) return [{ i: 0, x: sc.x(0), anchor: 'middle' }];
+  const out = [{ i: 0, x: sc.x(0), anchor: 'start' }];
+  if (n >= 3) {
+    const mid = Math.round((n - 1) / 2);
+    out.push({ i: mid, x: sc.x(mid), anchor: 'middle' });
+  }
+  out.push({ i: n - 1, x: sc.x(n - 1), anchor: 'end' });
+  return out;
+}
+
 function legend(d, lang) {
   const item = (swatchClass, label) => h('span', { class: 'kw-legend-item' }, [h('span', { class: 'kw-swatch ' + swatchClass, 'aria-hidden': 'true' }), label]);
   return h('div', { class: 'kw-legend' }, [
@@ -66,19 +83,16 @@ export function build(data, ctx = {}) {
 
   const grid = dom.ticks.map((v) => `M${BOX.x0} ${f1(sc.y(v))}H${BOX.x1}`).join('');
   const tickLabels = dom.ticks.map((v) => s('text', { x: 30, y: f1(sc.y(v) + 4), 'text-anchor': 'end', class: 'mono kw-axis-text' }, String(v)));
-  const mid = Math.round((n - 1) / 2);
-  const xLabel = (i, x, anchor) => s('text', { x, y: 226, 'text-anchor': anchor, class: 'mono kw-axis-text' }, pts[i].dateLabel || '');
+  const dateLabels = xLabels(n).map((l) => s('text', { x: f1(l.x), y: 226, 'text-anchor': l.anchor, class: 'mono kw-axis-text' }, pts[l.i].dateLabel || ''));
 
   const svg = s('svg', {
-    viewBox: `0 0 ${W} 236`, role: 'img', 'aria-label': d.aria || '', class: 'kw-trend', tabindex: '0',
+    viewBox: `0 0 ${W} 236`, role: 'img', 'aria-label': d.aria || '', class: 'kw-trend', tabindex: '0', 'data-fk': 'trend',
   }, [
     s('rect', { x: BOX.x0, y: f1(bandTop), width: SPAN, height: f1(Math.max(0, bandBottom - bandTop)), rx: 4, class: 'kw-trend-band' }),
     s('path', { d: grid, class: 'kw-trend-grid' }),
     ...tickLabels,
     area, bench, lineEl, cross, endHalo, endDot, lastText, tip,
-    xLabel(0, BOX.x0, 'start'),
-    xLabel(mid, (BOX.x0 + BOX.x1) / 2, 'middle'),
-    xLabel(n - 1, BOX.x1, 'end'),
+    ...dateLabels,
   ]);
   card.body.appendChild(svg);
   card.body.appendChild(h('div', { class: 'kw-foot' }, [

@@ -16,7 +16,7 @@ const loop = (v) => 'M' + Array.from({ length: O.n }, (_, i) => pt(i, v)).join('
 
 /**
  * data: the radar view-model {reference, axes:[{id,label,score,count,unscored,below,valueText,readout}], readout, aria}.
- * Returns {el, update(p), focus(id)}.
+ * Returns {el, update(p), focus(id), pinned()}.
  */
 export function build(data, ctx = {}) {
   const d = data || {};
@@ -68,6 +68,7 @@ export function build(data, ctx = {}) {
     type: 'button',
     class: 'kw-axis-chip' + (a.unscored ? ' unscored' : ''),
     'aria-pressed': 'false',
+    'data-fk': 'axis:' + a.id,
     onmouseenter: () => setHover(i),
     onmouseleave: () => setHover(null),
     onfocus: () => setHover(i),
@@ -129,6 +130,9 @@ export function build(data, ctx = {}) {
     paintFocus();
   }
 
+  /** Technique id of the pinned axis, or null (the view restores it after a same-scope refresh). */
+  const pinned = () => (lock !== null && axes[lock] ? axes[lock].id : null);
+
   paintFocus();
-  return { el: card.el, update, focus };
+  return { el: card.el, update, focus, pinned };
 }

@@ -6,6 +6,7 @@ import {
   viewModel, LENS_TILES, WIDGET_IDS, normalizeLayout, moveWidget, toggleWidget,
 } from '../../static/kestrel/views/overview.js';
 import { jobsModel } from '../../static/kestrel/widgets/pipeline.js';
+import { xLabels } from '../../static/kestrel/widgets/trend.js';
 import { trendScale, trendLine, niceDomain, trendPath } from '../../static/kestrel/core/geometry.js';
 import { reasonText } from '../../static/kestrel/core/i18n.js';
 
@@ -420,6 +421,45 @@ test('geometry: trendScale/trendLine use an asymmetric plot box (canvas: 40..628
   assert.equal(trendLine([{ index: 60 }, { index: 85 }], box).d, 'M40.0 200.0L628.0 16.0');
   // The existing symmetric trendPath is unchanged.
   assert.equal(trendPath([0, 10], { w: 100, h: 50, pad: 5 }), 'M5.0 45.0L95.0 5.0');
+});
+
+test('rally win rate and unforced errors are always gap tiles (spec 5.4 types them unavailable)', () => {
+  const ov = overviewFixture();
+  // Even a payload that (wrongly) carries a value never turns them into numbers.
+  ov.kpis.rally_win_rate = ok({ rate: 0.5 });
+  ov.kpis.unforced_errors = ok({ count: 3 });
+  const over = viewModel(ov, 'overview', 'en').tiles[3];
+  const tac = viewModel(ov, 'tactics', 'en').tiles[3];
+  for (const tile of [over, tac]) {
+    assert.equal(tile.kind, 'gap');
+    assert.equal(tile.reason, reasonText({ code: 'no_point_outcome' }, 'en')); // fallback when the payload has no reason
+  }
+  ov.kpis.unforced_errors = unavailable('no_data');
+  assert.equal(viewModel(ov, 'tactics', 'en').tiles[3].reason, reasonText({ code: 'no_data' }, 'en')); // payload reason kept
+});
+
+test('trend x labels: the middle label sits on point `mid` and is omitted below three points', () => {
+  assert.deepEqual(xLabels(2).map((l) => [l.i, l.anchor]), [[0, 'start'], [1, 'end']]);
+  const four = xLabels(4);
+  assert.deepEqual(four.map((l) => [l.i, l.anchor]), [[0, 'start'], [2, 'middle'], [3, 'end']]);
+  assert.equal(four[1].x, 40 + 2 * (588 / 3)); // the x of point 2, not the box centre
+  assert.equal(four[0].x, 40);
+  assert.equal(four[2].x, 628);
+  assert.equal(xLabels(3)[1].x, 334);
+  assert.deepEqual(xLabels(1).map((l) => l.i), [0]);
+  assert.deepEqual(xLabels(0), []);
+});
+
+test('court: an unavailable mode names its reason in the accessible label', () => {
+  const ov = overviewFixture();
+  ov.movement.pull = unavailable('no_hits');
+  for (const lang of ['en', 'zh']) {
+    const pull = viewModel(ov, 'overview', lang).court.pull;
+    assert.ok(pull.aria.includes(reasonText({ code: 'no_hits' }, lang)), `${lang}: ${pull.aria}`);
+  }
+  // An available mode keeps the densest-zone summary and no reason.
+  const pos = viewModel(ov, 'overview', 'en').court.position;
+  assert.match(pos.aria, /Densest zone/);
 });
 
 test('geometry: niceDomain gives six step-aligned ticks inside 0-100', () => {

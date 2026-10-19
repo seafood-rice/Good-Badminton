@@ -25,7 +25,7 @@ export function build(data, ctx = {}) {
 
   const thumb = h('div', { class: 'thumb', 'aria-hidden': 'true', style: { width: THUMB_W + 'px' } });
   const buttons = MODES.map((m) => h('button', {
-    type: 'button', 'aria-pressed': 'false', style: { width: THUMB_W + 'px', padding: '0' },
+    type: 'button', 'aria-pressed': 'false', 'data-fk': 'court:' + m, style: { width: THUMB_W + 'px', padding: '0' },
     onclick: () => setMode(m, true),
   }, (d[m] && d[m].label) || t('heat.' + m, lang)));
   const pills = h('div', { class: 'pill-slider kw-court-modes', role: 'group', 'aria-label': t('heat.mode_aria', lang) }, [thumb, ...buttons]);
@@ -44,10 +44,16 @@ export function build(data, ctx = {}) {
   const gapTitle = h('strong', null, t('gap.title', lang));
   const gapReason = h('span', null, '');
   const gapEl = h('div', { class: 'gap-card kw-court-gap' }, [gapTitle, gapReason]);
-  const readEl = h('span', null, '');
+  // The readout is a live region outside the role=img, so keyboard cell moves are announced.
+  const readEl = h('span', { 'aria-live': 'polite' }, '');
   const tagEl = h('span', { class: 'mono kw-tag' }, '');
-  const court = h('div', { class: 'kw-court', role: 'img', 'aria-label': '', onmouseleave: () => hoverCell(null) }, [
-    h('div', { class: 'kw-court-wrap' }, [gridEl, gapEl]),
+  // role=img summarises the grid (densest zone, or the reason it is unavailable); arrow keys walk the cells.
+  const wrap = h('div', {
+    class: 'kw-court-wrap', role: 'img', 'aria-label': '', tabindex: '0', 'data-fk': 'court-grid',
+    onkeydown: (e) => onKey(e), onblur: () => hoverCell(null),
+  }, [gridEl, gapEl]);
+  const court = h('div', { class: 'kw-court', onmouseleave: () => hoverCell(null) }, [
+    wrap,
     h('div', { class: 'mono kw-court-axis' }, [h('span', null, t('heat.net', lang)), readEl, h('span', null, t('heat.baseline', lang))]),
   ]);
   const scaleEl = h('div', { class: 'kw-court-scale' }, [
@@ -59,12 +65,28 @@ export function build(data, ctx = {}) {
   card.body.appendChild(scaleEl);
 
   let lastP = 1;
+  let current = null;
 
   function hoverCell(k) {
     const m = model();
+    current = k;
     cellEls.forEach((el, i) => el.classList.toggle('sel', i === k));
     const c = k === null || !m.available ? null : m.cells[k];
     setText(readEl, c ? c.readout : m.readout || '');
+  }
+
+  // Arrow keys move a cell cursor (Up = towards the net, row 0); Escape clears it.
+  function onKey(e) {
+    const m = model();
+    if (!m.available) return;
+    if (e.key === 'Escape') { hoverCell(null); return; }
+    const step = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const start = current !== null ? current : m.densest ? m.densest.row * COLS + m.densest.col : 0;
+    const row = Math.max(0, Math.min(ROWS - 1, Math.floor(start / COLS) + (current === null ? 0 : step[0])));
+    const col = Math.max(0, Math.min(COLS - 1, (start % COLS) + (current === null ? 0 : step[1])));
+    hoverCell(row * COLS + col);
   }
 
   function paintMode() {
@@ -73,7 +95,7 @@ export function build(data, ctx = {}) {
     setStyle(thumb, 'transform', `translateX(${i * THUMB_W}px)`);
     buttons.forEach((b, j) => setAttr(b, 'aria-pressed', j === i ? 'true' : 'false'));
     setText(card.subEl, m.sub || '');
-    setAttr(court, 'aria-label', m.aria || '');
+    setAttr(wrap, 'aria-label', m.aria || '');
     setText(tagEl, m.tag || '');
     setStyle(tagEl, 'display', m.tag ? '' : 'none');
     setStyle(gapEl, 'display', m.available ? 'none' : '');
@@ -91,7 +113,8 @@ export function build(data, ctx = {}) {
       const col = k % COLS;
       const l = cellReveal(row, col, p);
       const a = (c && m.available ? c.alpha : 0) * l;
-      setStyle(cellEls[k], 'background', `rgb(255 90 54 / ${(0.06 + a * 0.94).toFixed(3)})`);
+      // The --accent token, mixed by share; the inline value is rewritten in place each frame.
+      setStyle(cellEls[k], 'background', `color-mix(in srgb, var(--accent) ${((0.06 + a * 0.94) * 100).toFixed(1)}%, transparent)`);
       setStyle(cellEls[k], 'transform', l >= 1 ? '' : `scale(${(0.7 + 0.3 * l).toFixed(3)})`);
     }
   }

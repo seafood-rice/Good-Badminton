@@ -22,7 +22,7 @@ export function build(data, ctx = {}) {
     right: h('span', { class: 'mono kw-count' }, d.count || ''),
   }, ctx);
 
-  const rows = items.map((f) => {
+  const rows = items.map((f, i) => {
     const canFocus = !!f.axis && typeof ctx.onFocusAxis === 'function';
     const content = [
       h('span', { class: 'kw-find-glyph', 'aria-hidden': 'true' }, f.glyph || ''),
@@ -33,7 +33,7 @@ export function build(data, ctx = {}) {
     ];
     const cls = 'kw-find ' + (f.severity || 'info');
     return canFocus
-      ? h('button', { type: 'button', class: cls + ' focusable', onclick: () => ctx.onFocusAxis(f.axis) }, content)
+      ? h('button', { type: 'button', class: cls + ' focusable', 'data-fk': 'find:' + i, onclick: () => ctx.onFocusAxis(f.axis) }, content)
       : h('div', { class: cls }, content);
   });
   card.body.appendChild(

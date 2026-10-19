@@ -263,3 +263,7 @@
 .bar>i.kw-bar-good{background:var(--good);}
 .bar>i.kw-bar-bad{background:var(--bad);}
 .bar>i.kw-bar-queued{background:var(--ink3);}
+
+/* Task 9 review fixes: visible reason on a partial tile; focus ring on the keyboard-walkable court grid. */
+.kw-tile-reason{font-size:11.5px;line-height:1.35;color:var(--ink3);}
+.kw-court-wrap:focus-visible{outline:2px solid var(--cyan);outline-offset:3px;border-radius:4px;}

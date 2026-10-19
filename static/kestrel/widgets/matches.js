@@ -13,7 +13,8 @@ export function build(data, ctx = {}) {
   const lang = ctx.lang;
   const slot = typeof ctx.slot === 'number' ? ctx.slot : 0;
   const rows = Array.isArray(d.rows) ? d.rows : [];
-  const open = (stem) => { if (typeof ctx.onOpenMatch === 'function') ctx.onOpenMatch(stem); };
+  // The activating element goes along so the shell can grow its container transform from it.
+  const open = (stem, anchor) => { if (typeof ctx.onOpenMatch === 'function') ctx.onOpenMatch(stem, anchor || null); };
   const card = frame.build({
     id: 'matches',
     title: t('matches.title', lang),
@@ -30,20 +31,23 @@ export function build(data, ctx = {}) {
   }
 
   const th = (key, cls) => h('th', { scope: 'col', class: cls || null }, t(key, lang));
-  const trs = rows.map((r) => h('tr', {
-    class: 'trow',
-    onclick: (e) => {
-      // The button handles its own activation; a click elsewhere on the row opens the same peek.
-      if (e.target && typeof e.target.closest === 'function' && e.target.closest('button')) return;
-      open(r.stem);
-    },
-  }, [
-    h('td', null, h('button', { type: 'button', class: 'kw-row-open', 'aria-label': r.aria || r.label, onclick: () => open(r.stem) }, r.label || r.stem)),
-    h('td', { class: 'mono kw-muted' }, r.date || '—'),
-    h('td', null, h('span', { class: 'mono kw-res' + (r.result === 'W' ? ' win' : r.result === 'L' ? ' loss' : ' none') }, r.resultText || '')),
-    h('td', { class: 'mono kw-num' }, r.tech || '—'),
-    h('td', null, h('span', { class: 'k-chip' + (r.statusTone ? ' ' + r.statusTone : '') }, [h('span', { class: 'kw-dot', 'aria-hidden': 'true' }), r.statusText || ''])),
-  ]));
+  const trs = rows.map((r) => {
+    const btn = h('button', {
+      type: 'button', class: 'kw-row-open', 'aria-label': r.aria || r.label, 'data-fk': 'match:' + r.stem,
+      onclick: (e) => { if (e && typeof e.stopPropagation === 'function') e.stopPropagation(); open(r.stem, btn); },
+    }, r.label || r.stem);
+    return h('tr', {
+      class: 'trow',
+      // A click elsewhere on the row opens the same match (the button stops its own click from bubbling).
+      onclick: () => open(r.stem, btn),
+    }, [
+      h('td', null, btn),
+      h('td', { class: 'mono kw-muted' }, r.date || '—'),
+      h('td', null, h('span', { class: 'mono kw-res' + (r.result === 'W' ? ' win' : r.result === 'L' ? ' loss' : ' none') }, r.resultText || '')),
+      h('td', { class: 'mono kw-num' }, r.tech || '—'),
+      h('td', null, h('span', { class: 'k-chip' + (r.statusTone ? ' ' + r.statusTone : '') }, [h('span', { class: 'kw-dot', 'aria-hidden': 'true' }), r.statusText || ''])),
+    ]);
+  });
   const table = h('table', { class: 'table kw-table' }, [
     h('thead', null, h('tr', null, [
       th('matches.col.opponent'), th('matches.col.date'), th('matches.col.result'), th('matches.col.tech', 'kw-num'), th('matches.col.status'),
