@@ -418,7 +418,7 @@ all owner-compatible rulings:
   against the row's own side whenever a winner is recorded (`match_win_rate` stays unavailable without an athlete or
   squad scope). With no athlete scope the overview widget shows one row per stem.
 - **Net share** is computed per hitter (`by_hitter[side].distribution`), so an athlete scope never counts the
-  opponent's strokes. `INSIGHTS_VERSION` is 4.
+  opponent's strokes. `INSIGHTS_VERSION` is 5.
 - **Video file.** After a finished run the playable file is `detect_<stem>.mp4` (the H.264 transcode replaces it);
   the workspace tries it first and shows a message when it cannot play.
 - **GET /api/matches/<unknown stem>** is 404 (the front end treats it as "no record").
@@ -436,7 +436,7 @@ all owner-compatible rulings:
 Measured (owner's 13 real runs, 26 units): `/api/insights/overview` cold 5.0-7.5 s (computes and caches 13 sidecars),
 warm 0.09 s; technique index 54.7 with 4 of 7 techniques scored; 86 of 304 strokes classified; recovery to base median
 about 0.0-0.4 s; all KPI statuses honest (rally win rate, unforced errors and, without a scope, match win rate unavailable).
-Tests: `1824 passed, 5 skipped` pytest (baseline 1246 passed, 3 skipped) and `197` Node tests at the final commit.
+Tests: `1710 passed, 2 skipped` pytest on the tree merged with `main` (it dropped the retired claim-helper tests and added the doubles tests; pre-merge 1824 passed, 5 skipped; baseline 1246 passed, 3 skipped) and `202` Node tests at the final commit.
 
 Known limitations and follow-ups (not done):
 
