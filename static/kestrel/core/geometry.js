@@ -50,6 +50,26 @@ export function radarLabel(i, { cx, cy, r, n = 7, gap = 18 }) {
   };
 }
 
+const WIDE = /[⺀-鿿豈-﫿＀-￯]/;
+
+/** Rough rendered width of 12 px label text: `charW` per glyph, `wideW` per CJK / full-width glyph. */
+export function estimateTextWidth(text, { charW = 9, wideW = 12 } = {}) {
+  let w = 0;
+  for (const ch of String(text == null ? '' : text)) w += WIDE.test(ch) ? wideW : charW;
+  return w;
+}
+
+/**
+ * Estimated box {left, right, top, bottom} of radar label `i`: the name, a `dx` gap, then the score, placed by
+ * radarLabel's anchor (start grows right, end grows left, middle is centred). Used to size the radar viewBox.
+ */
+export function radarLabelExtent(i, name, value, opts, { dx = 5, fontSize = 12, ...widths } = {}) {
+  const pos = radarLabel(i, opts);
+  const w = estimateTextWidth(name, widths) + dx + estimateTextWidth(value, widths);
+  const left = pos.anchor === 'start' ? pos.x : pos.anchor === 'end' ? pos.x - w : pos.x - w / 2;
+  return { left, right: left + w, top: pos.y - fontSize, bottom: pos.y + fontSize / 3 };
+}
+
 function seriesValue(p) {
   if (p && typeof p === 'object') {
     for (const k of ['index', 'value', 'y', 'score']) if (isNum(p[k])) return p[k];

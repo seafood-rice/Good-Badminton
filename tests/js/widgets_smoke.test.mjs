@@ -7,6 +7,9 @@ import {
 } from '../../static/kestrel/views/overview.js';
 import { jobsModel } from '../../static/kestrel/widgets/pipeline.js';
 import { xLabels } from '../../static/kestrel/widgets/trend.js';
+import { RADAR_VIEWBOX, RADAR_GEOMETRY } from '../../static/kestrel/widgets/radar.js';
+import { estimateTextWidth, radarLabelExtent } from '../../static/kestrel/core/geometry.js';
+import { t, TECHNIQUE_IDS } from '../../static/kestrel/core/i18n.js';
 import { trendScale, trendLine, niceDomain, trendPath } from '../../static/kestrel/core/geometry.js';
 import { reasonText } from '../../static/kestrel/core/i18n.js';
 
@@ -460,6 +463,43 @@ test('court: an unavailable mode names its reason in the accessible label', () =
   // An available mode keeps the densest-zone summary and no reason.
   const pos = viewModel(ov, 'overview', 'en').court.position;
   assert.match(pos.aria, /Densest zone/);
+});
+
+test('geometry: estimateTextWidth counts CJK as wide glyphs', () => {
+  assert.equal(estimateTextWidth('Clear'), 45);
+  assert.equal(estimateTextWidth('高远球'), 36);
+  assert.equal(estimateTextWidth(''), 0);
+  assert.equal(estimateTextWidth(null), 0);
+});
+
+test('radar: every axis label (CJK or Latin name + score) fits inside the viewBox', () => {
+  const vb = RADAR_VIEWBOX;
+  // The plot itself is unchanged: centre 160,150, radius 105, and the viewBox is symmetric about the centre.
+  assert.deepEqual([RADAR_GEOMETRY.cx, RADAR_GEOMETRY.cy, RADAR_GEOMETRY.r], [160, 150, 105]);
+  assert.equal(vb.x + vb.w / 2, RADAR_GEOMETRY.cx);
+  for (const lang of ['en', 'zh']) {
+    TECHNIQUE_IDS.forEach((id, i) => {
+      for (const value of ['100', '99.5', '—']) {
+        const name = t('technique.' + id, lang);
+        const ext = radarLabelExtent(i, name, value, RADAR_GEOMETRY);
+        const where = `${lang} ${id} "${name} ${value}" [${ext.left.toFixed(1)}, ${ext.right.toFixed(1)}]`;
+        assert.ok(ext.left >= vb.x, `${where} clipped left of ${vb.x}`);
+        assert.ok(ext.right <= vb.x + vb.w, `${where} clipped right of ${vb.x + vb.w}`);
+        assert.ok(ext.top >= vb.y && ext.bottom <= vb.y + vb.h, `${where} clipped vertically`);
+      }
+    });
+  }
+});
+
+test('geometry: radarLabelExtent follows the text anchor', () => {
+  const O = { cx: 160, cy: 150, r: 105 };
+  const top = radarLabelExtent(0, 'Smash', '82', O); // middle anchor
+  assert.ok(Math.abs((top.left + top.right) / 2 - 160) < 1e-9);
+  const right = radarLabelExtent(2, 'Clear', '51.6', O); // start anchor: grows to the right of x
+  assert.ok(right.left > 160);
+  assert.ok(Math.abs(right.right - right.left - (estimateTextWidth('Clear') + 5 + estimateTextWidth('51.6'))) < 1e-9);
+  const left = radarLabelExtent(5, 'Drive', '64', O); // end anchor: grows to the left
+  assert.ok(left.right < 160);
 });
 
 test('geometry: niceDomain gives six step-aligned ticks inside 0-100', () => {

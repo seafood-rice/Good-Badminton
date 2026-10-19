@@ -7,6 +7,16 @@ import * as frame from './frame.js';
 import { h, s, setAttr, setText } from './frame.js';
 
 const O = { cx: 160, cy: 150, r: 105, n: 7 };
+/** Plot geometry (centre and radius as in the canvas). */
+export const RADAR_GEOMETRY = Object.freeze({ ...O });
+/**
+ * viewBox widened symmetrically about the centre (was 0 0 320 300): start/end-anchored labels with a 4-character
+ * score ("Clear 99.5", "平抽球 99.5") reach about x -46 and x 366 (radarLabelExtent), so 2-digit scores and CJK
+ * names are never clipped at any rendered width. A test asserts every label stays inside.
+ */
+export const RADAR_VIEWBOX = Object.freeze({ x: -60, y: 0, w: 440, h: 300 });
+// Keep the plot the size it had with the old 320-wide box and a 400 px cap (400 * 440 / 320).
+const MAX_WIDTH_PX = 550;
 const f1 = (v) => v.toFixed(1);
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
@@ -45,7 +55,12 @@ export function build(data, ctx = {}) {
     return { text, val };
   });
 
-  const svg = s('svg', { viewBox: '0 0 320 300', role: 'img', 'aria-label': d.aria || '', class: 'kw-radar' }, [
+  const vb = RADAR_VIEWBOX;
+  const svg = s('svg', {
+    viewBox: `${vb.x} ${vb.y} ${vb.w} ${vb.h}`, role: 'img', 'aria-label': d.aria || '', class: 'kw-radar',
+    // overflow:visible is a backstop for fonts wider than the estimate; the card's own padding gives it room.
+    style: { maxWidth: MAX_WIDTH_PX + 'px', overflow: 'visible' },
+  }, [
     s('polygon', { points: ringPolygon(1, O), class: 'kw-radar-grid' }),
     s('polygon', { points: ringPolygon(0.75, O), class: 'kw-radar-grid' }),
     s('polygon', { points: ringPolygon(0.5, O), class: 'kw-radar-grid' }),
