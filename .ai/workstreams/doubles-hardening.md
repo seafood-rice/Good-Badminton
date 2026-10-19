@@ -15,7 +15,8 @@
 - **Worktree:** `.claude/worktrees/beautiful-bhabha-593349`
 - **Base commit:** `b80a113`
 - **Claim id:** none (see Deviation)
-- **Last milestone:** 2026-10-18 - items 1-7 committed one per item; full suite run.
+- **Last milestone:** 2026-10-19 - both Codex review findings on PR #15 fixed (R1, R2);
+  full suite re-run.
 
 ## Deviation: no continuity claim
 
@@ -34,6 +35,8 @@ rule (claims are a record, not a gate), work proceeded without one.
 | 5 | Heatmap figures closed in `finally`; aborted `write_heatmaps` leaves no PNGs; identity-video labels drawn with PIL + `simhei.ttf` (CJK names) | `8aec250` |
 | 6 | `progress.json` `substage` for the doubles stage (identity, heatmaps, video render with a 2 s heartbeat); app message and Kestrel heartbeat during re-encode | `77c6b5a` |
 | 7 | Missing tests: hitter window / fallback / close contest, appearance embed and partial terms, collector malformed inputs, render frame alignment, identity coverage and stage-2 triangle | `4f91006` |
+| R1 | Codex review: doubles runs also remove a singles run's cached `training_plan.json` (spec 7 amended) | `ad4f5f4` |
+| R2 | Codex review: `players.json` records `identity_video` {status, file, reason}; Kestrel links the video only on `ok` (spec 6.6 amended) | `2e56fca` |
 
 Decisions:
 
@@ -51,6 +54,7 @@ Decisions:
 | Command | Result | Tested commit | Date |
 |---|---|---|---|
 | `PYTHONUTF8=1 .venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` | 1511 passed, 5 skipped (621 s; was 1477 on `b80a113`, +34 new tests). Skips: 3 symlink-privilege, 2 absent weight files | `4f91006` | 2026-10-18 |
+| same | 1513 passed, 5 skipped (680 s; +2 tests for the Codex review fixes) | `2e56fca` | 2026-10-19 |
 
 Kestrel's change (heartbeat visible while `reencoding`) is covered by a source test only;
 not checked in a browser, since it needs a full doubles run to reach that state.
