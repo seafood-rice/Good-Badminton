@@ -1,4 +1,3 @@
 @RTK.md
-@.ai/WORKFLOW.md
-@.ai/PROJECT_STATUS.md
+@.ai/STATE.md
 @.codex/active-team.md
