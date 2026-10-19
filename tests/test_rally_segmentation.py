@@ -342,7 +342,7 @@ def test_process_frame_records_the_rally_track_outside_the_technique_branch():
     update and before, not inside, the ``if self.analyze_technique`` block."""
     src = inspect.getsource(sysmod.BadmintonAnalysisSystem._process_frame)
     call = src.index("self._record_rally_frame(")
-    gate = src.index("if self.analyze_technique:")
+    gate = src.index('if getattr(self, "_capture_frames", self.analyze_technique):')
     assert src.index("self.player_tracker.update(") < call < gate
 
 

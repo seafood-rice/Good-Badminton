@@ -1,3 +1,2 @@
-@.ai/WORKFLOW.md
-@.ai/PROJECT_STATUS.md
+@.ai/STATE.md
 @.claude/active-team.md
