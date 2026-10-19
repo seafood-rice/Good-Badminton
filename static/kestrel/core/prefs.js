@@ -13,6 +13,11 @@ export function normTheme(v) {
   return v === 'day' || v === 'light' ? 'day' : 'night';
 }
 
+/** The string stored in `kestrel_theme` and set as `data-theme` (legacy-compatible): night -> 'dark', day -> 'light'. */
+export function legacyTheme(v) {
+  return normTheme(v) === 'day' ? 'light' : 'dark';
+}
+
 /** The app default is Chinese (as in the legacy UI); only 'en' selects English. */
 export function normLang(v) {
   return v === 'en' ? 'en' : 'zh';

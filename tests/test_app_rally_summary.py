@@ -180,7 +180,7 @@ def test_kestrel_hedges_the_unvalidated_shuttle_count():
     """Kestrel has no JS test harness: pin the copy in the source (zh + en)."""
     from pathlib import Path
 
-    src = (Path(webapp.__file__).parent / "static" / "kestrel.js").read_text(encoding="utf-8")
+    src = (Path(webapp.__file__).parent / "static" / "kestrel" / "legacy" / "kestrel-legacy.js").read_text(encoding="utf-8")
     assert "det.signal === 'shuttle'" in src
     assert "shuttle signal — not yet validated" in src
     assert "羽毛球轨迹信号，尚未验证" in src
