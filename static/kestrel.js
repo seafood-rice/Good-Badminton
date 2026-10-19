@@ -1287,6 +1287,13 @@ window.Kestrel = (function () {
       }).join('') + players.map(function (p) {
         return heatCell(p.heatmap, p.name || p.id);
       }).join('');
+      // Link the identity video only when players.json says it was rendered.
+      var vid = d.identity_video || null;
+      var videoLine = (vid && vid.status === 'ok' && vid.file)
+        ? '<p><a href="' + base + encodeURIComponent(String(vid.file)) + '" target="_blank">' +
+          (zh ? '球员身份视频' : 'Player identity video') + '</a></p>'
+        : (vid && vid.reason ? '<p class="muted">' + (zh ? '球员身份视频未生成：' : 'Player identity video not available: ') +
+          escHTML(String(vid.reason)) + '</p>' : '');
       var share = d.stats && typeof d.stats.hits_named_share === 'number' ? Math.round(d.stats.hits_named_share * 100) : 0;
       box.innerHTML = '<h2>' + (zh ? '双打球员' : 'Doubles players') + '</h2>' + status +
         '<table class="mono"><thead><tr><th>' + (zh ? '球员' : 'Player') + '</th><th>' + (zh ? '队' : 'Team') + '</th><th>' +
@@ -1294,9 +1301,7 @@ window.Kestrel = (function () {
         rows + '</tbody></table>' +
         '<p class="chip">' + (zh ? '击球归属：未验证（' + share + '% 已命名）' : 'Who hit: unvalidated (' + share + '% named)') + '</p>' +
         '<p class="muted">' + (zh ? '双打不提供击球类型（BST 为单打模型）' : 'Stroke types withheld for doubles (BST is a singles model)') + '</p>' +
-        '<div class="viz-row">' + heat + '</div>' +
-        '<p><a href="' + base + 'detect_' + encodeURIComponent(stem) + '_players.mp4" target="_blank">' +
-        (zh ? '球员身份视频' : 'Player identity video') + '</a></p>';
+        '<div class="viz-row">' + heat + '</div>' + videoLine;
       box.style.display = '';
     }).catch(function () {});
 

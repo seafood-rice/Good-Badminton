@@ -1524,8 +1524,10 @@ class BadmintonAnalysisSystem:
             from .visualization.doubles_render import render_identity_video, write_heatmaps
             self._write_progress("visualizing", substage="doubles_heatmaps")
             write_heatmaps(self.save_dir, payload, collector.identity_tracks)
+            video = {"status": "skipped", "file": None, "reason": "source video missing"}
             if os.path.exists(self.video_path):
-                out = os.path.join(self.save_dir, dbl.players_video_name(self.video_name))
+                name = dbl.players_video_name(self.video_name)
+                out = os.path.join(self.save_dir, name)
                 # Re-reads and re-encodes the whole video: minutes on 4K, so beat.
                 with _ProgressHeartbeat(self._write_progress, "visualizing",
                                         substage="doubles_video") as beat:
@@ -1533,11 +1535,16 @@ class BadmintonAnalysisSystem:
                         self.video_path, out, collector.identity_tracks,
                         payload.get("players") or [], fps=fps, progress=beat.update)
                 if rendered:
+                    video = {"status": "ok", "file": name, "reason": None}
                     print(f"Identity video: {out}")
                 else:
-                    print("Identity video skipped: render failed")
-            else:
-                print("Identity video skipped: source video missing")
+                    video = {"status": "failed", "file": None, "reason": "render failed"}
+            if video["status"] != "ok":
+                print(f"Identity video skipped: {video['reason']}")
+            # Recorded so consumers link the video only when it exists (spec 6.6).
+            from .data.writer import write_json as _write_json
+            payload["identity_video"] = video
+            _write_json(os.path.join(self.save_dir, "players.json"), payload)
         except Exception as exc:
             print(f"Doubles stage failed: {exc!r}")
 

@@ -243,7 +243,9 @@ only, per hit: `hitter_id` (e.g. `"P3"` or null), `hitter_team` (1, 2 or null),
 - `detect_<stem>_players.mp4`: a post-loop re-render of the source video drawing each
   identity's foot point, label and team colour (4 fixed colours), using `tracklets.jsonl`
   and the assignment. No inference; decode + draw + encode. Skipped with a recorded reason
-  if it fails.
+  if it fails: `players.json` gets `"identity_video": {"status": "ok" | "failed" |
+  "skipped", "file": <name or null>, "reason": <text or null>}` after the render, and
+  Kestrel links the video only when the status is `ok` (added 2026-10-19).
 - Optional names: `outputs/<stem>/player_names.json` (`{"P1": "Alice"}`) is read when
   present and copied into `players.json`; Kestrel can write it via the existing output
   file route.

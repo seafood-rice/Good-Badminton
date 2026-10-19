@@ -314,3 +314,37 @@ def test_doubles_stage_reports_progress_substages(tmp_path, monkeypatch):
     singles._run_doubles_stage(30.0, 5)
     assert "singles" not in seen
 
+
+def _identity_video_record(tmp_path, monkeypatch, *, source=True, rendered=True):
+    tmp_path.mkdir()
+    from badminton_analysis.data.writer import write_json
+    from badminton_analysis.visualization import doubles_render as dr
+
+    s = bare(tmp_path, "doubles")
+    if source:
+        (tmp_path / "v.mp4").write_text("x")
+
+    class Fake:
+        identity_tracks = {}
+
+        def finalize(self, save_dir, *a, **k):
+            payload = {"match_format": "doubles", "status": "ok", "players": []}
+            write_json(str(tmp_path / "players.json"), payload)
+            return payload
+
+    s._doubles = Fake()
+    monkeypatch.setattr(dr, "write_heatmaps", lambda *a, **k: [])
+    monkeypatch.setattr(dr, "render_identity_video", lambda *a, **k: rendered)
+    s._run_doubles_stage(30.0, 5)
+    saved = json.loads((tmp_path / "players.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "ok"                     # the rest of the payload is kept
+    return saved["identity_video"]
+
+
+def test_identity_video_outcome_recorded_in_players_json(tmp_path, monkeypatch):
+    assert _identity_video_record(tmp_path / "a", monkeypatch) == {
+        "status": "ok", "file": "detect_v_players.mp4", "reason": None}
+    assert _identity_video_record(tmp_path / "b", monkeypatch, rendered=False) == {
+        "status": "failed", "file": None, "reason": "render failed"}
+    assert _identity_video_record(tmp_path / "c", monkeypatch, source=False) == {
+        "status": "skipped", "file": None, "reason": "source video missing"}
