@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify, send_file
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
+from badminton_analysis.insights.rally import summarise_rally_payload
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -184,35 +185,17 @@ def _rally_summary(save_dir):
     measured on any footage (§0.16 measured the swing path only). It is not
     known to be bad, so it is still counted; Kestrel hedges its wording.
     """
-    unknown = {'count': 0, 'suppressed': False, 'label': 'rallies',
-               'signal': None, 'degraded': False, 'failed': False}
     path = os.path.join(str(save_dir), 'rally_segments.json')
     if not os.path.exists(path):
-        return unknown
+        return summarise_rally_payload(None)
     try:
         with open(path, encoding='utf-8') as f:
             payload = json.load(f)
-        rallies = payload.get('rallies', [])
-        if not isinstance(rallies, list):
-            raise ValueError('rallies is not a list')
-        detection = payload.get('detection')
-        if not isinstance(detection, dict):
-            detection = {}
     except Exception as exc:
         print(f'Could not read {path}: {exc!r}; treating the rally count as unknown')
-        return dict(unknown, failed=True)
-
-    signal = detection.get('signal')
-    if signal == 'error':
-        return dict(unknown, failed=True)
-    degraded = bool(detection.get('degraded'))
-    summary = {'count': len(rallies), 'suppressed': False, 'label': 'rallies',
-               'signal': signal, 'degraded': degraded, 'failed': False}
-    if degraded or signal == 'none':
-        summary.update(suppressed=True, label='windows')
-    elif signal == 'swing':
-        summary.update(suppressed=True, label='segments')
-    return summary
+        return summarise_rally_payload([])      # malformed -> failed
+    # a JSON ``null`` is malformed, not "no file"
+    return summarise_rally_payload([] if payload is None else payload)
 
 
 def _racket_weights(base=None):
