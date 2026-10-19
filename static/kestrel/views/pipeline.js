@@ -6,9 +6,8 @@ import { ago } from '../core/format.js';
 import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, setStyle, setText } from '../widgets/frame.js';
-import { ACTIVE_STATUSES } from '../widgets/pipeline.js';
+import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES } from '../widgets/pipeline.js';
 
-const RUNNING = ['running', 'reencoding', 'detached'];
 export const FAST_MS = 2000;
 export const SLOW_MS = 15000;
 
@@ -44,7 +43,7 @@ export function groupJobs(jobs) {
     const status = typeof j.status === 'string' ? j.status : '';
     const isActive = ACTIVE_STATUSES.includes(status);
     if (RUNNING.includes(status)) running += 1;
-    if (status === 'pending') queued += 1;
+    if (QUEUED_STATUSES.includes(status)) queued += 1;
     let progress = isNum(j.progress) ? Math.max(0, Math.min(100, Math.round(j.progress))) : 0;
     if (status === 'completed') progress = 100;
     const stem = stemOf(j.video);

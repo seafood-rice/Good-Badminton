@@ -2,10 +2,10 @@
 import { t } from '../core/i18n.js';
 import { local } from '../core/motion.js';
 import * as frame from './frame.js';
-import { h, revealStyle } from './frame.js';
+import { h, revealStyle, approxMark } from './frame.js';
 
 /**
- * data: the matches view-model {rows:[{stem,label,aria,date,result,resultText,tech,statusText,statusTone}],
+ * data: the matches view-model {rows:[{stem,label,aria,date,dateApprox,result,resultText,tech,statusText,statusTone}],
  * emptyTitle, emptyBody}. Returns {el, update(p)}.
  */
 export function build(data, ctx = {}) {
@@ -42,7 +42,7 @@ export function build(data, ctx = {}) {
       onclick: () => open(r.stem, btn),
     }, [
       h('td', null, btn),
-      h('td', { class: 'mono kw-muted kw-col-date' }, r.date || '—'),
+      h('td', { class: 'mono kw-muted kw-col-date' }, [r.date || '—', r.dateApprox ? approxMark(lang) : null]),
       h('td', { class: 'kw-col-res' }, h('span', { class: 'mono kw-res' + (r.result === 'W' ? ' win' : r.result === 'L' ? ' loss' : ' none') }, r.resultText || '')),
       h('td', { class: 'mono kw-num kw-col-tech' }, r.tech || '—'),
       h('td', null, h('span', { class: 'k-chip' + (r.statusTone ? ' ' + r.statusTone : '') }, [h('span', { class: 'kw-dot', 'aria-hidden': 'true' }), r.statusText || ''])),

@@ -370,3 +370,166 @@ def test_concurrent_posts_do_not_clobber_each_other(client, monkeypatch):
 
     assert all(s == 201 for s in statuses.values()), statuses
     assert len(c.get("/api/athletes").get_json()["athletes"]) == 20
+
+
+# ------------------------------------------- no-op edits never touch the store
+
+def _corrupt_store(store):
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_bytes(b"{not json")
+    return store.read_bytes()
+
+
+@pytest.mark.parametrize("url", ["/api/athletes/a_nope", "/api/squads/s_nope"])
+def test_unknown_id_delete_on_a_corrupt_store_leaves_it_byte_identical(client, url):
+    c, _videos, _outputs, store = client
+    before = _corrupt_store(store)
+    res = c.delete(url)
+    assert res.status_code == 200
+    assert store.read_bytes() == before
+    assert list(store.parent.glob("*.corrupt-*")) == []
+
+
+@pytest.mark.parametrize("url", ["/api/athletes/a_nope", "/api/squads/s_nope"])
+def test_unknown_id_delete_on_a_missing_store_creates_no_file(client, url):
+    c, _videos, _outputs, store = client
+    res = c.delete(url)
+    assert res.status_code == 200
+    assert not store.exists()
+    assert not store.parent.exists() or list(store.parent.iterdir()) == []
+
+
+def test_unknown_id_delete_does_not_rewrite_an_existing_store(client, monkeypatch):
+    c, *_ = client
+    _add(c, "A")
+    saved = []
+    monkeypatch.setattr(libathletes, "save", lambda *a, **k: saved.append(a))
+    assert c.delete("/api/athletes/a_nope").get_json() == {"ok": True, "rewritten": 0}
+    assert c.delete("/api/squads/s_nope").get_json() == {"ok": True, "cleared": 0}
+    assert saved == []
+
+
+def test_deleting_an_athlete_with_no_matches_still_saves(client):
+    # existence decides, not the rewrite count: zero rewrites, but the athlete goes
+    c, *_ = client
+    athlete_id = _add(c, "A")
+    res = c.delete(f"/api/athletes/{athlete_id}")
+    assert res.get_json() == {"ok": True, "rewritten": 0}
+    assert c.get("/api/athletes").get_json()["athletes"] == []
+
+
+def test_deleting_an_empty_squad_still_saves(client):
+    c, *_ = client
+    squad_id = c.post("/api/squads", json={"name": "S"}).get_json()["id"]
+    assert c.delete(f"/api/squads/{squad_id}").get_json() == {"ok": True, "cleared": 0}
+    assert c.get("/api/athletes").get_json()["squads"] == []
+
+
+def test_an_empty_put_saves_nothing(client, monkeypatch):
+    c, *_ = client
+    athlete_id = _add(c, "A")
+    squad_id = c.post("/api/squads", json={"name": "S"}).get_json()["id"]
+    saved = []
+    monkeypatch.setattr(libathletes, "save", lambda *a, **k: saved.append(a))
+    res = c.put(f"/api/athletes/{athlete_id}", json={})
+    assert res.status_code == 200 and res.get_json()["name"] == "A"
+    res = c.put(f"/api/squads/{squad_id}", json={})
+    assert res.status_code == 200 and res.get_json()["name"] == "S"
+    res = c.put(f"/api/athletes/{athlete_id}", json={"name": "A"})     # unchanged too
+    assert res.status_code == 200
+    assert saved == []
+    assert c.put("/api/athletes/a_nope", json={}).status_code == 404
+    assert c.put("/api/squads/s_nope", json={}).status_code == 404
+
+
+def test_an_empty_put_on_a_corrupt_store_leaves_it_byte_identical(client):
+    c, _videos, _outputs, store = client
+    before = _corrupt_store(store)
+    assert c.put("/api/athletes/a_x", json={}).status_code == 404
+    assert c.put("/api/squads/s_x", json={}).status_code == 404
+    assert store.read_bytes() == before
+    assert list(store.parent.glob("*.corrupt-*")) == []
+
+
+# ---------------------------------------- a video delete forgets its match record
+
+def _video(videos, outputs, stem="clip"):
+    (videos / f"{stem}.mp4").write_bytes(b"\x00")
+    (outputs / stem).mkdir(parents=True, exist_ok=True)
+
+
+def test_delete_all_removes_the_videos_match_record(client):
+    c, videos, outputs, store = client
+    _video(videos, outputs, "clip")
+    _video(videos, outputs, "other")
+    athlete_id = _add(c, "A")
+    for stem in ("clip", "other"):
+        assert c.put(f"/api/matches/{stem}", json={
+            "date": "2026-10-11", "upper": {"athlete_id": athlete_id}}).status_code == 200
+
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    data = libathletes.load(store)
+    assert "clip" not in data["matches"]
+    assert data["matches"]["other"]["date"] == "2026-10-11"
+    assert list(data["athletes"]) == [athlete_id]
+
+
+def test_delete_of_results_only_keeps_the_match_record(client):
+    c, videos, outputs, store = client
+    _video(videos, outputs)
+    (outputs / "clip" / "detections.jsonl").write_text("{}\n", encoding="utf-8")
+    assert c.put("/api/matches/clip", json={"date": "2026-10-11"}).status_code == 200
+    assert c.post("/api/delete/clip", json={"scope": "match"}).status_code == 200
+    assert libathletes.load(store)["matches"]["clip"]["date"] == "2026-10-11"
+
+
+def test_delete_all_without_a_record_does_not_write_the_store(client, monkeypatch):
+    c, videos, outputs, store = client
+    _video(videos, outputs)
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert not store.exists()                      # a missing store is not created
+
+    _video(videos, outputs)
+    _add(c, "A")
+    saved = []
+    monkeypatch.setattr(libathletes, "save", lambda *a, **k: saved.append(a))
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert saved == []                             # an unchanged store is not rewritten
+
+
+def test_delete_all_leaves_a_corrupt_store_byte_identical(client):
+    c, videos, outputs, store = client
+    _video(videos, outputs)
+    before = _corrupt_store(store)
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert store.read_bytes() == before
+    assert list(store.parent.glob("*.corrupt-*")) == []
+    assert not (videos / "clip.mp4").exists()
+
+
+def test_delete_all_with_an_unreadable_store_still_succeeds(client, monkeypatch):
+    c, videos, outputs, store = client
+    _video(videos, outputs)
+
+    def boom(*a, **k):
+        raise libathletes.StoreUnreadable("locked")
+
+    monkeypatch.setattr(libathletes, "load_for_update", boom)
+    saved = []
+    monkeypatch.setattr(libathletes, "save", lambda *a, **k: saved.append(a))
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert saved == [] and not store.exists()
+    assert not (videos / "clip.mp4").exists()
+
+
+def test_a_failed_match_forget_does_not_fail_the_delete(client, monkeypatch):
+    c, videos, outputs, _store = client
+    _video(videos, outputs)
+    assert c.put("/api/matches/clip", json={"date": "2026-10-11"}).status_code == 200
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(libathletes, "save", boom)
+    assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
+    assert not (videos / "clip.mp4").exists()

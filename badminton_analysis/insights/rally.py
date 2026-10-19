@@ -77,12 +77,17 @@ def rally_windows(payload, fps=None):
 
 
 def _hit_times(run):
-    """Hit times in seconds from hits.json only (the learned detector's hits).
+    """Hit times in seconds from hits.json only, and only when the learned detector wrote it.
 
-    strokes.json is deliberately not a fallback: its entries are sparse stroke
-    contacts, not a count of shots, and would understate shots per rally.
+    system.py also writes hits.json with ``source: "contact_rule"`` when the
+    learned detector was not used; those sparse heuristic contacts, like the
+    strokes.json entries (deliberately not a fallback), are not a count of shots
+    and would understate shots per rally. Anything else gives no shot counts.
     """
-    return [t for t, _frame, _hitter in run.hits] if run.hits else []
+    meta = run.hits_meta if isinstance(run.hits_meta, dict) else {}
+    if meta.get("source") != "learned" or not run.hits:
+        return []
+    return [t for t, _frame, _hitter in run.hits]
 
 
 def _round(x):

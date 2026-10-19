@@ -170,12 +170,14 @@ def register(app, *, store_path, lock, safe_stem):
                 if err:
                     return err
                 try:
-                    data = libathletes.update_athlete(data, athlete_id, **fields)
+                    new = libathletes.update_athlete(data, athlete_id, **fields)
                 except KeyError:
                     return jsonify(_UNKNOWN_ATHLETE), 404
                 except ValueError as exc:
                     return _value_error(exc, _ATHLETE_ERRORS)
-                edit.save(data)
+                if new != data:            # an empty or unchanged PUT writes nothing
+                    edit.save(new)
+                data = new
         except OSError as exc:
             return _save_failed(exc)
         athlete = data['athletes'][athlete_id]
@@ -190,8 +192,13 @@ def register(app, *, store_path, lock, safe_stem):
                 data, err = edit.load()
                 if err:
                     return err
+                existed = athlete_id in data['athletes']
                 data, rewritten = libathletes.delete_athlete(data, athlete_id)
-                edit.save(data)
+                # Existence, not the rewrite count: an athlete with no matches is
+                # still removed. An unknown id is a no-op and never writes (so a
+                # corrupt store is not backed up and replaced for nothing).
+                if existed:
+                    edit.save(data)
         except OSError as exc:
             return _save_failed(exc)
         return jsonify({'ok': True, 'rewritten': rewritten})
@@ -231,12 +238,14 @@ def register(app, *, store_path, lock, safe_stem):
                 if err:
                     return err
                 try:
-                    data = libathletes.update_squad(data, squad_id, **fields)
+                    new = libathletes.update_squad(data, squad_id, **fields)
                 except KeyError:
                     return jsonify(_UNKNOWN_SQUAD), 404
                 except ValueError as exc:
                     return _value_error(exc, _SQUAD_ERRORS)
-                edit.save(data)
+                if new != data:            # an empty or unchanged PUT writes nothing
+                    edit.save(new)
+                data = new
         except OSError as exc:
             return _save_failed(exc)
         return jsonify({'ok': True, 'id': squad_id, 'name': data['squads'][squad_id]['name']})
@@ -249,8 +258,10 @@ def register(app, *, store_path, lock, safe_stem):
                 data, err = edit.load()
                 if err:
                     return err
+                existed = squad_id in data['squads']
                 data, cleared = libathletes.delete_squad(data, squad_id)
-                edit.save(data)
+                if existed:                # an unknown id is a no-op: no write
+                    edit.save(data)
         except OSError as exc:
             return _save_failed(exc)
         return jsonify({'ok': True, 'cleared': cleared})

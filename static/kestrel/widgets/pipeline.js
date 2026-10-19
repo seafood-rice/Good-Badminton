@@ -7,7 +7,10 @@ import { h, setStyle, setText } from './frame.js';
 
 /** Job statuses that count as in flight (app.py: pending, running, reencoding; detached runs found on disk). */
 export const ACTIVE_STATUSES = Object.freeze(['pending', 'running', 'reencoding', 'detached']);
-const RUNNING = ['running', 'reencoding', 'detached'];
+/** The working subset of ACTIVE_STATUSES; the rest (QUEUED_STATUSES) are waiting to start. */
+export const RUNNING_STATUSES = Object.freeze(['running', 'reencoding', 'detached']);
+export const QUEUED_STATUSES = Object.freeze(['pending']);
+const RUNNING = RUNNING_STATUSES;
 const MAX_ROWS = 4;
 
 const known = (key, lang) => {
@@ -29,7 +32,7 @@ export function jobsModel(jobs, lang) {
   const rows = list.map((j) => {
     const status = typeof j.status === 'string' ? j.status : '';
     if (RUNNING.includes(status)) running += 1;
-    if (status === 'pending') queued += 1;
+    if (QUEUED_STATUSES.includes(status)) queued += 1;
     const raw = Number(j.progress);
     let pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : 0;
     if (status === 'completed') pct = 100;

@@ -138,6 +138,7 @@
 .kw-foot{display:flex;flex-wrap:wrap;gap:6px 24px;border-top:1px solid var(--line);padding-top:12px;font-size:13px;color:var(--ink2);}
 .kw-foot-strong{color:var(--ink);font-weight:600;}
 .kw-foot-muted{font-size:13px;color:var(--ink3);}
+.kw-approx{margin-left:5px;font-size:10.5px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink3);}
 
 /* metric tiles */
 .kw-tile-label{display:flex;align-items:center;gap:8px;color:var(--ink2);font-size:13px;font-weight:500;}
@@ -354,7 +355,7 @@
 .ws-time{font-size:13px;color:var(--ink2);white-space:nowrap;}
 .ws-seek{flex:1 1 120px;min-width:80px;accent-color:var(--accent);}
 
-.ws-lane-scroll{overflow-x:auto;padding:4px 2px 6px;}
+.ws-lane-scroll{position:relative;overflow-x:auto;padding:4px 2px 6px;}
 .ws-lane{display:flex;gap:4px;min-width:100%;height:48px;align-items:stretch;}
 .ws-rb{flex:1 1 0;min-width:18px;border:0;border-radius:8px;cursor:pointer;font-family:var(--font-mono);font-size:11.5px;font-weight:600;
   background:color-mix(in srgb,var(--cyan) 20%,var(--surface));color:var(--cyanInk);transform-origin:bottom;
@@ -382,6 +383,7 @@
 .ws-row-btn{all:unset;box-sizing:border-box;cursor:pointer;font-weight:600;padding:6px 0;display:flex;align-items:center;gap:8px;}
 .ws-row-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
 .ws-dot{width:10px;height:10px;border-radius:3px;background:var(--tc,var(--ink3));flex:0 0 auto;}
+.ws-as{font-size:11.5px;color:var(--ink3);white-space:nowrap;}
 .ws-opp{margin-left:6px;font-size:11px;color:var(--ink3);border:1px solid var(--line);border-radius:999px;padding:0 6px;}
 .ws-bad{color:var(--bad);font-weight:600;}
 .ws-empty{padding:24px;text-align:center;}

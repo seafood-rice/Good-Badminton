@@ -1,6 +1,7 @@
 """Task 5: the per-video sidecar (spec 5.2)."""
 import json
 import os
+import time
 
 import pytest
 
@@ -37,13 +38,13 @@ def _assert_envelope(env):
 
 
 def test_version_constant():
-    assert sidecar.INSIGHTS_VERSION == 3
+    assert sidecar.INSIGHTS_VERSION == 4
 
 
 def test_document_shape_and_file_written(tmp_path):
     out = _full_run(tmp_path)
     doc = sidecar.compute_video(out.name, out)
-    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 3
+    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 4
     assert doc["stem"] == out.name
     assert doc["computed_at"].endswith("Z")
     assert doc["date"] == {"value": "2026-10-10", "source": "filename"}
@@ -98,9 +99,9 @@ def test_version_change_recomputes(tmp_path, monkeypatch):
     out = _full_run(tmp_path)
     calls = _count_calls(monkeypatch, "technique_insight")
     sidecar.compute_video(out.name, out)
-    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 4)
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 5)
     doc = sidecar.compute_video(out.name, out)
-    assert len(calls) == 2 and doc["version"] == 4
+    assert len(calls) == 2 and doc["version"] == 5
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "null", '{"version": 1}', ""])
@@ -187,7 +188,40 @@ def test_date_falls_back_to_mtime_when_stem_has_none(tmp_path):
     out = make_run(tmp_path, "no_date_here")
     doc = sidecar.compute_video("no_date_here", out)
     assert doc["date"]["source"] == "mtime"
-    assert doc["date"]["value"]                 # the run directory's mtime date
+    assert doc["date"]["value"]                 # metadata.json's mtime date
+
+
+def _day(y, m, d):
+    return time.mktime((y, m, d, 12, 0, 0, 0, 0, -1))
+
+
+def test_undated_stem_keeps_its_input_date_across_sidecar_writes(tmp_path, monkeypatch):
+    # only run inputs: the oldest input's date, never the directory's own mtime,
+    # which every sidecar write (mkstemp + os.replace) moves to "today"
+    out = make_run(tmp_path, "IMG_1270", hits=[(1.0, "upper")],
+                   strokes=[("upper", "smash")])
+    (out / "metadata.json").unlink()
+    os.utime(out / "hits.json", (_day(2024, 5, 1),) * 2)
+    os.utime(out / "strokes.json", (_day(2024, 3, 2),) * 2)
+    os.utime(out, (_day(2024, 1, 1),) * 2)
+    first = sidecar.compute_video("IMG_1270", out)
+    assert first["date"] == {"value": "2024-03-02", "source": "mtime"}
+    os.utime(out, (_day(2026, 10, 19),) * 2)      # the write (and later ones) touch the dir
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 99)     # force a recompute
+    again = sidecar.compute_video("IMG_1270", out)
+    assert again["version"] == 99
+    assert again["date"] == {"value": "2024-03-02", "source": "mtime"}
+
+
+def test_empty_run_dir_has_no_date(tmp_path):
+    out = tmp_path / "outputs" / "IMG_1270"
+    out.mkdir(parents=True)
+    os.utime(out, (_day(2024, 1, 1),) * 2)
+    doc = sidecar.compute_video("IMG_1270", out)
+    assert doc["date"] == {"value": None, "source": "mtime"}
+    assert (out / "insights.json").exists()
+    doc = sidecar.compute_video("IMG_1270", out)        # after its own sidecar write
+    assert doc["date"] == {"value": None, "source": "mtime"}
 
 
 def test_court_view_quality_is_copied(tmp_path):

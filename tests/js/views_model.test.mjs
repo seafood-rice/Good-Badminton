@@ -4,7 +4,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildWorkspaceModel, summariseRallyPayload, capItems, STROKE_PAGE, matchDate, readReduced,
+  matchDateApprox, listScore, rallyInput, rallyCountText,
 } from '../../static/kestrel/views/workspace.js';
+import { t } from '../../static/kestrel/core/i18n.js';
 import { matchRows, validateRecordForm, formFromRecord, peekModel, rowTitle } from '../../static/kestrel/views/matches.js';
 import { groupBySquad } from '../../static/kestrel/views/players.js';
 import { groupJobs, jobsKey, createPoller, FAST_MS, SLOW_MS } from '../../static/kestrel/views/pipeline.js';
@@ -499,4 +501,89 @@ test('overview: recent matches keep one row per stem without an athlete, every u
   assert.equal(all.matches.total, 2);
   const one = viewModel({ scope: { athlete: { id: 'a', name: 'A' }, range: '30d', stems: 2 }, matches: rows }, 'overview', 'en');
   assert.equal(one.matches.rows.length, 3);
+});
+
+
+// ---------- final-review fixes ----------
+
+test('approx. dates: only a sidecar date from a file mtime is marked approximate', () => {
+  assert.equal(matchDateApprox({}, { date: { value: '2026-07-29', source: 'mtime' } }), true);
+  assert.equal(matchDateApprox({}, { date: { value: '2026-07-29', source: 'filename' } }), false);
+  assert.equal(matchDateApprox({ date: '2026-10-11' }, { date: { value: '2026-07-29', source: 'mtime' } }), false,
+    'a record date is the user\'s own: never approximate');
+  assert.equal(matchDateApprox({}, { date: { value: null, source: 'mtime' } }), false, 'no date, nothing to mark');
+  assert.equal(matchDateApprox(null, null), false);
+
+  const rows = matchRows({ matches: [
+    { stem: 'a', date: '2026-07-29', date_source: 'mtime', side: 'lower', status: 'analysed' },
+    { stem: 'b', date: '2026-10-10', date_source: 'filename', side: 'lower', status: 'analysed' },
+    { stem: 'c', date: '2026-10-11', date_source: 'record', side: 'lower', status: 'analysed' },
+    { stem: 'd', date: null, date_source: null, side: 'lower', status: 'analysed' },
+  ] });
+  assert.deepEqual(rows.map((r) => r.dateApprox), [true, false, false, false]);
+
+  const ov = viewModel({ scope: { athlete: null, range: 'all', stems: 2 }, matches: [
+    { stem: 'a', side: 'lower', date: '2026-07-29', date_source: 'mtime', status: 'analysed' },
+    { stem: 'b', side: 'lower', date: '2026-10-10', date_source: 'filename', status: 'analysed' },
+  ] }, 'overview', 'en');
+  assert.deepEqual(ov.matches.rows.map((r) => r.dateApprox), [true, false]);
+
+  assert.equal(peekModel({ stem: 'a', record: {}, insights: { date: { value: '2026-07-29', source: 'mtime' } } }).dateApprox, true);
+  assert.equal(peekModel({ stem: 'a', record: { date: '2026-07-30' }, insights: { date: { value: '2026-07-29', source: 'mtime' } } }).dateApprox, false);
+  assert.equal(peekModel({ stem: 'a', record: {}, insights: { date: { value: '2026-10-10', source: 'filename' } } }).dateApprox, false);
+
+  assert.equal(t('date.approx', 'en'), 'approx.');
+  assert.equal(t('date.approx', 'zh'), '约');
+});
+
+test('workspace summary: the strokes.json count reads "Strokes detected", never "Shots"', () => {
+  assert.equal(t('ws.summary.strokes', 'en'), 'Strokes detected');
+  assert.equal(t('ws.summary.strokes', 'zh'), '检测到的击球');
+  assert.equal(t('ws.summary.shots', 'en'), 'ws.summary.shots', 'the old "Shots" key is gone');
+});
+
+test('listScore: the list shows a score only when the joined report is for the same technique', () => {
+  // the join is by frame + side; a report for another technique is shown as "as <technique>" without a score
+  const m = buildWorkspaceModel({
+    rallies: rallyPayload(), fps: FPS,
+    strokes: { strokes: [
+      { frame: 24 * FPS, hitter: 'upper', stroke: 'net', uncertain: false },
+      { frame: 16 * FPS, hitter: 'lower', stroke: 'smash', uncertain: false },
+      { frame: 14 * FPS, hitter: 'lower', stroke: 'uncertain', uncertain: true },
+    ] },
+    techReports: [
+      { stroke_type: 'high_clear', contact_frame: 24 * FPS + 1, player_side: 'upper', overall_score: 66 },
+      { stroke_type: 'smash', contact_frame: 16 * FPS, player_side: 'lower', overall_score: 81.5 },
+      { stroke_type: 'drop_shot', contact_frame: 14 * FPS, player_side: 'lower', overall_score: 50 },
+    ],
+  });
+  const by = Object.fromEntries(m.strokes.map((s) => [s.frame, s]));
+  assert.deepEqual(listScore(by[24 * FPS]), { score: null, as: 'clear' });
+  assert.deepEqual(listScore(by[16 * FPS]), { score: 81.5, as: null });
+  assert.deepEqual(listScore(by[14 * FPS]), { score: null, as: 'drop' });
+  assert.equal(by[24 * FPS].report.technique, 'clear', 'the inspector still gets the report');
+  assert.deepEqual(listScore({ label: 'net', score: null, report: null }), { score: null, as: null });
+  assert.deepEqual(listScore(null), { score: null, as: null });
+  assert.equal(t('ws.list_as', 'en', { technique: 'Clear' }), 'as Clear');
+  assert.equal(t('ws.list_as', 'zh', { technique: '高远球' }), '按高远球');
+});
+
+test('rallyInput: a rally file that exists but cannot be read is a failure, a 404 is absent', () => {
+  const okRes = { ok: true, data: rallyPayload(), status: 200, error: null };
+  assert.equal(rallyInput(okRes), okRes.data);
+  assert.equal(rallyInput({ ok: false, data: null, status: 404, error: { kind: 'http', status: 404 } }), undefined);
+  for (const res of [
+    { ok: false, data: null, status: 200, error: { kind: 'parse', status: 200 } },    // malformed JSON
+    { ok: false, data: null, status: 500, error: { kind: 'http', status: 500 } },
+    { ok: true, data: null, status: 200, error: null },                                // the file says "null"
+  ]) {
+    const input = rallyInput(res);
+    assert.notEqual(input, undefined);
+    const m = buildWorkspaceModel({ rallies: input, fps: FPS });
+    assert.equal(m.summary.failed, true);
+    assert.equal(rallyCountText(m.summary, 'en'), 'Rally detection failed');
+  }
+  const absent = buildWorkspaceModel({ rallies: rallyInput({ ok: false, status: 404 }), fps: FPS });
+  assert.equal(absent.summary.failed, false);
+  assert.equal(rallyCountText(absent.summary, 'en'), t('ws.count.none', 'en'));
 });

@@ -4,11 +4,11 @@
 // segments are "segments (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so;
 // opponent strokes are shown but never scored.
 import { t, TECHNIQUE_IDS } from '../core/i18n.js';
-import { fmtDate, fmtDuration, fmtNumber } from '../core/format.js';
+import { fmtDate, fmtDuration, fmtNumber, isApproxDate } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
 import { formatHash } from '../core/router.js';
 import { api, getJSON, endpoints, errorText } from '../core/api.js';
-import { h, hasDOM, revealStyle, setText, setAttr } from '../widgets/frame.js';
+import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets/frame.js';
 
 const SIDES = ['upper', 'lower'];
 const STROKE_MAP = Object.freeze({ high_clear: 'clear', drop_shot: 'drop' });
@@ -208,6 +208,41 @@ export function matchDate(record, insights) {
   if (typeof r === 'string' && iso.test(r)) return r;
   const v = obj(obj(insights).date).value;
   return typeof v === 'string' && iso.test(v.slice(0, 10)) ? v.slice(0, 10) : null;
+}
+
+/** Pure: true when matchDate() fell back to a sidecar date taken from a file mtime (shown as "approx."). */
+export function matchDateApprox(record, insights) {
+  const r = obj(record).date;
+  if (typeof r === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r)) return false;
+  return isApproxDate(matchDate(null, insights), obj(obj(insights).date).source);
+}
+
+/**
+ * Pure: what the stroke list's score column shows. A report joins a stroke by frame and side only, so its
+ * technique may differ from the stroke's label (a 'net' stroke next to a 'clear' report): then the list shows
+ * no score, only a muted "as <technique>" (the inspector says "scored as"). {score: number|null, as: id|null}.
+ */
+export function listScore(stroke) {
+  const s = obj(stroke);
+  const rep = s.report && typeof s.report === 'object' ? s.report : null;
+  if (!rep || !isNum(s.score)) return { score: null, as: null };
+  if (rep.technique && rep.technique === s.label) return { score: s.score, as: null };
+  return { score: null, as: rep.technique || null };
+}
+
+/** buildWorkspaceModel's `rallies` for a rally file that exists but could not be read: summarises as failed. */
+const RALLY_UNREADABLE = Object.freeze({ rallies: null });
+
+/**
+ * Pure: the soft() result of fetching rally_segments.json -> buildWorkspaceModel's `rallies` input. A 404 is
+ * an absent file (undefined: "No rallies detected"); a file that exists but fails to parse, or any other
+ * failed fetch, is RALLY_UNREADABLE ("Rally detection failed"), never mistaken for "no rallies".
+ */
+export function rallyInput(res) {
+  const r = obj(res);
+  if (r.ok) return r.data === null || r.data === undefined ? RALLY_UNREADABLE : r.data;
+  if (r.status === 404) return undefined;
+  return RALLY_UNREADABLE;
 }
 
 // ---------- text helpers shared by the DOM layer ----------
@@ -434,7 +469,8 @@ export function mount(container, ctx = {}) {
     }
     const head = h('div', { class: 'ws-head' }, [
       h('div', { class: 'ws-head-l' }, [
-        h('div', { class: 'mono ov-eyebrow' }, t('ws.eyebrow', lang, { date })),
+        h('div', { class: 'mono ov-eyebrow' }, [t('ws.eyebrow', lang, { date }),
+          matchDateApprox(rec, ins) ? approxMark(lang) : null]),
         h('h1', { class: 'page-title serif ws-title' }, [sideName(a), h('span', { class: 'ws-vs' }, lang === 'zh' ? '对' : 'vs.'), sideName(b)]),
         meta,
       ]),
@@ -738,6 +774,17 @@ export function mount(container, ctx = {}) {
     });
   }
 
+  /** The list's score cell: the score, or a muted "as <technique>" when the report is for another technique. */
+  function scoreCell(ls, lo) {
+    if (ls.score !== null) return h('td', { class: 'mono kw-num' + (ls.score < lo ? ' ws-bad' : '') }, num1(ls.score));
+    if (ls.as) {
+      const label = techLabel(ls.as, lang);
+      return h('td', { class: 'kw-num kw-muted' },
+        h('span', { class: 'ws-as', title: t('ws.list_as_title', lang, { technique: label }) }, t('ws.list_as', lang, { technique: label })));
+    }
+    return h('td', { class: 'mono kw-num kw-muted' }, '—');
+  }
+
   function renderRows(focusFirstNew) {
     const wrap = refs.tableWrap;
     if (!wrap) return;
@@ -761,7 +808,7 @@ export function mount(container, ctx = {}) {
         h('td', { class: 'mono kw-muted' }, clockText(s.time)),
         h('td', null, btn),
         h('td', { class: 'kw-muted' }, [s.hitter ? sideName(s.hitter) : '—', s.opponent ? h('span', { class: 'ws-opp' }, t('ws.opponent_tag', lang)) : null]),
-        h('td', { class: 'mono kw-num' + (s.score !== null && s.score < lo ? ' ws-bad' : '') + (s.score === null ? ' kw-muted' : '') }, s.score === null ? '—' : num1(s.score)),
+        scoreCell(listScore(s), lo),
       ]);
       refs.listRows.set(s.i, { tr, btn });
       return tr;
@@ -861,11 +908,11 @@ export function mount(container, ctx = {}) {
     const strokes = unitStrokes();
     if (u) {
       row(unitTitle({ n: '' }).trim(), t('ws.summary.of', lang, { n: u.n, total: m.rallies.length }));
-      row(t('ws.summary.shots', lang), String(u.strokeCount));
+      row(t('ws.summary.strokes', lang), String(u.strokeCount));
       row(t('ws.summary.duration', lang), `${num1(u.len)} s`);
       row(t('ws.summary.span', lang), `${clockText(u.start)}–${clockText(u.end)}`);
     } else {
-      row(t('ws.summary.shots', lang), String(strokes.length));
+      row(t('ws.summary.strokes', lang), String(strokes.length));
     }
     const last = strokes[strokes.length - 1];
     if (last) row(t('ws.summary.last_stroke', lang), t('ws.by', lang, { label: techLabel(last.label, lang), name: last.hitter ? sideName(last.hitter) : '—' }));
@@ -1009,7 +1056,7 @@ export function mount(container, ctx = {}) {
     state.athleteSide = athleteId ? SIDES.find((sd) => obj(state.record[sd]).athlete_id === athleteId) || null : null;
     const fps = obj(obj(meta.data).video).fps;
     state.model = buildWorkspaceModel({
-      rallies: rally.ok ? rally.data : undefined,
+      rallies: rallyInput(rally),
       strokes: strokes.ok ? strokes.data : null,
       techReports: tech.ok ? tech.data : null,
       fps,

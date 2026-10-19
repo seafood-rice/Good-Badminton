@@ -3,11 +3,11 @@
 // drawer the overview opens (buildMatchPeek). matchRows / validateRecordForm / formFromRecord / peekModel are
 // pure and tested. Results come only from the record the user enters: there is no point outcome.
 import { t } from '../core/i18n.js';
-import { fmtDate, fmtNumber } from '../core/format.js';
+import { fmtDate, fmtNumber, isApproxDate } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
 import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
-import { h, hasDOM, revealStyle } from '../widgets/frame.js';
+import { h, hasDOM, revealStyle, approxMark } from '../widgets/frame.js';
 import { rallyCountText } from './workspace.js';
 
 const SIDES = ['upper', 'lower'];
@@ -49,6 +49,7 @@ export function matchRows(overview) {
     rows.push({
       stem: m.stem,
       date: typeof m.date === 'string' ? m.date : null,
+      dateApprox: isApproxDate(m.date, m.date_source),
       side: SIDES.includes(m.side) ? m.side : null,
       athlete: str(m.athlete) || null,
       opponent: str(m.opponent) || null,
@@ -161,6 +162,8 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}) 
   return {
     stem: str(stem),
     date: str(rec.date) || str(obj(ins.date).value) || null,
+    // A record date is the user's own; only a sidecar date from a file mtime is approximate.
+    dateApprox: !str(rec.date) && isApproxDate(obj(ins.date).value, obj(ins.date).source),
     side,
     names,
     winner,
@@ -234,7 +237,8 @@ export function buildMatchPeek(row, ctx = {}) {
     const [a, b] = [pm.first, otherSide(pm.first)];
     const nm = (s) => pm.names[s] || sideLabel(s, lang);
     root.appendChild(h('div', null, [
-      h('div', { class: 'mono k-label' }, t('peek.match', lang, { date: fmtDate(pm.date, lang).toUpperCase() })),
+      h('div', { class: 'mono k-label' }, [t('peek.match', lang, { date: fmtDate(pm.date, lang).toUpperCase() }),
+        pm.dateApprox ? approxMark(lang) : null]),
       h('h2', { class: 'mp-title' }, t('peek.title', lang, { a: nm(a), b: nm(b) })),
     ]));
     const chips = h('div', { class: 'mp-chips' });
@@ -295,7 +299,10 @@ export function buildMatchPeek(row, ctx = {}) {
     const sd = SIDES.includes(seed.side) ? seed.side : 'lower';
     base.names = { [sd]: str(seed.athlete) || null, [otherSide(sd)]: str(seed.opponent) || null };
   }
-  if (seed.date) base.date = seed.date;
+  if (seed.date) {
+    base.date = seed.date;
+    base.dateApprox = isApproxDate(seed.date, seed.date_source);
+  }
   paint(base, 'loading');
 
   // ctx.signal (main.js aborts it when the drawer closes) cancels both fetches.
@@ -313,6 +320,7 @@ export function buildMatchPeek(row, ctx = {}) {
       if (mode === 'failed') {
         pm.names = base.names;
         pm.date = base.date;
+        pm.dateApprox = base.dateApprox;
       }
       paint(pm, mode);
     });
@@ -438,7 +446,7 @@ export function mount(container, ctx = {}) {
       }, t('mv.record_btn', lang));
       [
         h('td', { class: 'mv-name' }, [openBtn, h('div', { class: 'mv-sub' }, sub)]),
-        h('td', { class: 'mono kw-muted kw-col-date' }, fmtDate(r.date, lang)),
+        h('td', { class: 'mono kw-muted kw-col-date' }, [fmtDate(r.date, lang), r.dateApprox ? approxMark(lang) : null]),
         h('td', null, resultChip(r)),
         h('td', { class: 'mono kw-muted' }, r.sets.length ? r.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ') : '—'),
         h('td', { class: 'mono kw-num' }, num1(r.techIndex)),

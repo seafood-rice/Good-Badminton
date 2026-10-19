@@ -2,7 +2,7 @@
 // GET /api/insights/overview (spec 5.4) and GET /api/jobs (spec 5.5). viewModel() is pure and tested;
 // mount() is a thin DOM layer over it that drives one reveal clock.
 import { t, reasonText, findingText, TECHNIQUE_IDS } from '../core/i18n.js';
-import { fmtNumber, fmtDate, ago } from '../core/format.js';
+import { fmtNumber, fmtDate, ago, isApproxDate } from '../core/format.js';
 import { niceDomain } from '../core/geometry.js';
 import { createClock, ease } from '../core/motion.js';
 import { RANGES } from '../core/scope.js';
@@ -402,6 +402,7 @@ function matchesModel(ov, lang) {
       label: opp ? t('matches.vs', lang, { name: opp }) : m.stem,
       aria: t('matches.peek_aria', lang, { name: opp || m.stem }),
       date: fmtDate(m.date, lang, { year: false }),
+      dateApprox: isApproxDate(m.date, m.date_source),
       result,
       resultText: result ? t('result.' + result, lang) : t('matches.add_result', lang),
       tech: fmtNumber(m.tech_index, 1),

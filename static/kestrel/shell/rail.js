@@ -4,6 +4,7 @@
 import { t } from '../core/i18n.js';
 import { formatHash } from '../core/router.js';
 import { el, icon, ICONS, brandMark, trapTab, refocus } from './dom.js';
+import { ACTIVE_STATUSES, RUNNING_STATUSES, QUEUED_STATUSES } from '../widgets/pipeline.js';
 
 export const NAV_GROUPS = Object.freeze([
   { id: 'analyze', items: ['overview', 'matches', 'players'] },
@@ -34,13 +35,21 @@ function jobList(jobs) {
   return [];
 }
 
-/** Jobs that are working right now (running in this server, or detached runs still writing progress). */
+const countIn = (jobs, statuses) => jobList(jobs).filter((j) => j && statuses.includes(j.status)).length;
+
+/** Jobs that are working right now (running or re-encoding in this server, or detached runs still writing progress). */
 export function runningCount(jobs) {
-  return jobList(jobs).filter((j) => j && (j.status === 'running' || j.status === 'detached')).length;
+  return countIn(jobs, RUNNING_STATUSES);
 }
 
+/** Jobs waiting to start (the server's 'pending'). */
 export function queuedCount(jobs) {
-  return jobList(jobs).filter((j) => j && j.status === 'queued').length;
+  return countIn(jobs, QUEUED_STATUSES);
+}
+
+/** Jobs in flight (running + queued): drives the 2 s poll and the pipeline badge. */
+export function activeCount(jobs) {
+  return countIn(jobs, ACTIVE_STATUSES);
 }
 
 /** Hash for a rail destination; overview and matches carry the current scope (athlete, squad, range). */
@@ -199,8 +208,9 @@ export function createRail(opts) {
     const queued = queuedCount(state.jobs);
     const pipe = refs.links.pipeline;
     const badge = pipe.querySelector('.rail-badge');
-    badge.hidden = running === 0;
-    badge.querySelector('.n').textContent = running ? String(running) : '';
+    const active = running + queued;
+    badge.hidden = active === 0;
+    badge.querySelector('.n').textContent = active ? String(active) : '';
     const pipeLabel = t('nav.pipeline', L);
     if (running || queued) pipe.setAttribute('aria-label', pipeLabel + ', ' + t('pipeline.sub', L, { running, queued }));
     else pipe.removeAttribute('aria-label');

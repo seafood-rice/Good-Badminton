@@ -22,3 +22,6 @@ def _keep_the_real_tag_store_off_the_suite(tmp_path, monkeypatch):
     webapp = sys.modules.get("app")
     if webapp is not None:
         monkeypatch.setattr(webapp, "TAGS_PATH", tmp_path / "library_tags.json")
+        # The same for data/athletes.json: a scope="all" delete forgets the
+        # video's match record there.
+        monkeypatch.setattr(webapp, "ATHLETES_PATH", tmp_path / "athletes.json")

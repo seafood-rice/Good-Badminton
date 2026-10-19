@@ -44,12 +44,21 @@ test('rail: activeNav maps every route to a destination', async () => {
   assert.equal(activeNav(null), null);
 });
 
-test('rail: runningCount counts running and detached jobs only', async () => {
-  const { runningCount } = await import('../../static/kestrel/shell/rail.js');
-  assert.equal(runningCount([{ status: 'running' }, { status: 'detached' }, { status: 'completed' },
-    { status: 'error' }, { status: 'queued' }, null]), 2);
+test('rail: job counts use the backend statuses shared with the pipeline widget', async () => {
+  const { runningCount, queuedCount, activeCount } = await import('../../static/kestrel/shell/rail.js');
+  const { ACTIVE_STATUSES, RUNNING_STATUSES, QUEUED_STATUSES } = await import('../../static/kestrel/widgets/pipeline.js');
+  // app.py emits pending, running, reencoding, completed, error; the jobs route adds detached. Never 'queued'.
+  const jobs = [{ status: 'running' }, { status: 'detached' }, { status: 'reencoding' }, { status: 'pending' },
+    { status: 'completed' }, { status: 'error' }, { status: 'queued' }, null];
+  assert.equal(runningCount(jobs), 3);
+  assert.equal(queuedCount(jobs), 1);
+  assert.equal(activeCount(jobs), 4);
+  assert.equal(activeCount([{ status: 'pending' }]), 1, 'a pending job alone keeps the 2 s poll and the badge');
+  assert.equal(activeCount([{ status: 'reencoding' }]), 1);
+  assert.equal(activeCount([{ status: 'completed' }, { status: 'error' }]), 0);
   assert.equal(runningCount(undefined), 0);
   assert.equal(runningCount({ jobs: [{ status: 'running' }] }), 1);
+  assert.deepEqual([...ACTIVE_STATUSES].sort(), [...RUNNING_STATUSES, ...QUEUED_STATUSES].sort());
 });
 
 test('transition: reduced motion and missing rect navigate instantly, no DOM needed', async () => {

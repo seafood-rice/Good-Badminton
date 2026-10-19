@@ -37,6 +37,11 @@ export function h(tag, attrs, children) {
   return el;
 }
 
+/** The small muted "approx." marker after a date taken from a file mtime (see core/format.js isApproxDate). */
+export function approxMark(lang) {
+  return h('span', { class: 'kw-approx', title: t('date.approx_title', lang) }, t('date.approx', lang));
+}
+
 /** SVG element (same contract as h). */
 export function s(tag, attrs, children) {
   const el = document.createElementNS(SVG_NS, tag);

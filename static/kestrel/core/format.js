@@ -56,6 +56,14 @@ export function fmtDate(iso, lang, { year = true } = {}) {
   return `${d} ${MONTHS[mo - 1]}` + (year ? ` ${y}` : '');
 }
 
+/**
+ * A shown date is approximate when it came from a file mtime (the API's date_source 'mtime': no date in the
+ * video name and no match record), so the UI marks it "approx.". Needs a real ISO date to mark.
+ */
+export function isApproxDate(iso, source) {
+  return source === 'mtime' && fmtDate(iso, 'en') !== DASH;
+}
+
 /** Escape text for interpolation into HTML (element content and quoted attributes). */
 export function escHTML(s) {
   return String(s == null ? '' : s)

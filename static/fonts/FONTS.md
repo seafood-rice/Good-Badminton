@@ -16,3 +16,14 @@ Latin only: CJK text falls back to the system `PingFang SC` / `Microsoft YaHei` 
 
 Space Grotesk and Instrument Serif are licensed under the SIL Open Font License 1.1
 (https://openfontlicense.org), which permits bundling and redistribution with this application.
+
+## Licence texts
+
+OFL 1.1 requires the copyright notice and licence to be distributed with the fonts. The full texts,
+copied unmodified from the Google Fonts repository (2026-10-19), sit next to the font files:
+
+| Licence file | Fonts | Source |
+|---|---|---|
+| `OFL-SpaceGrotesk.txt` | `SpaceGrotesk-Variable.woff2` | https://raw.githubusercontent.com/google/fonts/main/ofl/spacegrotesk/OFL.txt |
+| `OFL-InstrumentSerif.txt` | `InstrumentSerif-Regular.woff2`, `InstrumentSerif-Italic.woff2` | https://raw.githubusercontent.com/google/fonts/main/ofl/instrumentserif/OFL.txt |
+| `OFL-IBMPlexMono.txt` | `IBMPlexMono-{400,500,600}.ttf` | https://raw.githubusercontent.com/google/fonts/main/ofl/ibmplexmono/OFL.txt |

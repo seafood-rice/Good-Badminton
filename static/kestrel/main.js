@@ -12,7 +12,7 @@ import { prefs, PREF_KEYS, normLang, normTheme, legacyTheme } from './core/prefs
 import { api } from './core/api.js';
 import { t } from './core/i18n.js';
 import { el, prefersReduced, isTyping } from './shell/dom.js';
-import { createRail, runningCount } from './shell/rail.js';
+import { createRail, runningCount, activeCount } from './shell/rail.js';
 import { createTopbar, scopeFallback } from './shell/topbar.js';
 import { createPalette } from './shell/palette.js';
 import { createPeek } from './shell/peek.js';
@@ -271,7 +271,7 @@ export function start(root) {
       .then(() => {
         jobsInFlight = false;
         // Spec 6.4: every 2 s while a job runs, 15 s otherwise.
-        jobTimer = setTimeout(pollJobs, runningCount(store.get().jobs) > 0 ? 2000 : 15000);
+        jobTimer = setTimeout(pollJobs, activeCount(store.get().jobs) > 0 ? 2000 : 15000);
         return store.get().jobs;
       });
   }

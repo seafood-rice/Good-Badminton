@@ -148,13 +148,53 @@ def test_video_date_filename_ignores_impossible_dates(tmp_path):
     assert video_date("x_20260230_a", video_path=video) == ("2025-03-04", "mtime")
 
 
-def test_video_date_falls_back_to_run_dir_then_none(tmp_path):
-    day = time.mktime((2024, 7, 8, 12, 0, 0, 0, 0, -1))
-    os.utime(tmp_path, (day, day))
-    assert video_date("IMG_1270", out_dir=tmp_path) == ("2024-07-08", "mtime")
+def _set_day(path, y, m, d):
+    day = time.mktime((y, m, d, 12, 0, 0, 0, 0, -1))
+    os.utime(path, (day, day))
+
+
+RUN_INPUTS = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json")
+
+
+def test_video_date_never_uses_the_run_directory_mtime(tmp_path):
+    # the sidecar write bumps the directory's mtime: it is not a recording date
+    _set_day(tmp_path, 2024, 7, 8)
+    assert video_date("IMG_1270", out_dir=tmp_path) == (None, "mtime")
+    assert video_date("IMG_1270", out_dir=tmp_path, run_inputs=RUN_INPUTS) == (None, "mtime")
     assert video_date("IMG_1270", video_path=tmp_path / "missing.mp4",
-                      out_dir=tmp_path) == ("2024-07-08", "mtime")
+                      out_dir=tmp_path, run_inputs=RUN_INPUTS) == (None, "mtime")
     assert video_date("IMG_1270") == (None, "mtime")
+
+
+def test_video_date_falls_back_to_the_oldest_run_input(tmp_path):
+    for name, day in (("hits.json", (2024, 5, 1)), ("strokes.json", (2024, 3, 2))):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+        _set_day(tmp_path / name, *day)
+    for name in ("insights.json", "insights.abc.tmp"):          # never a recording date
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+        _set_day(tmp_path / name, 2020, 1, 1)
+    _set_day(tmp_path, 2026, 10, 19)
+    assert video_date("IMG_1270", out_dir=tmp_path,
+                      run_inputs=RUN_INPUTS) == ("2024-03-02", "mtime")
+
+
+def test_video_date_prefers_metadata_json_over_older_inputs(tmp_path):
+    (tmp_path / "strokes.json").write_text("{}", encoding="utf-8")
+    _set_day(tmp_path / "strokes.json", 2024, 3, 2)
+    (tmp_path / "metadata.json").write_text("{}", encoding="utf-8")
+    _set_day(tmp_path / "metadata.json", 2024, 6, 1)
+    assert video_date("IMG_1270", out_dir=tmp_path,
+                      run_inputs=RUN_INPUTS) == ("2024-06-01", "mtime")
+
+
+def test_video_date_prefers_the_video_file_over_run_inputs(tmp_path):
+    video = tmp_path / "IMG_1270.mp4"
+    video.write_bytes(b"\0")
+    _set_day(video, 2023, 9, 9)
+    (tmp_path / "metadata.json").write_text("{}", encoding="utf-8")
+    _set_day(tmp_path / "metadata.json", 2024, 6, 1)
+    assert video_date("IMG_1270", video_path=video, out_dir=tmp_path,
+                      run_inputs=RUN_INPUTS) == ("2023-09-09", "mtime")
 
 
 def test_video_date_takes_the_first_valid_date():
@@ -250,7 +290,45 @@ def test_rally_shots_come_only_from_hits_json(tmp_path):
 
 def test_rally_without_any_hits_has_null_shots(tmp_path):
     out = make_run(tmp_path, rallies=[(1.0, 3.0)], hits=[])
-    assert rally_insight(load_run(out))["value"]["shots_per_rally"] is None
+    v = rally_insight(load_run(out))["value"]
+    assert v["shots_per_rally"] is None and v["mean_shots"] is None
+
+
+def _hits_source(out, source):
+    """Rewrite hits.json's ``source`` (``None`` removes the key)."""
+    doc = json.loads((out / "hits.json").read_text(encoding="utf-8"))
+    if source is None:
+        doc.pop("source")
+    else:
+        doc["source"] = source
+    (out / "hits.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+@pytest.mark.parametrize("source", ["contact_rule", None, "", 5])
+def test_rally_shots_need_learned_hits(tmp_path, source):
+    # system.py writes hits.json with source "contact_rule" when the learned detector
+    # was not used: those sparse heuristic contacts are not a shot count
+    out = make_run(tmp_path, rallies=[(1.0, 3.0)], hits=[(2.0, "lower"), (2.5, "upper")])
+    _hits_source(out, source)
+    v = rally_insight(load_run(out))["value"]
+    assert v["shots_per_rally"] is None and v["mean_shots"] is None
+
+
+def test_rally_shots_from_learned_hits(tmp_path):
+    out = make_run(tmp_path, rallies=[(1.0, 3.0)], hits=[(2.0, "lower"), (2.5, "upper")])
+    _hits_source(out, "learned")
+    v = rally_insight(load_run(out))["value"]
+    assert v["shots_per_rally"] == [2] and v["mean_shots"] == 2.0
+
+
+def test_rally_shots_without_hits_meta_are_null():
+    run = Run(stem="x", out_dir=None)
+    run.rallies_payload = {"rallies": [{"start_sec": 1.0, "end_sec": 3.0}],
+                           "detection": {"signal": "shuttle"}}
+    run.hits = [(2.0, 60, "lower")]
+    run.hits_meta = None
+    v = rally_insight(run)["value"]
+    assert v["shots_per_rally"] is None and v["mean_shots"] is None
 
 
 # ---- strokes ----------------------------------------------------------------

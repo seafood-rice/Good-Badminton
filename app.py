@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify, send_file
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
+from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
 from badminton_analysis.web import athletes_routes, insights_routes
 
@@ -1241,6 +1242,28 @@ def api_delete_preview(video_name):
                     'total_files': total_files, 'total_size_mb': round(total_size, 1)})
 
 
+def _forget_match_record(stem):
+    """Drop ``stem``'s match record from the athlete store after its video is deleted.
+
+    The same contract as the tag cleanup in ``api_delete``: never raises (the
+    files are already gone), writes only when a record exists, and skips a
+    corrupt or unreadable store entirely -- no write, no backup -- since a
+    video delete carries no data worth replacing the file for.
+    """
+    with _ATHLETES_LOCK:
+        try:
+            data = libathletes.load_for_update(ATHLETES_PATH)
+        except (libathletes.StoreCorrupt, OSError) as exc:
+            print(f'Match record cleanup skipped for {stem}: {type(exc).__name__}')
+            return
+        if stem not in data['matches']:
+            return
+        try:
+            libathletes.save(libathletes.set_match(data, stem, None), ATHLETES_PATH)
+        except OSError as exc:
+            print(f'Match record cleanup skipped for {stem}: {exc}')
+
+
 @app.route('/api/delete/<video_name>', methods=['POST'])
 def api_delete(video_name):
     """Permanently delete a scope's files. 409 while an analysis job runs on the video."""
@@ -1291,6 +1314,7 @@ def api_delete(video_name):
                             libtags.save(libtags.forget(data, stem), TAGS_PATH)
                         except OSError as exc:
                             print(f'Tag cleanup skipped for {stem}: {exc}')
+            _forget_match_record(stem)
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})

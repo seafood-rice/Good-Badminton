@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fmtNumber, fmtPercent, fmtDuration, fmtDate, ago, escHTML } from '../../static/kestrel/core/format.js';
+import { fmtNumber, fmtPercent, fmtDuration, fmtDate, ago, escHTML, isApproxDate } from '../../static/kestrel/core/format.js';
 
 const DASH = '—';
 
@@ -56,4 +56,14 @@ test('escHTML leaves no raw markup characters', () => {
   assert.equal(out, '&lt;a href=&quot;x&quot;&gt;&amp;&#39;');
   assert.equal(escHTML(null), '');
   assert.equal(escHTML(5), '5');
+});
+
+test('isApproxDate: a real date whose source is a file mtime', () => {
+  assert.equal(isApproxDate('2026-07-29', 'mtime'), true);
+  assert.equal(isApproxDate('2026-07-29', 'filename'), false);
+  assert.equal(isApproxDate('2026-07-29', 'record'), false);
+  assert.equal(isApproxDate(null, 'mtime'), false);
+  assert.equal(isApproxDate('', 'mtime'), false);
+  assert.equal(isApproxDate('junk', 'mtime'), false);
+  assert.equal(isApproxDate('2026-07-29', undefined), false);
 });

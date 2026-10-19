@@ -105,6 +105,19 @@ test('@font-face covers the three families and the files exist', () => {
   }
 });
 
+test('the OFL 1.1 licence text travels with every bundled font family', () => {
+  const fontsMd = read('static/fonts/FONTS.md');
+  for (const [file, holder] of [['OFL-SpaceGrotesk.txt', 'Space Grotesk'], ['OFL-InstrumentSerif.txt', 'Instrument Serif'],
+    ['OFL-IBMPlexMono.txt', 'IBM']]) {
+    const rel = 'static/fonts/' + file;
+    assert.ok(existsSync(join(ROOT, rel)), rel + ' missing');
+    const text = read(rel);
+    assert.match(text, /SIL OPEN FONT LICENSE Version 1\.1/);
+    assert.ok(text.includes(holder), file + ' names its copyright holder');
+    assert.ok(fontsMd.includes(file), 'FONTS.md mentions ' + file);
+  }
+});
+
 test('prefers-reduced-motion block exists and kills motion', () => {
   const m = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/);
   assert.ok(m, 'reduced-motion block missing');

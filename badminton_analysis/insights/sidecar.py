@@ -19,7 +19,7 @@ from .rally import rally_insight
 from .strokes import strokes_insight
 from .technique import technique_insight
 
-INSIGHTS_VERSION = 3
+INSIGHTS_VERSION = 4
 SCHEMA_VERSION = 1
 SIDECAR_NAME = "insights.json"
 INPUT_FILES = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json",
@@ -136,7 +136,7 @@ def _build(stem, out_dir, video_path, inputs):
            .strftime("%Y-%m-%dT%H:%M:%SZ"),
            "inputs": inputs}
     try:
-        value, source = video_date(stem, video_path, out_dir)
+        value, source = video_date(stem, video_path, out_dir, INPUT_FILES)
     except Exception:
         value, source = None, "mtime"
     doc["date"] = {"value": value, "source": source}
