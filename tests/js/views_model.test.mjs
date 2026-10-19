@@ -587,3 +587,58 @@ test('rallyInput: a rally file that exists but cannot be read is a failure, a 40
   assert.equal(absent.summary.failed, false);
   assert.equal(rallyCountText(absent.summary, 'en'), t('ws.count.none', 'en'));
 });
+
+// ---------- doubles runs ----------
+
+const DOUBLES_INSIGHTS = {
+  match_format: 'doubles',
+  date: { value: '2026-10-10', source: 'filename' },
+  rally: { status: 'ok', value: { count: 4, label: 'rallies', suppressed: false, signal: 'shuttle' } },
+  strokes: { status: 'unavailable', value: null, coverage: null, reason: { code: 'doubles_run', params: {} } },
+  // a stale or hostile sidecar that still carries per-player data must not surface it
+  technique: { status: 'ok', value: { by_side: { upper: { index: 60.2 }, lower: { index: 71.44 } } } },
+};
+
+test('matchRows: the doubles flag is only true for an exact true', () => {
+  const rows = matchRows({
+    matches: [
+      { stem: 'd', side: 'lower', doubles: true, tech_index: null, status: 'analysed' },
+      { stem: 's', side: 'lower', doubles: false, tech_index: 70, status: 'analysed' },
+      { stem: 'o', side: 'lower', tech_index: 70, status: 'analysed' },
+      { stem: 'x', side: 'lower', doubles: 'yes', tech_index: 70, status: 'analysed' },
+    ],
+  });
+  assert.deepEqual(rows.map((r) => r.doubles), [true, false, false, false]);
+  assert.equal(rows[0].techIndex, null);
+});
+
+test('peekModel: a doubles run has no per-player score, even from a stale sidecar', () => {
+  const pm = peekModel({
+    stem: 'd', record: { lower: { name: 'A' }, upper: { name: 'B' }, result: { winner: 'upper', sets: [[21, 18]] } },
+    insights: DOUBLES_INSIGHTS, athletes: { athletes: [] }, athleteId: '',
+  });
+  assert.equal(pm.doubles, true);
+  assert.equal(pm.techIndex, null);
+  assert.deepEqual(pm.techBySide, { upper: null, lower: null });
+  assert.equal(pm.strokes, null);
+  assert.equal(pm.rally.available, true);
+  assert.equal(pm.rally.count, 4);
+  const single = peekModel({ stem: 's', record: {}, insights: { technique: DOUBLES_INSIGHTS.technique, match_format: 'singles' } });
+  assert.equal(single.doubles, false);
+  assert.equal(single.techBySide.lower, 71.44);
+  assert.equal(peekModel({ stem: 's', record: {}, insights: null }).doubles, false);
+});
+
+test('buildWorkspaceModel: a doubles run joins no technique score to a stroke', () => {
+  const reps = [{ contact_frame: 100, player_side: 'lower', overall_score: 88, stroke_type: 'smash', per_metric: {} }];
+  const strokes = { strokes: [{ frame: 100, hitter: 'lower', stroke: 'smash', uncertain: false }] };
+  const singles = buildWorkspaceModel({ rallies: rallyPayload(), strokes, techReports: reps, fps: FPS, insights: { match_format: 'singles' } });
+  assert.equal(singles.summary.doubles, false);
+  assert.equal(singles.strokes[0].score, 88);
+  const doubles = buildWorkspaceModel({ rallies: rallyPayload(), strokes, techReports: reps, fps: FPS, insights: DOUBLES_INSIGHTS });
+  assert.equal(doubles.summary.doubles, true);
+  assert.equal(doubles.strokes[0].score, null);
+  assert.equal(doubles.strokes[0].report, null);
+  assert.equal(doubles.summary.scored, 0);
+  assert.equal(buildWorkspaceModel({ rallies: rallyPayload(), strokes, fps: FPS }).summary.doubles, false);
+});

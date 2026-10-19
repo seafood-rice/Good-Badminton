@@ -518,3 +518,14 @@ test('geometry: niceDomain gives six step-aligned ticks inside 0-100', () => {
   assert.equal(wide.ticks[0] - wide.ticks[1], wide.ticks[1] - wide.ticks[2]);
   assert.deepEqual(niceDomain([]), { min: 60, max: 85, ticks: [85, 80, 75, 70, 65, 60] });
 });
+
+test('matches: a doubles row is flagged and carries no technique number', () => {
+  const ov = overviewFixture();
+  ov.matches.push({ stem: 'd1', date: '2026-10-17', date_source: 'filename', side: 'lower', athlete: null, opponent: null, result: null, sets: null, tech_index: null, status: 'analysed', needs_review: false, doubles: true });
+  const { matches } = viewModel(ov, 'overview', 'en');
+  const byStem = Object.fromEntries(matches.rows.map((r) => [r.stem, r]));
+  assert.equal(byStem.d1.doubles, true);
+  assert.equal(byStem.d1.tech, '—');
+  assert.equal(byStem.m2.doubles, false);
+  assertStringsResolve(matches, 'en');
+});

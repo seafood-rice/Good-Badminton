@@ -6,7 +6,7 @@ export const TECHNIQUE_IDS = Object.freeze(['smash', 'clear', 'drop', 'net', 'li
 export const REASON_CODES = Object.freeze([
   'no_data', 'no_rallies', 'signal_swing', 'signal_degraded', 'no_strokes_file', 'no_technique', 'few_hits',
   'no_hits', 'unscored_technique', 'no_point_outcome', 'no_results_entered', 'no_benchmark', 'no_positions',
-  'low_stroke_coverage',
+  'low_stroke_coverage', 'doubles_run',
 ]);
 
 export const FINDING_CODES = Object.freeze([
@@ -423,6 +423,8 @@ export const STRINGS = {
     'reason.no_benchmark': '需要同一队伍里还有其他运动员，才能计算队伍基准。',
     'reason.no_positions': '球员位置样本不足。',
     'reason.low_stroke_coverage': '只有一部分击球被分类，数据仅供参考。',
+    'reason.doubles_run': '双打比赛：暂不提供单个球员的分析。',
+    'doubles.chip': '双打',
     'reason.unknown': '暂时没有这项数据。',
 
     // matches view (Task 11)
@@ -953,6 +955,8 @@ export const STRINGS = {
     'reason.no_benchmark': 'A benchmark needs other athletes in the same squad.',
     'reason.no_positions': 'Not enough player position samples.',
     'reason.low_stroke_coverage': 'Only part of the strokes were classified, so figures are indicative.',
+    'reason.doubles_run': 'Doubles match: per-player insights are not available yet.',
+    'doubles.chip': 'Doubles',
     'reason.unknown': 'This data is not available yet.',
 
     // matches view (Task 11)

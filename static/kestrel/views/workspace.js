@@ -128,6 +128,8 @@ function reportModel(rep) {
  *   athleteSide 'upper' | 'lower' | null: strokes by the other side are the opponent's and are never scored
  * Returns {fps, rallies:[{id,n,start,end,len,strokeCount,degraded}],
  *   strokes:[{i,frame,time,hitter,label,uncertain,confidence,opponent,score|null,report|null,rallyId|null}], summary}.
+ * A doubles run (insights.match_format === 'doubles') joins no technique report to a stroke: its per-side data is
+ * one representative per side of a 4-player match, not a player. `summary.doubles` says so.
  */
 export function buildWorkspaceModel(input = {}) {
   const { rallies, strokes, techReports, fps, insights, athleteSide } = obj(input);
@@ -141,7 +143,8 @@ export function buildWorkspaceModel(input = {}) {
   const units = hasFile && !base.failed ? rallyEntries(payload, f) : [];
   const side = SIDES.includes(athleteSide) ? athleteSide : null;
 
-  const reps = (Array.isArray(techReports) ? techReports : Array.isArray(obj(techReports).strokes) ? techReports.strokes : [])
+  const doubles = obj(insights).match_format === 'doubles';
+  const reps = (doubles ? [] : Array.isArray(techReports) ? techReports : Array.isArray(obj(techReports).strokes) ? techReports.strokes : [])
     .filter((r) => r && typeof r === 'object' && isNum(r.contact_frame) && SIDES.includes(r.player_side));
 
   const rawStrokes = Array.isArray(strokes) ? strokes : Array.isArray(obj(strokes).strokes) ? strokes.strokes : [];
@@ -189,6 +192,7 @@ export function buildWorkspaceModel(input = {}) {
       ...base,
       countShown: base.suppressed || base.failed ? null : base.count,
       withheld,
+      doubles,
       hasFile,
       strokes: { total: list.length, uncertain: nUnc, classified: list.length - nUnc },
       scored: list.filter((s) => s.score !== null).length,
@@ -467,12 +471,15 @@ export function mount(container, ctx = {}) {
     if (m.summary.label !== 'rallies') {
       meta.appendChild(h('span', { class: 'mono ov-pill' }, t(m.summary.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
     }
+    if (m.summary.doubles) meta.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
     const head = h('div', { class: 'ws-head' }, [
       h('div', { class: 'ws-head-l' }, [
         h('div', { class: 'mono ov-eyebrow' }, [t('ws.eyebrow', lang, { date }),
           matchDateApprox(rec, ins) ? approxMark(lang) : null]),
         h('h1', { class: 'page-title serif ws-title' }, [sideName(a), h('span', { class: 'ws-vs' }, lang === 'zh' ? '对' : 'vs.'), sideName(b)]),
         meta,
+        // A doubles run has no per-player score: say so instead of showing one.
+        m.summary.doubles ? h('div', { class: 'kw-foot-muted', role: 'note' }, t('reason.doubles_run', lang)) : null,
       ]),
       h('div', { class: 'ov-actions' }, [
         h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),

@@ -5,6 +5,13 @@ and the athlete/match store; it does no file I/O. A *unit* is one
 ``(stem, side)``; a stem's rally and stroke-distribution insights belong to the
 whole video, so they are counted once per stem, not once per unit.
 
+A *doubles* stem (sidecar ``match_format == "doubles"``) has no per-player data: its
+legacy tracker output is one representative per side of a 4-player match. It is a
+stem in the scope and a row in ``matches`` (``doubles: true``, ``tech_index: null``) and its
+rally windows still feed ``avg_rally``, but it is not a player unit: it adds nothing to the
+technique, movement, recovery, pull, stroke or match-win aggregates, the trend or the
+benchmark, and ``scope.units`` does not count it.
+
 Stems without a date (no record date and no usable sidecar date) cannot be
 placed in a range: they are left out of every bounded range (``7d``, ``30d``,
 ``season``) and of the trend, but still count for ``range="all"``.
@@ -155,6 +162,8 @@ def _make_entries(units_source, parts, running):
         entries.append({
             "stem": stem, "record": record, "date": date, "date_source": source,
             "status": status,
+            # only the exact value counts; a missing or malformed one is singles
+            "doubles": status == "analysed" and _dict(insights).get("match_format") == "doubles",
             # processing / new stems have no (or in-flux) data: never aggregated
             "insights": insights if status == "analysed" else {},
             "ident": {side: _side_ident(parts, record, side) for side in SIDES},
@@ -269,7 +278,7 @@ def _benchmark(athlete, parts, all_entries, range_, bounds, has_units):
         return envelope.unavailable("no_benchmark")
     indexes = []
     for e in all_entries:
-        if not _in_range(e["date"], range_, bounds):
+        if e["doubles"] or not _in_range(e["date"], range_, bounds):
             continue
         for side in SIDES:
             aid = e["ident"][side]["athlete_id"]
@@ -521,14 +530,16 @@ def _rows(units):
         outcome = None
         if u["side"] in SIDES and winner in SIDES:       # relative to this unit's own side
             outcome = "W" if winner == u["side"] else "L"
-        index = _bounded(_dict(_unit_side(u)).get("index"), *SCORE_RANGE)
+        index = None if u["doubles"] else _bounded(_dict(_unit_side(u)).get("index"),
+                                                    *SCORE_RANGE)
         rows.append({
             "stem": u["stem"], "date": u["date"], "date_source": u["date_source"],
             "side": u["side"], "athlete": u["ident"][u["side"]]["name"],
             "opponent": u["ident"][other]["name"], "result": outcome,
             "sets": _sets_pairs(result, u["side"]),
             "tech_index": index, "status": u["status"],
-            "needs_review": _stem_needs_review(u["insights"]),
+            "needs_review": not u["doubles"] and _stem_needs_review(u["insights"]),
+            "doubles": u["doubles"],
         })
     rows.sort(key=lambda r: (r["stem"], r["side"]))
     rows.sort(key=lambda r: r["date"] or "", reverse=True)       # newest first, undated last
@@ -566,7 +577,11 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
     bounds = _bounds(range_, anchor)
     chosen = [(e, s) for e, s in candidates if _in_range(e["date"], range_, bounds)]
 
-    units = [dict(e, side=side) for e, sides in chosen for side in sides]
+    all_units = [dict(e, side=side) for e, sides in chosen for side in sides]
+    # Player units: a doubles side is one representative of a 4-player team, not a player.
+    # ``units`` feeds every per-player aggregate and ``scope.units``; ``all_units`` only the
+    # rally average (rally windows are not player-specific) and the match rows.
+    units = [u for u in all_units if not u["doubles"]]
     chosen_entries = [e for e, _s in chosen]
     selected_dates = sorted(e["date"] for e in chosen_entries if e["date"])
     if bounds is not None:
@@ -582,6 +597,14 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
     athlete_row = parts["athletes"].get(athlete) if athlete is not None else None
     squad_row = parts["squads"].get(squad) if squad is not None else None
     no_outcome = envelope.unavailable("no_point_outcome")
+    doubles_only = not units and bool(all_units)       # every selected unit is doubles
+
+    def player(insight):
+        """With only doubles in scope, 'no data' is really 'doubles' (never a false 'missing')."""
+        reason = _dict(insight.get("reason")).get("code")
+        if doubles_only and insight.get("status") == "unavailable" and reason == "no_data":
+            return envelope.unavailable("doubles_run")
+        return insight
 
     result = {
         "scope": {
@@ -596,22 +619,23 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
             .strftime("%Y-%m-%dT%H:%M:%SZ"),
         },
         "kpis": {
-            "technique_index": _technique_kpi(units, scores, points),
-            "match_win_rate": _match_win_rate(units, scoped),
-            "avg_rally": _avg_rally(units),
+            "technique_index": player(_technique_kpi(units, scores, points)),
+            "match_win_rate": player(_match_win_rate(units, scoped)),
+            "avg_rally": _avg_rally(all_units),
             "rally_win_rate": dict(no_outcome),
-            "recovery": _recovery(units),
-            "net_share": net_kpi,
-            "pull_rear": _pull_rear(units),
+            "recovery": player(_recovery(units)),
+            "net_share": player(net_kpi),
+            "pull_rear": player(_pull_rear(units)),
             "unforced_errors": dict(no_outcome),
-            "strokes": strokes_kpi,
+            "strokes": player(strokes_kpi),
         },
         "radar": _radar(scores),
         "trend": {"points": points,
                   "benchmark": _benchmark(athlete, parts, entries, range_, bounds,
                                           bool(units))},
-        "movement": {"position": _position(units), "pull": _pull_position(units)},
-        "matches": _rows(units),
+        "movement": {"position": player(_position(units)),
+                     "pull": player(_pull_position(units))},
+        "matches": _rows(all_units),
     }
     result["findings"] = build_findings(result)
     return result

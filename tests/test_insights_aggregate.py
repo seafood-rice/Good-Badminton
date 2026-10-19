@@ -577,7 +577,7 @@ def test_response_keys_match_the_contract():
     assert set(ov["movement"]) == {"position", "pull"}
     assert set(ov["matches"][0]) == {"stem", "date", "date_source", "side", "athlete",
                                      "opponent", "result", "sets", "tech_index", "status",
-                                     "needs_review"}
+                                     "needs_review", "doubles"}
     for kpi in ov["kpis"].values():
         assert set(kpi) == {"status", "value", "coverage", "reason"}
 
@@ -667,3 +667,102 @@ def test_findings_tolerate_a_bare_dict():
 def test_overview_embeds_findings():
     ov = _overview({"smash": 66.0})
     assert ov["findings"] == findings.build_findings(ov)
+
+
+# ---- doubles runs ---------------------------------------------------------------
+
+PLAYER_KPIS = ("technique_index", "recovery", "net_share", "pull_rear", "strokes",
+               "match_win_rate")
+
+
+def _full_unit(stem, match_format=None, **extra):
+    """A unit with data in every per-player insight (as a stale sidecar might hold)."""
+    kw = dict(upper={"smash": (12, 80.0)}, lower={"smash": (12, 60.0)},
+              strokes={"classified": 20, "total": 20, "distribution": {"net": 10, "smash": 10}},
+              rally={"durations": [4.0, 6.0], "shots": [5, 7], "signal": "shuttle"},
+              recovery={"upper": (1.2, 12, 12), "lower": (1.4, 12, 12)},
+              pull={"upper": (0.4, 12), "lower": (0.6, 12)},
+              movement={"upper": (3, 4, 100, 50.0, 1.0), "lower": (8, 5, 100, 50.0, 1.0)})
+    kw.update(extra)
+    return _unit(stem, match_format=match_format, **kw)
+
+
+def test_doubles_unit_contributes_nothing_to_player_aggregates():
+    data, _ = _store()
+    solo = [_full_unit("S1", date="2026-10-10")]
+    mixed = solo + [_full_unit("D1", match_format="doubles", date="2026-10-11",
+                               upper={"smash": (50, 99.0)}, lower={"smash": (50, 1.0)})]
+    only = aggregate.overview(solo, data, range_="all")
+    both = aggregate.overview(mixed, data, range_="all")
+    for key in PLAYER_KPIS:
+        assert both["kpis"][key] == only["kpis"][key], key
+    assert both["radar"] == only["radar"]
+    assert both["trend"]["points"] == only["trend"]["points"]
+    assert both["movement"] == only["movement"]
+    assert both["findings"] == only["findings"]
+    assert both["scope"]["stems"] == 2
+    assert both["scope"]["units"] == only["scope"]["units"] == 2     # singles sides only
+
+
+def test_doubles_unit_still_counts_for_rallies():
+    data, _ = _store()
+    units = [_full_unit("S1", date="2026-10-10"),
+             _full_unit("D1", match_format="doubles", date="2026-10-11",
+                        rally={"durations": [10.0, 20.0], "shots": [9, 11], "signal": "shuttle"})]
+    ov = aggregate.overview(units, data, range_="all")
+    rally = ov["kpis"]["avg_rally"]
+    assert rally["status"] == "ok"
+    assert rally["value"]["seconds"] == 10.0                  # mean of 4, 6, 10, 20
+    assert rally["coverage"] == {"n": 2, "of": 2}
+
+
+def test_matches_rows_flag_doubles_and_withhold_the_index():
+    data, _ = _store()
+    units = [_full_unit("S1", date="2026-10-10", match_format="singles"),
+             _full_unit("D1", match_format="doubles", date="2026-10-11")]
+    rows = aggregate.overview(units, data, range_="all")["matches"]
+    by_stem = {}
+    for r in rows:
+        by_stem.setdefault(r["stem"], []).append(r)
+    assert {r["stem"] for r in rows} == {"S1", "D1"}
+    for r in by_stem["D1"]:
+        assert r["doubles"] is True and r["tech_index"] is None
+        assert r["needs_review"] is False and r["status"] == "analysed"
+    for r in by_stem["S1"]:
+        assert r["doubles"] is False and r["tech_index"] is not None
+    assert all(type(r["doubles"]) is bool for r in rows)
+
+
+def test_only_doubles_selection_says_so_and_has_no_findings():
+    data, _ = _store()
+    ov = aggregate.overview([_full_unit("D1", match_format="doubles")], data, range_="all")
+    assert ov["scope"]["stems"] == 1 and ov["scope"]["units"] == 0
+    for key in PLAYER_KPIS:
+        kpi = ov["kpis"][key]
+        assert kpi["status"] == "unavailable" and kpi["reason"]["code"] == "doubles_run", key
+    assert ov["movement"]["position"]["reason"]["code"] == "doubles_run"
+    assert ov["movement"]["pull"]["reason"]["code"] == "doubles_run"
+    assert ov["trend"]["points"] == []
+    assert all(a["status"] == "unavailable" for a in ov["radar"]["axes"])
+    assert ov["findings"] == []
+    assert len(ov["matches"]) == 2 and all(m["doubles"] for m in ov["matches"])
+
+
+def test_doubles_unit_is_not_a_benchmark_source():
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"])
+    data = _match(data, "B", upper=ids["ito"])
+    units = [_unit("A", upper={"smash": (12, 50.0)}),
+             _unit("B", upper={"smash": (12, 99.0)}, match_format="doubles")]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert ov["trend"]["benchmark"]["status"] == "unavailable"
+    assert ov["trend"]["benchmark"]["reason"]["code"] == "no_benchmark"
+
+
+@pytest.mark.parametrize("value", [None, "singles", "triples", 2, ["doubles"], "Doubles"])
+def test_other_match_format_values_are_singles(value):
+    data, _ = _store()
+    ov = aggregate.overview([_full_unit("S1", match_format=value)], data, range_="all")
+    assert ov["scope"]["units"] == 2
+    assert all(m["doubles"] is False for m in ov["matches"])
+    assert ov["kpis"]["technique_index"]["status"] != "unavailable"

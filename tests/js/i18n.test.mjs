@@ -31,7 +31,7 @@ test('zh strings are really Chinese and en strings contain no Chinese', () => {
 
 test('every reason code has text in both languages', () => {
   assert.deepEqual([...REASON_CODES].sort(), [
-    'few_hits', 'low_stroke_coverage', 'no_benchmark', 'no_data', 'no_hits', 'no_point_outcome', 'no_positions',
+    'doubles_run', 'few_hits', 'low_stroke_coverage', 'no_benchmark', 'no_data', 'no_hits', 'no_point_outcome', 'no_positions',
     'no_rallies', 'no_results_entered', 'no_strokes_file', 'no_technique', 'signal_degraded',
     'signal_swing', 'unscored_technique',
   ]);
@@ -127,4 +127,11 @@ test('seven techniques, status labels, lenses and shell are all present', () => 
     'empty.library.title', 'range.7d', 'range.30d', 'range.season', 'heat.position', 'heat.pull']) {
     assert.ok(STRINGS.en[k] && STRINGS.zh[k], k);
   }
+});
+
+test('doubles strings: the chip and the doubles_run reason, in both languages', () => {
+  assert.equal(STRINGS.en['doubles.chip'], 'Doubles');
+  assert.equal(STRINGS.zh['doubles.chip'], '双打');
+  assert.equal(reasonText({ code: 'doubles_run' }, 'en'), 'Doubles match: per-player insights are not available yet.');
+  assert.equal(reasonText({ code: 'doubles_run' }, 'zh'), '双打比赛：暂不提供单个球员的分析。');
 });

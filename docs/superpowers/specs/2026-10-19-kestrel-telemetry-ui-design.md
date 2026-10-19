@@ -134,7 +134,18 @@ dates.py       video_date(stem, video_path) -> (iso, source)
 `unavailable` has `value: null` and a `reason`. `partial` has a value *and* a reason (what limits it).
 Reason codes: `no_data`, `no_rallies`, `signal_swing`, `signal_degraded`, `no_strokes_file`,
 `no_technique`, `few_hits`, `no_hits`, `unscored_technique`, `no_point_outcome`, `no_results_entered`,
-`no_benchmark`, `no_positions`, `low_stroke_coverage`.
+`no_benchmark`, `no_positions`, `low_stroke_coverage`, `doubles_run`.
+
+`doubles_run`: the run was analysed with `match_format: "doubles"` (top-level `match_format` in `metadata.json`;
+a missing or malformed value means singles). The legacy tracker's per-side positions and hits are one
+representative per side of a 4-player match, not a player, and stroke types and technique scores are withheld,
+so the per-player insights (`technique`, `strokes`, `movement`, `recovery`, `pull`) are `unavailable` with this
+code; `rally` and `quality` stay as computed (rally windows are not player-specific). The sidecar carries a
+top-level `"match_format": "singles" | "doubles"` (`INSIGHTS_VERSION` 5). In the overview a doubles stem is
+counted in `scope.stems` and listed in `matches`, but it is not a player unit: it adds nothing to the technique,
+movement, recovery, pull, stroke or match-win aggregates, the trend or the benchmark, `scope.units` does not
+count it, and its rally windows still feed `avg_rally`. With only doubles stems in scope the player KPIs read
+`unavailable` + `doubles_run`.
 
 ### 5.2 Per-video sidecar
 
@@ -147,7 +158,7 @@ without caching (never an error). `compute_video` never raises: a failing insigh
 { "schema_version": 1, "version": 1, "stem": "...", "computed_at": "ISO-8601 UTC",
   "inputs": { "detections.jsonl": 123, "hits.json": null, "...": 0 },
   "date": { "value": "2026-10-10", "source": "filename" | "mtime" },
-  "fps": 59.94, "duration_sec": 228.7,
+  "fps": 59.94, "duration_sec": 228.7, "match_format": "singles" | "doubles",
   "rally":     Insight<{count, label, signal, suppressed, durations_sec[], mean_sec, median_sec,
                         shots_per_rally[]|null, mean_shots|null}>,
   "strokes":   Insight<{total, classified, uncertain, distribution{}, by_hitter{upper{classified,total},lower{...}}}>,
@@ -223,7 +234,7 @@ Response:
   "trend": { "points": [ {"date","stem","index"} ], "benchmark": Insight<{index}> },
   "movement": { "position": Insight<Grid>, "pull": Insight<Pull> },
   "matches": [ {"stem","date","date_source","side","athlete","opponent","result":"W|L|null","sets",
-                "tech_index","status":"analysed|processing|new","needs_review":bool} ],
+                "tech_index","status":"analysed|processing|new","needs_review":bool,"doubles":bool} ],
   "findings": [ {"code","severity":"watch|good|info","params":{}} ] }
 ```
 

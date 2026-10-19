@@ -249,6 +249,7 @@
 .kw-table th,.kw-table td{padding:8px;}
 .kw-row-open{all:unset;box-sizing:border-box;cursor:pointer;font-weight:600;padding:8px 0;border-bottom:1px dotted var(--ink3);}
 .kw-row-open:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.kw-doubles{margin-left:8px;vertical-align:middle;}
 .kw-res{display:inline-grid;place-items:center;min-width:24px;height:24px;padding:0 6px;border-radius:6px;font-size:12px;font-weight:600;}
 .kw-res.win{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good);}
 .kw-res.loss{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);}

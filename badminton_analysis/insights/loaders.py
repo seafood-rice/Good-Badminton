@@ -30,6 +30,16 @@ class Run:
     strokes_meta: dict = None    # strokes.json without the stroke list
 
     @property
+    def match_format(self):
+        """``"doubles"`` when ``metadata.json`` says so, else ``"singles"``.
+
+        A missing key (older runs), a missing/unreadable file or any other value
+        counts as singles; it never raises.
+        """
+        value = (self.metadata or {}).get("match_format")
+        return "doubles" if value == "doubles" else "singles"
+
+    @property
     def fps(self):
         """Frames per second from metadata, else rally/hits files; None if unknown."""
         video = (self.metadata or {}).get("video")

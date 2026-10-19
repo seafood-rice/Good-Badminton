@@ -406,6 +406,7 @@ function matchesModel(ov, lang) {
       result,
       resultText: result ? t('result.' + result, lang) : t('matches.add_result', lang),
       tech: fmtNumber(m.tech_index, 1),
+      doubles: m.doubles === true,
       status,
       statusText: t('status.' + status, lang),
       statusTone: status === 'analysed' ? 'good' : status === 'needs_review' ? 'mid' : status === 'processing' ? 'cyan' : '',

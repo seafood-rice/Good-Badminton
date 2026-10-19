@@ -5,7 +5,7 @@ import * as frame from './frame.js';
 import { h, revealStyle, approxMark } from './frame.js';
 
 /**
- * data: the matches view-model {rows:[{stem,label,aria,date,dateApprox,result,resultText,tech,statusText,statusTone}],
+ * data: the matches view-model {rows:[{stem,label,aria,date,dateApprox,result,resultText,tech,doubles,statusText,statusTone}],
  * emptyTitle, emptyBody}. Returns {el, update(p)}.
  */
 export function build(data, ctx = {}) {
@@ -41,7 +41,7 @@ export function build(data, ctx = {}) {
       // A click elsewhere on the row opens the same match (the button stops its own click from bubbling).
       onclick: () => open(r.stem, btn),
     }, [
-      h('td', null, btn),
+      h('td', null, [btn, r.doubles ? h('span', { class: 'k-chip kw-doubles' }, t('doubles.chip', lang)) : null]),
       h('td', { class: 'mono kw-muted kw-col-date' }, [r.date || '—', r.dateApprox ? approxMark(lang) : null]),
       h('td', { class: 'kw-col-res' }, h('span', { class: 'mono kw-res' + (r.result === 'W' ? ' win' : r.result === 'L' ? ' loss' : ' none') }, r.resultText || '')),
       h('td', { class: 'mono kw-num kw-col-tech' }, r.tech || '—'),

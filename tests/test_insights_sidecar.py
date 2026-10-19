@@ -38,13 +38,13 @@ def _assert_envelope(env):
 
 
 def test_version_constant():
-    assert sidecar.INSIGHTS_VERSION == 4
+    assert sidecar.INSIGHTS_VERSION == 5
 
 
 def test_document_shape_and_file_written(tmp_path):
     out = _full_run(tmp_path)
     doc = sidecar.compute_video(out.name, out)
-    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 4
+    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 5
     assert doc["stem"] == out.name
     assert doc["computed_at"].endswith("Z")
     assert doc["date"] == {"value": "2026-10-10", "source": "filename"}
@@ -99,9 +99,9 @@ def test_version_change_recomputes(tmp_path, monkeypatch):
     out = _full_run(tmp_path)
     calls = _count_calls(monkeypatch, "technique_insight")
     sidecar.compute_video(out.name, out)
-    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 5)
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 6)
     doc = sidecar.compute_video(out.name, out)
-    assert len(calls) == 2 and doc["version"] == 5
+    assert len(calls) == 2 and doc["version"] == 6
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "null", '{"version": 1}', ""])
@@ -278,3 +278,77 @@ def test_concurrent_writers_use_distinct_temp_names(tmp_path, monkeypatch):
     sidecar._write_atomic(str(out / "insights.json"), {"a": 2})
     assert len(set(names)) == 2 and all(n.startswith("insights.") and n.endswith(".tmp")
                                         for n in names)
+
+
+# ---- doubles runs --------------------------------------------------------------
+
+PLAYER_KEYS = ("technique", "strokes", "movement", "recovery", "pull")
+
+
+def _doubles_run(tmp_path, match_format="doubles"):
+    return make_run(tmp_path, "DJI_20261010090046_0010_D", frames=120, rallies=[(0.5, 3.0)],
+                    hits=[(1.0, "upper"), (1.5, "lower")],
+                    strokes=[("upper", "smash"), ("lower", "net")], reports=REPORTS,
+                    match_format=match_format)
+
+
+def test_doubles_run_withholds_every_per_player_insight(tmp_path):
+    out = _doubles_run(tmp_path)
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["match_format"] == "doubles"
+    for key in PLAYER_KEYS:
+        env = doc[key]
+        _assert_envelope(env)
+        assert env["status"] == "unavailable" and env["value"] is None, key
+        assert env["reason"]["code"] == "doubles_run", key
+
+
+def test_doubles_run_keeps_rally_and_quality(tmp_path):
+    out = _doubles_run(tmp_path)
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["rally"]["status"] in ("ok", "partial")
+    assert doc["rally"]["value"]["count"] == 1
+    assert doc["quality"]["shuttle_coverage_in_play"] == 0.9
+    assert doc["quality"]["shuttle_source"] == "tracknet"
+
+
+def test_singles_run_records_match_format_and_computes_everything(tmp_path):
+    for fmt in (None, "singles"):
+        out = make_run(tmp_path / str(fmt), "clip", frames=120, rallies=[(0.5, 3.0)],
+                       hits=[(1.0, "upper"), (1.5, "lower")],
+                       strokes=[("upper", "smash"), ("lower", "net")], reports=REPORTS,
+                       match_format=fmt)
+        doc = sidecar.compute_video(out.name, out)
+        assert doc["match_format"] == "singles"
+        assert doc["technique"]["status"] == "partial"
+        assert doc["strokes"]["status"] in ("ok", "partial")
+        assert doc["movement"]["status"] != "unavailable"
+
+
+def test_doubles_run_does_not_run_per_player_insights(tmp_path, monkeypatch):
+    out = _doubles_run(tmp_path)
+    calls = {name: _count_calls(monkeypatch, name)
+             for name in ("technique_insight", "strokes_insight", "movement_insight",
+                          "recovery_insight", "pull_insight")}
+    sidecar.compute_video(out.name, out)
+    assert {name: len(c) for name, c in calls.items()} == dict.fromkeys(calls, 0)
+
+
+def test_changing_the_match_format_recomputes_the_cached_sidecar(tmp_path):
+    out = _doubles_run(tmp_path, match_format="singles")
+    first = sidecar.compute_video(out.name, out)
+    assert first["match_format"] == "singles" and first["technique"]["status"] == "partial"
+    make_run(tmp_path, out.name, frames=120, rallies=[(0.5, 3.0)],
+             hits=[(1.0, "upper"), (1.5, "lower")],
+             strokes=[("upper", "smash"), ("lower", "net")], reports=REPORTS,
+             match_format="doubles")
+    meta = out / "metadata.json"
+    os.utime(meta, ns=(time.time_ns() + 5_000_000_000,) * 2)       # mtime must differ
+    second = sidecar.compute_video(out.name, out)
+    assert second["match_format"] == "doubles"
+    assert second["technique"]["reason"]["code"] == "doubles_run"
+
+
+def test_fallback_documents_carry_match_format(tmp_path):
+    doc = sidecar.compute_video("nothing", tmp_path / "nope")
+    assert doc["match_format"] == "singles"

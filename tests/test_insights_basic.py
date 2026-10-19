@@ -556,3 +556,26 @@ def test_strokes_per_hitter_distribution_counts_classified_strokes_of_that_hitte
     for side in ("upper", "lower"):
         h = v["by_hitter"][side]
         assert sum(h["distribution"].values()) == h["classified"]
+
+
+# ---- match format (doubles runs) ---------------------------------------------
+
+def test_match_format_defaults_to_singles(tmp_path):
+    assert load_run(make_run(tmp_path, "a")).match_format == "singles"
+    assert load_run(tmp_path / "missing").match_format == "singles"      # no metadata at all
+    assert load_run(make_run(tmp_path, "b", match_format="singles")).match_format == "singles"
+
+
+def test_match_format_doubles_from_metadata(tmp_path):
+    assert load_run(make_run(tmp_path, "a", match_format="doubles")).match_format == "doubles"
+
+
+@pytest.mark.parametrize("value", ["triples", "DOUBLES", "", 2, True, ["doubles"], {"x": 1}])
+def test_malformed_match_format_is_singles(tmp_path, value):
+    assert load_run(make_run(tmp_path, "a", match_format=value)).match_format == "singles"
+
+
+def test_match_format_with_unreadable_metadata_is_singles(tmp_path):
+    out = make_run(tmp_path, "a", match_format="doubles")
+    (out / "metadata.json").write_text("{not json", encoding="utf-8")
+    assert load_run(out).match_format == "singles"

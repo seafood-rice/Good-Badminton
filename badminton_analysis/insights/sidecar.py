@@ -19,12 +19,14 @@ from .rally import rally_insight
 from .strokes import strokes_insight
 from .technique import technique_insight
 
-INSIGHTS_VERSION = 4
+INSIGHTS_VERSION = 5
 SCHEMA_VERSION = 1
 SIDECAR_NAME = "insights.json"
 INPUT_FILES = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json",
                "strokes.jsonl", "technique_summary.json", "rally_segments.json")
 INSIGHT_KEYS = ("rally", "strokes", "technique", "movement", "recovery", "pull")
+# Per-player insights: a doubles run only has one representative per side, not a player.
+PLAYER_KEYS = ("strokes", "technique", "movement", "recovery", "pull")
 QUALITY_KEYS = ("shuttle_coverage_in_play", "hit_source", "shuttle_source",
                 "court_view_pass_frac")
 
@@ -134,7 +136,7 @@ def _build(stem, out_dir, video_path, inputs):
     doc = {"schema_version": SCHEMA_VERSION, "version": INSIGHTS_VERSION, "stem": stem,
            "computed_at": datetime.datetime.now(datetime.timezone.utc)
            .strftime("%Y-%m-%dT%H:%M:%SZ"),
-           "inputs": inputs}
+           "inputs": inputs, "match_format": "singles"}
     try:
         value, source = video_date(stem, video_path, out_dir, INPUT_FILES)
     except Exception:
@@ -149,13 +151,22 @@ def _build(stem, out_dir, video_path, inputs):
 
     doc["fps"] = run.fps
     doc["duration_sec"] = _duration(run)
+    doc["match_format"] = run.match_format
     rally = _guarded("rally", rally_insight, run)
     doc["rally"] = rally
-    doc["strokes"] = _guarded("strokes", strokes_insight, run)
-    doc["technique"] = _guarded("technique", technique_insight, run)
-    doc["movement"] = _guarded("movement", movement_insight, run, rally)
-    doc["recovery"] = _guarded("recovery", recovery_insight, run)
-    doc["pull"] = _guarded("pull", pull_insight, run)
+    if run.match_format == "doubles":
+        # The legacy tracker keeps one representative per side of a 4-player match: its
+        # movement, recovery, pull and hits are not a player's, and stroke types and
+        # technique scores are withheld on doubles runs. Rally windows are not
+        # player-specific, so `rally` (and `quality`) stay as computed.
+        for key in PLAYER_KEYS:
+            doc[key] = envelope.unavailable("doubles_run")
+    else:
+        doc["strokes"] = _guarded("strokes", strokes_insight, run)
+        doc["technique"] = _guarded("technique", technique_insight, run)
+        doc["movement"] = _guarded("movement", movement_insight, run, rally)
+        doc["recovery"] = _guarded("recovery", recovery_insight, run)
+        doc["pull"] = _guarded("pull", pull_insight, run)
     try:
         doc["quality"] = _quality(run)
     except Exception:
@@ -168,7 +179,8 @@ def _fallback(stem):
            "computed_at": datetime.datetime.now(datetime.timezone.utc)
            .strftime("%Y-%m-%dT%H:%M:%SZ"),
            "inputs": {}, "date": {"value": None, "source": "mtime"},
-           "fps": None, "duration_sec": None, "quality": dict.fromkeys(QUALITY_KEYS)}
+           "fps": None, "duration_sec": None, "match_format": "singles",
+           "quality": dict.fromkeys(QUALITY_KEYS)}
     for key in INSIGHT_KEYS:
         doc[key] = envelope.unavailable("no_data")
     return doc

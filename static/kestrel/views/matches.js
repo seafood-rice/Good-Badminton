@@ -35,7 +35,8 @@ function setsText(sets) {
 /**
  * Pure: overview payload -> one row per stem (the first unit wins; the aggregator lists a stem's lower side
  * first when no athlete is selected). Row: {stem, date, side, athlete, opponent, result 'W'|'L'|null,
- * sets [[own, opp]], setsText, techIndex, status}. `result` is relative to `athlete` and comes from the record.
+ * sets [[own, opp]], setsText, techIndex, status, doubles}. `result` is relative to `athlete` and comes from the
+ * record; `doubles` is true only for an exact `true` (a doubles run has no per-player score).
  */
 export function matchRows(overview) {
   const list = Array.isArray(obj(overview).matches) ? overview.matches : [];
@@ -58,6 +59,7 @@ export function matchRows(overview) {
       setsText: setsText(sets),
       techIndex: isNum(m.tech_index) ? m.tech_index : null,
       status,
+      doubles: m.doubles === true,
     });
   }
   return rows;
@@ -138,7 +140,9 @@ function registryName(athletes, id) {
 /**
  * Pure: the peek summary for one stem from its match record, its insights sidecar and the athlete registry.
  * {stem, date, side, first, names{upper, lower}, winner, result 'W'|'L'|null, sets (oriented to `first`), techIndex, techBySide,
- *  rally{count, label, suppressed, signal, failed, available}, strokes{classified,total}|null}.
+ *  doubles, rally{count, label, suppressed, signal, failed, available}, strokes{classified,total}|null}.
+ * A doubles run (sidecar `match_format: 'doubles'`) has no per-player score: techIndex / techBySide stay null whatever
+ * the sidecar holds, and the peek says so instead.
  */
 export function peekModel({ stem, record, insights, athletes, athleteId } = {}) {
   const rec = obj(record);
@@ -152,7 +156,8 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}) 
   const res = obj(rec.result);
   const winner = SIDES.includes(res.winner) ? res.winner : null;
   const sets = Array.isArray(res.sets) ? res.sets.filter((p) => Array.isArray(p) && p.length === 2) : [];
-  const bySide = obj(obj(obj(ins.technique).value).by_side);
+  const doubles = ins.match_format === 'doubles';
+  const bySide = doubles ? {} : obj(obj(obj(ins.technique).value).by_side);
   const idx = (s) => (isNum(obj(bySide[s]).index) ? bySide[s].index : null);
   const rIns = obj(ins.rally);
   const rv = obj(rIns.value);
@@ -165,6 +170,7 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}) 
     // A record date is the user's own; only a sidecar date from a file mtime is approximate.
     dateApprox: !str(rec.date) && isApproxDate(obj(ins.date).value, obj(ins.date).source),
     side,
+    doubles,
     names,
     winner,
     result: side && winner ? (winner === side ? 'W' : 'L') : null,
@@ -245,6 +251,7 @@ export function buildMatchPeek(row, ctx = {}) {
     if (pm.result) chips.appendChild(h('span', { class: 'k-chip ' + (pm.result === 'W' ? 'good' : 'bad') }, t(pm.result === 'W' ? 'ws.result.win' : 'ws.result.loss', lang)));
     else if (pm.winner) chips.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: nm(pm.winner) })));
     else if (mode === 'ok') chips.appendChild(h('span', { class: 'k-chip' }, t('matches.no_result', lang)));
+    if (pm.doubles) chips.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
     if (mode === 'failed' || mode === 'partial') chips.appendChild(h('span', { class: 'kw-foot-muted', role: 'status' }, t('peek.load_failed', lang)));
     if (pm.sets.length) chips.appendChild(h('span', { class: 'mono kw-muted' }, pm.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ')));
     root.appendChild(chips);
@@ -261,7 +268,7 @@ export function buildMatchPeek(row, ctx = {}) {
     ]);
     const sig = r.signal ? t('signal.' + r.signal, lang) : '';
     root.appendChild(h('div', { class: 'mp-grid' }, [
-      tile(t('peek.tech', lang), loading && tech === '—' ? dash : tech, null, 0),
+      tile(t('peek.tech', lang), loading && tech === '—' ? dash : tech, pm.doubles ? t('reason.doubles_run', lang) : null, 0),
       tile(rallyHead, r.available ? fmtNumber(r.count) : dash, r.available ? rallyCountText(r, lang) : null, 1),
       tile(t('peek.strokes', lang), pm.strokes ? fmtNumber(pm.strokes.total) : dash,
         pm.strokes ? t('tile.classified_of', lang, { classified: fmtNumber(pm.strokes.classified), total: fmtNumber(pm.strokes.total) }) : null, 2),
@@ -445,7 +452,7 @@ export function mount(container, ctx = {}) {
         onclick: () => toggleEditor(r.stem),
       }, t('mv.record_btn', lang));
       [
-        h('td', { class: 'mv-name' }, [openBtn, h('div', { class: 'mv-sub' }, sub)]),
+        h('td', { class: 'mv-name' }, [openBtn, r.doubles ? h('span', { class: 'k-chip kw-doubles' }, t('doubles.chip', lang)) : null, h('div', { class: 'mv-sub' }, sub)]),
         h('td', { class: 'mono kw-muted kw-col-date' }, [fmtDate(r.date, lang), r.dateApprox ? approxMark(lang) : null]),
         h('td', null, resultChip(r)),
         h('td', { class: 'mono kw-muted' }, r.sets.length ? r.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ') : '—'),

@@ -40,7 +40,8 @@ def _detection(signal):
 
 
 def make_run(tmp_path, stem="clip", *, fps=30.0, frames=0, rallies=None, hits=None,
-             strokes=None, reports=None, signal="shuttle", positions=None):
+             strokes=None, reports=None, signal="shuttle", positions=None,
+             match_format=None):
     """Write ``<tmp_path>/outputs/<stem>/`` and return that directory.
 
     * ``frames`` > 0 writes ``detections.jsonl`` with that many frames;
@@ -53,14 +54,20 @@ def make_run(tmp_path, stem="clip", *, fps=30.0, frames=0, rallies=None, hits=No
     * ``hits``: ``[(time_sec, hitter)]`` -> ``hits.json``.
     * ``strokes``: ``[(hitter, stroke[, frame])]`` or dicts -> ``strokes.json``.
     * ``reports``: ``[(stroke_type, player_side, overall_score)]`` -> ``strokes.jsonl``.
+    * ``match_format``: ``None`` omits the key (an older, singles run); anything else is
+      written verbatim as the top-level ``"match_format"`` of ``metadata.json`` (so tests
+      can also write a malformed value).
     """
     out = Path(tmp_path) / "outputs" / stem
     out.mkdir(parents=True, exist_ok=True)
-    _write_json(out / "metadata.json", {
+    metadata = {
         "schema_version": "1.0",
         "video": {"name": stem, "fps": fps, "total_frames": frames,
                   "duration_sec": frames / fps if fps else 0.0},
-    })
+    }
+    if match_format is not None:
+        metadata["match_format"] = match_format
+    _write_json(out / "metadata.json", metadata)
 
     if frames > 0:
         lines = []
@@ -171,7 +178,7 @@ def _split_by_hitter(classified, total, distribution):
 
 def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=None,
              lower=None, strokes=None, rally=None, recovery=None, pull=None,
-             movement=None):
+             movement=None, match_format=None):
     """A sidecar dict as ``compute_video`` would return it, built by hand.
 
     * ``upper`` / ``lower``: ``{tech: (count, avg_score)}`` or ``None`` (no reports).
@@ -182,6 +189,8 @@ def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=No
     * ``recovery``: ``{side: (median_sec|None, found, hits)}``.
     * ``pull``: ``{side: (back_share, n)}``.
     * ``movement``: ``{side: (row, col, samples, distance_m, mean_speed_mps)}``.
+    * ``match_format``: ``None`` omits the top-level key; otherwise it is set verbatim
+      (the per-player envelopes are left as built, to show the aggregator ignores them).
     """
     if upper is None and lower is None:
         technique = _env("unavailable", None, reason="no_technique")
@@ -259,10 +268,13 @@ def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=No
 
     doc_date = {"value": date, "source": date_source} if date else {"value": None,
                                                                     "source": "mtime"}
-    return {"schema_version": 1, "version": 2, "stem": stem,
-            "computed_at": "2026-10-19T00:00:00Z", "inputs": {}, "date": doc_date,
-            "fps": 30.0, "duration_sec": 60.0, "rally": rally_env, "strokes": stroke_env,
-            "technique": technique, "movement": move_env, "recovery": rec_env,
-            "pull": pull_env,
-            "quality": {"shuttle_coverage_in_play": None, "hit_source": None,
-                        "shuttle_source": None, "court_view_pass_frac": None}}
+    doc = {"schema_version": 1, "version": 2, "stem": stem,
+           "computed_at": "2026-10-19T00:00:00Z", "inputs": {}, "date": doc_date,
+           "fps": 30.0, "duration_sec": 60.0, "rally": rally_env, "strokes": stroke_env,
+           "technique": technique, "movement": move_env, "recovery": rec_env,
+           "pull": pull_env,
+           "quality": {"shuttle_coverage_in_play": None, "hit_source": None,
+                       "shuttle_source": None, "court_view_pass_frac": None}}
+    if match_format is not None:
+        doc["match_format"] = match_format
+    return doc
