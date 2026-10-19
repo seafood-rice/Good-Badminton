@@ -9,6 +9,7 @@ from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
 from badminton_analysis.insights.rally import summarise_rally_payload
+from badminton_analysis.web import athletes_routes
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -22,6 +23,10 @@ TAGS_PATH = PROJECT_ROOT / 'data' / 'library_tags.json'
 # other. One global lock rather than per-video: rename/delete touch the whole
 # file, so a per-stem lock would not prevent the cross-video race.
 _TAGS_LOCK = threading.Lock()
+# Athletes, squads and match records: the same reasoning as the tags (outside
+# outputs/, gitignored), and one lock over every read-modify-write.
+ATHLETES_PATH = PROJECT_ROOT / 'data' / 'athletes.json'
+_ATHLETES_LOCK = threading.Lock()
 TEMPLATES = PROJECT_ROOT / 'templates'
 WEIGHTS = PROJECT_ROOT / 'weights'
 
@@ -31,6 +36,10 @@ TEMPLATES.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
+# Getters, not values: read at request time so a re-pointed ATHLETES_PATH is honoured.
+athletes_routes.register(app, store_path=lambda: ATHLETES_PATH,
+                         lock=lambda: _ATHLETES_LOCK,
+                         safe_stem=lambda name: _safe_stem(name))
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -193,8 +202,8 @@ def _rally_summary(save_dir):
             payload = json.load(f)
     except Exception as exc:
         print(f'Could not read {path}: {exc!r}; treating the rally count as unknown')
-        return summarise_rally_payload([])      # malformed -> failed
-    # a JSON ``null`` is malformed, not "no file"
+        return summarise_rally_payload([])      # a non-dict payload is the helper's "malformed -> failed" path
+    # a JSON ``null`` is malformed, not "no file" (None means "file absent" to the helper)
     return summarise_rally_payload([] if payload is None else payload)
 
 
