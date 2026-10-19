@@ -67,7 +67,8 @@ def _json_object(out_dir, name, notes):
         return None
     try:
         data = json.loads(_read_text(path))
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError, MemoryError) as exc:
+        # RecursionError: deeply nested JSON; MemoryError: absurdly large file
         notes.append(f"{name}: unreadable ({type(exc).__name__})")
         return None
     if not isinstance(data, dict):
@@ -83,7 +84,7 @@ def _json_lines(out_dir, name, notes):
         return None
     try:
         text = _read_text(path)
-    except OSError as exc:
+    except (OSError, MemoryError) as exc:
         notes.append(f"{name}: unreadable ({type(exc).__name__})")
         return None
     records = []
@@ -94,7 +95,7 @@ def _json_lines(out_dir, name, notes):
             continue
         try:
             records.append(json.loads(line))
-        except ValueError:
+        except (ValueError, RecursionError, MemoryError):
             bad += 1
             records.append(None)
     if bad:

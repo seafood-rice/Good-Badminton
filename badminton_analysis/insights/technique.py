@@ -20,9 +20,8 @@ def _side(reports):
         techniques[tech] = {
             "count": len(scores),
             "avg_score": round(statistics.fmean(valid), 1) if valid else None}
-    means = [statistics.fmean([s for t, s in reports if t == tech and s is not None])
-             for tech in TECHNIQUES
-             if any(t == tech and s is not None for t, s in reports)]
+    # the index is the mean of the avg_scores as reported (already rounded)
+    means = [v["avg_score"] for v in techniques.values() if v["avg_score"] is not None]
     return {"techniques": techniques,
             "index": round(statistics.fmean(means), 1) if means else None,
             "scored": len(means)}
@@ -31,8 +30,11 @@ def _side(reports):
 def technique_insight(run):
     by_side = {s: [] for s in SIDES}
     for r in run.tech_reports or []:
-        tech = REPORT_TO_TECH.get(r.get("stroke_type"))
-        side = r.get("player_side")
+        stroke_type, side = r.get("stroke_type"), r.get("player_side")
+        # JSON values may be lists/dicts (unhashable): only strings reach a lookup
+        if not isinstance(stroke_type, str) or not isinstance(side, str):
+            continue
+        tech = REPORT_TO_TECH.get(stroke_type)
         if tech is None or side not in by_side:
             continue
         by_side[side].append((tech, number(r.get("overall_score"))))

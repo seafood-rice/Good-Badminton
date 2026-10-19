@@ -113,6 +113,7 @@ def rally_insight(run):
         "signal": summary["signal"],
         "suppressed": summary["suppressed"],
         "durations_sec": durations,
+        "duration_missing": summary["count"] - len(windows),
         "mean_sec": _round(statistics.fmean(durations)) if durations else None,
         "median_sec": _round(statistics.median(durations)) if durations else None,
         "shots_per_rally": shots,

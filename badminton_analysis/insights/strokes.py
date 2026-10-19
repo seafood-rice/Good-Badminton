@@ -7,7 +7,10 @@ OK_COVERAGE = 0.6
 
 
 def _is_uncertain(stroke):
-    return bool(stroke.get("uncertain")) or stroke.get("stroke") == "uncertain"
+    """Flagged uncertain, named "uncertain", or without a usable (string) name."""
+    name = stroke.get("stroke")
+    return (bool(stroke.get("uncertain")) or not isinstance(name, str)
+            or not name or name == "uncertain")
 
 
 def strokes_insight(run):
@@ -22,14 +25,13 @@ def strokes_insight(run):
     for s in strokes:
         sure = not _is_uncertain(s)
         hitter = s.get("hitter")
-        if hitter in by_hitter:
+        if isinstance(hitter, str) and hitter in by_hitter:     # JSON values may be unhashable
             by_hitter[hitter]["total"] += 1
             by_hitter[hitter]["classified"] += sure
         if sure:
             classified += 1
             name = s.get("stroke")
-            if isinstance(name, str) and name:
-                distribution[name] = distribution.get(name, 0) + 1
+            distribution[name] = distribution.get(name, 0) + 1
 
     value = {"total": total, "classified": classified, "uncertain": total - classified,
              "distribution": distribution, "by_hitter": by_hitter}

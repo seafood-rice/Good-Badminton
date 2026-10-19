@@ -361,3 +361,102 @@ def test_technique_no_reports_is_unavailable(tmp_path):
     assert ins["status"] == "unavailable" and ins["reason"]["code"] == "no_technique"
     ins = technique_insight(load_run(make_run(tmp_path, "b", reports=[])))
     assert ins["reason"]["code"] == "no_technique"
+
+
+# ---- review fixes: hostile JSON values, nesting, rounding, missing durations --
+
+_HOSTILE = [["a"], {"k": 1}, 5, None, True]
+
+
+@pytest.mark.parametrize("bad", _HOSTILE)
+@pytest.mark.parametrize("field", ["stroke_type", "player_side"])
+def test_technique_skips_reports_with_non_string_fields(tmp_path, bad, field):
+    out = make_run(tmp_path, reports=[("smash", "lower", 80)])
+    good = {"stroke_type": "smash", "player_side": "lower", "overall_score": 80}
+    with open(out / "strokes.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(dict(good, **{field: bad})) + "\n")
+    ins = technique_insight(load_run(out))
+    assert ins["value"]["by_side"]["lower"]["techniques"]["smash"]["count"] == 1
+
+
+def test_technique_only_hostile_reports_is_unavailable(tmp_path):
+    out = make_run(tmp_path)
+    (out / "strokes.jsonl").write_text(
+        '{"stroke_type": ["a"], "player_side": "lower"}\n'
+        '{"stroke_type": "smash", "player_side": {"x": 1}}\n', encoding="utf-8")
+    ins = technique_insight(load_run(out))
+    assert ins["status"] == "unavailable" and ins["reason"]["code"] == "no_technique"
+
+
+@pytest.mark.parametrize("bad", [["x"], {"k": 1}, 5, None])
+def test_strokes_survive_non_string_hitter_and_stroke(tmp_path, bad):
+    out = make_run(tmp_path)
+    (out / "strokes.json").write_text(json.dumps({"strokes": [
+        {"hitter": "lower", "stroke": "net", "uncertain": False},
+        {"hitter": bad, "stroke": "net", "uncertain": False},
+        {"hitter": "upper", "stroke": bad, "uncertain": False}]}), encoding="utf-8")
+    v = strokes_insight(load_run(out))["value"]
+    assert v["total"] == 3
+    assert v["distribution"] == {"net": 2}            # a non-string stroke is not classified
+    assert v["classified"] == 2 and v["uncertain"] == 1
+    assert v["by_hitter"] == {"upper": {"classified": 0, "total": 1},
+                              "lower": {"classified": 1, "total": 1}}
+
+
+@pytest.mark.parametrize("bad", [["x"], {"k": 1}])
+def test_rally_ignores_non_numeric_hits_and_windows(tmp_path, bad):
+    out = make_run(tmp_path, rallies=[(1.0, 3.0)], hits=[(2.0, "lower")])
+    payload = json.loads((out / "rally_segments.json").read_text(encoding="utf-8"))
+    payload["rallies"].append({"start_sec": bad, "end_sec": bad})
+    (out / "rally_segments.json").write_text(json.dumps(payload), encoding="utf-8")
+    hits = json.loads((out / "hits.json").read_text(encoding="utf-8"))
+    hits["hits"].append({"frame": bad, "time_sec": bad, "hitter": bad})
+    (out / "hits.json").write_text(json.dumps(hits), encoding="utf-8")
+    v = rally_insight(load_run(out))["value"]
+    assert v["count"] == 2 and v["shots_per_rally"] == [1]
+
+
+@pytest.mark.parametrize("name", ["metadata.json", "hits.json", "strokes.json",
+                                  "technique_summary.json", "rally_segments.json"])
+def test_load_run_deeply_nested_json_does_not_raise(tmp_path, name):
+    (tmp_path / name).write_text("[" * 100000, encoding="utf-8")
+    run = load_run(tmp_path)
+    assert run.metadata is None and run.hits is None and run.strokes is None
+    assert run.tech_summary is None and run.rallies_payload is None
+    assert any(name in n for n in run.notes)
+
+
+def test_load_run_deeply_nested_jsonl_line_is_skipped(tmp_path):
+    (tmp_path / "detections.jsonl").write_text(
+        json.dumps({"frame": 0, "time_sec": 0.0, "players": {}}) + "\n"
+        + "[" * 100000 + "\n", encoding="utf-8")
+    (tmp_path / "strokes.jsonl").write_text("[" * 100000 + "\n", encoding="utf-8")
+    run = load_run(tmp_path)
+    assert [d[0] for d in run.detections] == [0]
+    assert run.tech_reports == []
+    assert run.notes
+
+
+def test_technique_index_is_the_mean_of_the_reported_avg_scores(tmp_path):
+    # avg_scores report as 50.0, 50.0, 50.1; the unrounded mean (50.0733) would give 50.1
+    out = make_run(tmp_path, reports=[("smash", "lower", 50.04), ("serve", "lower", 50.04),
+                                      ("high_clear", "lower", 50.14)])
+    side = technique_insight(load_run(out))["value"]["by_side"]["lower"]
+    reported = [v["avg_score"] for v in side["techniques"].values()
+                if v["avg_score"] is not None]
+    assert reported == [50.0, 50.1, 50.0]
+    assert side["index"] == round(sum(reported) / len(reported), 1) == 50.0
+
+
+def test_rally_reports_how_many_rallies_lack_usable_times(tmp_path):
+    out = make_run(tmp_path, rallies=[(0.0, 4.0)])
+    payload = json.loads((out / "rally_segments.json").read_text(encoding="utf-8"))
+    payload["rallies"] += [{"id": 2}, {"id": 3, "start_sec": 9.0, "end_sec": 5.0}]
+    (out / "rally_segments.json").write_text(json.dumps(payload), encoding="utf-8")
+    v = rally_insight(load_run(out))["value"]
+    assert v["count"] == 3 and v["durations_sec"] == [4.0] and v["duration_missing"] == 2
+
+
+def test_rally_duration_missing_is_zero_when_all_usable(tmp_path):
+    out = make_run(tmp_path, rallies=[(0.0, 4.0), (10.0, 18.0)])
+    assert rally_insight(load_run(out))["value"]["duration_missing"] == 0
