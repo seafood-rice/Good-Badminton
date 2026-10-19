@@ -37,13 +37,13 @@ def _assert_envelope(env):
 
 
 def test_version_constant():
-    assert sidecar.INSIGHTS_VERSION == 1
+    assert sidecar.INSIGHTS_VERSION == 2
 
 
 def test_document_shape_and_file_written(tmp_path):
     out = _full_run(tmp_path)
     doc = sidecar.compute_video(out.name, out)
-    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION
+    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 2
     assert doc["stem"] == out.name
     assert doc["computed_at"].endswith("Z")
     assert doc["date"] == {"value": "2026-10-10", "source": "filename"}
@@ -98,9 +98,9 @@ def test_version_change_recomputes(tmp_path, monkeypatch):
     out = _full_run(tmp_path)
     calls = _count_calls(monkeypatch, "technique_insight")
     sidecar.compute_video(out.name, out)
-    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 2)
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 3)
     doc = sidecar.compute_video(out.name, out)
-    assert len(calls) == 2 and doc["version"] == 2
+    assert len(calls) == 2 and doc["version"] == 3
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "null", '{"version": 1}', ""])
@@ -197,3 +197,50 @@ def test_court_view_quality_is_copied(tmp_path):
     (out / "rally_segments.json").write_text(json.dumps(payload), encoding="utf-8")
     doc = sidecar.compute_video("cv", out)
     assert doc["quality"]["court_view_pass_frac"] == 0.97
+
+
+def test_version_1_cache_is_rebuilt_with_per_hitter_distribution(tmp_path):
+    out = _full_run(tmp_path)
+    old = sidecar.compute_video(out.name, out)
+    old["version"] = 1
+    for side in old["strokes"]["value"]["by_hitter"].values():
+        side.pop("distribution")
+    (out / "insights.json").write_text(json.dumps(old), encoding="utf-8")
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["version"] == 2
+    assert doc["strokes"]["value"]["by_hitter"]["upper"]["distribution"] == {"smash": 1}
+
+
+@pytest.mark.parametrize("junk", [5, ["x"], {"k": 1}, True])
+def test_non_string_sources_become_none(tmp_path, junk):
+    out = _full_run(tmp_path)
+    payload = json.loads((out / "hits.json").read_text(encoding="utf-8"))
+    payload["source"] = junk
+    payload["shuttle_source"] = junk
+    (out / "hits.json").write_text(json.dumps(payload), encoding="utf-8")
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["quality"]["hit_source"] == "learned"      # falls back to strokes.json's string
+    assert doc["quality"]["shuttle_source"] == "tracknet"
+    strokes = json.loads((out / "strokes.json").read_text(encoding="utf-8"))
+    strokes["hit_source"] = junk
+    strokes["shuttle_source"] = junk
+    (out / "strokes.json").write_text(json.dumps(strokes), encoding="utf-8")
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["quality"]["hit_source"] is None and doc["quality"]["shuttle_source"] is None
+    json.dumps(doc, allow_nan=False)
+
+
+def test_concurrent_writers_use_distinct_temp_names(tmp_path, monkeypatch):
+    out = _full_run(tmp_path)
+    names = []
+    real = sidecar.os.replace
+
+    def spy(src, dst):
+        names.append(os.path.basename(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(sidecar.os, "replace", spy)
+    sidecar._write_atomic(str(out / "insights.json"), {"a": 1})
+    sidecar._write_atomic(str(out / "insights.json"), {"a": 2})
+    assert len(set(names)) == 2 and all(n.startswith("insights.") and n.endswith(".tmp")
+                                        for n in names)

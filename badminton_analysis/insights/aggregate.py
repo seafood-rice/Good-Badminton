@@ -10,6 +10,7 @@ placed in a range: they are left out of every bounded range (``7d``, ``30d``,
 ``season``) and of the trend, but still count for ``range="all"``.
 """
 import datetime
+import math
 import statistics
 
 from . import envelope
@@ -32,9 +33,31 @@ def _dict(x):
     return x if isinstance(x, dict) else {}
 
 
+MAX_COUNT = 10 ** 9
+"""A count above this is hostile data, not a count: it is read as 0."""
+MAX_SECONDS = 10 ** 6
+MAX_DISTANCE_M = 10 ** 7
+MAX_SPEED_MPS = 100.0
+SCORE_RANGE = (0.0, 100.0)
+
+
 def _count(x):
     n = number(x)
-    return int(n) if n is not None and n >= 0 else 0
+    return int(n) if n is not None and 0 <= n <= MAX_COUNT else 0
+
+
+def _bounded(x, lo, hi):
+    """A finite number within ``[lo, hi]``, else None (so sums can never overflow)."""
+    n = number(x)
+    return n if n is not None and lo <= n <= hi else None
+
+
+def _share(x):
+    return _bounded(x, 0.0, 1.0)
+
+
+def _fin(x, default=0.0):
+    return x if isinstance(x, (int, float)) and math.isfinite(x) else default
 
 
 def _value(insights, key):
@@ -67,13 +90,19 @@ def _unavailable(units, code, params=None):
     return envelope.unavailable(code if units else "no_data", params)
 
 
-def _first_reason(units, key, default):
-    """The reason code of the first unit whose ``key`` insight is unavailable."""
+def _first_reason(units, key):
+    """The code of the first ``unavailable`` ``key`` insight among ``units``.
+
+    ``no_data`` when none is unavailable (the values exist but carry nothing for
+    the selected sides): never a code that claims a missing file.
+    """
     for u in units:
-        reason = _env_of(u["insights"], key).get("reason")
-        if isinstance(reason, dict) and isinstance(reason.get("code"), str):
+        env = _env_of(u["insights"], key)
+        reason = env.get("reason")
+        if env.get("status") == "unavailable" and isinstance(reason, dict) \
+                and isinstance(reason.get("code"), str):
             return reason["code"]
-    return default
+    return "no_data"
 
 
 def _graded(value, n, of=None):
@@ -181,12 +210,13 @@ def _radar_scores(units):
             if side is None:
                 continue
             cell = _dict(side["techniques"].get(tech))
-            c, score = _count(cell.get("count")), number(cell.get("avg_score"))
+            c = _count(cell.get("count"))
+            score = _bounded(cell.get("avg_score"), *SCORE_RANGE)
             count += c
             if score is not None and c > 0:
                 total += score * c
                 weight += c
-        out.append((tech, count, total / weight if weight else None))
+        out.append((tech, count, _fin(total / weight, None) if weight else None))
     return out
 
 
@@ -248,7 +278,7 @@ def _benchmark(athlete, parts, all_entries, range_, bounds, has_units):
             if _dict(parts["athletes"].get(aid)).get("squad_id") != squad_id:
                 continue
             unit = {"stem": e["stem"], "side": side, "insights": e["insights"]}
-            index = number(_dict(_unit_side(unit)).get("index"))
+            index = _bounded(_dict(_unit_side(unit)).get("index"), *SCORE_RANGE)
             if index is not None:
                 indexes.append(index)
     if not indexes:
@@ -291,14 +321,15 @@ def _avg_rally(units):
         env = _env_of(u["insights"], "rally")
         value = _value(u["insights"], "rally")
         raw = _dict(value).get("durations_sec")
-        durs = [d for d in map(number, raw) if d is not None] if isinstance(raw, list) else []
+        durs = ([d for d in (_bounded(x, 0.0, MAX_SECONDS) for x in raw) if d is not None]
+                if isinstance(raw, list) else [])
         if not durs:
             continue
         with_rally += 1
         durations.extend(durs)
         per = value.get("shots_per_rally")
         if isinstance(per, list):
-            shots.extend(s for s in map(number, per) if s is not None)
+            shots.extend(s for s in (_bounded(x, 0.0, MAX_COUNT) for x in per) if s is not None)
         code = _dict(env.get("reason")).get("code")
         rank = {"signal_degraded": 2, "signal_swing": 1}.get(code, 0)
         label = {2: "degraded", 1: "swing"}.get(rank, value.get("signal"))
@@ -326,57 +357,52 @@ def _recovery(units):
         seen = True
         found += _count(stats.get("found"))
         hits += _count(stats.get("hits"))
-        median = number(stats.get("median_sec"))
+        median = _bounded(stats.get("median_sec"), 0.0, MAX_SECONDS)
         if median is not None and _count(stats.get("found")) > 0:
             medians.append(median)
     if not seen:
-        return _unavailable(units, _first_reason(units, "recovery", "no_hits"))
+        return _unavailable(units, _first_reason(units, "recovery"))
     if not medians:
         return _unavailable(units, "no_hits")
     value = {"median_sec": round(statistics.median(medians), 3)}
     return _graded(value, found, hits) or envelope.unavailable("no_hits")
 
 
+def _unit_hitter(unit):
+    """The unit's ``by_hitter[side]`` dict from the strokes insight (``{}`` if absent)."""
+    by_hitter = _dict(_dict(_value(unit["insights"], "strokes")).get("by_hitter"))
+    return _dict(by_hitter.get(unit["side"]))
+
+
 def _strokes_and_net(units):
-    """``(strokes_kpi, net_share_kpi)``."""
-    classified = total = 0
+    """``(strokes_kpi, net_share_kpi)``, both over the selected units' own strokes."""
+    classified = total = net = 0
     for u in units:
-        by_hitter = _dict(_dict(_value(u["insights"], "strokes")).get("by_hitter"))
-        side = _dict(by_hitter.get(u["side"]))
+        side = _unit_hitter(u)
         classified += _count(side.get("classified"))
         total += _count(side.get("total"))
-    if total:
-        low = classified * 10 < total * 6
-        value = {"classified": classified, "total": total}
-        coverage = {"n": classified, "of": total}
-        strokes = (envelope.partial(value, "low_stroke_coverage", dict(value), coverage)
-                   if low else envelope.ok(value, coverage))
-    else:
-        strokes = _unavailable(units, _first_reason(units, "strokes", "no_strokes_file"))
-
-    net = sure = every = 0
-    for u in _stem_entries(units):
-        v = _value(u["insights"], "strokes")
-        if v is None:
-            continue
-        net += _count(_dict(v.get("distribution")).get("net"))
-        sure += _count(v.get("classified"))
-        every += _count(v.get("total"))
-    if not sure:
-        return strokes, _unavailable(units, _first_reason(units, "strokes", "no_strokes_file"))
-    value = {"share": round(net / sure, 4)}
-    coverage = {"n": sure, "of": every}
-    if sure * 10 < every * 6:
-        return strokes, envelope.partial(value, "low_stroke_coverage",
-                                         {"classified": sure, "total": every}, coverage)
-    return strokes, envelope.ok(value, coverage)
+        net += _count(_dict(side.get("distribution")).get("net"))
+    if not total:
+        code = _first_reason(units, "strokes")
+        return _unavailable(units, code), _unavailable(units, code)
+    value = {"classified": classified, "total": total}
+    coverage = {"n": classified, "of": total}
+    low = classified * 10 < total * 6
+    strokes = (envelope.partial(value, "low_stroke_coverage", dict(value), coverage)
+               if low else envelope.ok(value, coverage))
+    if not classified:
+        return strokes, _unavailable(units, "no_data")
+    share = {"share": round(net / classified, 4)}
+    if low:
+        return strokes, envelope.partial(share, "low_stroke_coverage", dict(value), coverage)
+    return strokes, envelope.ok(share, coverage)
 
 
 def _unit_pulls(units):
     out = []
     for u in units:
         pull = _dict(_dict(_value(u["insights"], "pull")).get(u["side"]))
-        if _count(pull.get("n")) > 0 and number(pull.get("back")) is not None:
+        if _count(pull.get("n")) > 0 and _share(pull.get("back")) is not None:
             out.append(pull)
     return out
 
@@ -384,8 +410,8 @@ def _unit_pulls(units):
 def _pull_rear(units):
     pulls = _unit_pulls(units)
     if not pulls:
-        return _unavailable(units, _first_reason(units, "pull", "no_hits"))
-    value = {"share": round(statistics.fmean(number(p["back"]) for p in pulls), 4)}
+        return _unavailable(units, _first_reason(units, "pull"))
+    value = {"share": round(statistics.fmean(_share(p["back"]) for p in pulls), 4)}
     return _graded(value, sum(_count(p["n"]) for p in pulls)) \
         or envelope.unavailable("no_hits")
 
@@ -395,13 +421,13 @@ def _pull_rear(units):
 def _grid_ok(grid):
     return (isinstance(grid, list) and len(grid) == GRID_ROWS
             and all(isinstance(r, list) and len(r) == GRID_COLS
-                    and all(number(c) is not None for c in r) for r in grid))
+                    and all(_share(c) is not None for c in r) for r in grid))
 
 
 def _merge_grids(parts):
     """Weighted mean of ``[(weight, grid)]``, 4 decimals."""
     total = sum(w for w, _g in parts)
-    return [[round(sum(w * number(g[r][c]) for w, g in parts) / total, 4)
+    return [[round(_fin(sum(w * g[r][c] for w, g in parts) / total), 4)
              for c in range(GRID_COLS)] for r in range(GRID_ROWS)]
 
 
@@ -416,20 +442,20 @@ def _position(units):
             continue
         parts.append((samples, grid_side["grid"]))
         sides.add(u["side"])
-        dist, speed = number(grid_side.get("distance_m")) or 0.0, \
-            number(grid_side.get("mean_speed_mps")) or 0.0
+        dist = _bounded(grid_side.get("distance_m"), 0.0, MAX_DISTANCE_M) or 0.0
+        speed = _bounded(grid_side.get("mean_speed_mps"), 0.0, MAX_SPEED_MPS) or 0.0
         distance += dist
-        span += dist / speed if speed > 0 else 0.0
+        span += _fin(dist / speed) if speed > 0 else 0.0
         statuses.append(env.get("status"))
         if env.get("status") != "ok" and first_limit is None:
             first_limit = env.get("reason")
     if not parts:
-        return _unavailable(units, _first_reason(units, "movement", "no_positions"))
+        return _unavailable(units, _first_reason(units, "movement"))
     # rows count from the net on both halves, so the two bases coincide in grid terms
     base = {"x": 3.05, "y": 10.05} if sides == {"lower"} else {"x": 3.05, "y": 3.35}
     value = {"grid": _merge_grids(parts), "samples": sum(w for w, _g in parts),
-             "distance_m": round(distance, 2),
-             "mean_speed_mps": round(distance / span, 2) if span > 0 else 0.0,
+             "distance_m": round(_fin(distance), 2),
+             "mean_speed_mps": round(_fin(distance / span), 2) if span > 0 else 0.0,
              "base": base}
     coverage = {"n": len(parts), "of": len(units)}
     if first_limit is not None and isinstance(first_limit.get("code"), str):
@@ -442,12 +468,12 @@ def _pull_position(units):
     pulls = _unit_pulls(units)
     pulls = [p for p in pulls if _grid_ok(p.get("grid"))]
     if not pulls:
-        return _unavailable(units, _first_reason(units, "pull", "no_hits"))
+        return _unavailable(units, _first_reason(units, "pull"))
     weights = [(_count(p["n"]), p) for p in pulls]
     total = sum(w for w, _p in weights)
 
     def mean(key):
-        return round(sum(w * (number(p.get(key)) or 0.0) for w, p in weights) / total, 4)
+        return round(_fin(sum(w * (_share(p.get(key)) or 0.0) for w, p in weights) / total), 4)
 
     value = {"grid": _merge_grids([(w, p["grid"]) for w, p in weights]),
              "front": mean("front"), "mid": mean("mid"), "back": mean("back"),
@@ -465,29 +491,37 @@ def _stem_needs_review(insights):
     return bool(total) and classified < total * NEEDS_REVIEW_BELOW
 
 
-def _sets_text(result):
-    sets = _dict(result).get("sets")
-    if not isinstance(sets, list):
+def _sets_pairs(result, side):
+    """``[[own, opp], ...]`` for ``side``: the store holds ``[upper, lower]`` pairs.
+
+    ``None`` without a result; a result without sets gives ``[]``. A row with no
+    known side keeps the stored (upper-first) order.
+    """
+    if not isinstance(result, dict):
         return None
-    pairs = [f"{p[0]}-{p[1]}" for p in sets if isinstance(p, (list, tuple)) and len(p) == 2]
-    return " ".join(pairs) or None
+    sets = result.get("sets")
+    out = []
+    for p in sets if isinstance(sets, list) else []:
+        if isinstance(p, (list, tuple)) and len(p) == 2:
+            out.append([p[1], p[0]] if side == "lower" else [p[0], p[1]])
+    return out
 
 
-def _rows(units, athlete):
+def _rows(units):
     rows = []
     for u in units:
         other = "lower" if u["side"] == "upper" else "upper"
         result = _dict(u["record"]).get("result")
         winner = _dict(result).get("winner")
         outcome = None
-        if athlete is not None and winner in SIDES:
+        if u["side"] in SIDES and winner in SIDES:       # relative to this unit's own side
             outcome = "W" if winner == u["side"] else "L"
-        index = number(_dict(_unit_side(u)).get("index"))
+        index = _bounded(_dict(_unit_side(u)).get("index"), *SCORE_RANGE)
         rows.append({
             "stem": u["stem"], "date": u["date"], "date_source": u["date_source"],
             "side": u["side"], "athlete": u["ident"][u["side"]]["name"],
             "opponent": u["ident"][other]["name"], "result": outcome,
-            "sets": _sets_text(result) if result else None,
+            "sets": _sets_pairs(result, u["side"]),
             "tech_index": index, "status": u["status"],
             "needs_review": _stem_needs_review(u["insights"]),
         })
@@ -572,7 +606,7 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
                   "benchmark": _benchmark(athlete, parts, entries, range_, bounds,
                                           bool(units))},
         "movement": {"position": _position(units), "pull": _pull_position(units)},
-        "matches": _rows(units, athlete),
+        "matches": _rows(units),
     }
     result["findings"] = build_findings(result)
     return result

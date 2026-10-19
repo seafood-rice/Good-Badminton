@@ -226,7 +226,8 @@ def test_match_win_rate_two_of_three():
     assert kpi["coverage"] == {"n": 3, "of": 3}
     rows = {m["stem"]: m for m in ov["matches"]}
     assert (rows["A"]["result"], rows["B"]["result"], rows["C"]["result"]) == ("W", "W", "L")
-    assert rows["C"]["sets"] == "18-21 21-19 17-21"
+    assert rows["C"]["sets"] == [[18, 21], [21, 19], [17, 21]]     # athlete is upper: as stored
+    assert rows["B"]["sets"] == [[21, 10], [21, 11]]                   # athlete is lower: flipped
     assert rows["A"]["opponent"] == "R" and rows["A"]["athlete"] == "J. Tanaka"
     assert rows["B"]["side"] == "lower"
 
@@ -241,12 +242,29 @@ def test_match_win_rate_no_results_entered():
     assert row["result"] is None and row["sets"] is None
 
 
-def test_result_null_without_athlete_scope():
+def test_result_is_relative_to_each_rows_own_side_in_every_scope():
     data, ids = _store()
     data = _match(data, "A", upper=ids["tanaka"], lower="R", winner="upper", sets=[[21, 5]])
+    for kwargs in ({}, {"squad": ids["squad"]}, {"athlete": ids["tanaka"]}):
+        ov = aggregate.overview([_unit("A")], data, range_="all", **kwargs)
+        by_side = {m["side"]: m["result"] for m in ov["matches"]}
+        assert by_side["upper"] == "W", kwargs
+        if "lower" in by_side:                  # only without a scope that drops the opponent
+            assert by_side["lower"] == "L", kwargs
+    # no scope: both sides are rows, each judged against its own side
     ov = aggregate.overview([_unit("A")], data, range_="all")
-    assert all(m["result"] is None for m in ov["matches"])
+    assert {m["side"]: m["result"] for m in ov["matches"]} == {"upper": "W", "lower": "L"}
+    assert {m["side"]: m["sets"] for m in ov["matches"]} == {"upper": [[21, 5]],
+                                                             "lower": [[5, 21]]}
     assert ov["kpis"]["match_win_rate"]["status"] == "unavailable"
+
+
+def test_result_without_a_recorded_winner_is_null():
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"], lower="R")
+    ov = aggregate.overview([_unit("A")], data, range_="all")
+    assert [m["result"] for m in ov["matches"]] == [None, None]
+    assert [m["sets"] for m in ov["matches"]] == [None, None]
 
 
 def test_opponent_is_the_other_sides_name():
@@ -341,7 +359,108 @@ def test_strokes_and_net_share_kpis():
                                  "distribution": {"net": 1, "smash": 9}})]
     ov = aggregate.overview(units, data, range_="all")
     assert ov["kpis"]["strokes"]["value"] == {"classified": 20, "total": 22}
-    assert ov["kpis"]["net_share"]["value"] == {"share": 0.25}      # 5 / 20, stems counted once
+    # no scope: every unit's own strokes, which add up to the stem-wide 5 net / 20 classified
+    assert ov["kpis"]["net_share"]["value"] == {"share": 0.25}
+    assert ov["kpis"]["net_share"]["coverage"] == ov["kpis"]["strokes"]["coverage"] \
+        == {"n": 20, "of": 22}
+
+
+def _hitter(classified, total, **distribution):
+    return {"classified": classified, "total": total, "distribution": dict(distribution)}
+
+
+def test_net_share_follows_the_selected_athletes_own_strokes():
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"], lower="R")
+    data = _match(data, "B", upper="R", lower=ids["tanaka"])
+    # the opponent hits every net stroke; Tanaka (upper in A, lower in B) hits none
+    strokes_a = {"classified": 12, "total": 14, "distribution": {"clear": 6, "net": 6},
+                 "by_hitter": {"upper": _hitter(6, 7, clear=6), "lower": _hitter(6, 7, net=6)}}
+    strokes_b = {"classified": 12, "total": 14, "distribution": {"clear": 6, "net": 6},
+                 "by_hitter": {"upper": _hitter(6, 7, net=6), "lower": _hitter(6, 7, clear=6)}}
+    units = [_unit("A", strokes=strokes_a), _unit("B", strokes=strokes_b)]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert ov["kpis"]["net_share"]["value"] == {"share": 0.0}
+    assert ov["kpis"]["net_share"]["coverage"] == ov["kpis"]["strokes"]["coverage"] \
+        == {"n": 12, "of": 14}
+    assert ov["kpis"]["strokes"]["value"] == {"classified": 12, "total": 14}
+    # the opponent's view of the same videos
+    ov = aggregate.overview(units, data, range_="all")
+    assert ov["kpis"]["net_share"]["value"] == {"share": 0.5}
+
+
+def test_net_share_under_squad_scope_excludes_an_outside_opponent():
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"], lower="R")
+    strokes = {"classified": 10, "total": 10, "distribution": {"clear": 5, "net": 5},
+               "by_hitter": {"upper": _hitter(5, 5, clear=5), "lower": _hitter(5, 5, net=5)}}
+    ov = aggregate.overview([_unit("A", strokes=strokes)], data, squad=ids["squad"],
+                            range_="all")
+    assert ov["kpis"]["net_share"]["value"] == {"share": 0.0}
+    assert ov["kpis"]["strokes"]["value"] == {"classified": 5, "total": 5}
+
+
+def test_strokes_values_without_side_data_use_no_data_not_no_strokes_file():
+    data, _ = _store()
+    doc = unit_doc("A", strokes={"classified": 10, "total": 10})
+    doc["strokes"]["value"]["by_hitter"] = {}
+    ov = aggregate.overview([{"stem": "A", "insights": doc}], data, range_="all")
+    for key in ("strokes", "net_share"):
+        assert ov["kpis"][key]["status"] == "unavailable"
+        assert ov["kpis"][key]["reason"]["code"] == "no_data", key
+    # a genuinely unavailable insight still reports its own reason
+    ov = aggregate.overview([_unit("A")], data, range_="all")
+    assert ov["kpis"]["strokes"]["reason"]["code"] == "no_strokes_file"
+    assert ov["kpis"]["net_share"]["reason"]["code"] == "no_strokes_file"
+
+
+def test_first_reason_ignores_reasons_of_usable_insights():
+    data, _ = _store()
+    partial = unit_doc("A", pull={"upper": (0.5, 4)})
+    partial["pull"]["status"] = "partial"          # carries a reason, but is not unavailable
+    partial["pull"]["reason"] = {"code": "few_hits", "params": {}}
+    partial["pull"]["value"]["upper"] = None
+    ov = aggregate.overview([{"stem": "A", "insights": partial}], data, range_="all")
+    assert ov["kpis"]["pull_rear"]["reason"]["code"] == "no_data"
+    assert ov["movement"]["pull"]["reason"]["code"] == "no_data"
+
+
+def test_hostile_values_never_break_strict_json():
+    import json
+    data, _ = _store()
+    huge = 1e300
+    doc = unit_doc("A", upper={t: (1, 50.0) for t in TECHS},
+                   strokes={"classified": 10, "total": 10, "distribution": {"net": 5}},
+                   rally={"durations": [4.0], "shots": [3]},
+                   recovery={"upper": (1.0, 12, 12)}, pull={"upper": (0.5, 12)},
+                   movement={"upper": (2, 3, 300, 100.0, 2.0)})
+    for cell in doc["technique"]["value"]["by_side"]["upper"]["techniques"].values():
+        cell["count"], cell["avg_score"] = huge, 1e308
+    doc["technique"]["value"]["by_side"]["upper"]["index"] = 1e308
+    doc["strokes"]["value"]["by_hitter"]["upper"].update(classified=huge, total=huge)
+    doc["rally"]["value"]["durations_sec"] = [1e308, 1e308]
+    doc["rally"]["value"]["shots_per_rally"] = [1e308, 1e308]
+    doc["recovery"]["value"]["upper"].update(median_sec=1e308, found=huge, hits=huge)
+    doc["pull"]["value"]["upper"].update(back=1e308, n=huge)
+    move = doc["movement"]["value"]["upper"]
+    move.update(samples=huge, distance_m=1e308, mean_speed_mps=1e-300)
+    move["grid"] = [[1e308] * 10 for _ in range(11)]
+    other = unit_doc("B", upper={"smash": (1, 50.0)}, rally={"durations": [4.0], "shots": [3]},
+                     movement={"upper": (2, 3, 300, 100.0, 2.0)}, pull={"upper": (0.5, 12)})
+    other["pull"]["value"]["upper"]["grid"] = [[1e308] * 10 for _ in range(11)]
+    ov = aggregate.overview([{"stem": "A", "insights": doc}, {"stem": "B", "insights": other}],
+                            data, range_="all")
+    json.dumps(ov, allow_nan=False)
+    assert _axes(ov)["smash"]["score"] == 50.0       # out-of-range avg_score is ignored
+
+
+def test_scores_outside_zero_to_hundred_are_ignored():
+    data, _ = _store()
+    units = [_unit("A", upper={"smash": (1, 150.0), "clear": (1, -5.0), "drop": (1, 80.0)})]
+    ov = aggregate.overview(units, data, range_="all")
+    axes = _axes(ov)
+    assert axes["smash"]["score"] is None and axes["clear"]["score"] is None
+    assert axes["drop"]["score"] == 80.0
 
 
 def test_strokes_low_coverage_is_partial():

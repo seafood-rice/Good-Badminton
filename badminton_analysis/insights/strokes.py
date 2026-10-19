@@ -20,7 +20,7 @@ def strokes_insight(run):
 
     total = len(strokes)
     distribution = {}
-    by_hitter = {s: {"classified": 0, "total": 0} for s in SIDES}
+    by_hitter = {s: {"classified": 0, "total": 0, "distribution": {}} for s in SIDES}
     classified = 0
     for s in strokes:
         sure = not _is_uncertain(s)
@@ -28,6 +28,9 @@ def strokes_insight(run):
         if isinstance(hitter, str) and hitter in by_hitter:     # JSON values may be unhashable
             by_hitter[hitter]["total"] += 1
             by_hitter[hitter]["classified"] += sure
+            if sure:
+                per = by_hitter[hitter]["distribution"]
+                per[s["stroke"]] = per.get(s["stroke"], 0) + 1
         if sure:
             classified += 1
             name = s.get("stroke")

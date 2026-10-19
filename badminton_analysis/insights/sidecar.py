@@ -9,6 +9,7 @@ import datetime
 import json
 import os
 import sys
+import tempfile
 
 from . import envelope
 from .dates import video_date
@@ -18,7 +19,7 @@ from .rally import rally_insight
 from .strokes import strokes_insight
 from .technique import technique_insight
 
-INSIGHTS_VERSION = 1
+INSIGHTS_VERSION = 2
 SCHEMA_VERSION = 1
 SIDECAR_NAME = "insights.json"
 INPUT_FILES = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json",
@@ -64,17 +65,23 @@ def _read_cached(path, stem, inputs):
 
 
 def _write_atomic(path, doc):
-    """Temp file in the same directory + ``os.replace``; every ``OSError`` is ignored."""
-    tmp = f"{path}.tmp-{os.getpid()}"
+    """Unique temp file in the same directory + ``os.replace``; ``OSError`` is ignored.
+
+    ``mkstemp`` gives every writer (Flask threads, processes) its own temp name.
+    """
+    tmp = None
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(doc, f, ensure_ascii=False)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix="insights.",
+                                   suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, allow_nan=False)
         os.replace(tmp, path)
     except (OSError, ValueError, TypeError):
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _guarded(name, fn, *args):
@@ -89,6 +96,14 @@ def _guarded(name, fn, *args):
         return envelope.unavailable("no_data")
 
 
+def _text(*candidates):
+    """The first candidate that is a string, else None."""
+    for c in candidates:
+        if isinstance(c, str):
+            return c
+    return None
+
+
 def _quality(run):
     hits_meta = run.hits_meta if isinstance(run.hits_meta, dict) else {}
     strokes_meta = run.strokes_meta if isinstance(run.strokes_meta, dict) else {}
@@ -98,8 +113,9 @@ def _quality(run):
     pass_frac = court_view.get("pass_frac") if isinstance(court_view, dict) else None
     return {
         "shuttle_coverage_in_play": number(hits_meta.get("shuttle_coverage_in_play")),
-        "hit_source": hits_meta.get("source", strokes_meta.get("hit_source")),
-        "shuttle_source": hits_meta.get("shuttle_source", strokes_meta.get("shuttle_source")),
+        "hit_source": _text(hits_meta.get("source"), strokes_meta.get("hit_source")),
+        "shuttle_source": _text(hits_meta.get("shuttle_source"),
+                                strokes_meta.get("shuttle_source")),
         "court_view_pass_frac": number(pass_frac),
     }
 

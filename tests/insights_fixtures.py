@@ -152,13 +152,32 @@ def grid_at(row, col):
     return grid
 
 
+def _split_by_hitter(classified, total, distribution):
+    """Deal the stem's classified strokes: the first half to ``upper``, the rest to ``lower``."""
+    names = [name for name, n in distribution.items() for _ in range(n)]
+    cut = classified // 2
+
+    def count(chunk):
+        out = {}
+        for name in chunk:
+            out[name] = out.get(name, 0) + 1
+        return out
+
+    return {"upper": {"classified": cut, "total": total // 2,
+                      "distribution": count(names[:cut])},
+            "lower": {"classified": classified - cut, "total": total - total // 2,
+                      "distribution": count(names[cut:])}}
+
+
 def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=None,
              lower=None, strokes=None, rally=None, recovery=None, pull=None,
              movement=None):
     """A sidecar dict as ``compute_video`` would return it, built by hand.
 
     * ``upper`` / ``lower``: ``{tech: (count, avg_score)}`` or ``None`` (no reports).
-    * ``strokes``: ``{"classified", "total", "distribution"?, "by_hitter"?}``.
+    * ``strokes``: ``{"classified", "total", "distribution"?, "by_hitter"?}``;
+      ``by_hitter`` is ``{side: {"classified", "total", "distribution"}}``, dealt
+      from ``distribution`` (first half of the strokes to upper) when omitted.
     * ``rally``: ``{"durations": [...], "shots": [...]|None, "signal": "shuttle"}``.
     * ``recovery``: ``{side: (median_sec|None, found, hits)}``.
     * ``pull``: ``{side: (back_share, n)}``.
@@ -180,10 +199,8 @@ def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=No
         stroke_env = _env("unavailable", None, reason="no_strokes_file")
     else:
         classified, total = strokes["classified"], strokes["total"]
-        by_hitter = strokes.get("by_hitter") or {
-            "upper": {"classified": classified // 2, "total": total // 2},
-            "lower": {"classified": classified - classified // 2,
-                      "total": total - total // 2}}
+        by_hitter = strokes.get("by_hitter") or _split_by_hitter(
+            classified, total, strokes.get("distribution", {}))
         value = {"total": total, "classified": classified, "uncertain": total - classified,
                  "distribution": strokes.get("distribution", {}), "by_hitter": by_hitter}
         low = classified * 10 < total * 6
@@ -242,7 +259,7 @@ def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=No
 
     doc_date = {"value": date, "source": date_source} if date else {"value": None,
                                                                     "source": "mtime"}
-    return {"schema_version": 1, "version": 1, "stem": stem,
+    return {"schema_version": 1, "version": 2, "stem": stem,
             "computed_at": "2026-10-19T00:00:00Z", "inputs": {}, "date": doc_date,
             "fps": 30.0, "duration_sec": 60.0, "rally": rally_env, "strokes": stroke_env,
             "technique": technique, "movement": move_env, "recovery": rec_env,

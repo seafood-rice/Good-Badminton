@@ -267,8 +267,9 @@ def test_strokes_low_coverage_is_partial(tmp_path):
     v = ins["value"]
     assert (v["total"], v["classified"], v["uncertain"]) == (10, 3, 7)
     assert v["distribution"] == {"net": 1, "clear": 2}
-    assert v["by_hitter"] == {"upper": {"classified": 1, "total": 1},
-                              "lower": {"classified": 2, "total": 9}}
+    assert v["by_hitter"] == {
+        "upper": {"classified": 1, "total": 1, "distribution": {"net": 1}},
+        "lower": {"classified": 2, "total": 9, "distribution": {"clear": 2}}}
 
 
 def test_strokes_good_coverage_is_ok(tmp_path):
@@ -399,8 +400,9 @@ def test_strokes_survive_non_string_hitter_and_stroke(tmp_path, bad):
     assert v["total"] == 3
     assert v["distribution"] == {"net": 2}            # a non-string stroke is not classified
     assert v["classified"] == 2 and v["uncertain"] == 1
-    assert v["by_hitter"] == {"upper": {"classified": 0, "total": 1},
-                              "lower": {"classified": 1, "total": 1}}
+    assert v["by_hitter"] == {
+        "upper": {"classified": 0, "total": 1, "distribution": {}},
+        "lower": {"classified": 1, "total": 1, "distribution": {"net": 1}}}
 
 
 @pytest.mark.parametrize("bad", [["x"], {"k": 1}])
@@ -460,3 +462,18 @@ def test_rally_reports_how_many_rallies_lack_usable_times(tmp_path):
 def test_rally_duration_missing_is_zero_when_all_usable(tmp_path):
     out = make_run(tmp_path, rallies=[(0.0, 4.0), (10.0, 18.0)])
     assert rally_insight(load_run(out))["value"]["duration_missing"] == 0
+
+
+def test_strokes_per_hitter_distribution_counts_classified_strokes_of_that_hitter(tmp_path):
+    out = make_run(tmp_path, strokes=[
+        ("upper", "net"), ("upper", "net"), ("upper", "smash"), ("upper", "uncertain"),
+        ("lower", "clear"), ("lower", "net"),
+        {"frame": 1, "hitter": "nobody", "stroke": "net", "uncertain": False}])
+    v = strokes_insight(load_run(out))["value"]
+    assert v["distribution"] == {"net": 4, "smash": 1, "clear": 1}     # stem-wide, unchanged
+    assert v["by_hitter"]["upper"]["distribution"] == {"net": 2, "smash": 1}
+    assert v["by_hitter"]["lower"]["distribution"] == {"clear": 1, "net": 1}
+    # a stroke without a valid hitter belongs to neither side
+    for side in ("upper", "lower"):
+        h = v["by_hitter"][side]
+        assert sum(h["distribution"].values()) == h["classified"]
