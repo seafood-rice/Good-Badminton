@@ -388,4 +388,52 @@ last good data on screen and shows a retry in the header.
 
 ## 10. As built
 
-*(filled in after implementation)*
+Implemented on `claude/kestral-sports-ui-design-015bc4` in eleven reviewed tasks plus one final fix wave
+(ledger: the git-ignored `.superpowers/sdd/2026-10-19-kestrel-telemetry-ui/progress.md`; workstream status:
+`.ai/workstreams/kestrel-telemetry-ui.md`). Everything in sections 2-9 shipped. Deviations from the text above,
+all owner-compatible rulings:
+
+- **Court grid orientation.** Row 0 is at the net on BOTH halves and the column is `floor(x / 0.61)` (the plan's
+  `cell()` examples contradicted this section and were wrong). Drop/clamp is measured from the side's own half
+  rectangle (a lower-side point more than 1.5 m outside the lower half is dropped, not clamped).
+- **Dates.** Order: match record, then a `YYYYMMDD` in the stem, then the source video's mtime, then the mtime of a
+  stable run input (`metadata.json`, else the oldest sidecar input), else no date. The run directory's mtime is never
+  used (the sidecar write bumps it). Rows carry `date_source`; the UI marks `mtime` dates "approx.".
+- **Shots per rally** come only from `hits.json` written by the learned detector (`hits_meta.source == "learned"`);
+  the BST/contact fallback is too sparse to count shots (a real library showed "1.4 shots per rally"). The overview
+  tile shows seconds when shots are unknown. The workspace labels the `strokes.json` count "Strokes detected".
+- **Match rows** (`/api/insights/overview`): one row per unit (stem, side), newest first; `sets` is an array of
+  `[own, opp]` integer pairs oriented to the row's `side` (upper-first when the row has no side); `result` is W/L
+  against the row's own side whenever a winner is recorded (`match_win_rate` stays unavailable without an athlete or
+  squad scope). With no athlete scope the overview widget shows one row per stem.
+- **Net share** is computed per hitter (`by_hitter[side].distribution`), so an athlete scope never counts the
+  opponent's strokes. `INSIGHTS_VERSION` is 4.
+- **Video file.** After a finished run the playable file is `detect_<stem>.mp4` (the H.264 transcode replaces it);
+  the workspace tries it first and shows a message when it cannot play.
+- **GET /api/matches/<unknown stem>** is 404 (the front end treats it as "no record").
+- **Delete.** `/api/delete/<stem>` with scope `all` also removes that stem's match record; DELETE of an unknown
+  athlete/squad id and no-change PUTs never write the store.
+- **Jobs.** `/api/jobs` rows never expose the process handle or log path; error messages are reduced to
+  `分析失败 (exit=N)` and other messages are first-line, path-scrubbed (UNC paths and Windows paths containing spaces
+  are not scrubbed in non-error messages: parked, those messages are static text today).
+- **Theme storage** stays legacy-compatible: `kestrel_theme` holds `dark` or `light` (CSS maps them to night/day).
+- Overview has no range pills (the top bar owns the range) and no sparklines (the response has no per-tile series);
+  the canvas's "Export report" button is replaced by "New analysis"; match rows open the peek, and the peek's
+  "Open match workspace" runs the container transform.
+- The shell-only strings live in `core/i18n.js`; widget classes are `.k-chip` / `.k-label` (the legacy `.chip` is untouched).
+
+Measured (owner's 13 real runs, 26 units): `/api/insights/overview` cold 5.0-7.5 s (computes and caches 13 sidecars),
+warm 0.09 s; technique index 54.7 with 4 of 7 techniques scored; 86 of 304 strokes classified; recovery to base median
+about 0.0-0.4 s; all KPI statuses honest (rally win rate, unforced errors and, without a scope, match win rate unavailable).
+Tests: `1798 passed, 5 skipped` pytest (baseline 1246 passed, 3 skipped) and `197` Node tests at the final commit.
+
+Known limitations and follow-ups (not done):
+
+- Recovery to base counts a hit taken within 1 m of the base point as 0 s, so the median mostly measures standing near
+  base; a stricter definition (time to return after leaving a 2 m radius) is a worthwhile follow-up.
+- No automatic point outcome, net/lift/drive scoring or pro-calibrated ranges (owner scope decision); Compare and
+  Reports destinations; shot-landing on the ground.
+- `/api/technique/<stem>` returns 404 without `technique_summary.json`, so a run with only `strokes.jsonl` shows no
+  workspace scores although the overview scores it (real runs have both).
+- `app._safe_stem` accepts `stem.` on Windows (pre-existing).
+- Deferred minors from review (none blocking): see the ledger.
