@@ -126,7 +126,10 @@ def test_doubles_stage_never_raises(tmp_path):
 
 
 def test_withhold_removes_singles_stroke_outputs(tmp_path):
-    for n in ("strokes.json", "strokes.jsonl", "technique_summary.json", "hits.json"):
+    # training_plan.json is generated from technique_summary.json and served from
+    # cache: a previous singles run's plan would show beside "technique withheld".
+    for n in ("strokes.json", "strokes.jsonl", "technique_summary.json",
+              "training_plan.json", "hits.json"):
         (tmp_path / n).write_text("x")
     s = bare(tmp_path, "doubles")
     s._withhold_singles_outputs_for_doubles()
@@ -310,3 +313,4 @@ def test_doubles_stage_reports_progress_substages(tmp_path, monkeypatch):
     singles._write_progress = lambda *a, **k: seen.append("singles")
     singles._run_doubles_stage(30.0, 5)
     assert "singles" not in seen
+

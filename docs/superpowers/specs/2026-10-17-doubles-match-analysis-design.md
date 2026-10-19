@@ -252,7 +252,8 @@ only, per hit: `hitter_id` (e.g. `"P3"` or null), `hitter_team` (1, 2 or null),
 
 - `_run_stroke_recognition` and `_run_technique_analysis` are skipped on doubles runs. The
   console and `players.json` record `"stroke_labels_withheld": "doubles: BST is a singles
-  model"`; any previous run's `strokes.json` / `strokes.jsonl` / `technique_summary.json`
+  model"`; any previous run's `strokes.json` / `strokes.jsonl` / `technique_summary.json` /
+  `training_plan.json` (the cached plan derived from the summary; added 2026-10-19)
   are removed (same stale-output rule as today).
 - Hit detection: the learned model (if configured) and the contact rule still run, side
   level only; their output feeds 6.5.

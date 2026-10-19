@@ -1447,7 +1447,10 @@ class BadmintonAnalysisSystem:
     def _withhold_singles_outputs_for_doubles(self):
         from .tracking.doubles import STROKES_WITHHELD
         print(f"Stroke labels and technique scoring withheld: {STROKES_WITHHELD}")
-        for name in ("strokes.json", "strokes.jsonl", "technique_summary.json"):
+        # training_plan.json is generated from technique_summary.json and cached:
+        # a singles run's plan would otherwise be served beside "technique withheld".
+        for name in ("strokes.json", "strokes.jsonl", "technique_summary.json",
+                     "training_plan.json"):
             try:
                 os.remove(os.path.join(self.save_dir, name))
             except FileNotFoundError:
