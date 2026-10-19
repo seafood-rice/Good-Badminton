@@ -38,17 +38,48 @@ test('every spec 6.3 token is defined in night and day', () => {
   }
 });
 
-test('spec 6.3 values are verbatim', () => {
+// Full spec 6.3 table: token -> [night, day]
+const SPEC = {
+  bg: ['#05070A', '#EDF0F3'], surface: ['#0B1017', '#FFFFFF'], surface2: ['#111923', '#F5F7F9'],
+  line: ['#1B2733', '#DCE2E8'], lineHi: ['#2D4054', '#B9C4CF'],
+  ink: ['#E6EDF5', '#0E141B'], ink2: ['#9BA9B8', '#44505E'], ink3: ['#7A8898', '#5E6B7A'],
+  accent: ['#FF5A36', '#FF5A36'], accentInk: ['#FF8A6B', '#C23A1A'],
+  cyan: ['#7FC8D6', '#1B7F92'], cyanInk: ['#7FC8D6', '#077486'],
+  blue: ['#9DB0E6', '#3C58D6'], good: ['#5FCF9A', '#17794A'], mid: ['#E8B454', '#8A5A00'], bad: ['#F27B86', '#C4262B'],
+};
+
+test('spec 6.3 values are verbatim (all 16 tokens, night and day)', () => {
+  assert.equal(Object.keys(SPEC).length, 16);
   const n = night();
   const d = day();
-  assert.equal(decl(n, 'bg').toUpperCase(), '#05070A');
-  assert.equal(decl(n, 'surface').toUpperCase(), '#0B1017');
-  assert.equal(decl(n, 'ink3').toUpperCase(), '#7A8898');
-  assert.equal(decl(n, 'accent').toUpperCase(), '#FF5A36');
-  assert.equal(decl(d, 'bg').toUpperCase(), '#EDF0F3');
-  assert.equal(decl(d, 'surface').toUpperCase(), '#FFFFFF');
-  assert.equal(decl(d, 'cyan').toUpperCase(), '#1B7F92');
-  assert.equal(decl(d, 'bad').toUpperCase(), '#C4262B');
+  for (const [t, [nv, dv]] of Object.entries(SPEC)) {
+    assert.equal(decl(n, t).toUpperCase(), nv, `night --${t}`);
+    assert.equal(decl(d, t).toUpperCase(), dv, `day --${t}`);
+  }
+});
+
+test('theme selectors are scoped to the root element and map legacy dark/light', () => {
+  assert.match(css, /:root\[data-theme="night"\]/);
+  assert.match(css, /:root\[data-theme="dark"\]/);
+  assert.match(css, /:root\[data-theme="day"\]/);
+  assert.match(css, /:root\[data-theme="light"\]/);
+  // no bare [data-theme...] selector that would hit theme buttons
+  assert.doesNotMatch(css, /(^|[\s,}])\[data-theme[^\]]*\]\s*[,{]/m);
+});
+
+test('legacy alias block comes after both theme blocks', () => {
+  const iNight = css.indexOf(':root[data-theme="night"]');
+  const iDay = css.indexOf(':root[data-theme="day"]');
+  const iAlias = css.indexOf(':root[data-theme]{');
+  assert.ok(iNight >= 0 && iDay > iNight && iAlias > iDay, 'order night < day < alias');
+});
+
+test('widgets.css does not define a bare .label or .chip (collide with rail text / legacy chip)', () => {
+  const w = read('static/kestrel/widgets.css');
+  assert.doesNotMatch(w, /(^|[\s,}])\.label\s*[{,.:]/m);
+  assert.doesNotMatch(w, /(^|[\s,}])\.chip/m);
+  assert.match(w, /\.k-label\{/);
+  assert.match(w, /\.k-chip\{/);
 });
 
 test('legacy variable aliases are defined', () => {
@@ -66,6 +97,9 @@ test('@font-face covers the three families and the files exist', () => {
   for (const u of urls) {
     assert.ok(existsSync(join(ROOT, u.replace(/^\//, ''))), 'font file missing: ' + u);
   }
+  const faces = css.match(/@font-face\s*\{[^}]*\}/g) || [];
+  assert.equal(faces.length, 6);
+  for (const f of faces) assert.match(f, /font-display:\s*swap/);
   for (const f of ['SpaceGrotesk-Variable.woff2', 'InstrumentSerif-Regular.woff2', 'InstrumentSerif-Italic.woff2']) {
     assert.ok(urls.some((u) => u.endsWith(f)), f + ' not referenced');
   }
@@ -76,6 +110,8 @@ test('prefers-reduced-motion block exists and kills motion', () => {
   assert.ok(m, 'reduced-motion block missing');
   assert.match(m[1], /animation:\s*none/);
   assert.match(m[1], /transition:\s*none/);
+  assert.match(m[1], /!important/);
+  assert.match(m[1], /\.ground \.shuttle\s*\{\s*display:\s*none/);
 });
 
 test('page assets and skeleton are in place', () => {
@@ -95,7 +131,7 @@ test('page assets and skeleton are in place', () => {
 
 test('classes and keyframes used by later tasks are defined', () => {
   const all = ['tokens', 'shell', 'widgets'].map((n) => read(`static/kestrel/${n}.css`)).join('\n');
-  for (const c of ['hud', 'scan', 'ground', 'rail', 'topbar', 'page', 'gap-card', 'pill-slider', 'mono', 'serif', 'chip']) {
+  for (const c of ['hud', 'scan', 'ground', 'rail', 'topbar', 'page', 'gap-card', 'pill-slider', 'mono', 'serif', 'k-chip']) {
     assert.match(all, new RegExp('\\.' + esc(c) + '(?![\\w-])'), '.' + c);
   }
   for (const k of ['kUp', 'kFade', 'kIn', 'kPop', 'kLive', 'kFlow', 'kRing', 'kTravel']) {

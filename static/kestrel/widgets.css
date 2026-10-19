@@ -20,13 +20,13 @@
 .card.editing{--bstyle:dashed;--bcol:var(--ink3);}
 .card-title{font-weight:600;font-size:15px;color:var(--ink);}
 .card-sub{font-size:12.5px;color:var(--ink2);}
-.label{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);}
+.k-label{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);}
 
-/* Chip (tone: good | mid | bad; default neutral) */
-.chip{--c:var(--ink2);display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;
+/* Chip (tone: good | mid | bad; default neutral). Named .k-chip so the legacy .chip in kestrel.css is untouched. */
+.k-chip{--c:var(--ink2);display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;
   white-space:nowrap;color:var(--c);background:color-mix(in srgb,var(--c) 14%,transparent);}
-.chip.good{--c:var(--good);} .chip.mid{--c:var(--mid);} .chip.bad{--c:var(--bad);}
-.chip.accent{--c:var(--accentInk);} .chip.cyan{--c:var(--cyanInk);}
+.k-chip.good{--c:var(--good);} .k-chip.mid{--c:var(--mid);} .k-chip.bad{--c:var(--bad);}
+.k-chip.accent{--c:var(--accentInk);} .k-chip.cyan{--c:var(--cyanInk);}
 
 /* KPI tile */
 .kpi{flex:1 1 220px;min-width:0;display:flex;flex-direction:column;gap:10px;padding:18px 20px;border-radius:var(--r-card);

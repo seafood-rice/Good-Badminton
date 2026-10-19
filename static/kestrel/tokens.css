@@ -16,7 +16,8 @@
 
 /* Night is the default theme. */
 :root,
-[data-theme="night"]{
+:root[data-theme="night"],
+:root[data-theme="dark"]{
   --bg:#05070A; --surface:#0B1017; --surface2:#111923;
   --line:#1B2733; --lineHi:#2D4054;
   --ink:#E6EDF5; --ink2:#9BA9B8; --ink3:#7A8898;
@@ -28,7 +29,8 @@
   color-scheme:dark;
 }
 
-[data-theme="day"]{
+:root[data-theme="day"],
+:root[data-theme="light"]{
   --bg:#EDF0F3; --surface:#FFFFFF; --surface2:#F5F7F9;
   --line:#DCE2E8; --lineHi:#B9C4CF;
   --ink:#0E141B; --ink2:#44505E; --ink3:#5E6B7A;
@@ -41,9 +43,9 @@
 }
 
 /* Legacy variable aliases: untouched legacy screens (library, wizard, results)
-   adopt the new look. `[data-theme]` also catches the legacy dark/light values. */
+   adopt the new look. Legacy data-theme="dark"/"light" map to night/day above. */
 :root,
-[data-theme]{
+:root[data-theme]{
   --paper:var(--bg); --card:var(--surface); --border:var(--line); --fill:var(--surface2);
   --muted:var(--ink2); --faint:var(--ink3);
   --sidebar-bg:#070A0E;
@@ -90,4 +92,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,[t
     animation:none !important;
     scroll-behavior:auto !important;
   }
+  .ground .shuttle{display:none !important;}
+  /* JS note: shell/transition.js must also skip the container-transform layer
+     (matchMedia('(prefers-reduced-motion: reduce)')) and navigate instantly. */
 }
