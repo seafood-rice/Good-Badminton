@@ -901,6 +901,7 @@ window.Kestrel = (function () {
         fieldRow('语言','Language', selectHTML('cfg-lang', [['zh','中文','Chinese'],['en','English','English']])) +
         fieldRow('姿态模型','Pose model', selectHTML('cfg-pose', [['yolo-pose','YOLO Pose (快)','YOLO Pose (fast)'],['rtmpose','RTMPose (准)','RTMPose (accurate)']])) +
         fieldRow('分析质量','Analysis quality', selectHTML('cfg-quality', [['accurate','精确（完整分析）','Accurate (full analytics)'],['fast','快速（抽帧预览）','Fast (sampled preview)']])) +
+        fieldRow('比赛类型','Match format', selectHTML('cfg-format', [['singles','单打','Singles'],['doubles','双打','Doubles']])) +
         '<label class="field field-check"><input type="checkbox" id="cfg-tech" checked><span class="field-label">' + (zh?'技术分析':'Technique analysis') + '</span></label>';
     }
     body.innerHTML = '<div class="cfg-form">' + fields + '</div>' +
@@ -909,6 +910,12 @@ window.Kestrel = (function () {
         '<button class="btn-primary" id="wiz-start">' + (zh?'开始分析':'Start Analysis') + '</button></div>';
     document.getElementById('wiz-back').onclick = function () { goStep(wiz.mode === 'match' ? 'court' : 'upload'); };
     document.getElementById('wiz-start').onclick = startAnalysis;
+    // Pre-select Doubles when the library video carries the 'doubles' tag. wiz.video is the
+    // file name; lib.videos[].name is the stem.
+    if (!isPosture) {
+      var vv = lib.videos.filter(function (x) { return x.name === wiz.video.replace(/\.[^.]+$/, ''); })[0];
+      if (vv && tagsOf(vv).indexOf('doubles') !== -1) document.getElementById('cfg-format').value = 'doubles';
+    }
     // Availability chips: non-blocking, so a fetch failure just renders nothing.
     if (isPosture) {
       fetch('/api/models').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
@@ -941,7 +948,8 @@ window.Kestrel = (function () {
       url = '/api/analyze';
       payload = { video: wiz.video, language: document.getElementById('cfg-lang').value,
         pose_family: document.getElementById('cfg-pose').value, analyze_technique: document.getElementById('cfg-tech').checked,
-        analysis_quality: document.getElementById('cfg-quality').value };
+        analysis_quality: document.getElementById('cfg-quality').value,
+        match_format: document.getElementById('cfg-format').value };
     }
     fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { return r.json(); })
@@ -1000,7 +1008,7 @@ window.Kestrel = (function () {
         if (hb) {
           var now = Date.now() / 1000;
           var age = d.updated ? Math.max(0, Math.round(now - d.updated)) : null;
-          hb.textContent = (d.status === 'running')
+          hb.textContent = (d.status === 'running' || d.status === 'reencoding')
             ? (state.lang === 'zh'
                 ? '分析进行中… ' + (d.message || '') + (age !== null ? '（' + age + '秒前更新）' : '')
                 : 'Analysis in progress… ' + (d.message || '') + (age !== null ? ' (updated ' + age + 's ago)' : ''))
@@ -1130,6 +1138,7 @@ window.Kestrel = (function () {
       '<div class="res-section"><h2>' + (zh?'位置可视化':'Position visualization') + '</h2>' +
         '<div class="viz-row"><div class="viz-cell" id="viz-heat"><img class="res-viz" src="' + heat + '" alt="heatmap"><div class="viz-cap mono">' + (zh?'热力图':'Heatmap') + '</div></div>' +
           '<div class="viz-cell" id="viz-scat"><img class="res-viz" src="' + scat + '" alt="scatter"><div class="viz-cap mono">' + (zh?'散点图':'Scatter') + '</div></div></div></div>' +
+      '<div class="res-section" id="players-box" style="display:none"></div>' +
       '<div class="res-section" id="tech-box"><h2>' + (zh?'技术分析':'Technique analysis') + '</h2>' +
         '<p class="muted" id="tech-status">' + (zh?'加载中…':'Loading…') + '</p>' +
         '<div id="tech-summary"></div><div id="tech-strokes" class="stroke-list"></div><div id="tech-detail" class="rep-detail"></div></div>' +
@@ -1237,10 +1246,69 @@ window.Kestrel = (function () {
       }
     }).catch(function () {});
 
+    // A doubles run withholds technique scoring, so its empty technique box says
+    // so. The players and technique fetches race: whichever resolves second wins.
+    var doublesRun = false;
+    function techEmptyText() {
+      return doublesRun ? (zh ? '双打不提供技术评分' : 'Technique scoring withheld for doubles')
+                        : (zh ? '暂无技术分析数据' : 'No technique data yet');
+    }
+
+    // Doubles players panel (players.json exists only for doubles runs). Absent or
+    // malformed -> nothing renders. Every value from the file goes through escHTML.
+    fetch('/api/output/' + stem + '/players.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d || d.match_format !== 'doubles') return;
+      doublesRun = true;
+      var techStatus = document.getElementById('tech-status');
+      if (techStatus && techStatus.style.display !== 'none') techStatus.textContent = techEmptyText();
+      var box = document.getElementById('players-box'); if (!box) return;
+      var colors = { P1: '#008cff', P2: '#78dcff', P3: '#ff5000', P4: '#ffb478' };
+      var base = '/api/output/' + encodeURIComponent(stem) + '/';
+      var players = Array.isArray(d.players) ? d.players : [];
+      var teams = Array.isArray(d.teams) ? d.teams : [];
+      var status = d.status === 'ok' ? '' :
+        '<p class="muted">' + (zh ? '身份识别状态：' : 'Identity status: ') + escHTML(String(d.status)) +
+        (d.reason ? ' — ' + escHTML(String(d.reason)) : '') + '</p>';
+      var rows = players.map(function (p) {
+        var label = escHTML(String(p.name || p.id));
+        return '<tr><td><span style="color:' + (colors[p.id] || 'inherit') + '">●</span> ' + label + '</td>' +
+          '<td>' + (p.team == null ? '—' : escHTML(String(p.team))) + '</td>' +
+          '<td>' + escHTML(String(p.distance_m)) + ' m</td>' +
+          '<td>' + escHTML(String(p.avg_speed_mps)) + ' / ' + escHTML(String(p.max_speed_mps)) + ' m/s</td>' +
+          '<td>' + escHTML(String(p.hits)) + '</td></tr>';
+      }).join('');
+      function heatCell(file, cap) {
+        if (!file) return '';
+        return '<div class="viz-cell"><img class="res-viz" src="' + base + encodeURIComponent(String(file)) +
+          '" alt="heatmap" onerror="this.parentNode.style.display=\'none\'"><div class="viz-cap mono">' + escHTML(String(cap)) + '</div></div>';
+      }
+      var heat = teams.map(function (tm) {
+        return heatCell(tm.coverage_heatmap, (zh ? '队 ' : 'Team ') + tm.id);
+      }).join('') + players.map(function (p) {
+        return heatCell(p.heatmap, p.name || p.id);
+      }).join('');
+      // Link the identity video only when players.json says it was rendered.
+      var vid = d.identity_video || null;
+      var videoLine = (vid && vid.status === 'ok' && vid.file)
+        ? '<p><a href="' + base + encodeURIComponent(String(vid.file)) + '" target="_blank">' +
+          (zh ? '球员身份视频' : 'Player identity video') + '</a></p>'
+        : (vid && vid.reason ? '<p class="muted">' + (zh ? '球员身份视频未生成：' : 'Player identity video not available: ') +
+          escHTML(String(vid.reason)) + '</p>' : '');
+      var share = d.stats && typeof d.stats.hits_named_share === 'number' ? Math.round(d.stats.hits_named_share * 100) : 0;
+      box.innerHTML = '<h2>' + (zh ? '双打球员' : 'Doubles players') + '</h2>' + status +
+        '<table class="mono"><thead><tr><th>' + (zh ? '球员' : 'Player') + '</th><th>' + (zh ? '队' : 'Team') + '</th><th>' +
+        (zh ? '距离' : 'Distance') + '</th><th>' + (zh ? '均速 / 最高' : 'Avg / max speed') + '</th><th>' + (zh ? '击球' : 'Hits') + '</th></tr></thead><tbody>' +
+        rows + '</tbody></table>' +
+        '<p class="chip">' + (zh ? '击球归属：未验证（' + share + '% 已命名）' : 'Who hit: unvalidated (' + share + '% named)') + '</p>' +
+        '<p class="muted">' + (zh ? '双打不提供击球类型（BST 为单打模型）' : 'Stroke types withheld for doubles (BST is a singles model)') + '</p>' +
+        '<div class="viz-row">' + heat + '</div>' + videoLine;
+      box.style.display = '';
+    }).catch(function () {});
+
     // Technique analysis.
     fetch('/api/technique/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       var status = document.getElementById('tech-status');
-      if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = zh?'暂无技术分析数据':'No technique data yet'; return; }
+      if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = techEmptyText(); return; }
       status.style.display = 'none';
       var s = d.summary;
       var chips = Object.keys(s.by_type || {}).map(function (k) {

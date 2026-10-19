@@ -31,3 +31,26 @@ def test_reset_progress_file_removes_stale(tmp_path):
 
 def test_reset_progress_file_missing_is_noop(tmp_path):
     webapp._reset_progress_file(str(tmp_path))  # must not raise
+
+
+def test_progress_message_frames():
+    msg = webapp._progress_message({"stage": "analyzing", "current_frame": 3, "total_frames": 9})
+    assert msg == "分析中... 3/9 帧"
+
+
+def test_progress_message_doubles_substages():
+    msg = webapp._progress_message({"stage": "visualizing", "substage": "doubles_video",
+                                    "current_frame": 120, "total_frames": 600})
+    assert "players video" in msg and "120/600" in msg
+    assert "Identifying players" in webapp._progress_message(
+        {"stage": "visualizing", "substage": "doubles_identity"})
+    # Unknown substages fall back to the plain frame message.
+    assert webapp._progress_message({"substage": "x", "current_frame": 1,
+                                     "total_frames": 2}) == "分析中... 1/2 帧"
+
+
+def test_players_video_reencode_announces_itself():
+    import inspect
+    src = inspect.getsource(webapp)
+    i = src.index("_reencode_players_video(sd, vs")
+    assert "Encoding the players video" in src[src.rindex("job['message']", 0, i):i]
