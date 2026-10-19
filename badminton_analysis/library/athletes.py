@@ -105,7 +105,7 @@ def _is_score(value):
 
 
 def _clean_side(side, data):
-    """(clean_side, error). ``data`` None skips the athlete-exists check."""
+    """(clean_side, error); a referenced athlete must exist in ``data``."""
     if side is None:
         return None, None
     if not isinstance(side, dict):
@@ -116,7 +116,7 @@ def _clean_side(side, data):
     if athlete_id is not None:
         if not isinstance(athlete_id, str) or not athlete_id:
             return None, "invalid_side"
-        if data is not None and athlete_id not in data["athletes"]:
+        if athlete_id not in data["athletes"]:
             return None, "unknown_athlete"
         return {"athlete_id": athlete_id}, None
     clean = normalise_name(name)
@@ -148,12 +148,12 @@ def _clean_result(result):
     return {"winner": winner, "sets": clean_sets}, None
 
 
-def validate_match(record, data=None):
+def validate_match(record, data):
     """Validate one match record: ``(clean_record, None)`` or ``(None, code)``.
 
     The clean record always carries all four keys. ``data`` (a store dict) is
-    optional: when given, a side's ``athlete_id`` must exist in it
-    (``"unknown_athlete"``); without it only the shape is checked. Codes:
+    required, so the existence check can never be skipped by accident: a side's
+    ``athlete_id`` must exist in it (``"unknown_athlete"``). Codes:
     ``invalid_record``, ``invalid_date``, ``invalid_side``, ``invalid_result``,
     ``unknown_athlete``. Never mutates ``record``.
     """
@@ -222,7 +222,7 @@ def side_athlete(data, record, side):
         return nobody
     athlete_id = entry.get("athlete_id")
     if athlete_id is not None:
-        athlete = data["athletes"].get(athlete_id)
+        athlete = data["athletes"].get(athlete_id) if isinstance(athlete_id, str) else None
         if athlete is None:
             return nobody
         return {"athlete_id": athlete_id, "name": athlete["name"]}
@@ -238,6 +238,12 @@ def empty():
     return {"squads": {}, "athletes": {}, "matches": {}}
 
 
+def _known_squad(data, squad_id):
+    """True for an existing squad id. A non-string (e.g. a JSON list, which is
+    unhashable) is simply unknown rather than a TypeError."""
+    return isinstance(squad_id, str) and squad_id in data["squads"]
+
+
 def add_athlete(data, name, squad_id=None):
     """``(new_data, athlete_id)``; ValueError ``invalid``/``duplicate``/``unknown_squad``."""
     clean = normalise_name(name)
@@ -245,7 +251,7 @@ def add_athlete(data, name, squad_id=None):
         raise ValueError("invalid")
     if _name_taken(data["athletes"], clean):
         raise ValueError("duplicate")
-    if squad_id is not None and squad_id not in data["squads"]:
+    if squad_id is not None and not _known_squad(data, squad_id):
         raise ValueError("unknown_squad")
     out = copy.deepcopy(data)
     athlete_id = _new_id("a", out["athletes"])
@@ -268,7 +274,7 @@ def update_athlete(data, athlete_id, *, name=_UNSET, squad_id=_UNSET):
             raise ValueError("invalid")
         if _name_taken(data["athletes"], clean, ignore_id=athlete_id):
             raise ValueError("duplicate")
-    if squad_id is not _UNSET and squad_id is not None and squad_id not in data["squads"]:
+    if squad_id is not _UNSET and squad_id is not None and not _known_squad(data, squad_id):
         raise ValueError("unknown_squad")
     out = copy.deepcopy(data)
     if clean is not None:
@@ -363,7 +369,9 @@ def _classify(path):
         return "missing", None
     except OSError as exc:
         return "unreadable", exc
-    except ValueError:
+    except (ValueError, RecursionError, MemoryError):
+        # json.load raises RecursionError on pathologically nested input and
+        # MemoryError on absurd sizes; both mean "not a usable store".
         return "corrupt", None
     if not isinstance(payload, dict) or not any(key in payload for key in _SECTIONS):
         return "corrupt", None
@@ -372,13 +380,28 @@ def _classify(path):
     return "ok", payload
 
 
+def _null_dangling_sides(record, data):
+    """Copy of ``record`` with any side that only references a missing athlete
+    set to None, so the rest of the match (date, result) survives a hand edit."""
+    out = dict(record)
+    for side in SIDES:
+        entry = out.get(side)
+        if not isinstance(entry, dict) or entry.get("name") is not None:
+            continue
+        athlete_id = entry.get("athlete_id")
+        if athlete_id is not None and not (
+                isinstance(athlete_id, str) and athlete_id in data["athletes"]):
+            out[side] = None
+    return out
+
+
 def _sanitise(payload):
     """Rebuild a store dict from raw payload, dropping what is unusable.
 
     A store can be hand-edited (or predate a rule). Entries that fail the same
     validation a write would apply are dropped, a squad reference to a squad
-    that no longer exists is cleared, and a match naming an unknown athlete is
-    dropped, so the rest of the module can rely on the shape it documents.
+    that no longer exists is cleared, and a match side naming an unknown athlete
+    is set to None (the rest of the match is kept), so the rest of the module can rely on the shape it documents.
     """
     out = empty()
     for squad_id, entry in payload.get("squads", {}).items():
@@ -394,12 +417,13 @@ def _sanitise(payload):
         if name is None:
             continue
         squad_id = entry.get("squad_id")
-        if squad_id not in out["squads"]:
-            squad_id = None
+        squad_id = squad_id if isinstance(squad_id, str) and squad_id in out["squads"] else None
         out["athletes"][athlete_id] = {"name": name, "squad_id": squad_id}
     for stem, record in payload.get("matches", {}).items():
         if not isinstance(stem, str):
             continue
+        if isinstance(record, dict):
+            record = _null_dangling_sides(record, out)
         clean, err = validate_match(record, out)
         if err is None and not _is_blank(clean):
             out["matches"][stem] = clean
@@ -442,9 +466,9 @@ def load_for_update(path):
     if status == "missing":
         return empty()
     if status == "unreadable":
-        raise StoreUnreadable(f"athlete store unreadable: {path}") from value
+        raise StoreUnreadable("athlete store unreadable") from value
     if status == "corrupt":
-        raise StoreCorrupt(f"athlete store is not well-formed: {path}")
+        raise StoreCorrupt("athlete store is not well-formed")
     return _sanitise(value)
 
 

@@ -126,6 +126,15 @@ def test_update_athlete_invalid_name_and_unknown_squad():
         ath.update_athlete(data, athlete_id, squad_id="s_deadbeef")
 
 
+@pytest.mark.parametrize("bad_squad", [[], {}, 7, ["s_1"]])
+def test_non_string_squad_id_is_an_unknown_squad_not_a_type_error(bad_squad):
+    with pytest.raises(ValueError, match="^unknown_squad$"):
+        ath.add_athlete(ath.empty(), "X", squad_id=bad_squad)
+    data, athlete_id = ath.add_athlete(ath.empty(), "X")
+    with pytest.raises(ValueError, match="^unknown_squad$"):
+        ath.update_athlete(data, athlete_id, squad_id=bad_squad)
+
+
 def test_update_unknown_athlete_raises_key_error():
     with pytest.raises(KeyError):
         ath.update_athlete(ath.empty(), "a_00000000", name="x")
@@ -235,19 +244,19 @@ def test_validate_match_accepts_a_full_record():
 
 
 def test_validate_match_trims_a_name_and_fills_missing_keys():
-    clean, err = ath.validate_match({"upper": {"name": "  S. Ito "}})
+    clean, err = ath.validate_match({"upper": {"name": "  S. Ito "}}, ath.empty())
     assert err is None
     assert clean == {"date": None, "upper": {"name": "S. Ito"}, "lower": None, "result": None}
 
 
 def test_validate_match_normalises_sets_to_lists():
-    clean, err = ath.validate_match({"result": {"winner": "lower", "sets": [(21, 5)]}})
+    clean, err = ath.validate_match({"result": {"winner": "lower", "sets": [(21, 5)]}}, ath.empty())
     assert err is None
     assert clean["result"] == {"winner": "lower", "sets": [[21, 5]]}
 
 
 def test_validate_match_without_sets_gives_an_empty_list():
-    clean, err = ath.validate_match({"result": {"winner": "lower"}})
+    clean, err = ath.validate_match({"result": {"winner": "lower"}}, ath.empty())
     assert err is None
     assert clean["result"] == {"winner": "lower", "sets": []}
 
@@ -273,14 +282,14 @@ def test_validate_match_without_sets_gives_an_empty_list():
     {"upper": "S. Ito"},                                       # not an object
 ])
 def test_validate_match_rejects(record):
-    clean, err = ath.validate_match(record)
+    clean, err = ath.validate_match(record, ath.empty())
     assert clean is None
     assert isinstance(err, str) and err
 
 
 def test_validate_match_rejects_a_non_object_record():
-    assert ath.validate_match(["x"])[0] is None
-    assert ath.validate_match(None)[0] is None
+    assert ath.validate_match(["x"], ath.empty())[0] is None
+    assert ath.validate_match(None, ath.empty())[0] is None
 
 
 def test_validate_match_rejects_an_unknown_athlete_id_given_the_store():
@@ -290,16 +299,17 @@ def test_validate_match_rejects_an_unknown_athlete_id_given_the_store():
     assert err == "unknown_athlete"
 
 
-def test_validate_match_does_not_check_athlete_ids_without_a_store():
-    clean, err = ath.validate_match({"upper": {"athlete_id": "a_00000000"}})
-    assert err is None and clean["upper"] == {"athlete_id": "a_00000000"}
+def test_validate_match_requires_the_store():
+    """No default: a caller can never skip the unknown-athlete check by accident."""
+    with pytest.raises(TypeError):
+        ath.validate_match({"upper": {"athlete_id": "a_00000000"}})
 
 
 def test_validate_match_error_codes_are_distinct_per_field():
     codes = {
-        ath.validate_match({"date": "2026-02-30"})[1],
-        ath.validate_match({"result": {"winner": "left"}})[1],
-        ath.validate_match({"upper": {}})[1],
+        ath.validate_match({"date": "2026-02-30"}, ath.empty())[1],
+        ath.validate_match({"result": {"winner": "left"}}, ath.empty())[1],
+        ath.validate_match({"upper": {}}, ath.empty())[1],
     }
     assert len(codes) == 3
 
@@ -307,7 +317,7 @@ def test_validate_match_error_codes_are_distinct_per_field():
 def test_validate_match_does_not_mutate_its_argument():
     record = {"upper": {"name": "  S. Ito "}, "result": {"winner": "upper", "sets": [[21, 1]]}}
     before = copy.deepcopy(record)
-    ath.validate_match(record)
+    ath.validate_match(record, ath.empty())
     assert record == before
 
 
@@ -460,6 +470,65 @@ def test_load_sanitises_hand_edited_junk(tmp_path):
             "a_2": {"name": "Ghost", "squad_id": None}}
         assert list(loaded["matches"]) == ["good"]
         assert loaded["matches"]["good"]["upper"] == {"athlete_id": "a_1"}
+
+
+@pytest.mark.parametrize("bad_squad", [[], {}, 7, ["s_1"]])
+def test_unhashable_or_non_string_squad_id_in_a_file_never_raises(tmp_path, bad_squad):
+    p = tmp_path / "athletes.json"
+    p.write_text(json.dumps({
+        "squads": {"s_1": {"name": "Seniors"}},
+        "athletes": {"a_1": {"name": "J. Tanaka", "squad_id": bad_squad}}}), encoding="utf-8")
+    expected = {"a_1": {"name": "J. Tanaka", "squad_id": None}}
+    assert ath.load(p)["athletes"] == expected
+    assert ath.load_for_update(p)["athletes"] == expected
+
+
+def test_unhashable_athlete_id_in_a_match_side_never_raises(tmp_path):
+    p = tmp_path / "athletes.json"
+    p.write_text(json.dumps({"matches": {
+        "m1": {"date": "2026-10-11", "upper": {"athlete_id": []}},
+        "m2": {"upper": {"athlete_id": {}}, "lower": {"athlete_id": []}}}}), encoding="utf-8")
+    loaded = ath.load(p)
+    assert loaded["matches"] == {"m1": {"date": "2026-10-11", "upper": None,
+                                        "lower": None, "result": None}}
+
+
+def test_a_dangling_athlete_on_one_side_keeps_the_rest_of_the_match(tmp_path):
+    p = tmp_path / "athletes.json"
+    p.write_text(json.dumps({
+        "athletes": {"a_1": {"name": "J. Tanaka"}},
+        "matches": {"m": {
+            "date": "2026-10-11",
+            "upper": {"athlete_id": "a_gone"},
+            "lower": {"athlete_id": "a_1"},
+            "result": {"winner": "lower", "sets": [[10, 21]]}}}}), encoding="utf-8")
+    for loaded in (ath.load(p), ath.load_for_update(p)):
+        assert loaded["matches"]["m"] == {
+            "date": "2026-10-11", "upper": None, "lower": {"athlete_id": "a_1"},
+            "result": {"winner": "lower", "sets": [[10, 21]]}}
+
+
+def test_deeply_nested_json_is_corrupt_not_a_crash(tmp_path):
+    p = tmp_path / "athletes.json"
+    p.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    assert ath.load(p) == ath.empty()
+    with pytest.raises(ath.StoreCorrupt):
+        ath.load_for_update(p)
+
+
+def test_store_error_messages_do_not_leak_the_path(tmp_path):
+    corrupt = tmp_path / "corrupt_store.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ath.StoreCorrupt) as corrupt_info:
+        ath.load_for_update(corrupt)
+    unreadable = tmp_path / "unreadable_store.json"
+    unreadable.mkdir()
+    with pytest.raises(ath.StoreUnreadable) as unreadable_info:
+        ath.load_for_update(unreadable)
+    for info in (corrupt_info, unreadable_info):
+        text = str(info.value)
+        assert str(tmp_path) not in text
+        assert "_store" not in text           # nor the file names
 
 
 def test_load_logs_a_corrupt_file_once(tmp_path, capsys):
