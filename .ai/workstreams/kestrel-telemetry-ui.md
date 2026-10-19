@@ -12,7 +12,7 @@
 - **State:** handoff (implementation complete; awaiting owner review and merge)
 - **Branch:** `claude/kestral-sports-ui-design-015bc4` (worktree `.claude/worktrees/kestral-sports-ui-design-015bc4`)
 - **Base commit:** `71cee7b` (`main` after PR #13)
-- **Pull request:** see Last milestone
+- **Pull request:** opened against the fork's `main` (see the PR list); owner merges
 - **Claim:** none taken. The owner's rule is that claims are a record, not a gate; this branch was built in a
   linked worktree by parallel agents and its state is recorded here and in `.superpowers/sdd/` (git-ignored).
 
@@ -36,7 +36,14 @@ See spec section 9. Plan: `docs/superpowers/plans/2026-10-19-kestrel-telemetry-u
 
 ## Verification
 
-See "Verification records" below, filled at handoff.
+| Command | Result | Tested commit |
+|---|---|---|
+| `PYTHONUTF8=1 ./.venv/Scripts/python.exe -B -m pytest -q -p no:cacheprovider --basetemp <unique>` | 1824 passed, 5 skipped (720 s) | `10fb623` (docs-only after `20d74e2`) |
+| `node --test 'tests/js/*.test.mjs'` | 197 passed, 0 failed | `10fb623` |
+| Browser pass (Browser pane, real runs in `outputs/`, server on port 5071) | Overview in 3 lenses, peek, container transform to the workspace (real video and inspector), Matches + record editor, Players, Pipeline, legacy Library, palette (Ctrl+K), day theme, zh, 375 px layout; console clean | `20d74e2` |
+| API round trip (athlete + match record -> win rate 1/1, oriented sets), then cleaned up | pass | `pre-final` |
+
+Baseline before this work: 1246 passed, 3 skipped. Not browser-checked: reduced-motion rendering, the "approx." marker and "as <Technique>" cell after the final fix wave, the lane offset.
 
 ## Next action
 

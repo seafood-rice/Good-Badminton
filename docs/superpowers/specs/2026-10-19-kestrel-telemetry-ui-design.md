@@ -425,7 +425,7 @@ all owner-compatible rulings:
 Measured (owner's 13 real runs, 26 units): `/api/insights/overview` cold 5.0-7.5 s (computes and caches 13 sidecars),
 warm 0.09 s; technique index 54.7 with 4 of 7 techniques scored; 86 of 304 strokes classified; recovery to base median
 about 0.0-0.4 s; all KPI statuses honest (rally win rate, unforced errors and, without a scope, match win rate unavailable).
-Tests: `1798 passed, 5 skipped` pytest (baseline 1246 passed, 3 skipped) and `197` Node tests at the final commit.
+Tests: `1824 passed, 5 skipped` pytest (baseline 1246 passed, 3 skipped) and `197` Node tests at the final commit.
 
 Known limitations and follow-ups (not done):
 
