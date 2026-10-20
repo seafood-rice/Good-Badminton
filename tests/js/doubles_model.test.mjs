@@ -432,3 +432,8 @@ test('every doubles string exists in zh and en', () => {
   }
   for (const ev of ['shuttle', 'swing', 'single_candidate', 'none']) assert.ok(STRINGS.en['dbl.evidence.' + ev], 'dbl.evidence.' + ev);
 });
+
+test('doublesRows: a run with no readable players.json keeps its "missing" status', () => {
+  const ins = partial({ matches: 1, athlete: null, runs: [{ stem: 'gone', date: '2026-10-01', status: 'missing', players: [] }] }, 'doubles_degraded', { status: 'degraded' });
+  assert.equal(doublesRows(ins, 'en').runs[0].status, 'missing');
+});

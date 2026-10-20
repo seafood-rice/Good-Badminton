@@ -323,7 +323,7 @@ export function doublesRows(raw, lang) {
       dateIso: dateRank(r.date) || null,
       date: fmtDate(r.date, lang, { year: false }),
       dateApprox: isApproxDate(r.date, r.date_source),
-      ...statusFields(FILE_STATUSES.includes(r.status) ? r.status : 'unknown', lang),
+      ...statusFields(r.status, lang),
       unvalidated: true,
       title: title.text || r.stem,
       players: players.map((p) => playerRow(p, lang)),
