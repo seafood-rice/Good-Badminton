@@ -191,6 +191,20 @@ def _orient(groups, weight, sig_of, conf, base_conf=1.0):
     return out
 
 
+def _weighted_median(values, weights):
+    """Median of values, each counted with its weight; equal weights give np.median."""
+    order = sorted(zip(values, weights))
+    total = float(sum(w for _, w in order))
+    cum = 0.0
+    for i, (v, w) in enumerate(order):
+        cum += w
+        if 2 * cum > total:
+            return float(v)
+        if 2 * cum == total and i + 1 < len(order):
+            return (float(v) + float(order[i + 1][0])) / 2
+    return float(order[-1][0])
+
+
 def _sig_nodes(nodes, sig_of):
     samples = []
     for n in nodes:
@@ -266,7 +280,8 @@ def assign_identities(tracklets, analysed_frames, *, min_coverage=0.2, team_conf
     team = {m: team_of_comp[c] for c, ms in comp_members.items() for m in ms}
     conf = {m: comp_conf[c] for c, ms in comp_members.items() for m in ms}
     forced_comps = set(sorted(groups, key=lambda g: -sum(weight(n) for n in g))[0])
-    unforced_conf = [comp_conf[c] for c in comp_members if c not in forced_comps]
+    # Weighted by frames, so a few short orphan components cannot outvote long ones.
+    unforced = [(comp_conf[c], weight(c)) for c in comp_members if c not in forced_comps]
 
     # --- Stage 2: partners within each team ------------------------------
     # Coexisting at ANY frame (full frame sets) => different partners.
@@ -326,7 +341,7 @@ def assign_identities(tracklets, analysed_frames, *, min_coverage=0.2, team_conf
         result["status"] = "degraded"
         result["reason"] = (f"{len(good)} of 4 identities cover at least "
                             f"{int(min_coverage * 100)}% of analysed frames")
-    elif unforced_conf and float(np.median(unforced_conf)) < team_conf_min:
+    elif unforced and _weighted_median(*zip(*unforced)) < team_conf_min:
         result["status"] = "degraded_teams"
         result["reason"] = "teams cannot be told apart by appearance"
         result["teams"] = {p: None for p in teams}

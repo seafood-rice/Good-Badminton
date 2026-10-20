@@ -208,3 +208,72 @@ def test_tracklet_wholly_outside_constraint_frames_is_placed_by_appearance():
     r = assign_identities(t, 60, constraint_frames=set(range(0, 50)))
     assert r["assignment"][4] == r["assignment"][1]
     assert 0.0 < r["confidence"][4] <= 1.0
+
+
+def _orphan(tid, start, end):
+    """A short lower-side tracklet with no appearance samples: placed with confidence 0."""
+    t = tl(tid, "lower", start, end, None)
+    t["appearance"] = []
+    return t
+
+
+def test_short_orphans_do_not_outvote_long_confident_components():
+    # Two well-separated halves; the second is placed by appearance with confidence 1.
+    # Three 40-frame orphans with no appearance get confidence 0. By component count
+    # they are the majority (3 of 5); by frames they are 120 of 1720 unforced frames.
+    t = [tl(0, "lower", 0, 400, sig(1)), tl(1, "lower", 0, 400, sig(2)),
+         tl(2, "upper", 0, 400, sig(10)), tl(3, "upper", 0, 400, sig(11)),
+         tl(4, "lower", 500, 900, sig(1)), tl(5, "lower", 500, 900, sig(2)),
+         tl(6, "upper", 500, 900, sig(10)), tl(7, "upper", 500, 900, sig(11))]
+    t += [_orphan(8 + k, 950 + 50 * k, 990 + 50 * k) for k in range(3)]
+    r = assign_identities(t, 1090)
+    assert [r["confidence"][k] for k in (8, 9, 10)] == [0.0, 0.0, 0.0]
+    assert r["status"] == "ok"
+    assert r["teams"][person_of(r, 4)] == 1
+
+
+def test_long_ambiguous_component_outweighs_short_confident_ones():
+    # The reverse: one long orphan-like component with no appearance (confidence 0)
+    # dominates the unforced frames, so teams are reported as indistinguishable.
+    t = [tl(0, "lower", 0, 400, sig(1)), tl(1, "lower", 0, 400, sig(2)),
+         tl(2, "upper", 0, 400, sig(10)), tl(3, "upper", 0, 400, sig(11)),
+         tl(4, "lower", 500, 540, sig(1)), tl(5, "lower", 500, 540, sig(2)),
+         tl(6, "upper", 500, 540, sig(10)), tl(7, "upper", 500, 540, sig(11)),
+         _orphan(8, 600, 1400), _orphan(9, 600, 1400)]
+    r = assign_identities(t, 1400)
+    assert r["status"] == "degraded_teams"
+
+
+def test_weighted_median_matches_plain_median_for_equal_weights():
+    from badminton_analysis.tracking.identity import _weighted_median
+    for vals in ([0.2], [0.1, 0.9], [0.0, 0.5, 1.0], [0.3, 0.1, 0.8, 0.4]):
+        assert _weighted_median(vals, [1] * len(vals)) == float(np.median(vals))
+    assert _weighted_median([0.0, 1.0], [1, 3]) == 1.0
+    assert _weighted_median([0.0, 1.0], [3, 1]) == 0.0
+
+
+def test_coverage_values_per_identity():
+    t = [tl(0, "lower", 0, 100, sig(1)), tl(1, "lower", 0, 60, sig(2)),
+         tl(2, "upper", 0, 100, sig(10)), tl(3, "upper", 0, 80, sig(11))]
+    r = assign_identities(t, 200)
+    assert r["coverage"] == {"P1": 0.5, "P2": 0.3, "P3": 0.5, "P4": 0.4}
+    assert [person_of(r, k) for k in range(4)] == ["P1", "P2", "P3", "P4"]
+    assert r["status"] == "ok"
+
+
+def test_stage_two_partner_triangle_drops_the_shortest():
+    # A, B and C are pairwise present together (so same team and pairwise different
+    # partners) but never all three at once, so the same-side triple check keeps
+    # them. Three mutually exclusive partners cannot exist: the 50-frame C goes.
+    a, b = tl(0, "lower", 0, 100, sig(1)), tl(1, "lower", 50, 150, sig(2))
+    c = tl(2, "lower", 0, 0, sig(3))
+    c["frames"] = list(range(20, 50)) + list(range(110, 130))
+    c["court"] = [[3.0, 10.0]] * 50
+    c["image"] = [[300.0, 500.0]] * 50
+    c["keypoints"] = [None] * 50
+    t = [a, b, c, tl(3, "upper", 0, 150, sig(10)), tl(4, "upper", 0, 150, sig(11))]
+    r = assign_identities(t, 150)
+    assert r["dropped"] == [2]
+    assert 2 not in r["assignment"]
+    assert person_of(r, 0) != person_of(r, 1)
+    assert r["teams"][person_of(r, 0)] == r["teams"][person_of(r, 1)]

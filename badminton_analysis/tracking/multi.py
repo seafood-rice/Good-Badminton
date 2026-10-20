@@ -228,8 +228,9 @@ class MultiTracker:
         for k in ("frames", "court", "image", "keypoints"):
             setattr(new, k, tail[k])
         new.last_frame = tail["frames"][-1]
-        for xy in tail["court"][1:]:
-            new.kf.update(xy, 1)
+        # Real frame gaps: in fast mode the tail is one stride apart, not one frame.
+        for prev, f, xy in zip(tail["frames"], tail["frames"][1:], tail["court"][1:]):
+            new.kf.update(xy, max(1, f - prev))
         self._active.append(new)
 
     def finish(self):

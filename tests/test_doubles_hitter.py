@@ -96,3 +96,43 @@ def test_hit_without_side_is_not_attributed():
         (h,) = attribute_hitters([hit], tracks, FPS, teams=TEAMS)
         assert h["hitter_id"] is None and h["hitter_team"] is None
         assert h["hitter_confidence"] is None and h["hitter_evidence"] == "none"
+
+
+P2_RIGHT_WRIST = (450.0 + 30, 420.0 - 80)
+
+
+def test_shuttle_point_two_frames_away_is_used():
+    tracks = {"P1": swinging(200, 400, FR, 30), "P2": still(450, 420, FR)}
+    (h,) = attribute_hitters([{"frame": 30, "hitter": "lower"}], tracks, FPS,
+                             teams=TEAMS, shuttle={32: P2_RIGHT_WRIST})
+    assert h["hitter_evidence"] == "shuttle" and h["hitter_id"] == "P2"
+
+
+def test_shuttle_point_three_frames_away_falls_back_to_swing():
+    tracks = {"P1": swinging(200, 400, FR, 30), "P2": still(450, 420, FR)}
+    (h,) = attribute_hitters([{"frame": 30, "hitter": "lower"}], tracks, FPS,
+                             teams=TEAMS, shuttle={27: P2_RIGHT_WRIST, 33: P2_RIGHT_WRIST})
+    assert h["hitter_evidence"] == "swing" and h["hitter_id"] == "P1"
+
+
+def test_shuttle_without_valid_wrists_falls_back_to_swing():
+    blind = still(450, 420, FR)
+    for o in blind.values():
+        o["keypoints"] = np.zeros((17, 2)).tolist()     # no wrist to measure from
+    tracks = {"P1": swinging(200, 400, FR, 30), "P2": blind}
+    (h,) = attribute_hitters([{"frame": 30, "hitter": "lower"}], tracks, FPS,
+                             teams=TEAMS, shuttle={30: P2_RIGHT_WRIST})
+    assert h["hitter_evidence"] == "swing" and h["hitter_id"] == "P1"
+
+
+def test_close_shuttle_contest_is_withheld():
+    # P1's right wrist (230, 320) is 100.5 px away, P2's left wrist (420, 340) 90.6 px:
+    # scores -1.005 and -0.906 m, confidence tanh(0.0994 / 2) = 0.0497.
+    tracks = {"P1": still(200, 400, FR), "P2": still(450, 420, FR)}
+    (h,) = attribute_hitters([{"frame": 30, "hitter": "lower"}], tracks, FPS,
+                             teams=TEAMS, shuttle={30: (330.0, 330.0)})
+    assert h["hitter_evidence"] == "shuttle"
+    assert abs(h["hitter_confidence"] - 0.0497) < 1e-3
+    assert h["hitter_confidence"] < HITTER_MIN_CONF
+    assert h["hitter_id"] is None and h["hitter_team"] is None
+    assert h["hitter"] == "lower"

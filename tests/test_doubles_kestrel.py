@@ -45,3 +45,16 @@ def test_player_names_are_escaped():
     window = JS[i:i + 4000]
     assert "escHTML(String(p.name || p.id))" in window
     assert "escHTML(String(d.reason))" in window
+
+
+def test_heartbeat_shown_while_reencoding():
+    # The players-video transcode runs after the subprocess: keep the message visible.
+    assert "d.status === 'running' || d.status === 'reencoding'" in JS
+
+
+def test_identity_video_link_only_when_rendered():
+    # players.json records the render outcome; a failed or skipped render must not
+    # leave a link to a file that does not exist.
+    assert "detect_' + encodeURIComponent(stem) + '_players.mp4" not in JS
+    assert "d.identity_video" in JS and "vid.status === 'ok'" in JS
+    assert "vid.file" in JS

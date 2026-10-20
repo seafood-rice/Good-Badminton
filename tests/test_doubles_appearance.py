@@ -123,3 +123,44 @@ def test_region_hist_converts_only_the_crop(monkeypatch):
 def test_distance_without_terms_is_one():
     assert ap.distance({"torso": None, "legs": None, "height": None, "embed": None},
                        {"torso": None, "legs": None, "height": None, "embed": None}) == 1.0
+
+
+def _hist(i, n=64):
+    h = np.full(n, 0.001)
+    h[i] = 1.0
+    return h / h.sum()
+
+
+def _sig(torso=None, legs=None, height=None, embed=None):
+    return {"torso": torso, "legs": legs, "height": height, "embed": embed}
+
+
+def test_embedding_term_cosine():
+    e = np.array([1.0, 0.0, 0.0])
+    assert ap.distance(_sig(embed=e), _sig(embed=e)) < 1e-6
+    assert abs(ap.distance(_sig(embed=e), _sig(embed=np.array([0.0, 1.0, 0.0]))) - 0.5) < 1e-6
+    assert abs(ap.distance(_sig(embed=e), _sig(embed=-e)) - 1.0) < 1e-6
+
+
+def test_embedding_reweights_with_the_other_terms():
+    t, e = _hist(3), np.array([1.0, 0.0])
+    d = ap.distance(_sig(torso=t, embed=e), _sig(torso=t, embed=-e))
+    assert abs(d - ap.W_EMBED / (ap.W_TORSO + ap.W_EMBED)) < 1e-6
+
+
+def test_only_shared_terms_count():
+    a = _sig(torso=_hist(3), legs=_hist(5), height=1.8, embed=np.array([1.0, 0.0]))
+    b = _sig(torso=_hist(9))                         # torso only: legs/height/embed ignored
+    assert abs(ap.distance(a, b) - ap.chi2(a["torso"], b["torso"])) < 1e-9
+    c = _sig(legs=_hist(5), height=1.5)              # legs identical, height 0.3 m apart
+    expect = (ap.W_LEGS * 0.0 + ap.W_HEIGHT * min(1.0, 0.3 / ap.HEIGHT_SCALE_M)) / (ap.W_LEGS + ap.W_HEIGHT)
+    assert abs(ap.distance(a, c) - expect) < 1e-9
+
+
+def test_median_signature_keeps_embeddings_and_skips_missing_terms():
+    s = ap.median_signature([_sig(torso=_hist(1), height=1.7, embed=np.array([1.0, 0.0])),
+                             _sig(torso=_hist(1), embed=np.array([3.0, 0.0])),
+                             _sig(legs=_hist(2))])
+    assert np.allclose(s["embed"], [2.0, 0.0])
+    assert s["height"] == 1.7
+    assert np.allclose(s["torso"], _hist(1)) and np.allclose(s["legs"], _hist(2))

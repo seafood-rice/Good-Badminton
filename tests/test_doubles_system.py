@@ -126,7 +126,10 @@ def test_doubles_stage_never_raises(tmp_path):
 
 
 def test_withhold_removes_singles_stroke_outputs(tmp_path):
-    for n in ("strokes.json", "strokes.jsonl", "technique_summary.json", "hits.json"):
+    # training_plan.json is generated from technique_summary.json and served from
+    # cache: a previous singles run's plan would show beside "technique withheld".
+    for n in ("strokes.json", "strokes.jsonl", "technique_summary.json",
+              "training_plan.json", "hits.json"):
         (tmp_path / n).write_text("x")
     s = bare(tmp_path, "doubles")
     s._withhold_singles_outputs_for_doubles()
@@ -236,3 +239,112 @@ def _pretrack_probe(tmp_path, monkeypatch, capture):
 def test_tracknet_pretrack_runs_for_doubles_capture(tmp_path, monkeypatch):
     assert _pretrack_probe(tmp_path, monkeypatch, True) is True
     assert _pretrack_probe(tmp_path, monkeypatch, False) is False
+
+
+def test_shuttle_falls_back_to_yolo_points_without_tracknet(tmp_path):
+    s = bare(tmp_path, "doubles")
+    s._shuttle_trajectory = None
+    s._analysis_track_both = [{"frame": 1, "shuttle": (10.0, 20.0)},
+                              {"frame": 2, "shuttle": None},
+                              {"frame": 3, "shuttle": [0, 0]},
+                              {"frame": 4, "shuttle": [5, 6]}]
+    assert s._doubles_shuttle() == {1: (10.0, 20.0), 4: (5.0, 6.0)}
+    s._analysis_track_both = [{"frame": 1, "shuttle": None}]
+    assert s._doubles_shuttle() is None
+    # TrackNet ran: its track wins, YOLO points are not mixed in.
+    s._shuttle_trajectory = {7: (1.0, 1.0)}
+    s._analysis_track_both = [{"frame": 8, "shuttle": (2.0, 2.0)}]
+    assert s._doubles_shuttle() == {7: (1.0, 1.0)}
+
+
+def test_clean_frame_and_observe_failures_each_log_once(tmp_path, capsys):
+    class Broken:
+        def wants_frame(self):
+            raise RuntimeError("wants")
+
+        def observe(self, *a):
+            raise RuntimeError("observe")
+
+    class Pose:
+        def get_current_pose_data(self):
+            return None
+
+    s = bare(tmp_path, "doubles")
+    s._doubles = Broken()
+    s.player_pose_visualizer = Pose()
+    frame = np.zeros((4, 4, 3), np.uint8)
+    for f in (1, 2):
+        s._doubles_clean_frame(frame, f)
+        s._observe_doubles(f, None, [])
+    out = capsys.readouterr().out
+    # A clean-frame failure must not silence the (different) observe failure.
+    assert out.count("RuntimeError('wants')") == 1
+    assert out.count("RuntimeError('observe')") == 1
+
+
+def test_doubles_stage_reports_progress_substages(tmp_path, monkeypatch):
+    from badminton_analysis.visualization import doubles_render as dr
+
+    s = bare(tmp_path, "doubles")
+    (tmp_path / "v.mp4").write_text("x")
+    seen = []
+    s._write_progress = lambda stage, current_frame=None, substage=None: seen.append(
+        (stage, substage, current_frame))
+
+    class Fake:
+        identity_tracks = {}
+
+        def finalize(self, *a, **k):
+            seen.append("finalize")
+            return {"match_format": "doubles", "players": []}
+
+    def render(*a, progress=None, **k):
+        progress(5)
+        return True
+
+    s._doubles = Fake()
+    monkeypatch.setattr(dr, "write_heatmaps", lambda *a, **k: seen.append("heatmaps") or [])
+    monkeypatch.setattr(dr, "render_identity_video", render)
+    s._run_doubles_stage(30.0, 5)
+    assert seen.index(("visualizing", "doubles_identity", None)) < seen.index("finalize")
+    assert seen.index(("visualizing", "doubles_heatmaps", None)) < seen.index("heatmaps")
+    assert ("visualizing", "doubles_video", 5) in seen
+    singles = bare(tmp_path, "singles")
+    singles._write_progress = lambda *a, **k: seen.append("singles")
+    singles._run_doubles_stage(30.0, 5)
+    assert "singles" not in seen
+
+
+def _identity_video_record(tmp_path, monkeypatch, *, source=True, rendered=True):
+    tmp_path.mkdir()
+    from badminton_analysis.data.writer import write_json
+    from badminton_analysis.visualization import doubles_render as dr
+
+    s = bare(tmp_path, "doubles")
+    if source:
+        (tmp_path / "v.mp4").write_text("x")
+
+    class Fake:
+        identity_tracks = {}
+
+        def finalize(self, save_dir, *a, **k):
+            payload = {"match_format": "doubles", "status": "ok", "players": []}
+            write_json(str(tmp_path / "players.json"), payload)
+            return payload
+
+    s._doubles = Fake()
+    monkeypatch.setattr(dr, "write_heatmaps", lambda *a, **k: [])
+    monkeypatch.setattr(dr, "render_identity_video", lambda *a, **k: rendered)
+    s._run_doubles_stage(30.0, 5)
+    saved = json.loads((tmp_path / "players.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "ok"                     # the rest of the payload is kept
+    return saved["identity_video"]
+
+
+def test_identity_video_outcome_recorded_in_players_json(tmp_path, monkeypatch):
+    assert _identity_video_record(tmp_path / "a", monkeypatch) == {
+        "status": "ok", "file": "detect_v_players.mp4", "reason": None}
+    assert _identity_video_record(tmp_path / "b", monkeypatch, rendered=False) == {
+        "status": "failed", "file": None, "reason": "render failed"}
+    assert _identity_video_record(tmp_path / "c", monkeypatch, source=False) == {
+        "status": "skipped", "file": None, "reason": "source video missing"}

@@ -175,15 +175,18 @@ tracklet confidence, and a status.
    - `ok` - 4 identities each covering at least 20% of the analysed frames.
    - `degraded` - fewer than 4 identities meet that bar (e.g. the far back-court is not
      visible, or bystanders dominate). Identities are still reported with their coverage.
-   - `degraded_teams` - median team-placement confidence among unforced tracklets below
+   - `degraded_teams` - median team-placement confidence among unforced components below
      0.3: teams cannot be told apart by appearance; identities are reported per side only
-     (team field null).
+     (team field null). The median is weighted by each component's frame count
+     (amended 2026-10-18): unweighted, a few short orphan tracklets placed with
+     confidence 0 could outvote long, confidently placed components and flip a whole run.
    - `error` - the stage raised; the message is recorded and every earlier output stands.
 
 ### 6.5 Who hit (`hitter.py`)
 
 Input: the run's side-level hit list (learned or contact rule, as written to `hits.json`
-today), the identity tracks, fps, and the shuttle track if any.
+today), the identity tracks, fps, and the shuttle track if any: the dense TrackNet track when it ran, otherwise the per-frame
+YOLO shuttle points (amended 2026-10-18).
 
 For each hit with side `s` at frame `f`, candidates = identities on side `s` at `f`
 (within +/- 2 frames).
@@ -240,7 +243,9 @@ only, per hit: `hitter_id` (e.g. `"P3"` or null), `hitter_team` (1, 2 or null),
 - `detect_<stem>_players.mp4`: a post-loop re-render of the source video drawing each
   identity's foot point, label and team colour (4 fixed colours), using `tracklets.jsonl`
   and the assignment. No inference; decode + draw + encode. Skipped with a recorded reason
-  if it fails.
+  if it fails: `players.json` gets `"identity_video": {"status": "ok" | "failed" |
+  "skipped", "file": <name or null>, "reason": <text or null>}` after the render, and
+  Kestrel links the video only when the status is `ok` (added 2026-10-19).
 - Optional names: `outputs/<stem>/player_names.json` (`{"P1": "Alice"}`) is read when
   present and copied into `players.json`; Kestrel can write it via the existing output
   file route.
@@ -249,7 +254,8 @@ only, per hit: `hitter_id` (e.g. `"P3"` or null), `hitter_team` (1, 2 or null),
 
 - `_run_stroke_recognition` and `_run_technique_analysis` are skipped on doubles runs. The
   console and `players.json` record `"stroke_labels_withheld": "doubles: BST is a singles
-  model"`; any previous run's `strokes.json` / `strokes.jsonl` / `technique_summary.json`
+  model"`; any previous run's `strokes.json` / `strokes.jsonl` / `technique_summary.json` /
+  `training_plan.json` (the cached plan derived from the summary; added 2026-10-19)
   are removed (same stale-output rule as today).
 - Hit detection: the learned model (if configured) and the contact rule still run, side
   level only; their output feeds 6.5.

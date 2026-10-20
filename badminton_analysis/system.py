@@ -249,10 +249,12 @@ class _ProgressHeartbeat:
     latest frame count, independent of how often the tracker reports.
     """
 
-    def __init__(self, write, stage, interval=2.0):
+    def __init__(self, write, stage, interval=2.0, substage=None):
         self._write = write
         self._stage = stage
         self._interval = interval
+        # Passed only when set, so callers without sub-stages see the old call.
+        self._extra = {"substage": substage} if substage else {}
         self.current = 0
         self._stop = threading.Event()
         self._thread = None
@@ -261,20 +263,20 @@ class _ProgressHeartbeat:
         self.current = int(done)
 
     def __enter__(self):
-        self._write(self._stage, current_frame=0)
+        self._write(self._stage, current_frame=0, **self._extra)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
 
     def _run(self):
         while not self._stop.wait(self._interval):
-            self._write(self._stage, current_frame=self.current)
+            self._write(self._stage, current_frame=self.current, **self._extra)
 
     def __exit__(self, *exc):
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
-        self._write(self._stage, current_frame=self.current)
+        self._write(self._stage, current_frame=self.current, **self._extra)
         return False
 
 
@@ -1422,9 +1424,9 @@ class BadmintonAnalysisSystem:
         try:
             wanted = collector.wants_frame()
         except Exception as exc:
-            if not getattr(self, "_doubles_observe_logged", False):
-                self._doubles_observe_logged = True
-                print(f"Doubles observation failed (frame {frame_count}): {exc!r}")
+            if not getattr(self, "_doubles_clean_frame_logged", False):
+                self._doubles_clean_frame_logged = True
+                print(f"Doubles frame sampling failed (frame {frame_count}): {exc!r}")
             return None
         return frame.copy() if wanted else None
 
@@ -1445,7 +1447,10 @@ class BadmintonAnalysisSystem:
     def _withhold_singles_outputs_for_doubles(self):
         from .tracking.doubles import STROKES_WITHHELD
         print(f"Stroke labels and technique scoring withheld: {STROKES_WITHHELD}")
-        for name in ("strokes.json", "strokes.jsonl", "technique_summary.json"):
+        # training_plan.json is generated from technique_summary.json and cached:
+        # a singles run's plan would otherwise be served beside "technique withheld".
+        for name in ("strokes.json", "strokes.jsonl", "technique_summary.json",
+                     "training_plan.json"):
             try:
                 os.remove(os.path.join(self.save_dir, name))
             except FileNotFoundError:
@@ -1478,10 +1483,15 @@ class BadmintonAnalysisSystem:
         return frames or None
 
     def _doubles_shuttle(self):
-        """Dense shuttle track as {frame: (x, y)}, skipping frames with no detection."""
+        """Shuttle track as {frame: (x, y)}, skipping frames with no detection, or None.
+
+        The dense TrackNet track when it ran; otherwise the per-frame YOLO shuttle
+        points recorded in ``_analysis_track_both`` (sparser, but still evidence).
+        """
         traj = getattr(self, "_shuttle_trajectory", None)
         if traj is None:
-            return None
+            traj = {r["frame"]: r.get("shuttle")
+                    for r in getattr(self, "_analysis_track_both", None) or []}
         out = {}
         for k, v in traj.items():
             if v is None:
@@ -1490,7 +1500,7 @@ class BadmintonAnalysisSystem:
             if x == 0.0 and y == 0.0:
                 continue
             out[int(k)] = (x, y)
-        return out
+        return out or None
 
     def _run_doubles_stage(self, fps, analysed_frames):
         """Post-loop doubles analysis. Singles: only removes stale doubles outputs."""
@@ -1507,20 +1517,34 @@ class BadmintonAnalysisSystem:
                 _write_json(os.path.join(self.save_dir, "players.json"),
                             dbl.make_payload("error", "doubles collector unavailable"))
                 return
+            self._write_progress("visualizing", substage="doubles_identity")
             payload = collector.finalize(self.save_dir, analysed_frames,
                                          shuttle=self._doubles_shuttle(),
                                          constraint_frames=self._doubles_constraint_frames())
             from .visualization.doubles_render import render_identity_video, write_heatmaps
+            self._write_progress("visualizing", substage="doubles_heatmaps")
             write_heatmaps(self.save_dir, payload, collector.identity_tracks)
+            video = {"status": "skipped", "file": None, "reason": "source video missing"}
             if os.path.exists(self.video_path):
-                out = os.path.join(self.save_dir, dbl.players_video_name(self.video_name))
-                if render_identity_video(self.video_path, out, collector.identity_tracks,
-                                         payload.get("players") or [], fps=fps):
+                name = dbl.players_video_name(self.video_name)
+                out = os.path.join(self.save_dir, name)
+                # Re-reads and re-encodes the whole video: minutes on 4K, so beat.
+                with _ProgressHeartbeat(self._write_progress, "visualizing",
+                                        substage="doubles_video") as beat:
+                    rendered = render_identity_video(
+                        self.video_path, out, collector.identity_tracks,
+                        payload.get("players") or [], fps=fps, progress=beat.update)
+                if rendered:
+                    video = {"status": "ok", "file": name, "reason": None}
                     print(f"Identity video: {out}")
                 else:
-                    print("Identity video skipped: render failed")
-            else:
-                print("Identity video skipped: source video missing")
+                    video = {"status": "failed", "file": None, "reason": "render failed"}
+            if video["status"] != "ok":
+                print(f"Identity video skipped: {video['reason']}")
+            # Recorded so consumers link the video only when it exists (spec 6.6).
+            from .data.writer import write_json as _write_json
+            payload["identity_video"] = video
+            _write_json(os.path.join(self.save_dir, "players.json"), payload)
         except Exception as exc:
             print(f"Doubles stage failed: {exc!r}")
 
@@ -1844,8 +1868,12 @@ class BadmintonAnalysisSystem:
         "visualizing": 97, "encoding": 99, "done": 100,
     }
 
-    def _write_progress(self, stage, current_frame=None):
-        """Write a progress heartbeat to <save_dir>/progress.json. Never fatal."""
+    def _write_progress(self, stage, current_frame=None, substage=None):
+        """Write a progress heartbeat to <save_dir>/progress.json. Never fatal.
+
+        ``substage`` names a step inside a long stage (the doubles identity solve
+        and identity-video render run under "visualizing"); it is omitted when None.
+        """
         try:
             total = int(getattr(self, "_total_frames", 0) or 0)
             fixed = self._PROGRESS_STAGE_PCT.get(stage)
@@ -1862,6 +1890,8 @@ class BadmintonAnalysisSystem:
                 "pct": int(pct),
                 "updated": time.time(),
             }
+            if substage:
+                payload["substage"] = substage
             with open(os.path.join(self.save_dir, "progress.json"), "w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
         except Exception:
