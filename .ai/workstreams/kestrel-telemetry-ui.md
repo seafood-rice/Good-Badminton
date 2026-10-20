@@ -45,6 +45,19 @@ See spec section 9. Plan: `docs/superpowers/plans/2026-10-19-kestrel-telemetry-u
 
 Baseline before this work: 1246 passed, 3 skipped. Not browser-checked: reduced-motion rendering, the "approx." marker and "as <Technique>" cell after the final fix wave, the lane offset.
 
+## Doubles support (added 2026-10-20)
+
+Owner asked that every feature support doubles matches; chose per-identity athlete mapping. Spec
+`docs/superpowers/specs/2026-10-20-kestrel-doubles-support-design.md`, plan
+`docs/superpowers/plans/2026-10-20-kestrel-doubles-support.md`. Match records gain `format: "doubles"` with
+`players` P1-P4 -> athlete/name and `result {winner_team, sets}`; the sidecar gains a `doubles` insight
+(INSIGHTS_VERSION 6); the overview gains `doubles`, doubles match rows (with `teams`), the athlete's doubles grid in
+the court map, doubles results in match win rate, and two findings; the UI gains a Doubles players widget, doubles
+record editor, workspace identity video / who-hit strip / players panel, localized doubles stages.
+Technique/stroke scores stay withheld on doubles; who-hit is unvalidated. Verification: full pytest 1978 passed,
+2 skipped at `11dfd25`; node 250 passed at the head; browser pass with a temporary synthetic doubles run (removed).
+Not browser-checked: identity-video playback, reduced motion.
+
 ## Next action
 
 Owner reviews and merges the PR. Follow-ups worth planning (not done): match-record import from
