@@ -108,6 +108,16 @@ never echoed). Value:
 - `scope.units` counts singles units plus mapped doubles identity units (document the choice in code).
 - Findings: new codes `doubles_identity_degraded{status}` (watch), `doubles_hits_unvalidated{named_share}` (info,
   only when an athlete summary exists).
+- As built (Task 3 and its fix round 1; the full contract is in telemetry spec 5.4):
+  - `matches` counts **analysed** doubles stems only; a `new`/`processing` doubles stem is a row, not a run.
+  - `Summary` gains `hits_named_of` (the hits of the rows that report `hits_named`);
+    `named_share = hits_named / hits_named_of`, and the UI's "N of M" uses it. `hits` still sums every row.
+  - Every doubles row gains `teams: ["A / B", "C / D"] | null` (team 1 first; names resolved like
+    `runs[].players[].athlete`, else the identity id; null without team info). A no-scope row is titled from it.
+  - `movement.position.distance_m` sums known distances only, and `mean_speed_mps` is computed from units whose
+    distance and speed are both known; either is null when nothing usable exists. This also applies to singles.
+  - `doubles_hits_unvalidated` needs a numeric `named_share`; `doubles_identity_degraded` shows the localized
+    identity status.
 
 ### 4.3 Jobs
 

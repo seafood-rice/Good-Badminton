@@ -84,10 +84,10 @@ test('findingText interpolates the numbers', () => {
   assert.ok(zh.title.includes('66') && zh.title.includes('70') && zh.title.includes('吊球'), zh.title);
 });
 
-test('doubles findings show the status token and the named share as a percentage', () => {
+test('doubles findings show the localized status and the named share as a percentage', () => {
   const deg = findingText({ code: 'doubles_identity_degraded', params: { status: 'degraded' } }, 'en').title;
-  assert.equal(deg, 'Player identities for a doubles match are only partly reliable (degraded).');
-  assert.ok(findingText({ code: 'doubles_identity_degraded', params: { status: 'degraded' } }, 'zh').title.includes('degraded'));
+  assert.equal(deg, 'Player identities for a doubles match are only partly reliable (Identities degraded).');
+  assert.ok(findingText({ code: 'doubles_identity_degraded', params: { status: 'degraded' } }, 'zh').title.includes('身份识别降级'));
   const en = findingText({ code: 'doubles_hits_unvalidated', params: { named_share: 0.4 } }, 'en').title;
   assert.equal(en, 'Who-hit for your doubles matches is unvalidated: 40% of hits were named.');
   const zh = findingText({ code: 'doubles_hits_unvalidated', params: { named_share: 0.4 } }, 'zh').title;

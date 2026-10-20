@@ -780,7 +780,7 @@ from tests.insights_fixtures import DOUBLES_TEAMS, grid_at  # noqa: E402
 
 DOUBLES_ROW_KEYS = {"stem", "date", "date_source", "side", "athlete", "opponent", "result", "sets",
                     "tech_index", "status", "needs_review", "doubles", "format", "athlete_player",
-                    "team", "partner"}
+                    "team", "partner", "teams"}
 _CELL = {"P1": (2, 1), "P2": (8, 8), "P3": (7, 1), "P4": (1, 8)}
 
 
@@ -863,7 +863,8 @@ def test_doubles_athlete_scope_keeps_singles_kpis_singles_only():
     assert [r["stem"] for r in dbl["value"]["runs"]] == ["D1"]
     athlete = dbl["value"]["athlete"]
     assert set(athlete) == {"distance_m", "avg_speed_mps", "max_speed_mps", "frames", "hits",
-                            "hits_named", "named_share", "matches", "grid", "samples"}
+                            "hits_named", "hits_named_of", "named_share", "matches", "grid",
+                            "samples"}
     assert (athlete["distance_m"], athlete["hits"], athlete["hits_named"]) == (40.0, 10, 4)
     assert athlete["named_share"] == 0.4 and athlete["matches"] == 1
     assert athlete["samples"] == 100 and athlete["grid"][7][1] == 1.0
@@ -1091,7 +1092,7 @@ def test_athlete_summary_of_nothing_is_null_not_zero():
                            range_="all")["doubles"]["value"]["athlete"]
     assert s["matches"] == 1
     for key in ("distance_m", "avg_speed_mps", "max_speed_mps", "frames", "hits", "hits_named",
-                "named_share", "grid", "samples"):
+                "hits_named_of", "named_share", "grid", "samples"):
         assert s[key] is None, key
 
 
@@ -1202,3 +1203,106 @@ def test_findings_doubles_codes_from_a_bare_overview():
     assert findings.build_findings({"doubles": "junk"}) == []
     assert findings.build_findings({"doubles": {"status": "unavailable", "value": {
         "runs": [{"status": "degraded"}]}}}) == []
+
+
+# ---- doubles fix round 1 ----------------------------------------------------------------
+
+def test_doubles_rows_carry_both_teams_names():
+    data, ids, units = _mixed()
+    for kwargs in ({}, {"athlete": ids["tanaka"]}, {"squad": ids["squad"]}):
+        rows = aggregate.overview(units, data, range_="all", **kwargs)["matches"]
+        d1 = [m for m in rows if m["stem"] == "D1"][0]
+        assert d1["teams"] == ["Alice / Bob", "J. Tanaka / Dee"], kwargs
+    rows = aggregate.overview(units, data, range_="all")["matches"]
+    d3 = [m for m in rows if m["stem"] == "D3"][0]
+    assert d3["teams"] == ["P1 / P2", "P3 / P4"]           # unmapped: identity ids
+    d2 = [m for m in rows if m["stem"] == "D2"][0]
+    assert d2["teams"] == ["S. Ito / P2", "P3 / P4"]
+    assert "teams" not in [m for m in rows if m["stem"] == "A"][0]     # singles rows unchanged
+
+
+def test_doubles_row_teams_from_players_json_names_and_null_without_teams():
+    data, ids = _store()
+    players = [_dplayer("P1", name="Pip"), _dplayer("P2"), _dplayer("P3"), _dplayer("P4", team=None)]
+    row = aggregate.overview([_dunit("D1", players=players)], data, range_="all")["matches"][0]
+    assert row["teams"] == ["Pip / P2", "P3"]
+    only_one = [_dplayer("P1"), _dplayer("P2")]
+    row = aggregate.overview([_dunit("D1", players=only_one)], data, range_="all")["matches"][0]
+    assert row["teams"] == ["P1 / P2", None]
+    row = aggregate.overview([_dunit("D1", status="degraded_teams")], data, range_="all")["matches"][0]
+    assert row["teams"] is None
+    row = aggregate.overview([_dunit("D1", unavailable="doubles_error")], data,
+                             range_="all")["matches"][0]
+    assert row["teams"] is None
+    data = _dmatch(data, "N1", {"P3": ids["tanaka"]})
+    row = aggregate.overview([{"stem": "N1", "insights": None}], data, athlete=ids["tanaka"],
+                             range_="all")["matches"][0]
+    assert row["teams"] is None and set(row) == DOUBLES_ROW_KEYS
+
+
+def test_position_distance_and_speed_skip_unknowns():
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"])
+    data = _dmatch(data, "D1", {"P3": ids["tanaka"]})
+    players = [_dplayer("P3", distance_m=40.0, avg_speed_mps=None)]
+    units = [_unit("A", movement={"upper": (2, 3, 300, 100.0, 2.0)}),
+             _dunit("D1", players=players)]
+    value = aggregate.overview(units, data, athlete=ids["tanaka"],
+                               range_="all")["movement"]["position"]["value"]
+    assert value["distance_m"] == 140.0
+    assert value["mean_speed_mps"] == 2.0          # never 140 / 50 = 2.8
+    players = [_dplayer("P3", distance_m=None, avg_speed_mps=None)]
+    value = aggregate.overview([_dunit("D1", players=players)], data, athlete=ids["tanaka"],
+                               range_="all")["movement"]["position"]["value"]
+    assert value["distance_m"] is None and value["mean_speed_mps"] is None
+    assert value["samples"] == 100
+
+
+def test_singles_position_with_unknown_speed_is_null_not_zero():
+    data, _ = _store()
+    doc = unit_doc("A", movement={"upper": (2, 3, 300, 100.0, 2.0)})
+    doc["movement"]["value"]["upper"]["mean_speed_mps"] = None
+    value = aggregate.overview([{"stem": "A", "insights": doc}], data,
+                               range_="all")["movement"]["position"]["value"]
+    assert value["distance_m"] == 100.0 and value["mean_speed_mps"] is None
+    doc["movement"]["value"]["upper"]["distance_m"] = "junk"
+    value = aggregate.overview([{"stem": "A", "insights": doc}], data,
+                               range_="all")["movement"]["position"]["value"]
+    assert value["distance_m"] is None and value["mean_speed_mps"] is None
+
+
+def test_raw_store_with_one_athlete_on_two_identities_counts_once():
+    data, ids = _store()
+    data["matches"]["D1"] = {"date": None, "format": "doubles", "result": None,
+                             "players": {"P1": {"athlete_id": ids["tanaka"]},
+                                         "P3": {"athlete_id": ids["tanaka"]}}}
+    ov = aggregate.overview([_dunit("D1")], data, athlete=ids["tanaka"], range_="all")
+    assert ov["scope"]["units"] == 1
+    assert [m["athlete_player"] for m in ov["matches"]] == ["P1"]
+    assert ov["doubles"]["value"]["athlete"]["matches"] == 1
+
+
+def test_athlete_summary_named_share_uses_the_rows_with_both_counts():
+    data, ids = _store()
+    data = _dmatch(data, "D1", {"P3": ids["tanaka"]})
+    data = _dmatch(data, "D2", {"P3": ids["tanaka"]})
+    units = [_dunit("D1", date="2026-10-01", players=[_dplayer("P3", hits=10, hits_named=4)]),
+             _dunit("D2", date="2026-10-02",
+                    players=[_dplayer("P3", hits=10, hits_named=None)])]
+    s = aggregate.overview(units, data, athlete=ids["tanaka"],
+                           range_="all")["doubles"]["value"]["athlete"]
+    assert (s["hits"], s["hits_named"], s["hits_named_of"], s["named_share"]) == (20, 4, 10, 0.4)
+
+
+def test_number_never_raises_on_huge_ints():
+    from badminton_analysis.insights.loaders import number
+    assert number(10 ** 400) is None and number(-(10 ** 400)) is None
+    assert number(10 ** 6) == 1e6
+    data, ids = _store()
+    data = _dmatch(data, "D1", {"P3": ids["tanaka"]})
+    players = [_dplayer("P3", hits=10 ** 400, frames=10 ** 400, distance_m=10 ** 400, samples=10 ** 400)]
+    ov = aggregate.overview([_dunit("D1", players=players)], data, athlete=ids["tanaka"],
+                            range_="all")
+    json.dumps(ov, allow_nan=False)
+    assert ov["doubles"]["value"]["athlete"]["hits"] is None
+

@@ -61,7 +61,10 @@ def number(value):
     """A finite float, or None (booleans and non-numbers are not numbers)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    value = float(value)
+    try:
+        value = float(value)
+    except OverflowError:       # an int too large for a float (e.g. 10 ** 400) is no number
+        return None
     return value if math.isfinite(value) else None
 
 

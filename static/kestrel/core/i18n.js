@@ -602,6 +602,7 @@ export const STRINGS = {
     'dbl.tile.hits_named': '已归属击球',
     'dbl.tile.named_of': '{total} 次击球中 {named} 次',
     'dbl.row.no_names': '双打 · 还没有对应运动员',
+    'dbl.row.sub': '双打 · {stem}',
     'dbl.record.identities': '按身份对应运动员',
     'dbl.record.identity_hint': '把每个被跟踪的身份对应到一名运动员；标签里的队伍和覆盖率来自球员数据。',
     'dbl.record.no_identity_data': '无法读取身份数据，身份标签不含队伍和覆盖率。',
@@ -1217,6 +1218,7 @@ export const STRINGS = {
     'dbl.tile.hits_named': 'Hits named',
     'dbl.tile.named_of': '{named} of {total} hits',
     'dbl.row.no_names': 'Doubles · no athletes mapped yet',
+    'dbl.row.sub': 'Doubles · {stem}',
     'dbl.record.identities': 'Athletes by identity',
     'dbl.record.identity_hint': 'Map each tracked identity to an athlete; the team and coverage in each label come from the players data.',
     'dbl.record.no_identity_data': 'Identity data could not be read, so the labels have no team or coverage.',
@@ -1333,9 +1335,12 @@ export function findingText(finding, lang) {
       Object.assign(out, { signal: STRINGS.en[sigKey] !== undefined ? t(sigKey, lang) : String(p.signal === undefined ? '' : p.signal) });
       break;
     }
-    case 'doubles_identity_degraded':
-      Object.assign(out, { status: typeof p.status === 'string' ? p.status : '' });
+    case 'doubles_identity_degraded': {
+      // The identity status reads as its localized label ("Teams unknown"), never the raw token.
+      const statusKey = 'dbl.status.' + p.status;
+      Object.assign(out, { status: typeof p.status === 'string' && STRINGS.en[statusKey] !== undefined ? t(statusKey, lang) : t('dbl.status.unknown', lang) });
       break;
+    }
     case 'doubles_hits_unvalidated': {
       // The share arrives as 0-1; shown as a whole percentage, a dash when unusable.
       const share = p.named_share === null || p.named_share === undefined || p.named_share === '' ? NaN : Number(p.named_share);

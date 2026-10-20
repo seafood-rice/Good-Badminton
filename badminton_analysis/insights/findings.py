@@ -86,7 +86,7 @@ def build_findings(overview):
     if status == "partial" and rally is not None:
         found.append(_finding("rally_estimated", "info", signal=rally.get("signal")))
 
-    _status, doubles = _kpi_value(ov, "doubles")
+    doubles = _kpi_value(ov, "doubles")[1]
     if doubles is not None:
         runs = doubles.get("runs")
         degraded = next((r.get("status") for r in runs if isinstance(r, dict)

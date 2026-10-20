@@ -69,6 +69,10 @@ export function matchRows(overview) {
       row.athletePlayer = typeof m.athlete_player === 'string' && IDENTITY_IDS.includes(m.athlete_player) ? m.athlete_player : null;
       row.team = m.team === 1 || m.team === 2 ? m.team : null;
       row.partner = str(m.partner) || null;
+      // Spec 4.2: both teams' display names, team 1 first ("A / B"), null without team info.
+      row.teams = Array.isArray(m.teams) && m.teams.length === 2 && m.teams.some((x) => str(x))
+        ? m.teams.map((x) => str(x).trim().slice(0, 200) || null)
+        : null;
     }
     rows.push(row);
   }
@@ -242,6 +246,21 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}, 
   return { ...out, dbl: null };
 }
 
+/**
+ * Pure: the peek model painted before the record and sidecar arrive. `seed` is {stem} or an overview match row:
+ * a doubles row (`doubles: true`) gives the doubles layout straight away, titled like its Matches row
+ * ("A / B vs. C / D" from `teams` or the athlete's perspective); anything else the singles one.
+ */
+export function peekSeed(seed, stem, athletes, athleteId, lang) {
+  const sd = obj(seed);
+  if (sd.doubles !== true) return peekModel({ stem, record: {}, insights: null, athletes, athleteId }, lang);
+  const base = peekModel({ stem, record: { format: 'doubles' }, insights: null, athletes, athleteId }, lang);
+  const [row] = matchRows({ matches: [{ ...sd, stem: str(stem) || str(sd.stem) || '?' }] });
+  const title = row ? rowTitle(row, lang).title : '';
+  if (title && title !== row.stem) base.dbl.title = { ...base.dbl.title, text: title, vs: true };
+  return base;
+}
+
 function singlesPeek(stem, rec, ins, athletes, athleteId) {
   const names = {};
   for (const s of SIDES) {
@@ -296,14 +315,37 @@ export function rowTitle(row, lang) {
   return { title: t('mv.vs', lang, { a: r.athlete || sides.a, b: r.opponent || sides.b }), sub: str(r.stem) };
 }
 
-/** Doubles row title: "A / B vs. C / D"; a missing name falls back to the identity or team label; no names: the stem. */
+const IDENTITY_LABEL = /^P\d{1,2}$/;
+
+/** True when a team label ("Alice / P2") holds at least one real name, not only identity ids. */
+function hasRealName(label) {
+  return typeof label === 'string' && label.split(' / ').some((part) => part.trim() && !IDENTITY_LABEL.test(part.trim()));
+}
+
+/**
+ * Doubles row title. With the athlete's perspective: "Athlete / Partner vs. Opponents" (a missing side falls back
+ * to the row's `teams` label, then the team label). Without one (no-scope rows): both `teams` labels, team 1 first,
+ * with a neutral "Doubles · <video>" subtitle. Only when no name at all is known: the video name, with the
+ * "no athletes mapped yet" subtitle.
+ */
 function doublesRowTitle(r, lang) {
+  const teams = Array.isArray(r.teams) ? r.teams : [null, null];
   const own = [r.athlete || r.athletePlayer, r.partner].filter(Boolean).join(' / ');
-  if (!own && !r.opponent) return { title: str(r.stem), sub: t('dbl.row.no_names', lang) };
   const team = r.team === 2 ? 2 : r.team === 1 ? 1 : null;
-  const a = own || (team ? t('dbl.team', lang, { n: team }) : t('dbl.team_unknown', lang));
-  const b = r.opponent || (team ? t('dbl.team', lang, { n: team === 1 ? 2 : 1 }) : t('dbl.team_unknown', lang));
-  return { title: t('mv.vs', lang, { a, b }), sub: str(r.stem) };
+  const label = (n) => (n ? t('dbl.team', lang, { n }) : t('dbl.team_unknown', lang));
+  if (own || r.opponent) {
+    const other = team ? (team === 1 ? 2 : 1) : null;
+    const a = own || (team && teams[team - 1]) || label(team);
+    const b = r.opponent || (other && teams[other - 1]) || label(other);
+    return { title: t('mv.vs', lang, { a, b }), sub: str(r.stem) };
+  }
+  if (teams.some(hasRealName)) {
+    return {
+      title: t('mv.vs', lang, { a: teams[0] || label(1), b: teams[1] || label(2) }),
+      sub: t('dbl.row.sub', lang, { stem: str(r.stem) }),
+    };
+  }
+  return { title: str(r.stem), sub: t('dbl.row.no_names', lang) };
 }
 
 // ---------- shared DOM helpers ----------
@@ -455,8 +497,10 @@ export function buildMatchPeek(row, ctx = {}) {
   const s = storeState(ctx);
   const athleteId = obj(s.scope).athlete || s.athlete || '';
   const seed = obj(row);
-  const base = peekModel({ stem, record: {}, insights: null, athletes: s.athletes, athleteId }, lang);
-  if (seed.athlete || seed.opponent) {
+  // An overview row that says doubles opens in the doubles layout at once (titled from its teams), not the
+  // singles one, until the record and sidecar arrive.
+  const base = peekSeed(seed, stem, s.athletes, athleteId, lang);
+  if (!base.dbl && (seed.athlete || seed.opponent)) {
     const sd = SIDES.includes(seed.side) ? seed.side : 'lower';
     base.names = { [sd]: str(seed.athlete) || null, [otherSide(sd)]: str(seed.opponent) || null };
   }
@@ -482,6 +526,10 @@ export function buildMatchPeek(row, ctx = {}) {
         pm.names = base.names;
         pm.date = base.date;
         pm.dateApprox = base.dateApprox;
+        if (base.dbl && !pm.dbl) {
+          pm.dbl = base.dbl;
+          pm.doubles = true;
+        } else if (base.dbl && pm.dbl && !pm.dbl.title.text) pm.dbl.title = base.dbl.title;
       }
       paint(pm, mode);
     });

@@ -250,7 +250,7 @@ Response:
   "matches": [ {"stem","date","date_source","side","athlete","opponent","result":"W|L|null","sets",
                 "tech_index","status":"analysed|processing|new","needs_review":bool,"doubles":bool,
                 /* doubles rows only: */ "format":"doubles","athlete_player":"P1".."P4"|null,
-                "team":1|2|null,"partner":name|null} ],
+                "team":1|2|null,"partner":name|null,"teams":["A / B"|null,"C / D"|null]|null} ],
   "findings": [ {"code","severity":"watch|good|info","params":{}} ] }
 ```
 
@@ -263,24 +263,36 @@ Doubles (addendum `2026-10-20-kestrel-doubles-support-design.md` 4.2, as built):
   stems in scope they are `unavailable` + `doubles_run`. Rally windows of doubles stems still feed `avg_rally`.
 - `doubles`: `unavailable` + `no_data` without an analysed doubles stem in scope; `ok` when every run's identity
   status is `ok`; else `partial` with the newest non-ok run's reason (`doubles_degraded{status}`,
-  `doubles_error`, `no_players`); `coverage` = runs with identities / runs. `matches` = analysed doubles stems in
-  scope. `Run = {stem, date, date_source, status: ok|degraded|degraded_teams|error|missing, validated: false,
+  `doubles_error`, `no_players`); `coverage` = runs with identities / runs. `matches` (and `runs`) count
+  **analysed** doubles stems in scope only: a `new`/`processing` doubles stem is a row but not a run. `Run = {stem, date, date_source, status: ok|degraded|degraded_teams|error|missing, validated: false,
   teams: [{id, players, hits, hits_named}], players: [{id, team, name, athlete, coverage, frames, distance_m,
   avg_speed_mps, max_speed_mps, hits, hits_named, samples}]}`, newest first; `athlete` = the record's athlete
   (current registry name) or free-text name, else the identity's own `name`, else null. `Summary = {distance_m,
-  avg_speed_mps, max_speed_mps, frames, hits, hits_named, named_share, matches, grid, samples}` (athlete scope
-  only): sums and frame-weighted speeds over the athlete's identities, max of the maxima, grid sample-weighted
-  and renormalised; null numbers are skipped and a sum of nothing is null, never 0. Under `degraded_teams` every
-  team is null.
+  avg_speed_mps, max_speed_mps, frames, hits, hits_named, hits_named_of, named_share, matches, grid, samples}`
+  (athlete scope only): sums and frame-weighted speeds over the athlete's identities, max of the maxima, grid
+  sample-weighted and renormalised; null numbers are skipped and a sum of nothing is null, never 0. `hits` sums
+  every row's hits; `hits_named_of` sums the hits of the rows that also report `hits_named`, and
+  `named_share = hits_named / hits_named_of` (the "N of M" text uses `hits_named_of`). Under `degraded_teams`
+  every team is null. An athlete counts once per match (only the first identity of a hand-edited store that maps
+  them twice).
 - `movement.position` in athlete scope also merges the athlete's doubles identity grids (sample-weighted, with
   their distance and average speed; `coverage.of` counts the doubles units too). Squad / no scope: singles only.
+  For singles and doubles alike, `distance_m` sums the known distances (null when none is known) and
+  `mean_speed_mps` = total distance / total time over the units whose distance **and** speed are both known
+  (null when none): a unit without a speed never inflates it.
 - Doubles rows: athlete or squad scope gives one row per selected identity; no scope gives one stem-level row
   (`athlete_player`/`team`/`athlete`/`partner`/`opponent`/`result` null). `opponent` = the other team's names
   joined with " / " (null when none known); `result` W/L from the record's `winner_team` vs the athlete's team
   (null when either is unknown); `sets` `[own, opp]` for the athlete's team, team-1-first when the team is
   unknown; `side` and `tech_index` null; `needs_review` = identity status is not `ok` (false before analysis).
-- Findings: `doubles_identity_degraded{status}` (watch, first `degraded`/`degraded_teams` run) and
-  `doubles_hits_unvalidated{named_share}` (info, only with an athlete summary that has a named share).
+  `teams` (every doubles row, any scope) = both teams' display labels, team 1 first, each identity read as its
+  resolved name (registry name, record free-text, `players.json` name) else its id (`"P1 / P2"`); an empty team
+  is null; the whole key is null without team info (`degraded_teams`, error/missing, not analysed). The Matches
+  view titles a no-perspective row from it ("A / B vs. C / D", subtitle "Doubles · <video>"), keeping "no
+  athletes mapped yet" only when no real name is known.
+- Findings: `doubles_identity_degraded{status}` (watch, first `degraded`/`degraded_teams` run; the UI shows the
+  localized identity status, not the token) and `doubles_hits_unvalidated{named_share}` (info, only with an
+  athlete summary whose `named_share` is a number; a summary without one gives no finding).
 
 `technique_index.delta` = last point minus first point of the trend (null with fewer than 2 points).
 `net_share` = classified `net` strokes / classified strokes for the selection. `pull_rear` = mean of unit

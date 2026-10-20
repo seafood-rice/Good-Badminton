@@ -914,7 +914,10 @@ export function mount(container, opts = {}) {
   // ----- interactions -----
   function onOpenMatch(stem, anchor) {
     if (typeof opts.onOpenMatch === 'function') {
-      opts.onOpenMatch(stem, anchor || null);
+      // The overview's own row seeds the peek (a doubles row opens in the doubles layout at once).
+      const list = state.data && Array.isArray(state.data.matches) ? state.data.matches : [];
+      const row = list.find((m) => m && typeof m === 'object' && m.stem === stem) || null;
+      opts.onOpenMatch(stem, anchor || null, row);
       return;
     }
     try {

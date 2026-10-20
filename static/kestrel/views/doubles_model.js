@@ -278,8 +278,10 @@ function summaryModel(raw, lang) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const distance = inRange(s.distance_m, 0, 1e7);
   const hits = count(s.hits);
+  // hits_named_of (spec 4.2): the hits of the rows that report a named count, the honest "of" for hits_named.
+  const namedOf = count(s.hits_named_of) !== null && (hits === null || s.hits_named_of <= hits) ? s.hits_named_of : hits;
   const named = count(s.hits_named);
-  const share = namedShareOf(s.named_share, named, hits);
+  const share = namedShareOf(s.named_share, named, namedOf);
   const avg = inRange(s.avg_speed_mps, 0, 100);
   const max = inRange(s.max_speed_mps, 0, 100);
   if ([distance, hits, avg, max].every((v) => v === null)) return null;
@@ -291,7 +293,8 @@ function summaryModel(raw, lang) {
     maxSpeedText: max === null ? '—' : fmtNumber(max, 1),
     hits,
     hitsText: hits === null ? '—' : fmtNumber(hits),
-    hits_named: named !== null && (hits === null || named <= hits) ? named : null,
+    hits_named: named !== null && (namedOf === null || named <= namedOf) ? named : null,
+    hits_named_of: namedOf,
     namedShare: share,
     namedText: pctText(share),
   };
@@ -366,7 +369,7 @@ export function doublesTiles(raw, lang) {
     named = {
       ...base, id: 'doubles_hits_named', kind: 'ring', label, tag: t('dbl.tag_unvalidated', lang),
       value: pct, suffix: '%',
-      unit: s.hits_named === null ? '' : t('dbl.tile.named_of', lang, { named: fmtNumber(s.hits_named), total: fmtNumber(s.hits) }),
+      unit: s.hits_named === null ? '' : t('dbl.tile.named_of', lang, { named: fmtNumber(s.hits_named), total: fmtNumber(s.hits_named_of === null ? s.hits : s.hits_named_of) }),
       ring: { pct, lo: null, hi: null, label: t('tile.ring_aria', lang, { label, value: fmtNumber(pct, 0) + '%' }) },
       note: t('dbl.unvalidated', lang),
     };

@@ -198,13 +198,18 @@ def _side_selected(ident, athlete, squad, athletes):
 def _identities_selected(parts, record, athlete, squad):
     """``[(pid, ident)]``: the record's identities mapped to a registered athlete in scope.
 
-    A free-text name is not an athlete, and a singles record maps no identity at all.
+    A free-text name is not an athlete, and a singles record maps no identity at all. An
+    athlete counts once per match: the store rejects one athlete on two identities, but a
+    hand-edited store may still hold it, so only the first identity (P1..P4 order) is kept.
     """
-    out = []
+    out, seen = [], set()
     for pid in IDENTITIES:
         ident = lib.player_athlete(parts, record, pid)
-        if ident["athlete_id"] is not None \
-                and _side_selected(ident, athlete, squad, parts["athletes"]):
+        aid = ident["athlete_id"]
+        if aid is None or aid in seen:
+            continue
+        seen.add(aid)
+        if _side_selected(ident, athlete, squad, parts["athletes"]):
             out.append((pid, ident))
     return out
 
@@ -477,9 +482,14 @@ def _position(units, doubles=()):
 
     ``doubles`` is ``[(player_row | None, doubles_envelope)]`` for the selected athlete's
     doubles identities (athlete scope only): their grids merge sample-weighted like a
-    singles side's, and a null distance or speed is skipped, never read as 0.
+    singles side's.
+
+    ``distance_m`` sums the known distances (null when none is known). ``mean_speed_mps``
+    is total distance / total time over the sources whose distance **and** speed are both
+    known (null when there are none), so a source without a speed never inflates it.
     """
-    parts, distance, span, statuses, first_limit = [], 0.0, 0.0, [], None
+    parts, statuses, first_limit = [], [], None
+    distances, paired_distance, span = [], 0.0, 0.0
     sides = set()
     sources = [(_dict(_dict(_value(u["insights"], "movement")).get(u["side"])),
                 _env_of(u["insights"], "movement"), u["side"]) for u in units]
@@ -492,10 +502,13 @@ def _position(units, doubles=()):
         if side is not None:
             sides.add(side)
         speed_key = "mean_speed_mps" if side is not None else "avg_speed_mps"
-        dist = _bounded(grid_side.get("distance_m"), 0.0, MAX_DISTANCE_M) or 0.0
-        speed = _bounded(grid_side.get(speed_key), 0.0, MAX_SPEED_MPS) or 0.0
-        distance += dist
-        span += _fin(dist / speed) if speed > 0 else 0.0
+        dist = _bounded(grid_side.get("distance_m"), 0.0, MAX_DISTANCE_M)
+        speed = _bounded(grid_side.get(speed_key), 0.0, MAX_SPEED_MPS)
+        if dist is not None:
+            distances.append(dist)
+            if speed is not None and speed > 0:
+                paired_distance += dist
+                span += _fin(dist / speed)
         statuses.append(env.get("status"))
         if env.get("status") != "ok" and first_limit is None \
                 and isinstance(env.get("reason"), dict):
@@ -505,8 +518,8 @@ def _position(units, doubles=()):
     # rows count from the net on both halves, so the two bases coincide in grid terms
     base = {"x": 3.05, "y": 10.05} if sides == {"lower"} else {"x": 3.05, "y": 3.35}
     value = {"grid": _merge_grids(parts), "samples": sum(w for w, _g in parts),
-             "distance_m": round(_fin(distance), 2),
-             "mean_speed_mps": round(_fin(distance / span), 2) if span > 0 else 0.0,
+             "distance_m": round(_fin(sum(distances)), 2) if distances else None,
+             "mean_speed_mps": round(_fin(paired_distance / span), 2) if span > 0 else None,
              "base": base}
     coverage = {"n": len(parts), "of": len(units) + len(doubles)}
     if first_limit is not None and isinstance(first_limit.get("code"), str):
@@ -663,6 +676,8 @@ def _athlete_summary(rows, matches):
 
     Distance, frames and hits are summed, speeds frame-weighted (max: the highest),
     grids sample-weighted. Null numbers are skipped; a sum of nothing is None, not 0.
+    ``hits_named_of`` is the hits of the rows that also report ``hits_named``, and
+    ``named_share = hits_named / hits_named_of``, so "N named of M" is always consistent.
     """
     rows = [r for r in rows if r]
 
@@ -685,6 +700,8 @@ def _athlete_summary(rows, matches):
         "avg_speed_mps": round(_fin(sum(f * s for f, s in speeds) / weight), 2) if weight else None,
         "max_speed_mps": max(maxes) if maxes else None,
         "frames": frames, "hits": hits, "hits_named": named,
+        # the hits of the rows that report a named count: the honest "of" for hits_named
+        "hits_named_of": of if pairs else None,
         "named_share": round(named / of, 4) if pairs and of else None,
         "matches": matches,
         "grid": grid, "samples": sum(w for w, _g in grids) if grid is not None else None,
@@ -700,6 +717,8 @@ def _doubles_insight(entries, units, infos, parts, athlete):
     ``ok`` when every analysed run is ``ok``; ``partial`` (with the first non-ok run's
     reason, newest first) when any is degraded, failed or has no identities;
     ``unavailable`` + ``no_data`` when no analysed doubles stem is in scope.
+    ``matches`` and ``runs`` count **analysed** doubles stems only: a ``new`` or
+    ``processing`` doubles stem is a row in ``matches`` but has no run data yet.
     """
     analysed = [e for e in entries if infos[e["stem"]]["status"] is not None]
     if not analysed:
@@ -733,6 +752,23 @@ def _team_sets(result, team):
     return out
 
 
+def _team_names(record, info, parts):
+    """``["A / B", "C / D"]`` (team 1 first) for a run's teams, or None without team info.
+
+    Each identity reads as its resolved name (``_identity_name``), else its id ("P2"). A
+    team with nobody on it is None.
+    """
+    players = sorted(info["players"], key=lambda p: p["id"])
+    if not any(p["team"] is not None for p in players):
+        return None
+    out = []
+    for team in TEAM_IDS:
+        labels = [_identity_name(parts, record, p["id"], info) or p["id"]
+                  for p in players if p["team"] == team]
+        out.append(" / ".join(labels) or None)
+    return out
+
+
 def _doubles_row(entry, pid, info, parts):
     """A ``matches`` row for one doubles identity, or for the whole stem when ``pid`` is None."""
     record = entry["record"]
@@ -762,7 +798,7 @@ def _doubles_row(entry, pid, info, parts):
         "tech_index": None, "status": entry["status"],
         "needs_review": info["status"] is not None and info["status"] != "ok",
         "doubles": True, "format": "doubles", "athlete_player": pid, "team": team,
-        "partner": partner,
+        "partner": partner, "teams": _team_names(record, info, parts),
     }
 
 

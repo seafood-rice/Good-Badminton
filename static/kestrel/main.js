@@ -346,7 +346,7 @@ export function start(root) {
       toast,
       // Overview contract (Task 9, spec 6.5): a match row opens the match peek; its "Open match workspace" link
       // runs the container transform from the same row. If the peek cannot be built, go straight to the workspace.
-      onOpenMatch: (stem, anchorEl) => {
+      onOpenMatch: (stem, anchorEl, row) => {
         const active = document.activeElement;
         const anchor = anchorEl || (active && active !== document.body ? active : null);
         const fallback = () => transitionTo(anchor, formatHash('matches', { stem }));
@@ -355,7 +355,9 @@ export function start(root) {
             if (!mod || typeof mod.buildMatchPeek !== 'function') throw new Error('no match peek');
             // Closing the drawer aborts the peek's fetches.
             const ac = typeof AbortController === 'function' ? new AbortController() : null;
-            const node = mod.buildMatchPeek({ stem }, { ...makeCtx(store.get().route), anchorEl: anchor, signal: ac ? ac.signal : null });
+            // An overview row (when given) seeds the peek's first paint; the stem always wins.
+            const seed = row && typeof row === 'object' && !Array.isArray(row) ? { ...row, stem } : { stem };
+            const node = mod.buildMatchPeek(seed, { ...makeCtx(store.get().route), anchorEl: anchor, signal: ac ? ac.signal : null });
             peek.open(node, { label: t('peek.aria', store.get().lang), onClose: () => { if (ac) ac.abort(); } });
           })
           .catch((e) => {
