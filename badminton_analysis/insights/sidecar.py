@@ -13,18 +13,20 @@ import tempfile
 
 from . import envelope
 from .dates import video_date
+from .doubles import doubles_insight
 from .loaders import load_run, number
 from .movement import movement_insight, pull_insight, recovery_insight
 from .rally import rally_insight
 from .strokes import strokes_insight
 from .technique import technique_insight
 
-INSIGHTS_VERSION = 5
+INSIGHTS_VERSION = 6
 SCHEMA_VERSION = 1
 SIDECAR_NAME = "insights.json"
 INPUT_FILES = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json",
-               "strokes.jsonl", "technique_summary.json", "rally_segments.json")
-INSIGHT_KEYS = ("rally", "strokes", "technique", "movement", "recovery", "pull")
+               "strokes.jsonl", "technique_summary.json", "rally_segments.json",
+               "players.json", "tracklets.jsonl")
+INSIGHT_KEYS = ("rally", "strokes", "technique", "movement", "recovery", "pull", "doubles")
 # Per-player insights: a doubles run only has one representative per side, not a player.
 PLAYER_KEYS = ("strokes", "technique", "movement", "recovery", "pull")
 QUALITY_KEYS = ("shuttle_coverage_in_play", "hit_source", "shuttle_source",
@@ -167,6 +169,8 @@ def _build(stem, out_dir, video_path, inputs):
         doc["movement"] = _guarded("movement", movement_insight, run, rally)
         doc["recovery"] = _guarded("recovery", recovery_insight, run)
         doc["pull"] = _guarded("pull", pull_insight, run)
+    # Per identity and team on doubles runs; `not_doubles` on singles runs.
+    doc["doubles"] = _guarded("doubles", doubles_insight, run)
     try:
         doc["quality"] = _quality(run)
     except Exception:

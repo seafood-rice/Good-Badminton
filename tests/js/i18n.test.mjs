@@ -31,9 +31,9 @@ test('zh strings are really Chinese and en strings contain no Chinese', () => {
 
 test('every reason code has text in both languages', () => {
   assert.deepEqual([...REASON_CODES].sort(), [
-    'doubles_run', 'few_hits', 'low_stroke_coverage', 'no_benchmark', 'no_data', 'no_hits', 'no_point_outcome', 'no_positions',
-    'no_rallies', 'no_results_entered', 'no_strokes_file', 'no_technique', 'signal_degraded',
-    'signal_swing', 'unscored_technique',
+    'doubles_degraded', 'doubles_error', 'doubles_run', 'few_hits', 'low_stroke_coverage', 'no_benchmark', 'no_data', 'no_hits',
+    'no_players', 'no_point_outcome', 'no_positions', 'no_rallies', 'no_results_entered', 'no_strokes_file', 'no_technique',
+    'not_doubles', 'signal_degraded', 'signal_swing', 'unscored_technique',
   ]);
   for (const code of REASON_CODES) {
     for (const lang of ['zh', 'en']) {

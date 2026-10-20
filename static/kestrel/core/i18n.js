@@ -6,7 +6,7 @@ export const TECHNIQUE_IDS = Object.freeze(['smash', 'clear', 'drop', 'net', 'li
 export const REASON_CODES = Object.freeze([
   'no_data', 'no_rallies', 'signal_swing', 'signal_degraded', 'no_strokes_file', 'no_technique', 'few_hits',
   'no_hits', 'unscored_technique', 'no_point_outcome', 'no_results_entered', 'no_benchmark', 'no_positions',
-  'low_stroke_coverage', 'doubles_run',
+  'low_stroke_coverage', 'doubles_run', 'not_doubles', 'no_players', 'doubles_degraded', 'doubles_error',
 ]);
 
 export const FINDING_CODES = Object.freeze([
@@ -424,6 +424,10 @@ export const STRINGS = {
     'reason.no_positions': '球员位置样本不足。',
     'reason.low_stroke_coverage': '只有一部分击球被分类，数据仅供参考。',
     'reason.doubles_run': '双打比赛：暂不提供单个球员的分析。',
+    'reason.not_doubles': '不是双打比赛。',
+    'reason.no_players': '此双打比赛没有球员数据。',
+    'reason.doubles_degraded': '球员身份仅部分可靠（{status}）。',
+    'reason.doubles_error': '此比赛的球员识别失败。',
     'doubles.chip': '双打',
     'reason.unknown': '暂时没有这项数据。',
 
@@ -956,6 +960,10 @@ export const STRINGS = {
     'reason.no_positions': 'Not enough player position samples.',
     'reason.low_stroke_coverage': 'Only part of the strokes were classified, so figures are indicative.',
     'reason.doubles_run': 'Doubles match: per-player insights are not available yet.',
+    'reason.not_doubles': 'Not a doubles match.',
+    'reason.no_players': 'No player data for this doubles run.',
+    'reason.doubles_degraded': 'Player identities are only partly reliable ({status}).',
+    'reason.doubles_error': 'Player identification failed for this run.',
     'doubles.chip': 'Doubles',
     'reason.unknown': 'This data is not available yet.',
 

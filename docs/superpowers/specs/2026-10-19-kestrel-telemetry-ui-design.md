@@ -134,7 +134,11 @@ dates.py       video_date(stem, video_path) -> (iso, source)
 `unavailable` has `value: null` and a `reason`. `partial` has a value *and* a reason (what limits it).
 Reason codes: `no_data`, `no_rallies`, `signal_swing`, `signal_degraded`, `no_strokes_file`,
 `no_technique`, `few_hits`, `no_hits`, `unscored_technique`, `no_point_outcome`, `no_results_entered`,
-`no_benchmark`, `no_positions`, `low_stroke_coverage`, `doubles_run`.
+`no_benchmark`, `no_positions`, `low_stroke_coverage`, `doubles_run`, `not_doubles`, `no_players`,
+`doubles_degraded` (params `{status}`), `doubles_error` (the four doubles-insight codes of the doubles addendum
+`2026-10-20-kestrel-doubles-support-design.md` section 4.1: a singles run; no readable `players.json` or no
+players in it; identity status `degraded` / `degraded_teams`; identity status `error`, whose reason text is
+never echoed).
 
 `doubles_run`: the run was analysed with `match_format: "doubles"` (top-level `match_format` in `metadata.json`;
 a missing or malformed value means singles). The legacy tracker's per-side positions and hits are one
@@ -166,8 +170,17 @@ without caching (never an error). `compute_video` never raises: a failing insigh
   "movement":  Insight<{upper:Grid, lower:Grid}>,             Grid = {grid[11][10], samples, distance_m, mean_speed_mps, base{x,y}}
   "recovery":  Insight<{upper:{median_sec|null,found,hits}, lower:{...}}>,
   "pull":      Insight<{upper:Pull, lower:Pull}>,             Pull = {grid[11][10], front, mid, back, left, right, n}
+  "doubles":   Insight<{status, validated:false, players[Player], teams[Team]|null, hits{total, named,
+                        named_share|null, single_candidate}, identity_video{status:"ok", file}|null}>,
+               Player = {id, team|null, name|null, coverage, frames, distance_m, avg_speed_mps, max_speed_mps,
+                         hits, hits_named, samples, grid[11][10]|null},  Team = {id, players[], hits, hits_named}
   "quality":   {shuttle_coverage_in_play, hit_source, shuttle_source, court_view_pass_frac} }
 ```
+
+`doubles` (`INSIGHTS_VERSION` 6; doubles addendum section 4.1): `unavailable` + `not_doubles` on singles runs.
+`players.json` and `tracklets.jsonl` are inputs too, so touching them (or `hits.json`) recomputes the sidecar. A
+`players.json` number that is missing, non-finite, of the wrong type or outside a plausible range is `null`, never
+a made-up value; an unknown identity status is reported as `degraded`.
 
 ### 5.3 Algorithms
 

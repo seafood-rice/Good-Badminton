@@ -6,7 +6,7 @@ import time
 import pytest
 
 from badminton_analysis.insights import sidecar
-from tests.insights_fixtures import make_run
+from tests.insights_fixtures import doubles_hit, make_doubles_run, make_run
 
 INSIGHT_KEYS = ("rally", "strokes", "technique", "movement", "recovery", "pull")
 REPORTS = [("smash", "upper", 60.0), ("high_clear", "upper", 80.0), ("serve", "lower", 70.0)]
@@ -38,13 +38,13 @@ def _assert_envelope(env):
 
 
 def test_version_constant():
-    assert sidecar.INSIGHTS_VERSION == 5
+    assert sidecar.INSIGHTS_VERSION == 6
 
 
 def test_document_shape_and_file_written(tmp_path):
     out = _full_run(tmp_path)
     doc = sidecar.compute_video(out.name, out)
-    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 5
+    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 6
     assert doc["stem"] == out.name
     assert doc["computed_at"].endswith("Z")
     assert doc["date"] == {"value": "2026-10-10", "source": "filename"}
@@ -99,9 +99,9 @@ def test_version_change_recomputes(tmp_path, monkeypatch):
     out = _full_run(tmp_path)
     calls = _count_calls(monkeypatch, "technique_insight")
     sidecar.compute_video(out.name, out)
-    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 6)
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 7)
     doc = sidecar.compute_video(out.name, out)
-    assert len(calls) == 2 and doc["version"] == 6
+    assert len(calls) == 2 and doc["version"] == 7
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "null", '{"version": 1}', ""])
@@ -352,3 +352,85 @@ def test_changing_the_match_format_recomputes_the_cached_sidecar(tmp_path):
 def test_fallback_documents_carry_match_format(tmp_path):
     doc = sidecar.compute_video("nothing", tmp_path / "nope")
     assert doc["match_format"] == "singles"
+
+
+# ---- the doubles insight (doubles addendum 4.1) -----------------------------------
+
+def test_singles_sidecar_has_doubles_not_doubles(tmp_path):
+    out = _full_run(tmp_path)
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["doubles"] == {"status": "unavailable", "value": None, "coverage": None,
+                              "reason": {"code": "not_doubles", "params": {}}}
+
+
+def test_doubles_sidecar_carries_the_doubles_insight(tmp_path):
+    out = make_doubles_run(tmp_path, hits=[doubles_hit(5, "P1"), doubles_hit(9, None)])
+    doc = sidecar.compute_video(out.name, out)
+    _assert_envelope(doc["doubles"])
+    assert doc["doubles"]["status"] == "ok"
+    assert doc["doubles"]["value"]["hits"]["total"] == 2
+    assert doc["technique"]["reason"]["code"] == "doubles_run"
+    assert doc["inputs"]["players.json"] is not None
+    assert doc["inputs"]["tracklets.jsonl"] is not None
+    json.dumps(doc, allow_nan=False)
+    assert json.loads((out / "insights.json").read_text(encoding="utf-8")) == doc
+
+
+@pytest.mark.parametrize("name", ["players.json", "tracklets.jsonl", "hits.json"])
+def test_touching_a_doubles_input_recomputes(tmp_path, monkeypatch, name):
+    out = make_doubles_run(tmp_path, hits=[doubles_hit(5, "P1")])
+    calls = _count_calls(monkeypatch, "doubles_insight")
+    sidecar.compute_video(out.name, out)
+    sidecar.compute_video(out.name, out)
+    assert len(calls) == 1
+    target = out / name
+    stat = target.stat()
+    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    sidecar.compute_video(out.name, out)
+    assert len(calls) == 2
+
+
+def test_players_json_appearing_later_recomputes(tmp_path):
+    out = make_doubles_run(tmp_path, status=None)
+    assert sidecar.compute_video(out.name, out)["doubles"]["reason"]["code"] == "no_players"
+    make_doubles_run(tmp_path, out.name)
+    assert sidecar.compute_video(out.name, out)["doubles"]["status"] == "ok"
+
+
+def test_version_5_cache_without_doubles_is_rebuilt(tmp_path, monkeypatch):
+    out = make_doubles_run(tmp_path)
+    doc = sidecar.compute_video(out.name, out)
+    old = dict(doc, version=5)
+    old.pop("doubles")
+    (out / "insights.json").write_text(json.dumps(old), encoding="utf-8")
+    calls = _count_calls(monkeypatch, "doubles_insight")
+    again = sidecar.compute_video(out.name, out)
+    assert len(calls) == 1
+    assert again["version"] == 6 and again["doubles"]["status"] == "ok"
+
+
+def test_current_version_cache_without_a_doubles_envelope_is_rebuilt(tmp_path):
+    out = make_doubles_run(tmp_path)
+    doc = sidecar.compute_video(out.name, out)
+    (out / "insights.json").write_text(json.dumps(dict(doc, doubles=[1])), encoding="utf-8")
+    assert sidecar.compute_video(out.name, out)["doubles"]["status"] == "ok"
+
+
+def test_failing_doubles_insight_is_no_data_and_others_survive(tmp_path, monkeypatch):
+    out = make_doubles_run(tmp_path)
+
+    def boom(run):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(sidecar, "doubles_insight", boom)
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["doubles"]["reason"]["code"] == "no_data"
+    assert doc["technique"]["reason"]["code"] == "doubles_run"
+
+
+def test_loader_failure_makes_doubles_no_data(tmp_path, monkeypatch):
+    out = make_doubles_run(tmp_path)
+    monkeypatch.setattr(sidecar, "load_run", lambda path: 1 / 0)
+    doc = sidecar.compute_video(out.name, out)
+    assert doc["doubles"]["reason"]["code"] == "no_data"
+    assert sidecar._fallback("x")["doubles"]["reason"]["code"] == "no_data"

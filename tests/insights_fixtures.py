@@ -278,3 +278,118 @@ def unit_doc(stem="clip", *, date="2026-10-10", date_source="filename", upper=No
     if match_format is not None:
         doc["match_format"] = match_format
     return doc
+
+
+# ---- doubles runs (players.json, tracklets.jsonl, attributed hits.json) ---------
+
+# Where each default identity stands, and the cell ``movement.cell`` puts it in.
+DOUBLES_SPOTS = {"P1": (1.0, 8.0), "P2": (5.0, 12.0), "P3": (1.0, 2.0), "P4": (5.0, 6.0)}
+DOUBLES_CELLS = {"P1": (2, 1), "P2": (8, 8), "P3": (7, 1), "P4": (1, 8)}
+DOUBLES_TEAMS = {"P1": 1, "P2": 1, "P3": 2, "P4": 2}
+_DEFAULT = object()
+
+
+def doubles_player(pid, *, team=_DEFAULT, tracklet_ids=None, **fields):
+    """One ``players.json`` row as ``tracking/doubles.py _player_rows`` writes it."""
+    n = int(pid[1:]) if isinstance(pid, str) and pid[1:].isdigit() else 0
+    row = {"id": pid, "team": DOUBLES_TEAMS.get(pid) if team is _DEFAULT else team,
+           "name": None, "frames": 60, "coverage": 0.8, "distance_m": 12.5 * n,
+           "avg_speed_mps": 1.2, "max_speed_mps": 4.5, "hits": 0, "hits_named": 0,
+           "hits_single_candidate": 0, "heatmap": f"heatmap_{pid}.png",
+           "tracklets": [{"id": t, "start_frame": 0, "end_frame": 59, "confidence": 0.9}
+                         for t in (tracklet_ids if tracklet_ids is not None else [n])]}
+    row.update(fields)
+    return row
+
+
+def doubles_tracklet(tid, points, side=None):
+    """A ``tracklets.jsonl`` line (``_write_tracklets`` format): ``points`` = [(frame, x, y)]."""
+    frames = [p[0] for p in points]
+    court = [[p[1], p[2]] for p in points]
+    if side is None:
+        ys = sorted(c[1] for c in court)
+        side = "upper" if ys and ys[len(ys) // 2] < NET_Y else "lower"
+    return {"id": tid, "side": side, "frames": frames, "court": court,
+            "image": [[100.0, 200.0]] * len(frames), "keypoints": [None] * len(frames),
+            "appearance": []}
+
+
+def doubles_hit(frame, hitter_id=None, evidence="shuttle", *, team=_DEFAULT, fps=30.0,
+                hitter="lower", confidence=0.7):
+    """A ``hits.json`` entry after ``attribute_hitters`` (``_augment_hits``)."""
+    return {"frame": frame, "time_sec": frame / fps, "hitter": hitter, "confidence": 0.9,
+            "rally_id": None, "hitter_id": hitter_id,
+            "hitter_team": (DOUBLES_TEAMS.get(hitter_id) if isinstance(hitter_id, str)
+                            else None) if team is _DEFAULT else team,
+            "hitter_confidence": confidence,
+            "hitter_evidence": evidence if hitter_id is not None else "none"}
+
+
+def make_doubles_run(tmp_path, stem="doubles", *, status="ok", players=_DEFAULT,
+                     tracklets=_DEFAULT, hits=_DEFAULT, names=None, identity_video=_DEFAULT,
+                     fps=30.0, frames=60, reason=None, teams=_DEFAULT):
+    """Write a doubles ``<tmp_path>/outputs/<stem>/`` and return that directory.
+
+    * ``status``: ``players.json`` status; ``None`` leaves ``players.json`` absent.
+    * ``players``: the rows (default: P1..P4, one tracklet each, ids 1..4).
+    * ``tracklets``: ``tracklets.jsonl`` lines (default: tracklet ``n`` holds ``P<n>``
+      still at ``DOUBLES_SPOTS`` for ``frames`` frames); ``None`` leaves the file absent.
+    * ``hits``: ``hits.json`` entries (default: none); ``None`` leaves the file absent.
+    * ``names``: ``{"P1": "Alice"}`` -> ``player_names.json`` and the rows' ``name``.
+    * ``identity_video``: the ``players.json`` block (default: ``ok`` with the
+      ``detect_<stem>_players.mp4`` name); ``None`` omits it.
+    """
+    out = Path(tmp_path) / "outputs" / stem
+    out.mkdir(parents=True, exist_ok=True)
+    _write_json(out / "metadata.json", {
+        "schema_version": "1.0", "match_format": "doubles",
+        "video": {"name": stem, "fps": fps, "total_frames": frames,
+                  "duration_sec": frames / fps if fps else 0.0}})
+    if players is _DEFAULT:
+        players = [doubles_player(p) for p in ("P1", "P2", "P3", "P4")]
+    if names:
+        _write_json(out / "player_names.json", names)
+        for row in players:
+            if isinstance(row, dict) and row.get("id") in names:
+                row["name"] = names[row["id"]]
+    if tracklets is _DEFAULT:
+        tracklets = [doubles_tracklet(int(p[1:]), [(f, x, y) for f in range(frames)])
+                     for p, (x, y) in DOUBLES_SPOTS.items()]
+    if hits is _DEFAULT:
+        hits = []
+    if status is not None:
+        if teams is _DEFAULT:
+            teams = [{"id": k, "players": sorted(p.get("id") for p in players
+                                                 if isinstance(p, dict) and p.get("team") == k),
+                      "coverage_heatmap": f"heatmap_team{k}.png"}
+                     for k in (1, 2) if any(isinstance(p, dict) and p.get("team") == k
+                                            for p in players)]
+        listed = [h for h in hits or [] if isinstance(h, dict)]
+        named = sum(1 for h in listed if h.get("hitter_id")
+                    and h.get("hitter_evidence") in ("shuttle", "swing"))
+        payload = {"schema_version": "1.0", "match_format": "doubles", "status": status,
+                   "reason": reason, "players": players, "teams": teams,
+                   "stats": {"tracklets_total": len(tracklets or []),
+                             "tracklets_used": len(tracklets or []), "tracklets_dropped": 0,
+                             "median_confidence": 0.9, "hits_total": len(listed),
+                             "hits_named_share": (round(named / len(listed), 4) if listed
+                                                  else 0.0),
+                             "hits_single_candidate": 0},
+                   "stroke_labels_withheld": "doubles: BST is a singles model",
+                   "validated": False}
+        if identity_video is _DEFAULT:
+            identity_video = {"status": "ok", "file": f"detect_{stem}_players.mp4",
+                              "reason": None}
+        if identity_video is not None:
+            payload["identity_video"] = identity_video
+        _write_json(out / "players.json", payload)
+    if tracklets is not None:
+        (out / "tracklets.jsonl").write_text(
+            "".join(json.dumps(t, separators=(",", ":")) + "\n" for t in tracklets),
+            encoding="utf-8")
+    if hits is not None:
+        _write_json(out / "hits.json", {
+            "source": "learned", "fps": fps, "shuttle_source": "tracknet",
+            "shuttle_coverage_in_play": 0.9, "hits": hits,
+            "hitter_attribution": {"validated": False}})
+    return out
