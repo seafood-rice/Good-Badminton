@@ -259,8 +259,13 @@ Doubles (addendum `2026-10-20-kestrel-doubles-support-design.md` 4.2, as built):
 - A doubles stem (sidecar `match_format: "doubles"`; for a stem not analysed yet, a `format: "doubles"` record)
   never yields a singles `(stem, side)` unit. It yields a doubles unit `(stem, identity)` for each identity the
   record maps to a registered athlete in scope. **`scope.units` = singles units + doubles identity units.**
-  Technique, strokes, recovery, pull, match-win KPIs, trend and benchmark stay singles-only; with only doubles
-  stems in scope they are `unavailable` + `doubles_run`. Rally windows of doubles stems still feed `avg_rally`.
+  Technique, strokes, recovery, pull KPIs, trend and benchmark stay singles-only; with only doubles stems in
+  scope they are `unavailable` + `doubles_run`. Rally windows of doubles stems still feed `avg_rally`.
+- `match_win_rate` counts singles **and** doubles results of the selected athlete(s): a singles unit by its
+  record `winner` side, a doubles unit by its row `result` (the athlete's team vs the record's `winner_team`;
+  unknown team, e.g. `degraded_teams`, or no winner = not scored). `coverage` = scored units / all selected units
+  (singles + doubles); `unavailable` + `no_results_entered` only when no selected unit has a result, `no_data`
+  (`doubles_run` with only doubles stems) without an athlete or squad in scope.
 - `doubles`: `unavailable` + `no_data` without an analysed doubles stem in scope; `ok` when every run's identity
   status is `ok`; else `partial` with the newest non-ok run's reason (`doubles_degraded{status}`,
   `doubles_error`, `no_players`); `coverage` = runs with identities / runs. `matches` (and `runs`) count

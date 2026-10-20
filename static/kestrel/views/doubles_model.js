@@ -487,13 +487,23 @@ export function doublesWorkspaceModel({ playersFile, hits, insights, fps, record
   const pid = athletePid(record, athleteId);
   const me = players.find((p) => p.id === pid);
   const team = me ? me.team : null;
+  const whoHit = whoHitModel(hits, players, { fps });
+  // With a hit list loaded, the panel counts come from the same list as the who-hit strip and table, so the three
+  // never disagree; players.json's own counts stand only when there is no list.
+  const hasList = Array.isArray(hits) || Array.isArray(obj(hits).hits);
+  const counted = hasList
+    ? players.map((p) => {
+      const c = whoHit.perPlayer[p.id] || { hits: 0, named: 0 };
+      return { ...p, hits: c.hits, hits_named: c.named };
+    })
+    : players;
   return {
     ...statusFields(status, lang),
-    players: players.map((p) => playerRow(p, lang)),
+    players: counted.map((p) => playerRow(p, lang)),
     title: teamsTitle(players, lang, team),
     teams: [1, 2].map((id) => ({ id, label: teamLabel(id, players, lang) })),
     identityVideoOk: obj(video).status === 'ok',
-    whoHit: whoHitModel(hits, players, { fps }),
+    whoHit,
     athletePlayer: pid,
     team,
     ...recordResult(record, team),

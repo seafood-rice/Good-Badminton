@@ -66,9 +66,9 @@ test('doublesTiles: "N of M" uses hits_named_of, the hits of the rows that repor
   const ins = { status: 'ok', value: { matches: 2, athlete, runs: [] }, coverage: null, reason: null };
   const { named } = doublesTiles(ins, 'en');
   assert.equal(named.value, 40);
-  assert.equal(named.unit, '4 of 10 hits');
+  assert.equal(named.unit, 'Named: 4 of 10');
   const legacy = doublesTiles({ ...ins, value: { ...ins.value, athlete: { ...athlete, hits_named_of: undefined, named_share: 0.2 } } }, 'en');
-  assert.equal(legacy.named.unit, '4 of 20 hits');        // older payloads fall back to all hits
+  assert.equal(legacy.named.unit, 'Named: 4 of 20');       // older payloads fall back to all hits
 });
 
 test('doubles_identity_degraded shows the localized identity status, never the raw token', () => {

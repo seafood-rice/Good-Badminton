@@ -8,8 +8,9 @@ whole video, so they are counted once per stem, not once per unit.
 A *doubles* stem (sidecar ``match_format == "doubles"``; for a stem not analysed yet, a
 doubles match record) never yields a singles ``(stem, side)`` unit: its legacy tracker
 output is one representative per side of a 4-player match, so it adds nothing to the
-technique, stroke, recovery, pull or match-win aggregates, the trend or the benchmark. Its
-rally windows still feed ``avg_rally``. Instead it yields one *doubles unit*
+technique, stroke, recovery or pull aggregates, the trend or the benchmark. Its rally
+windows still feed ``avg_rally``, and its match result (the athlete's team vs the record's
+``winner_team``) counts in ``match_win_rate`` like a singles result. Instead it yields one *doubles unit*
 ``(stem, identity)`` for each identity (``P1``..``P4``) its match record maps to a
 registered athlete that the scope selects (doubles addendum 4.2); identities that are
 unmapped or hold a free-text name only appear in the ``doubles`` insight's run list.
@@ -330,19 +331,27 @@ def _benchmark(athlete, parts, all_entries, range_, bounds, has_units):
 
 # ----------------------------------------------------------------------- kpis
 
-def _match_win_rate(units, scoped):
-    if not units or not scoped:
-        return envelope.unavailable("no_data")
-    played = wins = 0
+def _match_win_rate(units, scoped, doubles_results=()):
+    """Wins over the selected athletes' scored matches, singles and doubles alike.
+
+    A singles unit is judged by its record's ``winner`` side; a doubles unit by its row
+    ``result`` (the athlete's team vs the record's ``winner_team``, None when either is
+    unknown, e.g. under ``degraded_teams``). ``doubles_results`` holds those, one per
+    doubles unit. Coverage = scored units / all selected units.
+    """
+    outcomes = []
     for u in units:
         winner = _dict(_dict(u["record"]).get("result")).get("winner")
-        if winner in SIDES:
-            played += 1
-            wins += winner == u["side"]
+        outcomes.append(("W" if winner == u["side"] else "L") if winner in SIDES else None)
+    outcomes.extend(doubles_results)
+    if not outcomes or not scoped:
+        return envelope.unavailable("no_data")
+    played = sum(o in ("W", "L") for o in outcomes)
+    wins = sum(o == "W" for o in outcomes)
     if not played:
         return envelope.unavailable("no_results_entered")
     return envelope.ok({"wins": wins, "played": played, "rate": round(wins / played, 3)},
-                       {"n": played, "of": len(units)})
+                       {"n": played, "of": len(outcomes)})
 
 
 def _stem_entries(units):
@@ -948,7 +957,9 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
         },
         "kpis": {
             "technique_index": player(_technique_kpi(units, scores, points)),
-            "match_win_rate": player(_match_win_rate(units, scoped)),
+            # scoped: one doubles row per doubles unit, so the rows carry each unit's W/L
+            "match_win_rate": player(_match_win_rate(
+                units, scoped, [r["result"] for r in doubles_rows] if scoped else [])),
             "avg_rally": _avg_rally(rally_units),
             "rally_win_rate": dict(no_outcome),
             "recovery": player(_recovery(units)),

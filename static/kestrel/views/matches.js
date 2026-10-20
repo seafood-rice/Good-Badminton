@@ -212,6 +212,26 @@ export function formFromDoublesRecord(record) {
   };
 }
 
+/**
+ * Pure: the doubles editor's winning-team options [{value: '1'|'2', label: "Team 1 · A / B"}]. Each member reads
+ * as the identity picker's current choice (registry name for an athlete id, else the typed name), else its
+ * players.json label (`label`: the name, else the id), else its id. A team with no known members: "Team 1".
+ */
+export function winnerTeamOptions(players, picks, athletes, lang) {
+  const ps = Array.isArray(players) ? players : [];
+  const pk = obj(picks);
+  const nameOf = (p) => {
+    const e = obj(pk[p.id]);
+    const aid = str(e.athlete_id).trim();
+    return (aid && registryName(athletes, aid)) || str(e.name).trim().slice(0, NAME_MAX) || str(p.label) || str(p.id);
+  };
+  return [1, 2].map((n) => {
+    const names = ps.filter((p) => p && typeof p.id === 'string' && p.team === n).map(nameOf).filter(Boolean);
+    const team = t('dbl.team', lang, { n });
+    return { value: String(n), label: names.length ? t('dbl.record.team_option', lang, { team, names: names.join(' / ') }) : team };
+  });
+}
+
 function registryName(athletes, id) {
   const a = (Array.isArray(obj(athletes).athletes) ? athletes.athletes : []).find((x) => x && x.id === id);
   return a && typeof a.name === 'string' && a.name ? a.name : null;
@@ -715,6 +735,7 @@ export function mount(container, ctx = {}) {
         h('span', { class: 'mv-err', id: errId, role: 'alert' })]),
       read: () => ({ athlete_id: sel.value && sel.value !== OTHER ? sel.value : '', name: sel.value === OTHER ? input.value : '' }),
       sel,
+      input,
     };
   }
 
@@ -873,16 +894,21 @@ export function mount(container, ctx = {}) {
       pickers[pid] = pickerControl(pid, label, obj(form.players[pid]), athletes, `${uid}-${pid}`, labelNode);
       fieldsIds.appendChild(pickers[pid].el);
     }
-    const teamName = (n) => {
-      const names = players.filter((p) => p.team === n).map((p) => p.label);
-      return names.length ? t('dbl.record.team_option', lang, { team: t('dbl.team', lang, { n }), names: names.join(' / ') }) : t('dbl.team', lang, { n });
-    };
+    const readPicks = () => Object.fromEntries(IDENTITY_IDS.map((pid) => [pid, pickers[pid].read()]));
+    const teamOpts = winnerTeamOptions(players, readPicks(), athletes, lang).map((o) => h('option', { value: o.value }, o.label));
     const winner = h('select', { class: 'mv-input', id: 'mv-winner', 'aria-describedby': uid + '-w' }, [
       h('option', { value: '' }, t('record.winner_none', lang)),
-      h('option', { value: '1' }, teamName(1)),
-      h('option', { value: '2' }, teamName(2)),
+      ...teamOpts,
     ]);
     winner.value = form.winner_team;
+    // The team labels follow the identity pickers as they change (the selected value is kept).
+    const relabel = () => {
+      winnerTeamOptions(players, readPicks(), athletes, lang).forEach((o, i) => { teamOpts[i].textContent = o.label; });
+    };
+    for (const pid of IDENTITY_IDS) {
+      pickers[pid].sel.addEventListener('change', relabel);
+      pickers[pid].input.addEventListener('input', relabel);
+    }
     const sets = h('input', { type: 'text', class: 'mv-input mono', id: 'mv-sets', value: form.sets, placeholder: '21-18, 19-21, 21-15', 'aria-describedby': `${uid}-s ${uid}-sh` });
     const errs = { date: err(uid + '-d'), winner: err(uid + '-w'), sets: err(uid + '-s') };
     const formErr = h('div', { class: 'mv-err form', role: 'alert' });

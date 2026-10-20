@@ -118,6 +118,10 @@ never echoed). Value:
     distance and speed are both known; either is null when nothing usable exists. This also applies to singles.
   - `doubles_hits_unvalidated` needs a numeric `named_share`; `doubles_identity_degraded` shows the localized
     identity status.
+  - Fix round 2: `kpis.match_win_rate` includes doubles results (the athlete's team vs `winner_team`, the same
+    rule as the row `result`; an unknown team is not scored); coverage counts singles and doubles units. The
+    workspace Players panel takes per-identity hits from the loaded `hits.json` list (players.json counts only
+    without one), and the record editor's winning-team labels follow the identity pickers.
 
 ### 4.3 Jobs
 

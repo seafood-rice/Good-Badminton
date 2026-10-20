@@ -303,7 +303,7 @@ test('doublesTiles: distance and hits-named tiles from the athlete summary, flag
   assert.equal(distance.kind, 'number');
   assert.equal(distance.value, 790.4);
   assert.equal(distance.label, 'Distance covered');
-  assert.match(distance.note, /2 doubles matches/);
+  assert.match(distance.note, /Doubles matches: 2/);
   assert.equal(named.id, 'doubles_hits_named');
   assert.equal(named.kind, 'ring');
   assert.equal(named.label, 'Hits named');

@@ -856,7 +856,9 @@ def test_doubles_athlete_scope_keeps_singles_kpis_singles_only():
     assert ov["scope"]["stems"] == 2
     assert ov["scope"]["units"] == 2                 # singles A.upper + doubles D1.P3
     assert _axes(ov)["smash"]["score"] == 80.0       # from the singles unit only
-    assert ov["kpis"]["match_win_rate"]["status"] == "unavailable"
+    # match results count in both formats: D1 was lost (team 1 won), A has no result
+    assert ov["kpis"]["match_win_rate"]["value"] == {"wins": 0, "played": 1, "rate": 0.0}
+    assert ov["kpis"]["match_win_rate"]["coverage"] == {"n": 1, "of": 2}
     dbl = ov["doubles"]
     assert dbl["status"] == "ok"
     assert dbl["value"]["matches"] == 1
@@ -992,7 +994,9 @@ def test_doubles_only_scope_says_doubles_run_for_singles_kpis():
     data = _dmatch(data, "D1", {"P3": ids["tanaka"]})
     ov = aggregate.overview([_dunit("D1")], data, athlete=ids["tanaka"], range_="all")
     for key in PLAYER_KPIS:
-        assert ov["kpis"][key]["reason"]["code"] == "doubles_run", key
+        if key != "match_win_rate":                   # results count for doubles too
+            assert ov["kpis"][key]["reason"]["code"] == "doubles_run", key
+    assert ov["kpis"]["match_win_rate"]["reason"]["code"] == "no_results_entered"
     assert ov["movement"]["pull"]["reason"]["code"] == "doubles_run"
     pos = ov["movement"]["position"]
     assert pos["status"] == "ok" and pos["value"]["grid"][7][1] == 1.0   # the doubles grid
@@ -1305,4 +1309,57 @@ def test_number_never_raises_on_huge_ints():
                             range_="all")
     json.dumps(ov, allow_nan=False)
     assert ov["doubles"]["value"]["athlete"]["hits"] is None
+
+
+# ---- doubles fix round 2: match results in both formats -------------------------------------
+
+def test_match_win_rate_mixes_singles_and_doubles_results():
+    data, ids, units = _mixed()
+    data = _match(data, "A", upper=ids["tanaka"], lower="R", date="2026-10-10", winner="upper",
+                  sets=[[21, 10]])
+    kpi = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")["kpis"]["match_win_rate"]
+    assert kpi["status"] == "ok"
+    assert kpi["value"] == {"wins": 1, "played": 2, "rate": 0.5}     # A won, D1 lost
+    assert kpi["coverage"] == {"n": 2, "of": 2}
+
+
+def test_match_win_rate_doubles_only_athlete():
+    data, ids = _store()
+    data = _dmatch(data, "D1", {"P3": ids["tanaka"]}, date="2026-10-01", winner_team=2,
+                   sets=[[18, 21]])
+    data = _dmatch(data, "D2", {"P1": ids["tanaka"]}, date="2026-10-02", winner_team=2)
+    data = _dmatch(data, "D3", {"P1": ids["tanaka"]}, date="2026-10-03")
+    units = [_dunit("D1", date="2026-10-01"), _dunit("D2", date="2026-10-02"),
+             _dunit("D3", date="2026-10-03")]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    kpi = ov["kpis"]["match_win_rate"]
+    assert kpi["status"] == "ok"
+    assert kpi["value"] == {"wins": 1, "played": 2, "rate": 0.5}     # W on team 2, L on team 1
+    assert kpi["coverage"] == {"n": 2, "of": 3}                       # D3 has no result
+    rows = {m["stem"]: m["result"] for m in ov["matches"]}
+    assert rows == {"D1": "W", "D2": "L", "D3": None}                 # the same rule as the rows
+
+
+def test_match_win_rate_skips_doubles_without_a_known_team():
+    data, ids = _store()
+    data = _dmatch(data, "D1", {"P3": ids["tanaka"]}, winner_team=2)
+    unit = _dunit("D1", status="degraded_teams")
+    kpi = aggregate.overview([unit], data, athlete=ids["tanaka"], range_="all")["kpis"]["match_win_rate"]
+    assert kpi["status"] == "unavailable" and kpi["reason"]["code"] == "no_results_entered"
+    kpi = aggregate.overview([_dunit("D1", unavailable="doubles_error")], data,
+                             athlete=ids["tanaka"], range_="all")["kpis"]["match_win_rate"]
+    assert kpi["reason"]["code"] == "no_results_entered"
+
+
+def test_match_win_rate_squad_scope_counts_each_member_identity():
+    data, ids = _store()
+    data = _dmatch(data, "D1", {"P3": ids["tanaka"], "P1": ids["ito"]}, winner_team=1)
+    data = _dmatch(data, "D2", {"P1": ids["ito"]})
+    units = [_dunit("D1"), _dunit("D2", date="2026-10-12")]
+    kpi = aggregate.overview(units, data, squad=ids["squad"], range_="all")["kpis"]["match_win_rate"]
+    assert kpi["value"] == {"wins": 1, "played": 2, "rate": 0.5}     # Ito W, Tanaka L
+    assert kpi["coverage"] == {"n": 2, "of": 3}
+    # no scope stays "no data": there is no one to win for
+    ov = aggregate.overview(units, data, range_="all")
+    assert ov["kpis"]["match_win_rate"]["reason"]["code"] == "doubles_run"
 

@@ -315,6 +315,10 @@ def test_overview_doubles_athlete_scope_end_to_end(lib):
     assert body["movement"]["position"]["status"] in ("ok", "partial")
     codes = {f["code"] for f in body["findings"]}
     assert "doubles_hits_unvalidated" in codes
+    # the doubles result counts in the win rate (the singles run has no result)
+    win = body["kpis"]["match_win_rate"]
+    assert win["status"] == "ok" and win["value"] == {"wins": 1, "played": 1, "rate": 1.0}
+    assert win["coverage"] == {"n": 1, "of": 2}
 
 
 def test_overview_doubles_no_scope_lists_both_runs(lib):
