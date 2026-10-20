@@ -467,3 +467,30 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .ws-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;}
 .ws-table-wrap{position:relative;}
 .kw-foot-muted[hidden],.pv-msg[hidden],.kw-muted[hidden]{display:none;}
+
+/* ===== Doubles (spec 2026-10-20 section 5). Identity colours arrive as --pc (the four fixed IDENTITY_COLORS);
+   muted hits (not named, or the only candidate) keep a faint colour and a dashed edge. ===== */
+.dbl-swatch{display:inline-block;flex:0 0 auto;width:10px;height:10px;border-radius:3px;background:var(--pc,var(--ink3));vertical-align:middle;}
+.dbl-swatch.none{background:transparent;border:1px dashed var(--ink3);}
+.dbl-who{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;min-width:0;}
+.dbl-name{overflow-wrap:anywhere;}
+.dbl-unval{white-space:nowrap;}
+.dbl-table{min-width:520px;}
+.dbl-run{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px;}
+.dbl-run-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;}
+.dbl-summary{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);}
+.dbl-summary-row{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;}
+.dbl-title{font-size:44px;}
+.dbl-named{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.dbl-plist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;}
+.dbl-prow{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-top:1px solid var(--line);}
+.dbl-prow:first-child{border-top:0;}
+.dbl-stats{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;}
+.mv-field label .dbl-swatch{margin-right:6px;}
+.ws-hit{border-bottom-color:var(--pc,var(--ink3));min-width:34px;}
+.ws-hit.muted{color:var(--ink3);border-style:dashed;border-bottom-style:solid;border-bottom-color:color-mix(in srgb,var(--pc,var(--ink3)) 45%,transparent);opacity:.75;}
+.ws-hit.nobody{border-bottom-color:var(--ink3);}
+.ws-hit.on{background:var(--ink);color:var(--surface);opacity:1;}
+@media (max-width:719px){
+  .dbl-title{font-size:30px;}
+}

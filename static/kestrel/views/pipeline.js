@@ -6,7 +6,7 @@ import { ago } from '../core/format.js';
 import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, setStyle, setText } from '../widgets/frame.js';
-import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES } from '../widgets/pipeline.js';
+import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES, jobStage } from '../widgets/pipeline.js';
 
 export const FAST_MS = 2000;
 export const SLOW_MS = 15000;
@@ -53,7 +53,7 @@ export function groupJobs(jobs) {
       stem,
       kind,
       status,
-      stage: typeof j.stage === 'string' && j.stage ? j.stage : null,
+      stage: jobStage(j),
       progress,
       message: typeof j.message === 'string' ? j.message : '',
       updated: isNum(j.updated) ? j.updated : null,

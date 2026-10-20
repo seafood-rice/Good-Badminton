@@ -529,3 +529,68 @@ test('matches: a doubles row is flagged and carries no technique number', () => 
   assert.equal(byStem.m2.doubles, false);
   assertStringsResolve(matches, 'en');
 });
+
+// ---------- doubles support (spec 2026-10-20 section 5) ----------
+
+function doublesInsight() {
+  return ok({
+    matches: 2,
+    athlete: { distance_m: 640, avg_speed_mps: 1.3, max_speed_mps: 4.4, frames: 1600, hits: 30, hits_named: 21, named_share: 0.7, matches: 2, grid: null, samples: 0 },
+    runs: [{
+      stem: 'd1', date: '2026-10-17', date_source: 'filename', status: 'ok', validated: false,
+      teams: [{ id: 1, players: ['P1', 'P2'], hits: 10, hits_named: 7 }, { id: 2, players: ['P3', 'P4'], hits: 20, hits_named: 14 }],
+      players: [
+        { id: 'P1', team: 1, name: null, athlete: 'J. Tanaka', coverage: 0.9, frames: 800, distance_m: 320, avg_speed_mps: 1.3, max_speed_mps: 4.4, hits: 6, hits_named: 4 },
+        { id: 'P3', team: 2, name: 'Cara', coverage: 0.8, frames: 700, distance_m: 300, avg_speed_mps: 1.2, max_speed_mps: 4, hits: 12, hits_named: 9 },
+      ],
+    }],
+  });
+}
+
+test('doubles: the Overview model carries the Doubles players widget only when there are doubles matches', () => {
+  const ov = overviewFixture();
+  assert.equal(viewModel(ov, 'overview', 'en').doubles.show, false);
+  ov.doubles = doublesInsight();
+  const vm = viewModel(ov, 'overview', 'en');
+  assert.equal(vm.doubles.show, true);
+  assert.equal(vm.doubles.runs[0].stem, 'd1');
+  assert.equal(vm.doubles.unvalidated, true);
+  ov.doubles = unavailable('no_data');
+  assert.equal(viewModel(ov, 'overview', 'en').doubles.show, false);
+  for (const lang of ['en', 'zh']) {
+    const o2 = overviewFixture();
+    o2.doubles = doublesInsight();
+    assertStringsResolve(viewModel(o2, 'overview', lang), lang);
+  }
+});
+
+test('doubles: tactics tiles use the doubles summary only where the singles value is unavailable', () => {
+  const ov = overviewFixture();
+  ov.doubles = doublesInsight();
+  // singles values present: unchanged
+  assert.deepEqual(viewModel(ov, 'tactics', 'en').tiles.map((x) => x.id), ['recovery', 'net_share', 'pull_rear', 'unforced_errors']);
+  ov.kpis.recovery = unavailable('no_hits');
+  ov.kpis.pull_rear = unavailable('no_hits');
+  const vm = viewModel(ov, 'tactics', 'en');
+  assert.deepEqual(vm.tiles.map((x) => x.id), ['doubles_distance', 'net_share', 'doubles_hits_named', 'unforced_errors']);
+  assert.equal(vm.tiles[0].label, 'Distance covered');
+  assert.equal(vm.tiles[0].value, 640);
+  assert.equal(vm.tiles[2].label, 'Hits named');
+  assert.equal(vm.tiles[2].value, 70);
+  assert.equal(vm.tiles[3].kind, 'gap');
+  // without an athlete summary the gaps stay gaps
+  ov.doubles = ok({ matches: 2, athlete: null, runs: [] });
+  assert.deepEqual(viewModel(ov, 'tactics', 'en').tiles.map((x) => x.kind), ['gap', 'ring', 'gap', 'gap']);
+  for (const lang of ['en', 'zh']) {
+    ov.doubles = doublesInsight();
+    assertStringsResolve(viewModel(ov, 'tactics', lang), lang);
+  }
+});
+
+test('doubles: a recent-matches doubles row shows no technique number even if the payload holds one', () => {
+  const ov = overviewFixture();
+  ov.matches.push({ stem: 'd2', date: '2026-10-16', side: null, opponent: 'Cara / Dan', result: 'L', tech_index: 88.8, status: 'analysed', doubles: true, format: 'doubles', team: 1 });
+  const row = viewModel(ov, 'overview', 'en').matches.rows.find((r) => r.stem === 'd2');
+  assert.equal(row.tech, '—');
+  assert.equal(row.label, 'vs. Cara / Dan');
+});

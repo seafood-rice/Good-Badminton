@@ -4,6 +4,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mount, OVERVIEW_TIMEOUT_MS } from '../../static/kestrel/views/overview.js';
 import { createStore } from '../../static/kestrel/core/store.js';
+import { mount as mountWorkspace } from '../../static/kestrel/views/workspace.js';
+import { buildMatchPeek } from '../../static/kestrel/views/matches.js';
 
 // ---------- fake DOM ----------
 class FakeText {
@@ -36,6 +38,8 @@ class FakeEl {
         self.attrs.set('class', [...set].join(' '));
       },
       contains: (c) => (self.getAttribute('class') || '').split(/\s+/).includes(c),
+      add: (c) => self.classList.toggle(c, true),
+      remove: (c) => self.classList.toggle(c, false),
     };
   }
   get firstChild() { return this.childNodes[0] || null; }
@@ -62,6 +66,7 @@ class FakeEl {
   setAttribute(k, v) { this.attrs.set(k, String(v)); if (k === 'disabled') this.disabled = true; }
   getAttribute(k) { return this.attrs.has(k) ? this.attrs.get(k) : null; }
   hasAttribute(k) { return this.attrs.has(k); }
+  removeAttribute(k) { this.attrs.delete(k); }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   removeEventListener(type, fn) { this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn); }
   fire(type, extra = {}) {
@@ -373,6 +378,169 @@ test('a partial tile shows its reason as visible text', async () => {
     byClass(container2, 'kw-row-open')[0].fire('click');
     assert.deepEqual(opened, [['m1', 'BUTTON']]);
     view2.destroy();
+  } finally {
+    fake.restore();
+  }
+});
+
+test('doubles: the Doubles players card mounts with its runs and opens a run; it is absent without doubles', async () => {
+  const fake = installEnv();
+  try {
+    const api = fakeApi();
+    const opened = [];
+    const container = new FakeEl('main');
+    const view = mount(container, { query: {}, api, reduced: true, store: countingStore({ lang: 'en', jobs: [] }), onOpenMatch: (stem) => opened.push(stem) });
+    const p = payload('Tanaka');
+    p.doubles = ok({
+      matches: 1,
+      athlete: null,
+      runs: [{
+        stem: 'd1', date: '2026-10-17', date_source: 'filename', status: 'degraded_teams', validated: true,
+        players: [{ id: 'P1', team: null, name: 'Alice<script>', distance_m: 300, hits: 4, hits_named: 2 }],
+      }],
+    });
+    api.calls[0].resolve(p);
+    await tick();
+    const card = byAttr(container, 'data-widget', 'doubles');
+    assert.ok(card, 'doubles card');
+    assert.match(card.textContent, /Doubles players/);
+    assert.match(card.textContent, /Who hit: unvalidated/);
+    assert.match(card.textContent, /Teams unknown/);
+    assert.match(card.textContent, /Alice<script>/); // a text node, never parsed as markup
+    byAttr(card, 'data-fk', 'dbl:d1').fire('click');
+    assert.deepEqual(opened, ['d1']);
+    view.destroy();
+    const container2 = new FakeEl('main');
+    const view2 = mount(container2, { query: {}, api, reduced: true, store: countingStore({ lang: 'en', jobs: [] }) });
+    api.calls[1].resolve(payload('Tanaka'));
+    await tick();
+    assert.equal(byAttr(container2, 'data-widget', 'doubles'), null);
+    view2.destroy();
+  } finally {
+    fake.restore();
+  }
+});
+
+// ---------- doubles workspace and peek against the same fake DOM ----------
+const D_PLAYERS = [
+  { id: 'P1', team: 1, name: 'Alice', coverage: 0.83, distance_m: 300, avg_speed_mps: 1.2, max_speed_mps: 4, hits: 3, hits_named: 2 },
+  { id: 'P2', team: 1, name: null, coverage: 0.7, hits: 1, hits_named: 0 },
+  { id: 'P3', team: 2, name: 'Cara', coverage: 0.9, hits: 2, hits_named: 1 },
+  { id: 'P4', team: 2, name: 'Dan', coverage: 0.6, hits: 0, hits_named: 0 },
+];
+const D_HITS = {
+  hitter_attribution: { validated: false },
+  hits: [
+    { frame: 100, time_sec: 2, hitter: 'lower', hitter_id: 'P1', hitter_team: 1, hitter_confidence: 0.9, hitter_evidence: 'shuttle' },
+    { frame: 150, time_sec: 3, hitter: 'upper', hitter_id: 'P3', hitter_team: 2, hitter_confidence: 0.5, hitter_evidence: 'single_candidate' },
+    { frame: 200, time_sec: 4, hitter: 'lower', hitter_id: null, hitter_team: null, hitter_confidence: 0.1, hitter_evidence: 'none' },
+  ],
+};
+
+function stubFetch(routes) {
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    seen.push(url);
+    const body = routes[url];
+    if (body === undefined) return { ok: false, status: 404, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  return seen;
+}
+
+test('doubles workspace: identity video, Players panel, coloured who-hit strip, hits table, strokes withheld', async () => {
+  const fake = installEnv();
+  try {
+    const out = (f) => '/api/output/d1/' + f;
+    const seen = stubFetch({
+      [out('rally_segments.json')]: { fps: 50, rallies: [{ id: 1, start_sec: 1, end_sec: 5 }], detection: { signal: 'shuttle' } },
+      [out('metadata.json')]: { match_format: 'doubles', video: { fps: 50 } },
+      [out('players.json')]: { match_format: 'doubles', status: 'ok', players: D_PLAYERS, identity_video: { status: 'ok', file: 'detect_d1_players.mp4' } },
+      [out('hits.json')]: D_HITS,
+      '/api/insights/video/d1': { match_format: 'doubles', rally: { status: 'ok', value: { count: 1, label: 'rallies', signal: 'shuttle' } } },
+      '/api/matches/d1': { format: 'doubles', players: { P2: { name: 'Bea' } }, result: { winner_team: 2, sets: [[18, 21]] } },
+    });
+    const container = new FakeEl('main');
+    const view = mountWorkspace(container, { params: { stem: 'd1' }, lang: 'en', reduced: true });
+    for (let i = 0; i < 10; i++) await tick();
+    assert.ok(seen.includes(out('players.json')) && seen.includes(out('hits.json')));
+    const video = all(container, (n) => n.tagName === 'VIDEO')[0];
+    assert.ok(video && String(video.src).endsWith('detect_d1_players.mp4'), String(video && video.src));
+    const text = container.textContent;
+    assert.match(text, /Alice \/ Bea/);
+    assert.match(text, /Cara \/ Dan/);
+    assert.match(text, /Players/);
+    assert.match(text, /Identities OK/);
+    assert.match(text, /Who hit: unvalidated/);
+    assert.match(text, /Stroke types withheld for doubles/);
+    assert.match(text, /Team 2 won|Cara \/ Dan won/);
+    const hits = byClass(container, 'ws-hit');
+    assert.equal(hits.length, 3);
+    assert.deepEqual(hits.map((b) => b.classList.contains('muted')), [false, true, true]);
+    assert.equal(hits[0].style['--pc'], '#008CFF');
+    assert.equal(hits[2].style['--pc'], undefined);
+    // the hits table has one row per hit with the evidence text
+    assert.match(text, /Shuttle position/);
+    assert.match(text, /Only candidate/);
+    hits[1].fire('click');
+    assert.equal(byClass(container, 'ws-hit')[1].classList.contains('on'), true);
+    // no stroke-technique filter chips and no score column on doubles
+    assert.equal(byClass(container, 'ws-score').length, 0);
+    view.destroy();
+    assert.equal(container.childNodes.length, 0);
+  } finally {
+    delete globalThis.fetch;
+    fake.restore();
+  }
+});
+
+test('doubles workspace: degraded identity without a players video falls back to the annotated video and says why', async () => {
+  const fake = installEnv();
+  try {
+    const out = (f) => '/api/output/d2/' + f;
+    stubFetch({
+      [out('metadata.json')]: { match_format: 'doubles', video: { fps: 50 } },
+      [out('players.json')]: { match_format: 'doubles', status: 'degraded_teams', reason: 'C:\secret', players: D_PLAYERS.map((p) => ({ ...p, team: null })), identity_video: { status: 'failed', file: null } },
+      '/api/insights/video/d2': { match_format: 'doubles' },
+    });
+    const container = new FakeEl('main');
+    const view = mountWorkspace(container, { params: { stem: 'd2' }, lang: 'en', reduced: true });
+    for (let i = 0; i < 10; i++) await tick();
+    const video = all(container, (n) => n.tagName === 'VIDEO')[0];
+    assert.ok(String(video.src).endsWith('detect_d2.mp4'), String(video.src));
+    const text = container.textContent;
+    assert.match(text, /Teams unknown/);
+    assert.match(text, /could not be told apart/);
+    assert.doesNotMatch(text, /secret/);
+    assert.match(text, /No hits detected/);
+    view.destroy();
+  } finally {
+    delete globalThis.fetch;
+    fake.restore();
+  }
+});
+
+test('doubles peek: teams, identity status, named-hit share with the unvalidated badge and no technique tile', async () => {
+  const fake = installEnv();
+  try {
+    const fakeA = {
+      videoInsights: async () => ({
+        match_format: 'doubles',
+        technique: { status: 'ok', value: { by_side: { lower: { index: 77.7 } } } },
+        doubles: { status: 'ok', value: { status: 'ok', players: D_PLAYERS, hits: { total: 6, named: 3, named_share: 0.5 } } },
+      }),
+      match: async () => ({ format: 'doubles', players: { P1: { name: 'Al' } }, result: { winner_team: 1, sets: [[21, 15]] } }),
+    };
+    const node = buildMatchPeek({ stem: 'd1' }, { lang: 'en', api: fakeA });
+    for (let i = 0; i < 5; i++) await tick();
+    const text = node.textContent;
+    assert.match(text, /Al \/ P2 vs\. Cara \/ Dan/);
+    assert.match(text, /Identities OK/);
+    assert.match(text, /50%/);
+    assert.match(text, /Who hit: unvalidated/);
+    assert.match(text, /Al \/ P2 won/);
+    assert.doesNotMatch(text, /77\.7/);
+    assert.doesNotMatch(text, /Technique/);
   } finally {
     fake.restore();
   }

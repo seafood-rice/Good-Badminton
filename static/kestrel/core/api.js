@@ -138,4 +138,7 @@ export const api = {
   saveMatch: (stem, record, opts) => sendJSON('PUT', endpoints.match(stem), record, opts),
   videos: (opts) => getJSON(endpoints.videos(), opts),
   stats: (opts) => getJSON(endpoints.stats(), opts),
+  // Doubles run files (spec 2026-10-20 section 2): a 404 means the file is absent (callers treat it as none).
+  players: (stem, opts) => getJSON(endpoints.output(stem, 'players.json'), opts),
+  hits: (stem, opts) => getJSON(endpoints.output(stem, 'hits.json'), opts),
 };

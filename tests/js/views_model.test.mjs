@@ -7,7 +7,10 @@ import {
   matchDateApprox, listScore, rallyInput, rallyCountText,
 } from '../../static/kestrel/views/workspace.js';
 import { t } from '../../static/kestrel/core/i18n.js';
-import { matchRows, validateRecordForm, formFromRecord, peekModel, rowTitle } from '../../static/kestrel/views/matches.js';
+import {
+  matchRows, validateRecordForm, formFromRecord, peekModel, rowTitle, validateDoublesRecordForm, formFromDoublesRecord,
+} from '../../static/kestrel/views/matches.js';
+import { jobStage, jobsModel } from '../../static/kestrel/widgets/pipeline.js';
 import { groupBySquad } from '../../static/kestrel/views/players.js';
 import { groupJobs, jobsKey, createPoller, FAST_MS, SLOW_MS } from '../../static/kestrel/views/pipeline.js';
 import { viewModel } from '../../static/kestrel/views/overview.js';
@@ -641,4 +644,127 @@ test('buildWorkspaceModel: a doubles run joins no technique score to a stroke', 
   assert.equal(doubles.strokes[0].report, null);
   assert.equal(doubles.summary.scored, 0);
   assert.equal(buildWorkspaceModel({ rallies: rallyPayload(), strokes, fps: FPS }).summary.doubles, false);
+});
+
+// ---------- doubles support (spec 2026-10-20 section 5) ----------
+
+test('validateDoublesRecordForm: four identities, team winner, sets team-1-first, blanks to null', () => {
+  const out = validateDoublesRecordForm({
+    date: '2026-10-11',
+    players: { P1: { athlete_id: 'a1', name: '' }, P2: { athlete_id: '', name: ' Bea ' }, P3: { athlete_id: '', name: '  ' }, P9: { athlete_id: 'a2' } },
+    winner_team: '2', sets: '21-18, 19-21; 15-21',
+  });
+  assert.deepEqual(out.errors, {});
+  assert.deepEqual(out.record, {
+    date: '2026-10-11', format: 'doubles',
+    players: { P1: { athlete_id: 'a1' }, P2: { name: 'Bea' }, P3: null, P4: null },
+    result: { winner_team: 2, sets: [[21, 18], [19, 21], [15, 21]] },
+  });
+  assert.equal('upper' in out.record || 'lower' in out.record, false);
+  const empty = validateDoublesRecordForm({});
+  assert.deepEqual(empty.record, { date: null, format: 'doubles', players: { P1: null, P2: null, P3: null, P4: null }, result: null });
+  assert.deepEqual(validateDoublesRecordForm({ winner_team: 1 }).record.result, { winner_team: 1, sets: [] });
+});
+
+test('validateDoublesRecordForm: winner required with sets, same athlete twice, bad sets/dates/names', () => {
+  const noWinner = validateDoublesRecordForm({ winner_team: '', sets: '21-18' });
+  assert.equal(noWinner.record, null);
+  assert.equal(noWinner.errors.winner, 'record.err.winner');
+  for (const w of ['3', 'upper', 'lower', 0]) assert.equal(validateDoublesRecordForm({ winner_team: w, sets: '21-18' }).errors.winner, 'record.err.winner', String(w));
+  const same = validateDoublesRecordForm({ players: { P1: { athlete_id: 'a1' }, P3: { athlete_id: 'a1' } } });
+  assert.equal(same.record, null);
+  assert.equal(same.errors.P3, 'dbl.record.err.same');
+  assert.equal(same.errors.P1, undefined);
+  assert.equal(validateDoublesRecordForm({ sets: '21-', winner_team: '1' }).errors.sets, 'record.err.sets');
+  assert.equal(validateDoublesRecordForm({ sets: '1-1,1-1,1-1,1-1,1-1,1-1', winner_team: '1' }).errors.sets, 'record.err.sets');
+  assert.equal(validateDoublesRecordForm({ date: '2026-02-30' }).errors.date, 'record.err.date');
+  assert.equal(validateDoublesRecordForm({ players: { P2: { name: 'x'.repeat(61) } } }).errors.P2, 'record.err.name');
+});
+
+test('formFromDoublesRecord round-trips and ignores a singles shape', () => {
+  const rec = {
+    date: '2026-10-11', format: 'doubles',
+    players: { P1: { athlete_id: 'a1' }, P2: { name: 'Bea' }, P3: null, P4: null },
+    result: { winner_team: 1, sets: [[21, 18]] },
+  };
+  const form = formFromDoublesRecord(rec);
+  assert.equal(form.winner_team, '1');
+  assert.equal(form.sets, '21-18');
+  assert.deepEqual(form.players.P2, { athlete_id: '', name: 'Bea' });
+  assert.deepEqual(validateDoublesRecordForm(form).record, rec);
+  const singles = formFromDoublesRecord({ upper: { name: 'X' }, lower: { athlete_id: 'a' }, result: { winner: 'upper', sets: [[1, 2]] } });
+  assert.equal(singles.winner_team, '');
+  assert.deepEqual(Object.keys(singles.players), ['P1', 'P2', 'P3', 'P4']);
+  assert.ok(Object.values(singles.players).every((p) => !p.athlete_id && !p.name));
+  assert.equal(formFromDoublesRecord({ players: 'junk', result: { winner_team: '2' } }).winner_team, '');
+});
+
+test('matchRows: a doubles row keeps its team fields and never a technique index', () => {
+  const rows = matchRows({
+    matches: [{
+      stem: 'd', side: 'lower', doubles: true, format: 'doubles', athlete: 'J. Tanaka', athlete_player: 'P3', team: 2,
+      partner: 'Bea', opponent: 'Cara / Dan', result: 'W', sets: [[21, 18]], tech_index: 81.5, status: 'analysed', needs_review: true,
+    }, { stem: 'e', doubles: true, athlete_player: 'P7', team: 3, partner: 5, opponent: null, tech_index: 50 }],
+  });
+  assert.equal(rows[0].techIndex, null);
+  assert.equal(rows[0].athletePlayer, 'P3');
+  assert.equal(rows[0].team, 2);
+  assert.equal(rows[0].partner, 'Bea');
+  assert.equal(rows[0].status, 'needs_review');
+  assert.equal(rows[1].techIndex, null);
+  assert.equal(rows[1].athletePlayer, null);
+  assert.equal(rows[1].team, null);
+  assert.equal(rows[1].partner, null);
+});
+
+test('rowTitle: doubles rows list teams, else identity labels, else the stem', () => {
+  const [full, partnerless, anon] = matchRows({
+    matches: [
+      { stem: 'd1', doubles: true, athlete: 'J. Tanaka', athlete_player: 'P3', team: 2, partner: 'Bea', opponent: 'Cara / Dan' },
+      { stem: 'd2', doubles: true, athlete: null, athlete_player: 'P3', team: 1, partner: null, opponent: null },
+      { stem: 'd3', doubles: true },
+    ],
+  });
+  assert.deepEqual(rowTitle(full, 'en'), { title: 'J. Tanaka / Bea vs. Cara / Dan', sub: 'd1' });
+  assert.deepEqual(rowTitle(partnerless, 'en'), { title: 'P3 vs. Team 2', sub: 'd2' });
+  const a = rowTitle(anon, 'en');
+  assert.equal(a.title, 'd3');
+  assert.ok(a.sub.length > 0 && !/[{}]/.test(a.sub));
+  assert.ok(!/[{}]/.test(rowTitle(anon, 'zh').sub));
+});
+
+test('peekModel: a doubles record or sidecar adds the doubles model and drops side scores', () => {
+  const pm = peekModel({
+    stem: 'd',
+    record: { format: 'doubles', players: { P1: { athlete_id: 'a1' } }, result: { winner_team: 1, sets: [[21, 10]] } },
+    insights: { match_format: 'doubles', technique: { status: 'ok', value: { by_side: { lower: { index: 77 } } } },
+      doubles: { status: 'ok', value: { status: 'ok', players: [{ id: 'P1', team: 1 }, { id: 'P3', team: 2 }], hits: { total: 10, named: 6, named_share: 0.6 } } } },
+    athletes: { athletes: [{ id: 'a1', name: 'J. Tanaka' }] }, athleteId: 'a1',
+  }, 'en');
+  assert.equal(pm.doubles, true);
+  assert.equal(pm.techIndex, null);
+  assert.deepEqual(pm.techBySide, { upper: null, lower: null });
+  assert.ok(pm.dbl);
+  assert.equal(pm.result, 'W');
+  assert.deepEqual(pm.sets, [[21, 10]]);
+  assert.equal(pm.dbl.namedText, '60%');
+  // a doubles record on a run whose sidecar is not doubles still reads as doubles
+  const rec = peekModel({ stem: 'x', record: { format: 'doubles', players: {} }, insights: null });
+  assert.equal(rec.doubles, true);
+  assert.ok(rec.dbl);
+  assert.equal(peekModel({ stem: 's', record: {}, insights: null }).dbl, null);
+});
+
+test('jobStage: doubles sub-stages from a substage field or the bilingual progress message', () => {
+  assert.equal(jobStage({ stage: 'visualizing', substage: 'doubles_video' }), 'doubles_video');
+  assert.equal(jobStage({ stage: 'visualizing', message: '识别球员身份... / Identifying players... 40/100 帧' }), 'doubles_identity');
+  assert.equal(jobStage({ stage: 'visualizing', message: '生成球员热图... / Drawing player heatmaps...' }), 'doubles_heatmaps');
+  assert.equal(jobStage({ stage: 'visualizing', substage: 'bogus' }), 'visualizing');
+  assert.equal(jobStage({ stage: 'strokes', message: '识别球员身份' }), 'strokes');
+  assert.equal(jobStage({}), null);
+  const g = groupJobs([{ id: 'j', status: 'running', stage: 'visualizing', message: '渲染球员视频... / Rendering the players video... 5/9 帧', video: 'a.mp4' }]);
+  assert.equal(g.active[0].stage, 'doubles_video');
+  const m = jobsModel([{ id: 'j', status: 'running', stage: 'visualizing', substage: 'doubles_identity', progress: 40 }], 'en');
+  assert.equal(m.rows[0].title, 'Identifying players');
+  assert.equal(jobsModel([{ id: 'j', status: 'running', stage: 'doubles_video' }], 'zh').rows[0].title, t('stage.doubles_video', 'zh'));
 });

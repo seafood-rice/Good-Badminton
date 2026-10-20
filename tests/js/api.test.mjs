@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getJSON, sendJSON, ApiError, errorText, endpoints } from '../../static/kestrel/core/api.js';
+import { getJSON, sendJSON, ApiError, errorText, endpoints, api } from '../../static/kestrel/core/api.js';
 
 const resp = (status, body, ok = status >= 200 && status < 300) => ({
   ok, status, json: async () => { if (body === undefined) throw new Error('no body'); return body; },
@@ -73,4 +73,12 @@ test('endpoint helpers encode stems and skip empty query values', () => {
   assert.equal(endpoints.squad('s_1'), '/api/squads/s_1');
   assert.equal(endpoints.output('a b', 'detect_a b_h264.mp4'), '/api/output/a%20b/detect_a%20b_h264.mp4');
   assert.equal(endpoints.output('a', 'sub/dir/x.json'), '/api/output/a/sub/dir/x.json');
+});
+
+test('api.players / api.hits read the doubles run files; a 404 is an http error the caller treats as absent', async () => {
+  const urls = [];
+  const fetchImpl = async (url) => { urls.push(url); return url.endsWith('players.json') ? resp(200, { status: 'ok' }) : resp(404, {}); };
+  assert.deepEqual(await api.players('a b', { fetch: fetchImpl }), { status: 'ok' });
+  await assert.rejects(api.hits('a b', { fetch: fetchImpl }), (e) => e.kind === 'http' && e.status === 404);
+  assert.deepEqual(urls, ['/api/output/a%20b/players.json', '/api/output/a%20b/hits.json']);
 });

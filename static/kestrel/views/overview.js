@@ -17,6 +17,8 @@ import * as findingsW from '../widgets/findings.js';
 import * as courtW from '../widgets/courtmap.js';
 import * as matchesW from '../widgets/matches.js';
 import * as pipelineW from '../widgets/pipeline.js';
+import * as doublesW from '../widgets/doubles.js';
+import { doublesRows, doublesTiles } from './doubles_model.js';
 
 export const LENS_IDS = Object.freeze(['overview', 'technique', 'tactics']);
 export const LENS_TILES = Object.freeze({
@@ -225,12 +227,17 @@ function techniqueTiles(radar, kpis, lang) {
   return out;
 }
 
-function tacticsTiles(kpis, lang) {
+/**
+ * Tactics tiles. `dbl` (doublesTiles of the overview's `doubles` insight) stands in where a singles value is
+ * unavailable: "Distance covered" for the recovery slot and "Hits named" (unvalidated) for the pull-to-rear slot.
+ */
+function tacticsTiles(kpis, lang, dbl) {
+  const d = dbl || {};
   const out = [];
   {
     const ins = insight(kpis.recovery);
     const label = t('tile.recovery', lang);
-    if (!usable(ins) || !isNum(ins.value.median_sec)) out.push(gapTile('recovery', label, ins, lang, 'no_hits'));
+    if (!usable(ins) || !isNum(ins.value.median_sec)) out.push(d.distance || gapTile('recovery', label, ins, lang, 'no_hits'));
     else {
       const cov = ins.coverage;
       out.push({
@@ -241,7 +248,8 @@ function tacticsTiles(kpis, lang) {
     }
   }
   out.push(shareTile('net_share', 'tile.net_share', 'tile.of_classified', insight(kpis.net_share), lang));
-  out.push(shareTile('pull_rear', 'tile.pull_rear', 'tile.opponent_drawn_back', insight(kpis.pull_rear), lang));
+  const pull = shareTile('pull_rear', 'tile.pull_rear', 'tile.opponent_drawn_back', insight(kpis.pull_rear), lang);
+  out.push(pull.kind === 'gap' && d.named ? d.named : pull);
   // Unforced errors: spec 5.4 types it unavailable (no point-outcome signal), so it is always a gap tile.
   out.push(gapTile('unforced_errors', t('tile.unforced_errors', lang), insight(kpis.unforced_errors), lang, 'no_point_outcome'));
   return out;
@@ -405,7 +413,8 @@ function matchesModel(ov, lang) {
       dateApprox: isApproxDate(m.date, m.date_source),
       result,
       resultText: result ? t('result.' + result, lang) : t('matches.add_result', lang),
-      tech: fmtNumber(m.tech_index, 1),
+      // A doubles run has no per-player technique score, whatever the payload holds.
+      tech: m.doubles === true ? '—' : fmtNumber(m.tech_index, 1),
       doubles: m.doubles === true,
       status,
       statusText: t('status.' + status, lang),
@@ -446,7 +455,7 @@ export function viewModel(overview, lens, lang) {
   const radar = radarModel(ov, kpis, lang);
   let tiles;
   if (L === 'technique') tiles = techniqueTiles(radar, kpis, lang);
-  else if (L === 'tactics') tiles = tacticsTiles(kpis, lang);
+  else if (L === 'tactics') tiles = tacticsTiles(kpis, lang, doublesTiles(ov.doubles, lang));
   else tiles = overviewTiles(kpis, radar.reference, range, lang, !!sc.athlete);
   const mv = obj(ov.movement);
   const empty = !(isNum(sc.stems) && sc.stems > 0);
@@ -462,6 +471,7 @@ export function viewModel(overview, lens, lang) {
     findings: findingsModel(ov, lang),
     court: { position: courtMode(insight(mv.position), 'position', lang), pull: courtMode(insight(mv.pull), 'pull', lang) },
     matches: matchesModel(ov, lang),
+    doubles: doublesRows(ov.doubles, lang),
     empty,
     emptyKind,
     emptyTitle: t(emptyKind === 'library' ? 'empty.library.title' : 'matches.empty.title', lang),
@@ -773,6 +783,20 @@ export function mount(container, opts = {}) {
       built.push(w);
       refs[id] = w;
     });
+    // "Doubles players" (spec 5) appears only with doubles matches in scope, so it sits after the customizable
+    // widgets rather than in the saved layout (kestrel_layout_v1 keeps its six ids).
+    if (vm.doubles && vm.doubles.show) {
+      try {
+        const w = doublesW.build(vm.doubles, ctxFor(1 + visible.length));
+        if (w && w.el) {
+          grid.appendChild(w.el);
+          built.push(w);
+          refs.doubles = w;
+        }
+      } catch (err) {
+        console.error('widget build failed', 'doubles', err);
+      }
+    }
     refs.gridWidgets = built;
     return grid;
   }

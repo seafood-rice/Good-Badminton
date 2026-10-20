@@ -9,6 +9,7 @@ import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, approxMark } from '../widgets/frame.js';
 import { rallyCountText } from './workspace.js';
+import { IDENTITY_IDS, doublesPeekModel, identityOptionLabel, identityColor } from './doubles_model.js';
 
 const SIDES = ['upper', 'lower'];
 const OTHER = '__other';
@@ -47,7 +48,8 @@ export function matchRows(overview) {
     seen.add(m.stem);
     const status = m.needs_review ? 'needs_review' : ['analysed', 'processing', 'new'].includes(m.status) ? m.status : 'analysed';
     const sets = Array.isArray(m.sets) ? m.sets.filter((p) => Array.isArray(p) && p.length === 2 && p.every(isNum)) : [];
-    rows.push({
+    const doubles = m.doubles === true;
+    const row = {
       stem: m.stem,
       date: typeof m.date === 'string' ? m.date : null,
       dateApprox: isApproxDate(m.date, m.date_source),
@@ -57,12 +59,33 @@ export function matchRows(overview) {
       result: m.result === 'W' || m.result === 'L' ? m.result : null,
       sets,
       setsText: setsText(sets),
-      techIndex: isNum(m.tech_index) ? m.tech_index : null,
+      // A doubles run has no per-player technique score, whatever the payload holds.
+      techIndex: !doubles && isNum(m.tech_index) ? m.tech_index : null,
       status,
-      doubles: m.doubles === true,
-    });
+      doubles,
+    };
+    if (doubles) {
+      // Spec 4.2: the athlete's identity and team, the partner's name and the opposing team's names.
+      row.athletePlayer = typeof m.athlete_player === 'string' && IDENTITY_IDS.includes(m.athlete_player) ? m.athlete_player : null;
+      row.team = m.team === 1 || m.team === 2 ? m.team : null;
+      row.partner = str(m.partner) || null;
+    }
+    rows.push(row);
   }
   return rows;
+}
+
+/** "21-18, 19-21" -> {sets: [[21, 18], [19, 21]], bad}. Pairs keep the order typed; at most MAX_SETS. */
+function parseSets(text) {
+  const raw = str(text).trim();
+  const sets = [];
+  if (!raw) return { sets, bad: false };
+  for (const p of raw.split(/[,;，、]/).map((x) => x.trim())) {
+    const m = /^(\d{1,2})\s*[-–—:]\s*(\d{1,2})$/.exec(p);
+    if (!m) return { sets: [], bad: true };
+    sets.push([Number(m[1]), Number(m[2])]);
+  }
+  return sets.length > MAX_SETS ? { sets: [], bad: true } : { sets, bad: false };
 }
 
 function cleanSide(side, errors, key) {
@@ -132,6 +155,59 @@ export function formFromRecord(record) {
   };
 }
 
+/**
+ * Pure: doubles editor form {date, players: {P1: {athlete_id, name}, ...}, winner_team: ''|'1'|'2', sets: "21-18"}
+ * -> {record: {date, format: 'doubles', players: {P1..P4: entry|null}, result: {winner_team, sets}|null} | null,
+ * errors: {field: i18n key}} (spec 3). Blank identities map to null; sets are team-1-first pairs; a winning team is
+ * required when sets are present; the same athlete may not be mapped to two identities.
+ */
+export function validateDoublesRecordForm(form) {
+  const f = obj(form);
+  const errors = {};
+  const dateRaw = str(f.date).trim();
+  let date = null;
+  if (dateRaw) {
+    if (realDate(dateRaw)) date = dateRaw;
+    else errors.date = 'record.err.date';
+  }
+  const map = obj(f.players);
+  const players = {};
+  const used = new Set();
+  for (const pid of IDENTITY_IDS) {
+    const entry = cleanSide(map[pid], errors, pid);
+    if (entry && entry.athlete_id) {
+      if (used.has(entry.athlete_id)) errors[pid] = 'dbl.record.err.same';
+      used.add(entry.athlete_id);
+    }
+    players[pid] = entry;
+  }
+  const parsed = parseSets(f.sets);
+  if (parsed.bad) errors.sets = 'record.err.sets';
+  const wt = String(f.winner_team === undefined || f.winner_team === null ? '' : f.winner_team);
+  const winner = wt === '1' ? 1 : wt === '2' ? 2 : null;
+  if (parsed.sets.length && winner === null) errors.winner = 'record.err.winner';
+  if (Object.keys(errors).length) return { record: null, errors };
+  return { record: { date, format: 'doubles', players, result: winner ? { winner_team: winner, sets: parsed.sets } : null }, errors };
+}
+
+/** Pure: a stored record (or {}) -> the doubles editor form; a singles record's sides and winner are not carried over. */
+export function formFromDoublesRecord(record) {
+  const r = obj(record);
+  const map = obj(r.players);
+  const players = {};
+  for (const pid of IDENTITY_IDS) {
+    const e = obj(map[pid]);
+    players[pid] = { athlete_id: str(e.athlete_id), name: str(e.athlete_id) ? '' : str(e.name) };
+  }
+  const res = obj(r.result);
+  return {
+    date: str(r.date),
+    players,
+    winner_team: res.winner_team === 1 || res.winner_team === 2 ? String(res.winner_team) : '',
+    sets: res.winner_team === 1 || res.winner_team === 2 ? setsText(res.sets) : '',
+  };
+}
+
 function registryName(athletes, id) {
   const a = (Array.isArray(obj(athletes).athletes) ? athletes.athletes : []).find((x) => x && x.id === id);
   return a && typeof a.name === 'string' && a.name ? a.name : null;
@@ -144,9 +220,29 @@ function registryName(athletes, id) {
  * A doubles run (sidecar `match_format: 'doubles'`) has no per-player score: techIndex / techBySide stay null whatever
  * the sidecar holds, and the peek says so instead.
  */
-export function peekModel({ stem, record, insights, athletes, athleteId } = {}) {
+export function peekModel({ stem, record, insights, athletes, athleteId } = {}, lang) {
   const rec = obj(record);
   const ins = obj(insights);
+  const out = singlesPeek(stem, rec, ins, athletes, athleteId);
+  // A doubles run (sidecar) or a doubles record: teams, identity status and who-hit shares; never a score.
+  if (ins.match_format === 'doubles' || rec.format === 'doubles') {
+    const dbl = doublesPeekModel({ record: rec, insights: ins, athletes, athleteId }, lang);
+    return {
+      ...out,
+      doubles: true,
+      techIndex: null,
+      techBySide: { upper: null, lower: null },
+      side: null,
+      winner: null,
+      result: dbl.result,
+      sets: dbl.sets,
+      dbl,
+    };
+  }
+  return { ...out, dbl: null };
+}
+
+function singlesPeek(stem, rec, ins, athletes, athleteId) {
   const names = {};
   for (const s of SIDES) {
     const e = obj(rec[s]);
@@ -193,10 +289,21 @@ export function peekModel({ stem, record, insights, athletes, athleteId } = {}) 
  */
 export function rowTitle(row, lang) {
   const r = obj(row);
+  if (r.doubles) return doublesRowTitle(r, lang);
   const a = r.side || 'lower';
   const sides = { a: t('ws.side.' + a, lang), b: t('ws.side.' + otherSide(a), lang) };
   if (!r.athlete && !r.opponent) return { title: str(r.stem), sub: t('mv.sides_sub', lang, sides) };
   return { title: t('mv.vs', lang, { a: r.athlete || sides.a, b: r.opponent || sides.b }), sub: str(r.stem) };
+}
+
+/** Doubles row title: "A / B vs. C / D"; a missing name falls back to the identity or team label; no names: the stem. */
+function doublesRowTitle(r, lang) {
+  const own = [r.athlete || r.athletePlayer, r.partner].filter(Boolean).join(' / ');
+  if (!own && !r.opponent) return { title: str(r.stem), sub: t('dbl.row.no_names', lang) };
+  const team = r.team === 2 ? 2 : r.team === 1 ? 1 : null;
+  const a = own || (team ? t('dbl.team', lang, { n: team }) : t('dbl.team_unknown', lang));
+  const b = r.opponent || (team ? t('dbl.team', lang, { n: team === 1 ? 2 : 1 }) : t('dbl.team_unknown', lang));
+  return { title: t('mv.vs', lang, { a, b }), sub: str(r.stem) };
 }
 
 // ---------- shared DOM helpers ----------
@@ -242,45 +349,14 @@ export function buildMatchPeek(row, ctx = {}) {
     root.textContent = '';
     const [a, b] = [pm.first, otherSide(pm.first)];
     const nm = (s) => pm.names[s] || sideLabel(s, lang);
+    const dbl = pm.dbl;
     root.appendChild(h('div', null, [
       h('div', { class: 'mono k-label' }, [t('peek.match', lang, { date: fmtDate(pm.date, lang).toUpperCase() }),
         pm.dateApprox ? approxMark(lang) : null]),
-      h('h2', { class: 'mp-title' }, t('peek.title', lang, { a: nm(a), b: nm(b) })),
+      h('h2', { class: 'mp-title' }, dbl ? dbl.title.text || stem : t('peek.title', lang, { a: nm(a), b: nm(b) })),
     ]));
-    const chips = h('div', { class: 'mp-chips' });
-    if (pm.result) chips.appendChild(h('span', { class: 'k-chip ' + (pm.result === 'W' ? 'good' : 'bad') }, t(pm.result === 'W' ? 'ws.result.win' : 'ws.result.loss', lang)));
-    else if (pm.winner) chips.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: nm(pm.winner) })));
-    else if (mode === 'ok') chips.appendChild(h('span', { class: 'k-chip' }, t('matches.no_result', lang)));
-    if (pm.doubles) chips.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
-    if (mode === 'failed' || mode === 'partial') chips.appendChild(h('span', { class: 'kw-foot-muted', role: 'status' }, t('peek.load_failed', lang)));
-    if (pm.sets.length) chips.appendChild(h('span', { class: 'mono kw-muted' }, pm.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ')));
-    root.appendChild(chips);
-
-    const dash = loading ? t('state.loading', lang) : '—';
-    const r = pm.rally;
-    const rallyHead = !r.available ? t('peek.segments', lang) : r.label === 'rallies' ? t('peek.rallies', lang) : r.label === 'windows' ? t('peek.windows', lang) : t('peek.segments', lang);
-    const tech = pm.side ? num1(pm.techIndex)
-      : [pm.techBySide.lower, pm.techBySide.upper].some(isNum) ? `${num1(pm.techBySide[a])} · ${num1(pm.techBySide[b])}` : '—';
-    const tile = (label, value, sub, i) => h('div', { class: 'mp-tile', style: { animationDelay: `${(0.12 + i * 0.08).toFixed(2)}s` } }, [
-      h('div', { class: 'kw-muted' }, label),
-      h('div', { class: 'mono mp-val' }, value),
-      sub ? h('div', { class: 'mp-sub' }, sub) : null,
-    ]);
-    const sig = r.signal ? t('signal.' + r.signal, lang) : '';
-    root.appendChild(h('div', { class: 'mp-grid' }, [
-      tile(t('peek.tech', lang), loading && tech === '—' ? dash : tech, pm.doubles ? t('reason.doubles_run', lang) : null, 0),
-      tile(rallyHead, r.available ? fmtNumber(r.count) : dash, r.available ? rallyCountText(r, lang) : null, 1),
-      tile(t('peek.strokes', lang), pm.strokes ? fmtNumber(pm.strokes.total) : dash,
-        pm.strokes ? t('tile.classified_of', lang, { classified: fmtNumber(pm.strokes.classified), total: fmtNumber(pm.strokes.total) }) : null, 2),
-      tile(t('peek.signal', lang), r.available ? (sig && sig !== 'signal.' + r.signal ? sig : '—') : dash, null, 3),
-    ]));
-    root.appendChild(h('div', { class: 'mp-box' }, [
-      h('div', { class: 'mono k-label' }, t('peek.athletes', lang)),
-      h('div', null, [
-        `${sideLabel('lower', lang)}: `, h('strong', null, pm.names.lower || '—'), ' · ',
-        `${sideLabel('upper', lang)}: `, h('strong', null, pm.names.upper || '—'),
-      ]),
-    ]));
+    if (dbl) paintDoubles(pm, mode);
+    else paintSingles(pm, mode, a, b, nm);
     root.appendChild(h('p', { class: 'mp-hint' }, t('peek.hint', lang)));
     const open = h('a', {
       href: hash, class: 'ov-btn primary mp-open',
@@ -298,10 +374,88 @@ export function buildMatchPeek(row, ctx = {}) {
     if (back) back.focus();
   }
 
+  const tile = (label, value, sub, i) => h('div', { class: 'mp-tile', style: { animationDelay: `${(0.12 + i * 0.08).toFixed(2)}s` } }, [
+    h('div', { class: 'kw-muted' }, label),
+    h('div', { class: 'mono mp-val' }, value),
+    sub ? h('div', { class: 'mp-sub' }, sub) : null,
+  ]);
+
+  function rallyTiles(pm, dash, from) {
+    const r = pm.rally;
+    const rallyHead = !r.available ? t('peek.segments', lang) : r.label === 'rallies' ? t('peek.rallies', lang) : r.label === 'windows' ? t('peek.windows', lang) : t('peek.segments', lang);
+    const sig = r.signal ? t('signal.' + r.signal, lang) : '';
+    return [
+      tile(rallyHead, r.available ? fmtNumber(r.count) : dash, r.available ? rallyCountText(r, lang) : null, from),
+      tile(t('peek.signal', lang), r.available ? (sig && sig !== 'signal.' + r.signal ? sig : '—') : dash, null, from + 2),
+    ];
+  }
+
+  /** Doubles peek (spec 5): teams, identity status, named-hit share with the unvalidated badge; no scores. */
+  function paintDoubles(pm, mode) {
+    const d = pm.dbl;
+    const loading = mode === 'loading';
+    const chips = h('div', { class: 'mp-chips' });
+    const winLabel = d.winnerTeam ? (d.teams.find((x) => x.id === d.winnerTeam) || {}).label || t('dbl.team', lang, { n: d.winnerTeam }) : '';
+    if (pm.result) chips.appendChild(h('span', { class: 'k-chip ' + (pm.result === 'W' ? 'good' : 'bad') }, t(pm.result === 'W' ? 'ws.result.win' : 'ws.result.loss', lang)));
+    else if (d.winnerTeam) chips.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: winLabel })));
+    else if (mode === 'ok') chips.appendChild(h('span', { class: 'k-chip' }, t('matches.no_result', lang)));
+    chips.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
+    chips.appendChild(h('span', { class: 'k-chip mid', title: t('dbl.unvalidated_title', lang) }, t('dbl.unvalidated', lang)));
+    if (mode === 'failed' || mode === 'partial') chips.appendChild(h('span', { class: 'kw-foot-muted', role: 'status' }, t('peek.load_failed', lang)));
+    if (pm.sets.length) chips.appendChild(h('span', { class: 'mono kw-muted' }, pm.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ')));
+    root.appendChild(chips);
+    const dash = loading ? t('state.loading', lang) : '—';
+    const named = d.hits.namedShare !== null
+      ? t('dbl.peek.named_sub', lang, { named: fmtNumber(d.hits.named), total: fmtNumber(d.hits.total) })
+      : null;
+    const [rally, signal] = rallyTiles(pm, dash, 1);
+    root.appendChild(h('div', { class: 'mp-grid' }, [
+      tile(t('dbl.peek.identity', lang), loading ? dash : d.statusText, loading ? null : d.detail || null, 0),
+      rally,
+      tile(t('dbl.peek.named', lang), loading && d.namedText === '—' ? dash : d.namedText, named ? `${named} · ${t('dbl.tag_unvalidated', lang)}` : null, 2),
+      signal,
+    ]));
+    root.appendChild(h('div', { class: 'mp-box' }, [
+      h('div', { class: 'mono k-label' }, t('dbl.peek.teams', lang)),
+      ...d.teams.map((tm) => h('div', null, [`${t('dbl.team', lang, { n: tm.id })}: `, h('strong', null, tm.label)])),
+    ]));
+  }
+
+  function paintSingles(pm, mode, a, b, nm) {
+    const loading = mode === 'loading';
+    const chips = h('div', { class: 'mp-chips' });
+    if (pm.result) chips.appendChild(h('span', { class: 'k-chip ' + (pm.result === 'W' ? 'good' : 'bad') }, t(pm.result === 'W' ? 'ws.result.win' : 'ws.result.loss', lang)));
+    else if (pm.winner) chips.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: nm(pm.winner) })));
+    else if (mode === 'ok') chips.appendChild(h('span', { class: 'k-chip' }, t('matches.no_result', lang)));
+    if (pm.doubles) chips.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
+    if (mode === 'failed' || mode === 'partial') chips.appendChild(h('span', { class: 'kw-foot-muted', role: 'status' }, t('peek.load_failed', lang)));
+    if (pm.sets.length) chips.appendChild(h('span', { class: 'mono kw-muted' }, pm.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ')));
+    root.appendChild(chips);
+
+    const dash = loading ? t('state.loading', lang) : '—';
+    const tech = pm.side ? num1(pm.techIndex)
+      : [pm.techBySide.lower, pm.techBySide.upper].some(isNum) ? `${num1(pm.techBySide[a])} · ${num1(pm.techBySide[b])}` : '—';
+    const [rally, signal] = rallyTiles(pm, dash, 1);
+    root.appendChild(h('div', { class: 'mp-grid' }, [
+      tile(t('peek.tech', lang), loading && tech === '—' ? dash : tech, pm.doubles ? t('reason.doubles_run', lang) : null, 0),
+      rally,
+      tile(t('peek.strokes', lang), pm.strokes ? fmtNumber(pm.strokes.total) : dash,
+        pm.strokes ? t('tile.classified_of', lang, { classified: fmtNumber(pm.strokes.classified), total: fmtNumber(pm.strokes.total) }) : null, 2),
+      signal,
+    ]));
+    root.appendChild(h('div', { class: 'mp-box' }, [
+      h('div', { class: 'mono k-label' }, t('peek.athletes', lang)),
+      h('div', null, [
+        `${sideLabel('lower', lang)}: `, h('strong', null, pm.names.lower || '—'), ' · ',
+        `${sideLabel('upper', lang)}: `, h('strong', null, pm.names.upper || '—'),
+      ]),
+    ]));
+  }
+
   const s = storeState(ctx);
   const athleteId = obj(s.scope).athlete || s.athlete || '';
   const seed = obj(row);
-  const base = peekModel({ stem, record: {}, insights: null, athletes: s.athletes, athleteId });
+  const base = peekModel({ stem, record: {}, insights: null, athletes: s.athletes, athleteId }, lang);
   if (seed.athlete || seed.opponent) {
     const sd = SIDES.includes(seed.side) ? seed.side : 'lower';
     base.names = { [sd]: str(seed.athlete) || null, [otherSide(sd)]: str(seed.opponent) || null };
@@ -323,7 +477,7 @@ export function buildMatchPeek(row, ctx = {}) {
       // GET /api/matches returns {} without a record; a 404 is an unknown video, i.e. no record either.
       const recOk = rec.ok || (rec.error && rec.error.status === 404);
       const mode = !ins.ok && !recOk ? 'failed' : !recOk ? 'partial' : 'ok';
-      const pm = peekModel({ stem, record: rec.ok ? rec.data : {}, insights: ins.ok ? ins.data : null, athletes: storeState(ctx).athletes, athleteId });
+      const pm = peekModel({ stem, record: rec.ok ? rec.data : {}, insights: ins.ok ? ins.data : null, athletes: storeState(ctx).athletes, athleteId }, lang);
       if (mode === 'failed') {
         pm.names = base.names;
         pm.date = base.date;
@@ -492,31 +646,39 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- record editor -----
-  function sideControl(side, form, athletes, errId) {
+  /** An athlete picker (registry select + "other" name input) for one side or one doubles identity. */
+  function pickerControl(key, labelText, cur, athletes, errId, labelNode) {
     const list = Array.isArray(obj(athletes).athletes) ? athletes.athletes : [];
-    const cur = obj(form[side]);
     const known = cur.athlete_id && list.some((a) => a && a.id === cur.athlete_id);
     const initial = known ? cur.athlete_id : cur.name || cur.athlete_id ? OTHER : '';
-    const sel = h('select', { class: 'mv-input', id: `mv-${side}`, 'aria-describedby': errId });
+    const sel = h('select', { class: 'mv-input', id: `mv-${key}`, 'aria-describedby': errId });
     sel.appendChild(h('option', { value: '' }, t('record.unspecified', lang)));
     list.forEach((a) => { if (a && a.id) sel.appendChild(h('option', { value: a.id }, String(a.name || a.id))); });
     sel.appendChild(h('option', { value: OTHER }, t('record.athlete_other', lang)));
     sel.value = initial;
     const input = h('input', {
       type: 'text', class: 'mv-input', maxlength: String(NAME_MAX), placeholder: t('record.name_placeholder', lang),
-      'aria-label': `${t('record.' + side, lang)} · ${t('record.name_placeholder', lang)}`, value: cur.name || '',
+      'aria-label': `${labelText} · ${t('record.name_placeholder', lang)}`, value: cur.name || '',
     });
     input.hidden = sel.value !== OTHER;
     sel.addEventListener('change', () => { input.hidden = sel.value !== OTHER; if (!input.hidden) input.focus(); });
     return {
-      el: h('div', { class: 'mv-field' }, [h('label', { for: `mv-${side}` }, t('record.' + side, lang)), sel, input,
+      el: h('div', { class: 'mv-field' }, [h('label', { for: `mv-${key}` }, labelNode || labelText), sel, input,
         h('span', { class: 'mv-err', id: errId, role: 'alert' })]),
       read: () => ({ athlete_id: sel.value && sel.value !== OTHER ? sel.value : '', name: sel.value === OTHER ? input.value : '' }),
       sel,
     };
   }
 
+  function sideControl(side, form, athletes, errId) {
+    return pickerControl(side, t('record.' + side, lang), obj(form[side]), athletes, errId);
+  }
+
   function buildEditor(cell, row, name) {
+    if (row.doubles) {
+      buildDoublesEditor(cell, row, name);
+      return;
+    }
     const box = h('div', { class: 'mv-editor', role: 'group', 'aria-label': t('record.title', lang, { name }) });
     box.appendChild(h('div', { class: 'k-label' }, t('record.title', lang, { name })));
     const status = h('div', { class: 'kw-note', role: 'status' }, t('state.loading', lang));
@@ -610,6 +772,130 @@ export function mount(container, ctx = {}) {
     formEl.addEventListener('submit', (e) => {
       e.preventDefault();
       const out = validateRecordForm({ date: date.value, upper: upper.read(), lower: lower.read(), winner: winner.value, sets: sets.value });
+      showErrors(out.errors);
+      if (out.record) submit(out.record);
+    });
+    box.appendChild(formEl);
+    const first = formEl.querySelector('input,select');
+    if (first) first.focus();
+  }
+
+  // ----- doubles record editor (spec 3 and 5): four identity pickers, a winning team, sets team-1-first -----
+  function buildDoublesEditor(cell, row, name) {
+    const box = h('div', { class: 'mv-editor', role: 'group', 'aria-label': t('record.title', lang, { name }) });
+    box.appendChild(h('div', { class: 'k-label' }, [t('record.title', lang, { name }), ' ', h('span', { class: 'k-chip' }, t('doubles.chip', lang))]));
+    const status = h('div', { class: 'kw-note', role: 'status' }, t('state.loading', lang));
+    box.appendChild(status);
+    cell.appendChild(box);
+    const stem = row.stem;
+    const s0 = storeState(state.ctx);
+    const needAthletes = s0.athletesStatus !== 'ok' && typeof state.ctx.refreshAthletes === 'function'
+      ? state.ctx.refreshAthletes().catch(() => null) : Promise.resolve(null);
+    Promise.all([
+      api.match(stem, LONG).then((r) => ({ ok: true, rec: obj(r) })).catch((e) => (e && e.status === 404 ? { ok: true, rec: {} } : { ok: false, err: e })),
+      // The identity labels (team, coverage) come from the sidecar's doubles insight; without it the ids still work.
+      api.videoInsights(stem, LONG).then((d) => obj(d), () => null),
+      needAthletes,
+    ]).then(([res, ins]) => {
+      if (state.destroyed || state.editing !== stem || !box.isConnected) return;
+      if (!res.ok) {
+        status.textContent = errorText(res.err, lang);
+        box.appendChild(h('button', { type: 'button', class: 'ov-btn small', onclick: () => { state.editing = null; toggleEditor(stem); } }, t('btn.retry', lang)));
+        return;
+      }
+      const has = Object.keys(res.rec).length > 0;
+      status.textContent = has ? '' : t('record.none_yet', lang);
+      const pm = doublesPeekModel({ record: {}, insights: ins || {} }, lang);
+      fillDoublesEditor(box, row, formFromDoublesRecord(res.rec), has, pm.players, pm.status === 'missing' || !ins);
+    });
+  }
+
+  function fillDoublesEditor(box, row, form, hasRecord, players, noIdentityData) {
+    const athletes = storeState(state.ctx).athletes;
+    const uid = `mv-dbl-${Math.random().toString(36).slice(2, 8)}`;
+    const err = (id) => h('span', { class: 'mv-err', id, role: 'alert' });
+    const date = h('input', { type: 'date', class: 'mv-input', id: 'mv-date', value: form.date, 'aria-describedby': uid + '-d' });
+    const pickers = {};
+    const fieldsIds = h('div', { class: 'mv-fields' });
+    for (const pid of IDENTITY_IDS) {
+      const p = players.find((x) => x.id === pid) || { id: pid };
+      const label = identityOptionLabel(p, lang);
+      const color = identityColor(pid);
+      const labelNode = [h('span', { class: 'dbl-swatch', 'aria-hidden': 'true', style: color ? { '--pc': color } : null }), label];
+      pickers[pid] = pickerControl(pid, label, obj(form.players[pid]), athletes, `${uid}-${pid}`, labelNode);
+      fieldsIds.appendChild(pickers[pid].el);
+    }
+    const teamName = (n) => {
+      const names = players.filter((p) => p.team === n).map((p) => p.label);
+      return names.length ? t('dbl.record.team_option', lang, { team: t('dbl.team', lang, { n }), names: names.join(' / ') }) : t('dbl.team', lang, { n });
+    };
+    const winner = h('select', { class: 'mv-input', id: 'mv-winner', 'aria-describedby': uid + '-w' }, [
+      h('option', { value: '' }, t('record.winner_none', lang)),
+      h('option', { value: '1' }, teamName(1)),
+      h('option', { value: '2' }, teamName(2)),
+    ]);
+    winner.value = form.winner_team;
+    const sets = h('input', { type: 'text', class: 'mv-input mono', id: 'mv-sets', value: form.sets, placeholder: '21-18, 19-21, 21-15', 'aria-describedby': `${uid}-s ${uid}-sh` });
+    const errs = { date: err(uid + '-d'), winner: err(uid + '-w'), sets: err(uid + '-s') };
+    const formErr = h('div', { class: 'mv-err form', role: 'alert' });
+    const saveBtn = h('button', { type: 'submit', class: 'ov-btn small primary' }, t('btn.save', lang));
+    const formEl = h('form', { class: 'mv-form', novalidate: true }, [
+      h('div', { class: 'mv-fields' }, [h('div', { class: 'mv-field' }, [h('label', { for: 'mv-date' }, t('record.date', lang)), date, errs.date])]),
+      h('div', { class: 'k-label' }, t('dbl.record.identities', lang)),
+      h('div', { class: 'mv-hint' }, t(noIdentityData ? 'dbl.record.no_identity_data' : 'dbl.record.identity_hint', lang)),
+      fieldsIds,
+      h('div', { class: 'mv-fields' }, [
+        h('div', { class: 'mv-field' }, [h('label', { for: 'mv-winner' }, t('dbl.record.winner_team', lang)), winner, errs.winner]),
+        h('div', { class: 'mv-field wide' }, [h('label', { for: 'mv-sets' }, t('record.sets', lang)), sets,
+          h('span', { class: 'mv-hint', id: uid + '-sh' }, t('dbl.record.sets_order', lang)), errs.sets]),
+      ]),
+      formErr,
+      h('div', { class: 'mv-actions' }, [
+        saveBtn,
+        hasRecord ? h('button', {
+          type: 'button', class: 'ov-btn small danger',
+          onclick: () => { if (typeof confirm !== 'function' || confirm(t('record.clear_confirm', lang))) submit({}); },
+        }, t('record.clear', lang)) : null,
+        h('button', { type: 'button', class: 'ov-btn small', onclick: () => toggleEditor(row.stem) }, t('btn.cancel', lang)),
+      ]),
+    ]);
+    const ctlOf = { date, ...Object.fromEntries(IDENTITY_IDS.map((pid) => [pid, pickers[pid].sel])), winner, sets };
+    const errOf = { ...errs, ...Object.fromEntries(IDENTITY_IDS.map((pid) => [pid, pickers[pid].el.querySelector('.mv-err')])) };
+
+    function showErrors(errors) {
+      for (const [k, el] of Object.entries(errOf)) if (el) el.textContent = errors[k] ? t(errors[k], lang) : '';
+      for (const [k, c] of Object.entries(ctlOf)) c.setAttribute('aria-invalid', errors[k] ? 'true' : 'false');
+      const firstBad = Object.keys(ctlOf).find((k) => errors[k]);
+      if (firstBad) ctlOf[firstBad].focus();
+    }
+
+    async function submit(record) {
+      formErr.textContent = '';
+      saveBtn.disabled = true;
+      try {
+        await api.saveMatch(row.stem, record, LONG);
+        if (state.destroyed) return;
+        if (typeof state.ctx.toast === 'function') state.ctx.toast(t('toast.saved', lang));
+        state.editing = null;
+        await load({ reveal: false });
+        const safe = String(row.stem).replace(/["\\]/g, '\\$&');
+        const btn = root.querySelector(`[data-rec="${safe}"]`);
+        if (btn) btn.focus();
+      } catch (e) {
+        if (state.destroyed) return;
+        formErr.textContent = errorText(e, lang);
+        saveBtn.disabled = false;
+      }
+    }
+
+    formEl.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const out = validateDoublesRecordForm({
+        date: date.value,
+        players: Object.fromEntries(IDENTITY_IDS.map((pid) => [pid, pickers[pid].read()])),
+        winner_team: winner.value,
+        sets: sets.value,
+      });
       showErrors(out.errors);
       if (out.record) submit(out.record);
     });

@@ -24,6 +24,25 @@ function basename(p) {
   return parts[parts.length - 1] || '';
 }
 
+/** Doubles steps inside the `visualizing` stage (app.py _PROGRESS_SUBSTAGES; progress.json `substage`). */
+export const DOUBLES_STAGES = Object.freeze(['doubles_identity', 'doubles_heatmaps', 'doubles_video']);
+
+/**
+ * Pure: the stage a job is in, with the doubles sub-stages resolved. /api/jobs carries `stage` and a bilingual
+ * message ("识别球员身份... / Identifying players... 40/100 帧"); a `substage` field wins when present, else the
+ * message's Chinese prefix names the sub-stage (the zh stage strings match app.py's). null when there is none.
+ */
+export function jobStage(job) {
+  const j = job && typeof job === 'object' ? job : {};
+  if (DOUBLES_STAGES.includes(j.substage)) return j.substage;
+  const stage = typeof j.stage === 'string' && j.stage ? j.stage : null;
+  if (stage === 'visualizing' && typeof j.message === 'string') {
+    const hit = DOUBLES_STAGES.find((s) => j.message.startsWith(t('stage.' + s, 'zh')));
+    if (hit) return hit;
+  }
+  return stage;
+}
+
 /** Pure: jobs list -> {rows:[{id,title,target,state,pct,tone}], running, queued, active, sub, emptyText}. */
 export function jobsModel(jobs, lang) {
   const list = Array.isArray(jobs) ? jobs.filter((j) => j && typeof j === 'object') : [];
@@ -43,7 +62,8 @@ export function jobsModel(jobs, lang) {
     else if (status === 'error') { state = t('job.state.error', lang); tone = 'bad'; }
     else if (status === 'detached') { state = t('job.state.detached', lang); tone = 'accent'; }
     else { state = t('job.state.running', lang, { pct }); tone = 'accent'; }
-    const stage = typeof j.stage === 'string' && j.stage ? known('stage.' + j.stage, lang) : null;
+    const st = jobStage(j);
+    const stage = st ? known('stage.' + st, lang) : null;
     const kind = typeof j.kind === 'string' ? known('job.kind.' + j.kind, lang) : null;
     return {
       id: String(j.id === undefined ? '' : j.id),
