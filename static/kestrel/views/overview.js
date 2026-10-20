@@ -402,13 +402,15 @@ function matchesModel(ov, lang) {
   const seen = new Set();
   const list = obj(ov.scope).athlete ? all : all.filter((m) => (seen.has(m.stem) ? false : (seen.add(m.stem), true)));
   const rows = list.slice(0, MAX_ROWS).map((m) => {
+    const teamsLabel = !nameOf(m.opponent) && m.doubles === true && Array.isArray(m.teams) && m.teams.length === 2
+      && m.teams.every((x) => typeof x === 'string' && x.trim()) ? t('mv.vs', lang, { a: m.teams[0].slice(0, 120), b: m.teams[1].slice(0, 120) }) : '';
     const opp = nameOf(m.opponent);
     const status = m.needs_review ? 'needs_review' : ['analysed', 'processing', 'new'].includes(m.status) ? m.status : 'analysed';
     const result = m.result === 'W' || m.result === 'L' ? m.result : null;
     return {
       stem: m.stem,
-      label: opp ? t('matches.vs', lang, { name: opp }) : m.stem,
-      aria: t('matches.peek_aria', lang, { name: opp || m.stem }),
+      label: opp ? t('matches.vs', lang, { name: opp }) : teamsLabel || m.stem,
+      aria: t('matches.peek_aria', lang, { name: opp || teamsLabel || m.stem }),
       date: fmtDate(m.date, lang, { year: false }),
       dateApprox: isApproxDate(m.date, m.date_source),
       result,

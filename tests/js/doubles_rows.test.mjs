@@ -79,3 +79,14 @@ test('doubles_identity_degraded shows the localized identity status, never the r
   const odd = findingText({ code: 'doubles_identity_degraded', params: { status: 'weird' } }, 'en').title;
   assert.ok(odd.includes('Identity status unknown') && !odd.includes('weird'), odd);
 });
+
+test('Overview recent matches: a no-scope doubles row is labelled with its teams, not the bare stem', async () => {
+  const { viewModel } = await import('../../static/kestrel/views/overview.js');
+  const ov = { scope: { stems: 1, athlete: null }, kpis: {}, matches: [
+    { stem: 'dbl', doubles: true, status: 'analysed', date: '2026-10-18', teams: ['Zed / Bo', 'Cara / Dev'], opponent: null },
+    { stem: 'dbl2', doubles: true, status: 'analysed', date: '2026-10-17', teams: null, opponent: null },
+  ] };
+  const rows = viewModel(ov, 'overview', 'en').matches.rows;
+  assert.equal(rows[0].label, 'Zed / Bo vs. Cara / Dev');
+  assert.equal(rows[1].label, 'dbl2');
+});
