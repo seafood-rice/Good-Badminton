@@ -18,6 +18,14 @@ In-memory shape (``save`` adds ``schema_version``)::
                              "lower": likewise,
                              "result": {"winner": "upper"|"lower",
                                         "sets": [[a, b], ...]} | None}}}
+
+A match record is singles (the four keys above) or doubles::
+
+    {"date": ..., "format": "doubles",
+     "players": {"P1": {"athlete_id": ...} | {"name": ...} | None, ... "P4": ...},
+     "result": {"winner_team": 1 | 2, "sets": [[team1, team2], ...]} | None}
+
+``record_format`` tells them apart; a record never carries both shapes.
 """
 import copy
 import datetime
@@ -35,6 +43,8 @@ MAX_NAME_LEN = 60
 MAX_SETS = 5
 MAX_SCORE = 99
 SIDES = ("upper", "lower")
+PLAYER_IDS = ("P1", "P2", "P3", "P4")
+TEAMS = (1, 2)
 
 _SECTIONS = ("squads", "athletes", "matches")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -100,6 +110,20 @@ def _blank_match():
     return {"date": None, "upper": None, "lower": None, "result": None}
 
 
+def _blank_doubles():
+    return {"date": None, "format": "doubles", "players": {}, "result": None}
+
+
+def record_format(record):
+    """``"doubles"`` for a record marked ``format: "doubles"``, else ``"singles"``.
+
+    Total: a non-dict, or an unmarked / hostile ``format``, is singles.
+    """
+    if isinstance(record, dict) and record.get("format") == "doubles":
+        return "doubles"
+    return "singles"
+
+
 def _is_score(value):
     return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_SCORE
 
@@ -125,6 +149,22 @@ def _clean_side(side, data):
     return {"name": clean}, None
 
 
+def _clean_sets(sets):
+    """``(clean_sets, ok)``: 0-5 pairs of ints 0-99, as lists."""
+    if sets is None:
+        sets = []
+    if not isinstance(sets, (list, tuple)) or len(sets) > MAX_SETS:
+        return None, False
+    clean_sets = []
+    for pair in sets:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            return None, False
+        if not (_is_score(pair[0]) and _is_score(pair[1])):
+            return None, False
+        clean_sets.append([pair[0], pair[1]])
+    return clean_sets, True
+
+
 def _clean_result(result):
     if result is None:
         return None, None
@@ -133,43 +173,113 @@ def _clean_result(result):
     winner = result.get("winner")
     if winner not in SIDES:
         return None, "invalid_result"
-    sets = result.get("sets", [])
-    if sets is None:
-        sets = []
-    if not isinstance(sets, (list, tuple)) or len(sets) > MAX_SETS:
+    clean_sets, ok = _clean_sets(result.get("sets", []))
+    if not ok:
         return None, "invalid_result"
-    clean_sets = []
-    for pair in sets:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            return None, "invalid_result"
-        if not (_is_score(pair[0]) and _is_score(pair[1])):
-            return None, "invalid_result"
-        clean_sets.append([pair[0], pair[1]])
     return {"winner": winner, "sets": clean_sets}, None
+
+
+def _clean_doubles_result(result):
+    """Doubles result: ``winner_team`` 1 or 2 is required; sets are team-1-first."""
+    if result is None:
+        return None, None
+    if not isinstance(result, dict) or "winner" in result:
+        return None, "invalid_result"
+    winner = result.get("winner_team")
+    if isinstance(winner, bool) or not isinstance(winner, int) or winner not in TEAMS:
+        return None, "invalid_result"
+    clean_sets, ok = _clean_sets(result.get("sets", []))
+    if not ok:
+        return None, "invalid_result"
+    return {"winner_team": winner, "sets": clean_sets}, None
+
+
+def _clean_players(players, data):
+    """``(clean_players, error)`` for a doubles ``players`` map.
+
+    ``invalid_players`` for a non-object map, a key outside P1..P4, or one
+    athlete on two identities; ``invalid_side`` / ``unknown_athlete`` for a bad
+    identity entry (the singles side rule). Keys come back in P1..P4 order.
+    """
+    if players is None:
+        return {}, None
+    if not isinstance(players, dict):
+        return None, "invalid_players"
+    if any(key not in PLAYER_IDS for key in players):
+        return None, "invalid_players"
+    clean, seen = {}, set()
+    for pid in PLAYER_IDS:
+        if pid not in players:
+            continue
+        value, err = _clean_side(players[pid], data)
+        if err:
+            return None, err
+        if value is not None and "athlete_id" in value:
+            if value["athlete_id"] in seen:
+                return None, "invalid_players"
+            seen.add(value["athlete_id"])
+        clean[pid] = value
+    return clean, None
+
+
+def _clean_date(record, clean):
+    """Set ``clean["date"]`` from ``record``; an error code or None."""
+    date = record.get("date")
+    if date is None:
+        return None
+    if not isinstance(date, str) or not _DATE_RE.fullmatch(date):
+        return "invalid_date"
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        return "invalid_date"
+    clean["date"] = date
+    return None
+
+
+def _validate_doubles(record, data):
+    if record.get("upper") is not None or record.get("lower") is not None:
+        return None, "invalid_record"
+    clean = _blank_doubles()
+    err = _clean_date(record, clean)
+    if err:
+        return None, err
+    players, err = _clean_players(record.get("players"), data)
+    if err:
+        return None, err
+    clean["players"] = players
+    result, err = _clean_doubles_result(record.get("result"))
+    if err:
+        return None, err
+    clean["result"] = result
+    return clean, None
 
 
 def validate_match(record, data):
     """Validate one match record: ``(clean_record, None)`` or ``(None, code)``.
 
-    The clean record always carries all four keys. ``data`` (a store dict) is
-    required, so the existence check can never be skipped by accident: a side's
-    ``athlete_id`` must exist in it (``"unknown_athlete"``). Codes:
+    A singles record always carries ``date``/``upper``/``lower``/``result``; a
+    doubles one (``format: "doubles"``) carries ``date``/``format``/``players``/
+    ``result`` and never ``upper``/``lower``. ``data`` (a store dict) is
+    required, so the existence check can never be skipped by accident: a
+    referenced ``athlete_id`` must exist in it (``"unknown_athlete"``). Codes:
     ``invalid_record``, ``invalid_date``, ``invalid_side``, ``invalid_result``,
-    ``unknown_athlete``. Never mutates ``record``.
+    ``invalid_players``, ``unknown_athlete``. Never mutates ``record``.
     """
     if not isinstance(record, dict):
         return None, "invalid_record"
+    fmt = record.get("format")
+    if fmt is not None and fmt not in ("singles", "doubles"):
+        return None, "invalid_record"
+    if fmt == "doubles":
+        return _validate_doubles(record, data)
+    if record.get("players") is not None:
+        return None, "invalid_record"
     clean = _blank_match()
 
-    date = record.get("date")
-    if date is not None:
-        if not isinstance(date, str) or not _DATE_RE.fullmatch(date):
-            return None, "invalid_date"
-        try:
-            datetime.date.fromisoformat(date)
-        except ValueError:
-            return None, "invalid_date"
-        clean["date"] = date
+    err = _clean_date(record, clean)
+    if err:
+        return None, err
 
     for side in SIDES:
         value, err = _clean_side(record.get(side), data)
@@ -185,6 +295,11 @@ def validate_match(record, data):
 
 
 def _is_blank(record):
+    if record_format(record) == "doubles":
+        players = record.get("players")
+        return (record.get("date") is None and record.get("result") is None
+                and not (isinstance(players, dict)
+                         and any(value is not None for value in players.values())))
     return all(record.get(key) is None for key in _blank_match())
 
 
@@ -198,8 +313,10 @@ def set_match(data, stem, record):
     if record is None or _is_blank(record):
         out["matches"].pop(stem, None)
         return out
-    stored = _blank_match()
+    stored = _blank_doubles() if record_format(record) == "doubles" else _blank_match()
     stored.update({key: copy.deepcopy(record.get(key)) for key in stored})
+    if stored.get("format") == "doubles" and not isinstance(stored["players"], dict):
+        stored["players"] = {}
     out["matches"][stem] = stored
     return out
 
@@ -209,6 +326,34 @@ def get_match(data, stem):
     return copy.deepcopy(data["matches"].get(stem, {}))
 
 
+def record_athlete_ids(record):
+    """The set of registered athlete ids a record (singles or doubles) references.
+
+    Total: a hostile record or players map yields an empty set, never an error.
+    """
+    if not isinstance(record, dict):
+        return set()
+    if record_format(record) == "doubles":
+        players = record.get("players")
+        entries = list(players.values()) if isinstance(players, dict) else []
+    else:
+        entries = [record.get(side) for side in SIDES]
+    return {entry["athlete_id"] for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("athlete_id"), str)}
+
+
+def player_athlete(data, record, pid):
+    """Resolve one doubles identity (``"P1"``..``"P4"``) like ``side_athlete``.
+
+    Total: a singles record, a missing or hostile ``players`` map, an unknown
+    identity or a dangling athlete all yield both ``None``.
+    """
+    players = record.get("players") if isinstance(record, dict) else None
+    if not isinstance(players, dict) or not isinstance(pid, str):
+        return {"athlete_id": None, "name": None}
+    return _resolve_entry(data, players.get(pid))
+
+
 def side_athlete(data, record, side):
     """Resolve one side of a match to ``{"athlete_id", "name"}``.
 
@@ -216,8 +361,12 @@ def side_athlete(data, record, side):
     followed); a plain-name side yields only ``name``; an empty side, or a
     reference to an athlete that no longer exists, yields both ``None``.
     """
+    return _resolve_entry(data, (record or {}).get(side))
+
+
+def _resolve_entry(data, entry):
+    """Shared by ``side_athlete`` and ``player_athlete``."""
     nobody = {"athlete_id": None, "name": None}
-    entry = (record or {}).get(side)
     if not isinstance(entry, dict):
         return nobody
     athlete_id = entry.get("athlete_id")
@@ -287,8 +436,8 @@ def update_athlete(data, athlete_id, *, name=_UNSET, squad_id=_UNSET):
 def delete_athlete(data, athlete_id):
     """``(new_data, rewritten_count)``.
 
-    Every match side that referenced the athlete becomes ``{"name": <their
-    name>}``: the history is kept, only the registry entry goes. Deleting an
+    Every match side or doubles identity that referenced the athlete becomes
+    ``{"name": <their name>}``: the history is kept, only the registry entry goes. Deleting an
     unknown athlete is a no-op returning ``(data, 0)`` (the route answers 200).
     """
     out = copy.deepcopy(data)
@@ -302,6 +451,12 @@ def delete_athlete(data, athlete_id):
             if isinstance(entry, dict) and entry.get("athlete_id") == athlete_id:
                 record[side] = {"name": athlete["name"]}
                 rewritten += 1
+        players = record.get("players")
+        if isinstance(players, dict):
+            for pid, entry in players.items():
+                if isinstance(entry, dict) and entry.get("athlete_id") == athlete_id:
+                    players[pid] = {"name": athlete["name"]}
+                    rewritten += 1
     return out, rewritten
 
 
@@ -395,6 +550,37 @@ def _null_dangling_sides(record, data):
     return out
 
 
+def _degrade_players(record, data):
+    """Copy of a doubles ``record`` whose ``players`` map is made valid.
+
+    A hostile map (not an object) becomes empty, keys outside P1..P4 are
+    dropped, and an identity that fails the side rule, names a missing athlete
+    or repeats an athlete already on an earlier identity becomes None, so the
+    rest of the match survives a hand edit. Never raises.
+    """
+    out = dict(record)
+    players = out.get("players")
+    if not isinstance(players, dict):
+        out["players"] = {}
+        return out
+    clean, seen = {}, set()
+    for pid in PLAYER_IDS:
+        if pid not in players:
+            continue
+        value, err = _clean_side(players[pid], data)
+        if err or value is None:
+            clean[pid] = None
+            continue
+        if "athlete_id" in value:
+            if value["athlete_id"] in seen:
+                clean[pid] = None
+                continue
+            seen.add(value["athlete_id"])
+        clean[pid] = value
+    out["players"] = clean
+    return out
+
+
 def _sanitise(payload):
     """Rebuild a store dict from raw payload, dropping what is unusable.
 
@@ -422,7 +608,9 @@ def _sanitise(payload):
     for stem, record in payload.get("matches", {}).items():
         if not isinstance(stem, str):
             continue
-        if isinstance(record, dict):
+        if record_format(record) == "doubles":
+            record = _degrade_players(record, out)
+        elif isinstance(record, dict):
             record = _null_dangling_sides(record, out)
         clean, err = validate_match(record, out)
         if err is None and not _is_blank(clean):

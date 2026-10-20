@@ -645,3 +645,383 @@ def test_concurrent_edits_under_the_callers_lock_lose_nothing(tmp_path):
     assert not errors
     names = sorted(a["name"] for a in ath.load(p)["athletes"].values())
     assert names == ["J. Tanaka", "S. Ito"]
+
+
+# ================================================================== doubles
+
+def _doubles(players=None, **extra):
+    record = {"date": "2026-10-11", "format": "doubles",
+              "players": players if players is not None else {}, "result": None}
+    record.update(extra)
+    return record
+
+
+def _with_four():
+    data = ath.empty()
+    ids = []
+    for name in ("A. One", "B. Two", "C. Three", "D. Four"):
+        data, athlete_id = ath.add_athlete(data, name)
+        ids.append(athlete_id)
+    return data, ids
+
+
+def test_record_format_defaults_to_singles():
+    assert ath.record_format({"format": "doubles"}) == "doubles"
+    for record in ({}, {"format": "singles"}, {"format": None}, {"format": ["doubles"]},
+                   {"upper": None}, None, [], "doubles"):
+        assert ath.record_format(record) == "singles"
+
+
+def test_validate_match_accepts_a_full_doubles_record_and_round_trips():
+    data, ids = _with_four()
+    record = {"date": "2026-10-11", "format": "doubles",
+              "players": {"P1": {"athlete_id": ids[0]}, "P2": {"name": "  Guest "},
+                          "P3": {"athlete_id": ids[2]}, "P4": None},
+              "result": {"winner_team": 2, "sets": [[21, 18], [19, 21], [15, 21]]}}
+    clean, err = ath.validate_match(record, data)
+    assert err is None
+    assert clean == {**record, "players": {**record["players"], "P2": {"name": "Guest"}}}
+    data = ath.set_match(data, "clip", clean)
+    assert ath.get_match(data, "clip") == clean
+    assert "upper" not in clean and "lower" not in clean
+
+
+def test_validate_match_doubles_accepts_missing_and_null_identities():
+    data, ids = _with_four()
+    clean, err = ath.validate_match(_doubles({"P3": {"athlete_id": ids[0]}}), data)
+    assert err is None and clean["players"] == {"P3": {"athlete_id": ids[0]}}
+    clean, err = ath.validate_match({"format": "doubles", "date": "2026-10-11"}, data)
+    assert err is None and clean["players"] == {} and clean["result"] is None
+    clean, err = ath.validate_match(
+        _doubles({"P1": None, "P2": None, "P3": None, "P4": None}), data)
+    assert err is None and clean["players"] == {"P1": None, "P2": None, "P3": None, "P4": None}
+
+
+@pytest.mark.parametrize("winner", [1, 2])
+def test_doubles_winner_team_accepts_one_and_two(winner):
+    clean, err = ath.validate_match(
+        _doubles(result={"winner_team": winner, "sets": [[21, 1]]}), ath.empty())
+    assert err is None and clean["result"] == {"winner_team": winner, "sets": [[21, 1]]}
+
+
+@pytest.mark.parametrize("result", [
+    {"winner_team": 3, "sets": []},
+    {"winner_team": 0, "sets": []},
+    {"winner_team": "upper", "sets": []},
+    {"winner_team": "1", "sets": []},
+    {"winner_team": True, "sets": []},                         # bool is not a team
+    {"winner_team": 1.0, "sets": []},
+    {"winner_team": None, "sets": [[21, 18]]},                 # sets need a winner
+    {"sets": [[21, 18]]},
+    {"winner": "upper", "sets": []},                           # singles winner
+    {"winner": "upper", "winner_team": 1, "sets": []},
+    {"winner_team": 1, "sets": [[1, 2]] * 6},                  # six sets
+    {"winner_team": 1, "sets": [[100, 0]]},
+    {"winner_team": 1, "sets": [[-1, 0]]},
+    {"winner_team": 1, "sets": [[1.5, 0]]},
+    {"winner_team": 1, "sets": [[True, 0]]},
+    {"winner_team": 1, "sets": [[1, 2, 3]]},
+    {"winner_team": 1, "sets": "21-18"},
+    "team 1",
+])
+def test_doubles_invalid_results_are_rejected(result):
+    clean, err = ath.validate_match(_doubles(result=result), ath.empty())
+    assert clean is None and err == "invalid_result"
+
+
+def test_doubles_result_accepts_zero_to_five_sets():
+    for count in range(6):
+        clean, err = ath.validate_match(
+            _doubles(result={"winner_team": 1, "sets": [(21, 10)] * count}), ath.empty())
+        assert err is None and clean["result"]["sets"] == [[21, 10]] * count
+
+
+def test_format_doubles_with_a_singles_winner_is_rejected():
+    clean, err = ath.validate_match(
+        {"format": "doubles", "result": {"winner": "upper", "sets": []}}, ath.empty())
+    assert clean is None and err == "invalid_result"
+
+
+@pytest.mark.parametrize("players", [
+    {"P5": None}, {"P0": None}, {"p1": None}, {"upper": {"name": "x"}}, {"": None}, {"1": None},
+])
+def test_doubles_players_keys_outside_p1_to_p4_are_rejected(players):
+    clean, err = ath.validate_match(_doubles(players), ath.empty())
+    assert clean is None and err == "invalid_players"
+
+
+@pytest.mark.parametrize("players", [[], ["P1"], "P1", 7, [{"name": "x"}]])
+def test_doubles_players_that_is_not_an_object_is_rejected(players):
+    clean, err = ath.validate_match(_doubles(players), ath.empty())
+    assert clean is None and err == "invalid_players"
+
+
+def test_doubles_identity_with_both_athlete_id_and_name_is_rejected():
+    data, ids = _with_four()
+    clean, err = ath.validate_match(
+        _doubles({"P1": {"athlete_id": ids[0], "name": "A. One"}}), data)
+    assert clean is None and err == "invalid_side"
+
+
+@pytest.mark.parametrize("entry", ["S. Ito", {}, {"name": ""}, {"name": 5}, [], {"athlete_id": ""},
+                                   {"athlete_id": 7}])
+def test_doubles_malformed_identities_are_rejected(entry):
+    clean, err = ath.validate_match(_doubles({"P2": entry}), ath.empty())
+    assert clean is None and err == "invalid_side"
+
+
+def test_doubles_same_athlete_on_two_identities_is_rejected():
+    data, ids = _with_four()
+    clean, err = ath.validate_match(
+        _doubles({"P1": {"athlete_id": ids[0]}, "P4": {"athlete_id": ids[0]}}), data)
+    assert clean is None and err == "invalid_players"
+    # the same plain name twice is only text, not a registry mapping
+    clean, err = ath.validate_match(
+        _doubles({"P1": {"name": "Guest"}, "P2": {"name": "Guest"}}), data)
+    assert err is None
+
+
+def test_doubles_unknown_athlete_id_is_rejected():
+    data, _ = _with_four()
+    clean, err = ath.validate_match(_doubles({"P1": {"athlete_id": "a_00000000"}}), data)
+    assert clean is None and err == "unknown_athlete"
+
+
+@pytest.mark.parametrize("extra", [
+    {"upper": {"name": "A"}}, {"lower": {"name": "A"}}, {"upper": {"name": "A"}, "lower": None}])
+def test_doubles_mixed_with_upper_lower_is_rejected(extra):
+    clean, err = ath.validate_match(_doubles({"P1": {"name": "x"}}, **extra), ath.empty())
+    assert clean is None and err == "invalid_record"
+
+
+def test_singles_mixed_with_players_is_rejected():
+    clean, err = ath.validate_match(
+        {"upper": {"name": "A"}, "players": {"P1": {"name": "x"}}}, ath.empty())
+    assert clean is None and err == "invalid_record"
+    clean, err = ath.validate_match(
+        {"format": "singles", "players": {"P1": {"name": "x"}}}, ath.empty())
+    assert clean is None and err == "invalid_record"
+    clean, err = ath.validate_match({"players": {"P1": {"name": "x"}}}, ath.empty())
+    assert clean is None and err == "invalid_record"
+
+
+def test_a_null_players_key_does_not_make_a_singles_record_invalid():
+    clean, err = ath.validate_match({"upper": {"name": "A"}, "players": None}, ath.empty())
+    assert err is None
+    assert clean == {"date": None, "upper": {"name": "A"}, "lower": None, "result": None}
+
+
+@pytest.mark.parametrize("fmt", ["triples", "Doubles", 2, ["doubles"], {}])
+def test_an_unknown_format_is_rejected(fmt):
+    clean, err = ath.validate_match({"format": fmt, "date": "2026-10-11"}, ath.empty())
+    assert clean is None and err == "invalid_record"
+
+
+def test_explicit_singles_format_is_accepted_and_not_stored():
+    clean, err = ath.validate_match({"format": "singles", "upper": {"name": "A"}}, ath.empty())
+    assert err is None and "format" not in clean
+    assert clean == {"date": None, "upper": {"name": "A"}, "lower": None, "result": None}
+
+
+def test_doubles_bad_date_is_invalid_date():
+    clean, err = ath.validate_match(_doubles(date="2026-02-30"), ath.empty())
+    assert clean is None and err == "invalid_date"
+
+
+def test_validate_match_doubles_does_not_mutate_its_argument():
+    data, ids = _with_four()
+    record = _doubles({"P1": {"athlete_id": ids[0]}, "P2": {"name": " G "}},
+                      result={"winner_team": 1, "sets": [(21, 1)]})
+    before = copy.deepcopy(record)
+    ath.validate_match(record, data)
+    assert record == before
+
+
+def test_set_match_doubles_blank_record_deletes():
+    data = ath.set_match(ath.empty(), "clip", _doubles(date="2026-10-11"))
+    assert "clip" in data["matches"]
+    blank = {"date": None, "format": "doubles", "players": {"P1": None}, "result": None}
+    assert ath.set_match(data, "clip", blank)["matches"] == {}
+    assert ath.set_match(ath.empty(), "clip", {"format": "doubles"}) == ath.empty()
+
+
+def test_set_match_doubles_with_only_players_is_kept():
+    data = ath.set_match(ath.empty(), "clip", {"format": "doubles",
+                                               "players": {"P2": {"name": "G"}}})
+    assert ath.get_match(data, "clip") == {
+        "date": None, "format": "doubles", "players": {"P2": {"name": "G"}}, "result": None}
+
+
+def test_set_match_replaces_a_doubles_record_with_a_singles_one_whole():
+    data = ath.set_match(ath.empty(), "clip", _doubles({"P1": {"name": "G"}}))
+    data = ath.set_match(data, "clip", {"upper": {"name": "A"}})
+    assert ath.get_match(data, "clip") == {
+        "date": None, "upper": {"name": "A"}, "lower": None, "result": None}
+
+
+def test_get_match_of_a_doubles_record_returns_a_copy():
+    data = ath.set_match(ath.empty(), "clip", _doubles({"P1": {"name": "G"}}))
+    ath.get_match(data, "clip")["players"]["P1"]["name"] = "changed"
+    assert data["matches"]["clip"]["players"]["P1"] == {"name": "G"}
+
+
+def test_set_match_does_not_mutate_its_doubles_argument():
+    record = _doubles({"P1": {"name": "G"}})
+    before = copy.deepcopy(record)
+    ath.set_match(ath.empty(), "clip", record)
+    assert record == before
+
+
+# --------------------------------------------------------- player_athlete
+
+def test_player_athlete_resolves_registered_plain_and_empty_identities():
+    data, ids = _with_four()
+    record = _doubles({"P1": {"athlete_id": ids[0]}, "P2": {"name": "Guest"}, "P3": None})
+    assert ath.player_athlete(data, record, "P1") == {"athlete_id": ids[0], "name": "A. One"}
+    assert ath.player_athlete(data, record, "P2") == {"athlete_id": None, "name": "Guest"}
+    nobody = {"athlete_id": None, "name": None}
+    assert ath.player_athlete(data, record, "P3") == nobody
+    assert ath.player_athlete(data, record, "P4") == nobody     # missing
+    assert ath.player_athlete(data, record, "P9") == nobody     # unknown identity
+
+
+def test_player_athlete_follows_a_rename_and_a_dangling_id_is_nobody():
+    data, ids = _with_four()
+    record = _doubles({"P1": {"athlete_id": ids[0]}, "P2": {"athlete_id": "a_00000000"}})
+    data = ath.update_athlete(data, ids[0], name="Alpha One")
+    assert ath.player_athlete(data, record, "P1")["name"] == "Alpha One"
+    assert ath.player_athlete(data, record, "P2") == {"athlete_id": None, "name": None}
+
+
+@pytest.mark.parametrize("record", [None, {}, [], "x", {"players": None}, {"players": []},
+                                    {"players": "P1"}, {"upper": {"name": "A"}},
+                                    {"players": {"P1": "x"}}, {"players": {"P1": []}},
+                                    {"players": {"P1": {"athlete_id": []}}}])
+def test_player_athlete_is_total_on_hostile_records(record):
+    assert ath.player_athlete(ath.empty(), record, "P1") == {"athlete_id": None, "name": None}
+    assert ath.player_athlete(ath.empty(), record, ["P1"]) == {"athlete_id": None, "name": None}
+
+
+def test_side_athlete_is_unchanged_for_a_doubles_record():
+    data, ids = _with_four()
+    record = _doubles({"P1": {"athlete_id": ids[0]}})
+    assert ath.side_athlete(data, record, "upper") == {"athlete_id": None, "name": None}
+
+
+# ---------------------------------------------------- record_athlete_ids
+
+def test_record_athlete_ids_covers_both_formats_and_hostile_input():
+    data, ids = _with_four()
+    assert ath.record_athlete_ids(
+        {"upper": {"athlete_id": ids[0]}, "lower": {"athlete_id": ids[0]}}) == {ids[0]}
+    assert ath.record_athlete_ids(_doubles(
+        {"P1": {"athlete_id": ids[0]}, "P2": {"name": "G"}, "P3": {"athlete_id": ids[2]},
+         "P4": None})) == {ids[0], ids[2]}
+    for hostile in (None, [], {}, {"format": "doubles", "players": []},
+                    {"format": "doubles", "players": {"P1": {"athlete_id": []}}},
+                    {"upper": "x"}):
+        assert ath.record_athlete_ids(hostile) == set()
+
+
+# ------------------------------------------------------------ delete_athlete
+
+def test_delete_athlete_rewrites_doubles_identities_and_counts_them():
+    data, ids = _with_four()
+    data = ath.set_match(data, "d1", _doubles(
+        {"P1": {"athlete_id": ids[0]}, "P2": {"athlete_id": ids[1]}, "P3": {"name": "G"}}))
+    data = ath.set_match(data, "d2", _doubles({"P4": {"athlete_id": ids[0]}}))
+    data = ath.set_match(data, "s1", {"upper": {"athlete_id": ids[0]}})
+    data, rewritten = ath.delete_athlete(data, ids[0])
+    assert rewritten == 3
+    assert ids[0] not in data["athletes"]
+    assert data["matches"]["d1"]["players"] == {
+        "P1": {"name": "A. One"}, "P2": {"athlete_id": ids[1]}, "P3": {"name": "G"}}
+    assert data["matches"]["d2"]["players"] == {"P4": {"name": "A. One"}}
+    assert data["matches"]["s1"]["upper"] == {"name": "A. One"}
+
+
+def test_delete_athlete_tolerates_a_hostile_in_memory_players_value():
+    data, ids = _with_four()
+    data["matches"]["odd"] = {"format": "doubles", "players": ["x"], "result": None}
+    out, rewritten = ath.delete_athlete(data, ids[0])
+    assert rewritten == 0 and ids[0] not in out["athletes"]
+
+
+# ----------------------------------------------------------------- load
+
+def _write_store(path, matches, athletes=None):
+    path.write_text(json.dumps({"athletes": athletes or {}, "matches": matches}),
+                    encoding="utf-8")
+
+
+def test_load_keeps_a_valid_doubles_record_and_orders_players(tmp_path):
+    p = tmp_path / "athletes.json"
+    _write_store(p, {"d": {"date": "2026-10-11", "format": "doubles",
+                           "players": {"P3": {"athlete_id": "a_1"}, "P1": {"name": " G "}},
+                           "result": {"winner_team": 1, "sets": [[21, 5]]}}},
+                 {"a_1": {"name": "A"}})
+    for loaded in (ath.load(p), ath.load_for_update(p)):
+        assert loaded["matches"]["d"] == {
+            "date": "2026-10-11", "format": "doubles",
+            "players": {"P1": {"name": "G"}, "P3": {"athlete_id": "a_1"}},
+            "result": {"winner_team": 1, "sets": [[21, 5]]}}
+        assert list(loaded["matches"]["d"]["players"]) == ["P1", "P3"]
+
+
+@pytest.mark.parametrize("hostile", [
+    [], ["P1", "P2"], "P1", 7, None, [{"name": "x"}], {"P1": [[["deep"]]]},
+    {"P1": "S. Ito", "P2": 5, "P3": [], "P4": {"athlete_id": []}},
+    {"P1": {"athlete_id": {}}, "P2": {"athlete_id": ["a_1"]}},
+    {"P1": {"athlete_id": "a_1", "name": "both"}, "P2": {"name": ""}},
+    {"P1": {"athlete_id": "a_gone"}},
+])
+def test_hostile_players_degrade_to_null_identities_without_raising(tmp_path, hostile):
+    p = tmp_path / "athletes.json"
+    _write_store(p, {"d": {"date": "2026-10-11", "format": "doubles", "players": hostile,
+                           "result": None}}, {"a_1": {"name": "A"}})
+    for loaded in (ath.load(p), ath.load_for_update(p)):
+        record = loaded["matches"]["d"]                      # the date keeps it alive
+        assert record["date"] == "2026-10-11" and record["format"] == "doubles"
+        assert all(value is None for value in record["players"].values())
+        for pid in ("P1", "P2", "P3", "P4"):
+            assert ath.player_athlete(loaded, record, pid) == {"athlete_id": None, "name": None}
+
+
+def test_a_hostile_players_map_with_nothing_else_drops_the_record(tmp_path):
+    p = tmp_path / "athletes.json"
+    _write_store(p, {"d": {"format": "doubles", "players": ["x"]},
+                     "ok": {"date": "2026-10-11"}})
+    assert list(ath.load(p)["matches"]) == ["ok"]
+
+
+def test_load_nulls_only_the_bad_identities_and_the_second_duplicate(tmp_path):
+    p = tmp_path / "athletes.json"
+    _write_store(p, {"d": {"format": "doubles", "players": {
+        "P1": {"athlete_id": "a_1"}, "P2": {"athlete_id": "a_1"}, "P3": {"athlete_id": "a_gone"},
+        "P4": {"name": "Guest"}, "P9": {"name": "stray"}}}}, {"a_1": {"name": "A"}})
+    assert ath.load(p)["matches"]["d"]["players"] == {
+        "P1": {"athlete_id": "a_1"}, "P2": None, "P3": None, "P4": {"name": "Guest"}}
+
+
+@pytest.mark.parametrize("record", [
+    {"format": "doubles", "date": "2026-10-11", "upper": {"name": "A"}},     # mixed shapes
+    {"format": "doubles", "date": "2026-10-11", "result": {"winner": "upper", "sets": []}},
+    {"format": "doubles", "date": "2026-10-11", "result": {"winner_team": 3, "sets": []}},
+    {"format": "doubles", "date": "2026-02-30"},
+    {"format": "triples", "date": "2026-10-11"},
+    {"format": "doubles", "date": "2026-10-11", "result": []},
+])
+def test_load_drops_a_doubles_record_that_fails_validation(tmp_path, record):
+    p = tmp_path / "athletes.json"
+    _write_store(p, {"bad": record, "ok": {"date": "2026-10-11"}})
+    assert list(ath.load(p)["matches"]) == ["ok"]
+
+
+def test_doubles_record_survives_save_then_load(tmp_path):
+    p = tmp_path / "athletes.json"
+    data, ids = _with_four()
+    record = _doubles({"P1": {"athlete_id": ids[0]}, "P2": {"name": "田中"}},
+                      result={"winner_team": 2, "sets": [[18, 21]]})
+    data = ath.set_match(data, "clip", ath.validate_match(record, data)[0])
+    ath.save(data, p)
+    assert ath.load(p) == data

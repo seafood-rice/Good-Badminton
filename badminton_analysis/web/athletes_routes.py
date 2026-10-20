@@ -37,6 +37,7 @@ _MATCH_ERRORS = {
     'invalid_date': {'error': '日期无效，应为 YYYY-MM-DD / invalid date, expected YYYY-MM-DD'},
     'invalid_side': {'error': '选手信息无效 / invalid player entry'},
     'invalid_result': {'error': '比分结果无效 / invalid result'},
+    'invalid_players': {'error': '双打选手信息无效 / invalid doubles players'},
     'unknown_athlete': _UNKNOWN_ATHLETE,
 }
 _GENERIC_VALUE_ERROR = (400, _BAD_BODY)
@@ -110,9 +111,7 @@ def register(app, *, store_path, lock, safe_stem):
             data = libathletes.load(store_path())
         match_counts = {}
         for record in data['matches'].values():
-            ids = {entry['athlete_id'] for entry in (record.get(s) for s in libathletes.SIDES)
-                   if isinstance(entry, dict) and entry.get('athlete_id') is not None}
-            for athlete_id in ids:
+            for athlete_id in libathletes.record_athlete_ids(record):   # once per match
                 match_counts[athlete_id] = match_counts.get(athlete_id, 0) + 1
         member_counts = {}
         for athlete in data['athletes'].values():

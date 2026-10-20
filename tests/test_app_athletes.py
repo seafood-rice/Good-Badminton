@@ -533,3 +533,193 @@ def test_a_failed_match_forget_does_not_fail_the_delete(client, monkeypatch):
     monkeypatch.setattr(libathletes, "save", boom)
     assert c.post("/api/delete/clip", json={"scope": "all"}).status_code == 200
     assert not (videos / "clip.mp4").exists()
+
+
+# ----------------------------------------------------------- doubles records
+
+def _doubles_record(players, **extra):
+    record = {"date": "2026-10-11", "format": "doubles", "players": players,
+              "result": {"winner_team": 1, "sets": [[21, 18], [19, 21], [21, 15]]}}
+    record.update(extra)
+    return record
+
+
+def test_doubles_record_round_trips_through_put_and_get(client):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    a, b = _add(c, "Alice"), _add(c, "Bob")
+    record = _doubles_record({"P1": {"athlete_id": a}, "P2": {"name": "Guest"},
+                              "P3": {"athlete_id": b}, "P4": None})
+    res = c.put("/api/matches/clip", json=record)
+    assert res.status_code == 200
+    assert res.get_json() == {"ok": True, "match": record}
+    assert c.get("/api/matches/clip").get_json() == record
+    assert libathletes.load(store)["matches"]["clip"] == record
+
+
+def test_doubles_record_with_a_stem_with_spaces_round_trips(client):
+    c, videos, *_ = client
+    stem = "Dji 20260919100627 0004 D"
+    (videos / f"{stem}.mp4").write_bytes(b"\x00")
+    record = _doubles_record({"P1": {"name": "A"}})
+    assert c.put(f"/api/matches/{stem}", json=record).status_code == 200
+    assert c.get(f"/api/matches/{stem.replace(' ', '%20')}").get_json() == record
+
+
+def test_a_singles_put_still_returns_exactly_the_four_singles_keys(client):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    c.put("/api/matches/clip", json={"upper": {"name": "A"}})
+    assert set(c.get("/api/matches/clip").get_json()) == {"date", "upper", "lower", "result"}
+
+
+@pytest.mark.parametrize("winner,status", [(1, 200), (2, 200), (3, 400), ("upper", 400),
+                                           (True, 400), (None, 400)])
+def test_doubles_winner_team_over_http(client, tmp_path, winner, status):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    res = c.put("/api/matches/clip", json={
+        "format": "doubles", "players": {}, "result": {"winner_team": winner, "sets": []}})
+    assert res.status_code == status
+    if status != 200:
+        _assert_static_bilingual(res, tmp_path)
+
+
+@pytest.mark.parametrize("record", [
+    {"format": "doubles", "players": {"P5": None}},                             # key outside P1..P4
+    {"format": "doubles", "players": ["P1"]},                                   # not an object
+    {"format": "doubles", "players": {"P1": {"athlete_id": "a_x", "name": "A"}}},   # both
+    {"format": "doubles", "players": {"P1": {"athlete_id": "a_ghost"}}},        # unknown athlete
+    {"format": "doubles", "players": {"P1": "A"}},                              # not an object
+    {"format": "doubles", "players": {"P1": {"name": "A"}}, "upper": {"name": "B"}},   # mixed
+    {"upper": {"name": "A"}, "players": {"P1": {"name": "B"}}},                 # mixed
+    {"format": "doubles", "result": {"winner": "upper", "sets": []}},           # singles winner
+    {"format": "doubles", "result": {"winner_team": 1, "sets": [[1, 100]]}},    # score range
+    {"format": "doubles", "result": {"winner_team": 1, "sets": [[1, 2]] * 6}},  # six sets
+    {"format": "doubles", "result": {"sets": [[21, 1]]}},                       # sets, no winner
+    {"format": "triples", "date": "2026-10-11"},                                # unknown format
+])
+def test_invalid_doubles_records_are_400_with_static_bodies_and_save_nothing(
+        client, tmp_path, record):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    res = c.put("/api/matches/clip", json=record)
+    assert res.status_code == 400
+    _assert_static_bilingual(res, tmp_path)
+    assert not store.exists()
+
+
+def test_the_same_athlete_on_two_identities_is_400_and_saves_nothing(client, tmp_path):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    a = _add(c, "Alice")
+    before = store.read_bytes()
+    res = c.put("/api/matches/clip", json=_doubles_record(
+        {"P1": {"athlete_id": a}, "P3": {"athlete_id": a}}))
+    assert res.status_code == 400
+    _assert_static_bilingual(res, tmp_path)
+    assert store.read_bytes() == before
+
+
+def test_invalid_players_is_a_distinct_static_bilingual_error(client, tmp_path):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    bad_map = c.put("/api/matches/clip", json={"format": "doubles", "players": {"P7": None}})
+    bad_record = c.put("/api/matches/clip", json={"format": "doubles", "date": 5})
+    assert bad_map.status_code == 400
+    _assert_static_bilingual(bad_map, tmp_path)
+    assert bad_map.get_json() != bad_record.get_json()
+    assert "players" in bad_map.get_json()["error"]
+    assert "P7" not in bad_map.get_json()["error"]          # nothing from the request is echoed
+
+
+def test_doubles_null_and_missing_identities_are_accepted(client):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    res = c.put("/api/matches/clip", json={"format": "doubles",
+                                           "players": {"P2": {"name": "G"}, "P4": None}})
+    assert res.status_code == 200
+    assert c.get("/api/matches/clip").get_json() == {
+        "date": None, "format": "doubles", "players": {"P2": {"name": "G"}, "P4": None},
+        "result": None}
+
+
+def test_an_all_empty_doubles_record_deletes(client):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    c.put("/api/matches/clip", json=_doubles_record({"P1": {"name": "A"}}))
+    assert c.put("/api/matches/clip", json={
+        "format": "doubles", "date": None, "players": {"P1": None}, "result": None}
+    ).status_code == 200
+    assert c.get("/api/matches/clip").get_json() == {}
+
+
+def test_a_doubles_put_replaces_a_singles_record_whole(client):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    c.put("/api/matches/clip", json={"upper": {"name": "A"}})
+    c.put("/api/matches/clip", json={"format": "doubles", "players": {"P1": {"name": "B"}}})
+    body = c.get("/api/matches/clip").get_json()
+    assert "upper" not in body and body["players"] == {"P1": {"name": "B"}}
+
+
+def test_deleting_a_mapped_athlete_rewrites_doubles_identities(client):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    (videos / "single.mp4").write_bytes(b"\x00")
+    a, b = _add(c, "Alice"), _add(c, "Bob")
+    c.put("/api/matches/clip", json=_doubles_record(
+        {"P1": {"athlete_id": a}, "P2": {"athlete_id": b}}))
+    c.put("/api/matches/single", json={"upper": {"athlete_id": a}})
+
+    res = c.delete(f"/api/athletes/{a}")
+    assert res.status_code == 200
+    assert res.get_json() == {"ok": True, "rewritten": 2}
+    assert c.get("/api/matches/clip").get_json()["players"] == {
+        "P1": {"name": "Alice"}, "P2": {"athlete_id": b}}
+    assert c.get("/api/matches/single").get_json()["upper"] == {"name": "Alice"}
+
+
+def test_athlete_match_counts_include_doubles_once_per_match(client):
+    c, videos, *_ = client
+    for stem in ("d1", "d2", "s1"):
+        (videos / f"{stem}.mp4").write_bytes(b"\x00")
+    a, b, d = _add(c, "Alice"), _add(c, "Bob"), _add(c, "Dave")
+    c.put("/api/matches/d1", json=_doubles_record(
+        {"P1": {"athlete_id": a}, "P2": {"athlete_id": b}}))
+    c.put("/api/matches/d2", json=_doubles_record({"P4": {"athlete_id": a}}))
+    c.put("/api/matches/s1", json={"upper": {"athlete_id": a}, "lower": {"athlete_id": b}})
+    counts = {x["id"]: x["matches"] for x in c.get("/api/athletes").get_json()["athletes"]}
+    assert counts == {a: 3, b: 2, d: 0}
+
+
+def test_hostile_doubles_players_on_disk_never_fail_a_request(client):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(__import__("json").dumps({
+        "athletes": {"a_1": {"name": "Alice"}},
+        "matches": {
+            "clip": {"format": "doubles", "date": "2026-10-11", "players": ["x", {"y": 1}]},
+            "other": {"format": "doubles", "date": "2026-10-12",
+                      "players": {"P1": {"athlete_id": []}, "P2": "z", "P3": {"athlete_id": "a_1"}}},
+        }}), encoding="utf-8")
+    assert c.get("/api/matches/clip").get_json() == {
+        "date": "2026-10-11", "format": "doubles", "players": {}, "result": None}
+    body = c.get("/api/athletes").get_json()
+    assert body["athletes"][0]["matches"] == 1
+    assert c.delete("/api/athletes/a_1").get_json() == {"ok": True, "rewritten": 1}
+
+
+def test_doubles_put_on_an_unreadable_store_is_refused_without_writing(client, monkeypatch, tmp_path):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+
+    def boom(*a, **k):
+        raise libathletes.StoreUnreadable(f"locked {store}")
+
+    monkeypatch.setattr(libathletes, "load_for_update", boom)
+    res = c.put("/api/matches/clip", json=_doubles_record({"P1": {"name": "A"}}))
+    assert res.status_code == 500
+    _assert_static_bilingual(res, tmp_path)
+    assert not store.exists()
