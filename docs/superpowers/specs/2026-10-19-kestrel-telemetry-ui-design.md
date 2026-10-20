@@ -246,10 +246,41 @@ Response:
              "axes": [ {"id":"smash","count":n,"score":x|null,"status":"ok|unavailable"}, ... 7 ] },
   "trend": { "points": [ {"date","stem","index"} ], "benchmark": Insight<{index}> },
   "movement": { "position": Insight<Grid>, "pull": Insight<Pull> },
+  "doubles": Insight<{ "matches": n, "athlete": Summary|null, "runs": [Run] }>,
   "matches": [ {"stem","date","date_source","side","athlete","opponent","result":"W|L|null","sets",
-                "tech_index","status":"analysed|processing|new","needs_review":bool,"doubles":bool} ],
+                "tech_index","status":"analysed|processing|new","needs_review":bool,"doubles":bool,
+                /* doubles rows only: */ "format":"doubles","athlete_player":"P1".."P4"|null,
+                "team":1|2|null,"partner":name|null} ],
   "findings": [ {"code","severity":"watch|good|info","params":{}} ] }
 ```
+
+Doubles (addendum `2026-10-20-kestrel-doubles-support-design.md` 4.2, as built):
+
+- A doubles stem (sidecar `match_format: "doubles"`; for a stem not analysed yet, a `format: "doubles"` record)
+  never yields a singles `(stem, side)` unit. It yields a doubles unit `(stem, identity)` for each identity the
+  record maps to a registered athlete in scope. **`scope.units` = singles units + doubles identity units.**
+  Technique, strokes, recovery, pull, match-win KPIs, trend and benchmark stay singles-only; with only doubles
+  stems in scope they are `unavailable` + `doubles_run`. Rally windows of doubles stems still feed `avg_rally`.
+- `doubles`: `unavailable` + `no_data` without an analysed doubles stem in scope; `ok` when every run's identity
+  status is `ok`; else `partial` with the newest non-ok run's reason (`doubles_degraded{status}`,
+  `doubles_error`, `no_players`); `coverage` = runs with identities / runs. `matches` = analysed doubles stems in
+  scope. `Run = {stem, date, date_source, status: ok|degraded|degraded_teams|error|missing, validated: false,
+  teams: [{id, players, hits, hits_named}], players: [{id, team, name, athlete, coverage, frames, distance_m,
+  avg_speed_mps, max_speed_mps, hits, hits_named, samples}]}`, newest first; `athlete` = the record's athlete
+  (current registry name) or free-text name, else the identity's own `name`, else null. `Summary = {distance_m,
+  avg_speed_mps, max_speed_mps, frames, hits, hits_named, named_share, matches, grid, samples}` (athlete scope
+  only): sums and frame-weighted speeds over the athlete's identities, max of the maxima, grid sample-weighted
+  and renormalised; null numbers are skipped and a sum of nothing is null, never 0. Under `degraded_teams` every
+  team is null.
+- `movement.position` in athlete scope also merges the athlete's doubles identity grids (sample-weighted, with
+  their distance and average speed; `coverage.of` counts the doubles units too). Squad / no scope: singles only.
+- Doubles rows: athlete or squad scope gives one row per selected identity; no scope gives one stem-level row
+  (`athlete_player`/`team`/`athlete`/`partner`/`opponent`/`result` null). `opponent` = the other team's names
+  joined with " / " (null when none known); `result` W/L from the record's `winner_team` vs the athlete's team
+  (null when either is unknown); `sets` `[own, opp]` for the athlete's team, team-1-first when the team is
+  unknown; `side` and `tech_index` null; `needs_review` = identity status is not `ok` (false before analysis).
+- Findings: `doubles_identity_degraded{status}` (watch, first `degraded`/`degraded_teams` run) and
+  `doubles_hits_unvalidated{named_share}` (info, only with an athlete summary that has a named share).
 
 `technique_index.delta` = last point minus first point of the trend (null with fewer than 2 points).
 `net_share` = classified `net` strokes / classified strokes for the selection. `pull_rear` = mean of unit
@@ -258,7 +289,8 @@ range (`unavailable` + `no_benchmark` without a squad or without others). `needs
 coverage `< 0.5`. `processing` = the stem has a running job. Findings (`findings.py`, deterministic, at most
 6, sorted `watch`, `good`, `info`): `technique_below_reference{technique,score,lo}` (lowest first),
 `technique_strongest{technique,score}`, `index_trend{delta,range}`, `recovery_median{sec}`,
-`techniques_unscored{names}`, `strokes_coverage_low{classified,total}`, `rally_estimated{signal}`.
+`techniques_unscored{names}`, `strokes_coverage_low{classified,total}`, `rally_estimated{signal}`,
+`doubles_identity_degraded{status}`, `doubles_hits_unvalidated{named_share}`.
 
 `GET /api/insights/video/<stem>` returns the sidecar (computing it when stale). `404` for an unknown stem.
 

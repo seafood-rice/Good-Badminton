@@ -3,6 +3,11 @@
 ``build_findings`` reads only the overview dict (tolerating missing parts) and
 returns at most six ``{"code", "severity", "params"}``, ordered ``watch``,
 ``good``, ``info``; within a severity, in the order the checks run.
+
+Doubles (addendum 4.2): ``doubles_identity_degraded{status}`` (watch) names the first
+``degraded``/``degraded_teams`` run of the ``doubles`` insight (a failed or missing run is
+already the insight's own reason); ``doubles_hits_unvalidated{named_share}`` (info) only
+appears with a selected athlete's doubles summary that has a named share.
 """
 from .loaders import number
 from .technique import REFERENCE
@@ -11,6 +16,8 @@ MAX_FINDINGS = 6
 MAX_BELOW_REFERENCE = 3
 """Keeps one weak profile from crowding every other finding out of the six."""
 _SEVERITY_ORDER = {"watch": 0, "good": 1, "info": 2}
+DEGRADED_IDENTITY = ("degraded", "degraded_teams")
+"""Doubles run statuses whose identities exist but are only partly reliable."""
 
 
 def _dict(x):
@@ -78,6 +85,19 @@ def build_findings(overview):
     status, rally = _kpi_value(kpis, "avg_rally")
     if status == "partial" and rally is not None:
         found.append(_finding("rally_estimated", "info", signal=rally.get("signal")))
+
+    _status, doubles = _kpi_value(ov, "doubles")
+    if doubles is not None:
+        runs = doubles.get("runs")
+        degraded = next((r.get("status") for r in runs if isinstance(r, dict)
+                         and r.get("status") in DEGRADED_IDENTITY), None) \
+            if isinstance(runs, list) else None
+        if degraded is not None:
+            found.append(_finding("doubles_identity_degraded", "watch", status=degraded))
+        summary = doubles.get("athlete")
+        share = number(summary.get("named_share")) if isinstance(summary, dict) else None
+        if share is not None:
+            found.append(_finding("doubles_hits_unvalidated", "info", named_share=share))
 
     found.sort(key=lambda f: _SEVERITY_ORDER[f["severity"]])      # stable
     return found[:MAX_FINDINGS]

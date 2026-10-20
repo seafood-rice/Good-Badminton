@@ -5,12 +5,18 @@ and the athlete/match store; it does no file I/O. A *unit* is one
 ``(stem, side)``; a stem's rally and stroke-distribution insights belong to the
 whole video, so they are counted once per stem, not once per unit.
 
-A *doubles* stem (sidecar ``match_format == "doubles"``) has no per-player data: its
-legacy tracker output is one representative per side of a 4-player match. It is a
-stem in the scope and a row in ``matches`` (``doubles: true``, ``tech_index: null``) and its
-rally windows still feed ``avg_rally``, but it is not a player unit: it adds nothing to the
-technique, movement, recovery, pull, stroke or match-win aggregates, the trend or the
-benchmark, and ``scope.units`` does not count it.
+A *doubles* stem (sidecar ``match_format == "doubles"``; for a stem not analysed yet, a
+doubles match record) never yields a singles ``(stem, side)`` unit: its legacy tracker
+output is one representative per side of a 4-player match, so it adds nothing to the
+technique, stroke, recovery, pull or match-win aggregates, the trend or the benchmark. Its
+rally windows still feed ``avg_rally``. Instead it yields one *doubles unit*
+``(stem, identity)`` for each identity (``P1``..``P4``) its match record maps to a
+registered athlete that the scope selects (doubles addendum 4.2); identities that are
+unmapped or hold a free-text name only appear in the ``doubles`` insight's run list.
+``scope.units`` counts the singles units **plus** these doubles identity units, so an
+athlete who only played doubles still has a non-zero unit count. The selected athlete's
+doubles grids are merged (sample-weighted) into ``movement.position``; nothing else of a
+doubles unit reaches a singles KPI.
 
 Stems without a date (no record date and no usable sidecar date) cannot be
 placed in a range: they are left out of every bounded range (``7d``, ``30d``,
@@ -32,6 +38,11 @@ GRID_ROWS, GRID_COLS = 11, 10
 OK_COUNT, FEW_COUNT = 10, 3
 NEEDS_REVIEW_BELOW = 0.5
 POINT_OUTCOME_KPIS = ("rally_win_rate", "unforced_errors")
+IDENTITIES = lib.PLAYER_IDS
+TEAM_IDS = lib.TEAMS
+IDENTITY_STATUSES = ("ok", "degraded", "degraded_teams")
+"""Statuses a usable ``doubles`` insight may carry; a run without one is ``error``/``missing``."""
+NAME_MAX = 120
 
 
 # ---------------------------------------------------------------- small helpers
@@ -162,8 +173,10 @@ def _make_entries(units_source, parts, running):
         entries.append({
             "stem": stem, "record": record, "date": date, "date_source": source,
             "status": status,
-            # only the exact value counts; a missing or malformed one is singles
-            "doubles": status == "analysed" and _dict(insights).get("match_format") == "doubles",
+            # the sidecar decides for an analysed run (only the exact value counts; a missing
+            # or malformed one is singles); without one, only the match record can tell
+            "doubles": (_dict(insights).get("match_format") == "doubles"
+                        if status == "analysed" else lib.record_format(record) == "doubles"),
             # processing / new stems have no (or in-flux) data: never aggregated
             "insights": insights if status == "analysed" else {},
             "ident": {side: _side_ident(parts, record, side) for side in SIDES},
@@ -180,6 +193,20 @@ def _side_selected(ident, athlete, squad, athletes):
         if member.get("squad_id") != squad:
             return False
     return True
+
+
+def _identities_selected(parts, record, athlete, squad):
+    """``[(pid, ident)]``: the record's identities mapped to a registered athlete in scope.
+
+    A free-text name is not an athlete, and a singles record maps no identity at all.
+    """
+    out = []
+    for pid in IDENTITIES:
+        ident = lib.player_athlete(parts, record, pid)
+        if ident["athlete_id"] is not None \
+                and _side_selected(ident, athlete, squad, parts["athletes"]):
+            out.append((pid, ident))
+    return out
 
 
 def _bounds(range_, anchor):
@@ -445,24 +472,34 @@ def _merge_grids(parts):
              for c in range(GRID_COLS)] for r in range(GRID_ROWS)]
 
 
-def _position(units):
+def _position(units, doubles=()):
+    """Merged court occupancy of the singles ``units`` plus ``doubles``.
+
+    ``doubles`` is ``[(player_row | None, doubles_envelope)]`` for the selected athlete's
+    doubles identities (athlete scope only): their grids merge sample-weighted like a
+    singles side's, and a null distance or speed is skipped, never read as 0.
+    """
     parts, distance, span, statuses, first_limit = [], 0.0, 0.0, [], None
     sides = set()
-    for u in units:
-        env = _env_of(u["insights"], "movement")
-        grid_side = _dict(_dict(_value(u["insights"], "movement")).get(u["side"]))
+    sources = [(_dict(_dict(_value(u["insights"], "movement")).get(u["side"])),
+                _env_of(u["insights"], "movement"), u["side"]) for u in units]
+    sources += [(_dict(row), env, None) for row, env in doubles]
+    for grid_side, env, side in sources:
         samples = _count(grid_side.get("samples"))
         if not samples or not _grid_ok(grid_side.get("grid")):
             continue
         parts.append((samples, grid_side["grid"]))
-        sides.add(u["side"])
+        if side is not None:
+            sides.add(side)
+        speed_key = "mean_speed_mps" if side is not None else "avg_speed_mps"
         dist = _bounded(grid_side.get("distance_m"), 0.0, MAX_DISTANCE_M) or 0.0
-        speed = _bounded(grid_side.get("mean_speed_mps"), 0.0, MAX_SPEED_MPS) or 0.0
+        speed = _bounded(grid_side.get(speed_key), 0.0, MAX_SPEED_MPS) or 0.0
         distance += dist
         span += _fin(dist / speed) if speed > 0 else 0.0
         statuses.append(env.get("status"))
-        if env.get("status") != "ok" and first_limit is None:
-            first_limit = env.get("reason")
+        if env.get("status") != "ok" and first_limit is None \
+                and isinstance(env.get("reason"), dict):
+            first_limit = env["reason"]
     if not parts:
         return _unavailable(units, _first_reason(units, "movement"))
     # rows count from the net on both halves, so the two bases coincide in grid terms
@@ -471,7 +508,7 @@ def _position(units):
              "distance_m": round(_fin(distance), 2),
              "mean_speed_mps": round(_fin(distance / span), 2) if span > 0 else 0.0,
              "base": base}
-    coverage = {"n": len(parts), "of": len(units)}
+    coverage = {"n": len(parts), "of": len(units) + len(doubles)}
     if first_limit is not None and isinstance(first_limit.get("code"), str):
         return envelope.partial(value, first_limit["code"],
                                 _dict(first_limit.get("params")), coverage)
@@ -493,6 +530,240 @@ def _pull_position(units):
              "front": mean("front"), "mid": mean("mid"), "back": mean("back"),
              "left": mean("left"), "right": mean("right"), "n": total}
     return _graded(value, total) or envelope.unavailable("no_hits")
+
+
+# -------------------------------------------------------------------- doubles
+
+def _opt_count(x):
+    """A whole count in ``[0, MAX_COUNT]``, else None (never a made-up 0)."""
+    n = number(x)
+    return int(n) if n is not None and 0 <= n <= MAX_COUNT and n == int(n) else None
+
+
+def _team(x):
+    return x if type(x) is int and x in TEAM_IDS else None
+
+
+def _name(x):
+    return x.strip()[:NAME_MAX] if isinstance(x, str) and x.strip() else None
+
+
+def _identity_players(value, status):
+    """Validated player rows of a ``doubles`` insight value, in file order.
+
+    Known ids only (the first of a duplicate wins); every number re-checked, a bad one
+    is None. Under ``degraded_teams`` no team is trusted, whatever the row says.
+    """
+    raw = _dict(value).get("players")
+    rows, seen = [], set()
+    for p in raw if isinstance(raw, list) else ():
+        pid = p.get("id") if isinstance(p, dict) else None
+        if not isinstance(pid, str) or pid not in IDENTITIES or pid in seen:
+            continue
+        seen.add(pid)
+        hits, named = _opt_count(p.get("hits")), _opt_count(p.get("hits_named"))
+        samples = _opt_count(p.get("samples"))
+        grid = p.get("grid") if samples and _grid_ok(p.get("grid")) else None
+        rows.append({
+            "id": pid,
+            "team": None if status == "degraded_teams" else _team(p.get("team")),
+            "name": _name(p.get("name")),
+            "coverage": _share(p.get("coverage")),
+            "frames": _opt_count(p.get("frames")),
+            "distance_m": _bounded(p.get("distance_m"), 0.0, MAX_DISTANCE_M),
+            "avg_speed_mps": _bounded(p.get("avg_speed_mps"), 0.0, MAX_SPEED_MPS),
+            "max_speed_mps": _bounded(p.get("max_speed_mps"), 0.0, MAX_SPEED_MPS),
+            "hits": hits,
+            "hits_named": named if named is not None and hits is not None and named <= hits
+            else None,
+            "samples": samples,
+            "grid": grid,
+        })
+    return rows
+
+
+def _identity_teams(value, status, players):
+    if status == "degraded_teams":
+        return []
+    known = {p["id"] for p in players}
+    raw = _dict(value).get("teams")
+    out, seen = [], set()
+    for t in raw if isinstance(raw, list) else ():
+        tid = _team(t.get("id")) if isinstance(t, dict) else None
+        if tid is None or tid in seen:
+            continue
+        seen.add(tid)
+        members = t.get("players")
+        ids = []
+        for m in members if isinstance(members, list) else ():
+            if isinstance(m, str) and m in known and m not in ids:
+                ids.append(m)
+        out.append({"id": tid, "players": ids, "hits": _opt_count(t.get("hits")),
+                    "hits_named": _opt_count(t.get("hits_named"))})
+    return out
+
+
+def _identity_info(entry):
+    """``{status, env, value, players, by_id}`` of one doubles stem.
+
+    ``status`` is the identity status: the value's ``ok|degraded|degraded_teams`` (an
+    unknown one, or ``ok`` under a non-ok envelope, is ``degraded``), else ``error`` for
+    a ``doubles_error`` run and ``missing`` for any other run without a usable value.
+    ``None`` for a stem that is not analysed (no data yet).
+    """
+    if entry["status"] != "analysed":
+        return {"status": None, "env": {}, "value": None, "players": [], "by_id": {}}
+    env = _env_of(entry["insights"], "doubles")
+    value = _value(entry["insights"], "doubles")
+    if value is None:
+        code = _dict(env.get("reason")).get("code")
+        status = "error" if code == "doubles_error" else "missing"
+    else:
+        status = value.get("status")
+        if status not in IDENTITY_STATUSES or (status == "ok" and env.get("status") != "ok"):
+            status = "degraded"
+    players = _identity_players(value, status)
+    return {"status": status, "env": env, "value": value, "players": players,
+            "by_id": {p["id"]: p for p in players}}
+
+
+def _identity_name(parts, record, pid, info):
+    """The record's athlete (current registry name) or free-text name, else the identity's
+    own ``players.json`` name, else None."""
+    return (lib.player_athlete(parts, record, pid)["name"]
+            or _dict(info["by_id"].get(pid)).get("name"))
+
+
+def _doubles_run(entry, info, parts):
+    players = []
+    for p in info["players"]:
+        row = {k: v for k, v in p.items() if k != "grid"}
+        row["athlete"] = _identity_name(parts, entry["record"], p["id"], info)
+        players.append(row)
+    return {"stem": entry["stem"], "date": entry["date"], "date_source": entry["date_source"],
+            "status": info["status"], "validated": False,
+            "teams": _identity_teams(info["value"], info["status"], info["players"]),
+            "players": players}
+
+
+def _share_grid(parts):
+    """Sample-weighted merge of ``[(samples, grid)]``, renormalised so the shares sum to 1."""
+    if not parts:
+        return None
+    cells = [[sum(w * g[r][c] for w, g in parts) for c in range(GRID_COLS)]
+             for r in range(GRID_ROWS)]
+    total = sum(map(sum, cells))
+    if not (math.isfinite(total) and total > 0):
+        return None
+    return [[round(_fin(v / total), 4) for v in row] for row in cells]
+
+
+def _athlete_summary(rows, matches):
+    """The selected athlete's identity across their doubles matches (addendum 4.2).
+
+    Distance, frames and hits are summed, speeds frame-weighted (max: the highest),
+    grids sample-weighted. Null numbers are skipped; a sum of nothing is None, not 0.
+    """
+    rows = [r for r in rows if r]
+
+    def total(key):
+        values = [r[key] for r in rows if r[key] is not None]
+        return sum(values) if values else None
+
+    distance, frames, hits = total("distance_m"), total("frames"), total("hits")
+    speeds = [(r["frames"], r["avg_speed_mps"]) for r in rows
+              if r["frames"] and r["avg_speed_mps"] is not None]
+    weight = sum(f for f, _s in speeds)
+    maxes = [r["max_speed_mps"] for r in rows if r["max_speed_mps"] is not None]
+    pairs = [(r["hits"], r["hits_named"]) for r in rows if r["hits_named"] is not None]
+    named = sum(n for _h, n in pairs) if pairs else None
+    of = sum(h for h, _n in pairs)
+    grids = [(r["samples"], r["grid"]) for r in rows if r["grid"] is not None and r["samples"]]
+    grid = _share_grid(grids)
+    return {
+        "distance_m": None if distance is None else round(_fin(distance), 2),
+        "avg_speed_mps": round(_fin(sum(f * s for f, s in speeds) / weight), 2) if weight else None,
+        "max_speed_mps": max(maxes) if maxes else None,
+        "frames": frames, "hits": hits, "hits_named": named,
+        "named_share": round(named / of, 4) if pairs and of else None,
+        "matches": matches,
+        "grid": grid, "samples": sum(w for w, _g in grids) if grid is not None else None,
+    }
+
+
+_RUN_REASONS = {"error": ("doubles_error", None), "missing": ("no_players", None)}
+
+
+def _doubles_insight(entries, units, infos, parts, athlete):
+    """The overview's ``doubles`` Insight over the doubles stems in scope.
+
+    ``ok`` when every analysed run is ``ok``; ``partial`` (with the first non-ok run's
+    reason, newest first) when any is degraded, failed or has no identities;
+    ``unavailable`` + ``no_data`` when no analysed doubles stem is in scope.
+    """
+    analysed = [e for e in entries if infos[e["stem"]]["status"] is not None]
+    if not analysed:
+        return envelope.unavailable("no_data")
+    runs = [_doubles_run(e, infos[e["stem"]], parts) for e in analysed]
+    runs.sort(key=lambda r: r["stem"])
+    runs.sort(key=lambda r: r["date"] or "", reverse=True)       # newest first, undated last
+    summary = None
+    mine = [u for u in units if infos[u["stem"]]["status"] is not None]
+    if athlete is not None and mine:
+        summary = _athlete_summary([infos[u["stem"]]["by_id"].get(u["pid"]) for u in mine],
+                                   len(mine))
+    value = {"matches": len(analysed), "athlete": summary, "runs": runs}
+    coverage = {"n": sum(r["status"] in IDENTITY_STATUSES for r in runs), "of": len(runs)}
+    bad = next((r for r in runs if r["status"] != "ok"), None)
+    if bad is None:
+        return envelope.ok(value, coverage)
+    code, params = _RUN_REASONS.get(bad["status"], ("doubles_degraded", {"status": bad["status"]}))
+    return envelope.partial(value, code, params, coverage)
+
+
+def _team_sets(result, team):
+    """Team-1-first stored pairs oriented ``[own, opp]`` for ``team`` (as stored when unknown)."""
+    if not isinstance(result, dict):
+        return None
+    sets = result.get("sets")
+    out = []
+    for p in sets if isinstance(sets, list) else []:
+        if isinstance(p, (list, tuple)) and len(p) == 2:
+            out.append([p[1], p[0]] if team == 2 else [p[0], p[1]])
+    return out
+
+
+def _doubles_row(entry, pid, info, parts):
+    """A ``matches`` row for one doubles identity, or for the whole stem when ``pid`` is None."""
+    record = entry["record"]
+    result = record.get("result") if lib.record_format(record) == "doubles" else None
+    me = info["by_id"].get(pid) if pid is not None else None
+    team = me["team"] if me else None
+    partner = opponent = None
+    if team is not None:
+        def names(on_team):
+            got = [_identity_name(parts, record, p["id"], info)
+                   for p in sorted(info["players"], key=lambda p: p["id"])
+                   if p["team"] == on_team and p["id"] != pid]
+            return [n for n in got if n]
+
+        mates = names(team)
+        partner = mates[0] if mates else None
+        opponent = " / ".join(names(3 - team)) or None
+    winner = _team(_dict(result).get("winner_team"))
+    outcome = None
+    if team is not None and winner is not None:
+        outcome = "W" if winner == team else "L"
+    return {
+        "stem": entry["stem"], "date": entry["date"], "date_source": entry["date_source"],
+        "side": None,
+        "athlete": None if pid is None else _identity_name(parts, record, pid, info),
+        "opponent": opponent, "result": outcome, "sets": _team_sets(result, team),
+        "tech_index": None, "status": entry["status"],
+        "needs_review": info["status"] is not None and info["status"] != "ok",
+        "doubles": True, "format": "doubles", "athlete_player": pid, "team": team,
+        "partner": partner,
+    }
 
 
 # ---------------------------------------------------------------------- rows
@@ -521,7 +792,8 @@ def _sets_pairs(result, side):
     return out
 
 
-def _rows(units):
+def _rows(units, doubles_rows=()):
+    """Singles rows (one per unit) plus the prepared doubles rows, newest first."""
     rows = []
     for u in units:
         other = "lower" if u["side"] == "upper" else "upper"
@@ -530,18 +802,17 @@ def _rows(units):
         outcome = None
         if u["side"] in SIDES and winner in SIDES:       # relative to this unit's own side
             outcome = "W" if winner == u["side"] else "L"
-        index = None if u["doubles"] else _bounded(_dict(_unit_side(u)).get("index"),
-                                                    *SCORE_RANGE)
         rows.append({
             "stem": u["stem"], "date": u["date"], "date_source": u["date_source"],
             "side": u["side"], "athlete": u["ident"][u["side"]]["name"],
             "opponent": u["ident"][other]["name"], "result": outcome,
             "sets": _sets_pairs(result, u["side"]),
-            "tech_index": index, "status": u["status"],
-            "needs_review": not u["doubles"] and _stem_needs_review(u["insights"]),
-            "doubles": u["doubles"],
+            "tech_index": _bounded(_dict(_unit_side(u)).get("index"), *SCORE_RANGE),
+            "status": u["status"], "needs_review": _stem_needs_review(u["insights"]),
+            "doubles": False,
         })
-    rows.sort(key=lambda r: (r["stem"], r["side"]))
+    rows.extend(doubles_rows)
+    rows.sort(key=lambda r: (r["stem"], r["side"] or "", r.get("athlete_player") or ""))
     rows.sort(key=lambda r: r["date"] or "", reverse=True)       # newest first, undated last
     return rows
 
@@ -550,9 +821,12 @@ def _rows(units):
 
 def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="30d",
              running_stems=frozenset()):
-    """The spec 5.4 response for the selected athlete / squad / range.
+    """The spec 5.4 response (plus doubles addendum 4.2) for the athlete / squad / range.
 
-    ``units_source`` is ``[{"stem", "insights"}]`` (sidecar dicts); raises
+    Athlete scope selects the doubles stems where the athlete is mapped to an identity,
+    squad scope those where any identity is a squad member's, no scope every doubles
+    stem. ``scope.units`` = singles units + mapped doubles identity units (see the
+    module docstring). ``units_source`` is ``[{"stem", "insights"}]`` (sidecar dicts); raises
     ``LookupError("athlete")`` / ``LookupError("squad")`` for unknown ids and
     ``ValueError("range")`` for a bad range.
     """
@@ -565,8 +839,15 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
         raise LookupError("squad")
 
     entries = _make_entries(units_source, parts, frozenset(running_stems or ()))
+    scoped = athlete is not None or squad is not None
     candidates = []
     for e in entries:
+        if e["doubles"]:
+            # (pid, ident) pairs; with no scope every doubles stem is in, mapped or not
+            picked = _identities_selected(parts, e["record"], athlete, squad)
+            if picked or not scoped:
+                candidates.append((e, picked))
+            continue
         sides = [s for s in SIDES
                  if _side_selected(e["ident"][s], athlete, squad, parts["athletes"])]
         if sides:
@@ -577,11 +858,22 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
     bounds = _bounds(range_, anchor)
     chosen = [(e, s) for e, s in candidates if _in_range(e["date"], range_, bounds)]
 
-    all_units = [dict(e, side=side) for e, sides in chosen for side in sides]
-    # Player units: a doubles side is one representative of a 4-player team, not a player.
-    # ``units`` feeds every per-player aggregate and ``scope.units``; ``all_units`` only the
-    # rally average (rally windows are not player-specific) and the match rows.
-    units = [u for u in all_units if not u["doubles"]]
+    # ``units`` are singles (stem, side) units: they feed every per-player aggregate.
+    # ``doubles_units`` are (stem, identity) units of mapped athletes: they feed the
+    # ``doubles`` insight, the athlete's court map and the rows. ``scope.units`` counts both.
+    units = [dict(e, side=side) for e, sides in chosen if not e["doubles"] for side in sides]
+    doubles_entries = [e for e, _p in chosen if e["doubles"]]
+    doubles_units = [dict(e, side=None, pid=pid) for e, picked in chosen if e["doubles"]
+                     for pid, _ident in picked]
+    infos = {e["stem"]: _identity_info(e) for e in doubles_entries}
+    if scoped:
+        doubles_rows = [_doubles_row(u, u["pid"], infos[u["stem"]], parts) for u in doubles_units]
+    else:       # no perspective: one stem-level row, sets team-1-first
+        doubles_rows = [_doubles_row(e, None, infos[e["stem"]], parts) for e in doubles_entries]
+    # rally windows are not player-specific: every selected stem's count once
+    rally_units = units + [{"stem": e["stem"], "insights": e["insights"]} for e in doubles_entries]
+    athlete_doubles = ([(infos[u["stem"]]["by_id"].get(u["pid"]), infos[u["stem"]]["env"])
+                        for u in doubles_units] if athlete is not None else [])
     chosen_entries = [e for e, _s in chosen]
     selected_dates = sorted(e["date"] for e in chosen_entries if e["date"])
     if bounds is not None:
@@ -593,11 +885,10 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
     scores = _radar_scores(units)
     points = _trend(chosen_entries, units)
     strokes_kpi, net_kpi = _strokes_and_net(units)
-    scoped = athlete is not None or squad is not None
     athlete_row = parts["athletes"].get(athlete) if athlete is not None else None
     squad_row = parts["squads"].get(squad) if squad is not None else None
     no_outcome = envelope.unavailable("no_point_outcome")
-    doubles_only = not units and bool(all_units)       # every selected unit is doubles
+    doubles_only = not units and bool(doubles_entries)     # every selected stem is doubles
 
     def player(insight):
         """With only doubles in scope, 'no data' is really 'doubles' (never a false 'missing')."""
@@ -613,7 +904,8 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
                 "squad_id": _dict(athlete_row).get("squad_id")},
             "squad": None if squad_row is None else {
                 "id": squad, "name": _dict(squad_row).get("name")},
-            "range": range_, "stems": len(chosen_entries), "units": len(units),
+            "range": range_, "stems": len(chosen_entries),
+            "units": len(units) + len(doubles_units),
             "date_from": date_from, "date_to": date_to,
             "generated_at": datetime.datetime.now(datetime.timezone.utc)
             .strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -621,7 +913,7 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
         "kpis": {
             "technique_index": player(_technique_kpi(units, scores, points)),
             "match_win_rate": player(_match_win_rate(units, scoped)),
-            "avg_rally": _avg_rally(all_units),
+            "avg_rally": _avg_rally(rally_units),
             "rally_win_rate": dict(no_outcome),
             "recovery": player(_recovery(units)),
             "net_share": player(net_kpi),
@@ -633,9 +925,10 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
         "trend": {"points": points,
                   "benchmark": _benchmark(athlete, parts, entries, range_, bounds,
                                           bool(units))},
-        "movement": {"position": player(_position(units)),
+        "movement": {"position": player(_position(units, athlete_doubles)),
                      "pull": player(_pull_position(units))},
-        "matches": _rows(all_units),
+        "doubles": _doubles_insight(doubles_entries, doubles_units, infos, parts, athlete),
+        "matches": _rows(units, doubles_rows),
     }
     result["findings"] = build_findings(result)
     return result

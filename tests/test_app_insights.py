@@ -264,3 +264,69 @@ def test_overview_and_video_route_agree_on_which_stems_exist(lib):
     assert c.get("/api/insights/video/clip..v2").status_code == 404
     assert not (outputs / "clip..v2" / "insights.json").exists()
     assert not (outputs / ".hidden" / "insights.json").exists()
+
+
+# ------------------------------------------------------------- doubles (addendum 4.2)
+
+DOUBLES_STEM = "Dji 20260920100000 0007 D"
+DOUBLES_OTHER = "Dji 20260921100000 0008 D"
+
+
+def _doubles(tmp_path, videos, stem, **kw):
+    from insights_fixtures import doubles_hit, make_doubles_run
+    hits = [doubles_hit(5, "P3", "shuttle"), doubles_hit(15, "P3", "single_candidate"),
+            doubles_hit(25, "P1", "swing"), doubles_hit(35, None)]
+    out = make_doubles_run(tmp_path, stem, hits=hits, **kw)
+    (out / "detections.jsonl").write_text("", encoding="utf-8")       # the pipeline writes it
+    (videos / f"{stem}.mp4").write_bytes(b"\x00")
+    return out
+
+
+def test_overview_doubles_athlete_scope_end_to_end(lib):
+    c, tmp_path, videos, *_ = lib
+    _run(tmp_path, videos, STEM_A)
+    _doubles(tmp_path, videos, DOUBLES_STEM, names={"P1": "Alice"})
+    _doubles(tmp_path, videos, DOUBLES_OTHER, status="degraded")
+    athlete = c.post("/api/athletes", json={"name": "J. Tanaka"}).get_json()["id"]
+    assert c.put(f"/api/matches/{STEM_A}",
+                 json={"upper": {"athlete_id": athlete}}).status_code == 200
+    res = c.put(f"/api/matches/{DOUBLES_STEM}",
+                json={"format": "doubles", "players": {"P3": {"athlete_id": athlete},
+                                                       "P4": {"name": "Dee"}},
+                      "result": {"winner_team": 2, "sets": [[18, 21], [21, 19], [15, 21]]}})
+    assert res.status_code == 200, res.get_json()
+    res = c.get(f"/api/insights/overview?range=all&athlete={athlete}")
+    assert res.status_code == 200
+    json.dumps(res.get_json(), allow_nan=False)
+    body = res.get_json()
+    assert body["scope"]["stems"] == 2 and body["scope"]["units"] == 2
+    dbl = body["doubles"]
+    assert dbl["status"] == "ok" and dbl["value"]["matches"] == 1
+    summary = dbl["value"]["athlete"]
+    assert (summary["hits"], summary["hits_named"], summary["named_share"]) == (2, 1, 0.5)
+    assert summary["distance_m"] == 37.5 and summary["samples"] == 60
+    run = dbl["value"]["runs"][0]
+    assert {p["id"]: p["athlete"] for p in run["players"]} == {
+        "P1": "Alice", "P2": None, "P3": "J. Tanaka", "P4": "Dee"}
+    row = [m for m in body["matches"] if m["stem"] == DOUBLES_STEM][0]
+    assert (row["athlete_player"], row["team"], row["result"]) == ("P3", 2, "W")
+    assert row["sets"] == [[21, 18], [19, 21], [21, 15]]
+    assert row["partner"] == "Dee" and row["opponent"] == "Alice"
+    assert body["movement"]["position"]["status"] in ("ok", "partial")
+    codes = {f["code"] for f in body["findings"]}
+    assert "doubles_hits_unvalidated" in codes
+
+
+def test_overview_doubles_no_scope_lists_both_runs(lib):
+    c, tmp_path, videos, *_ = lib
+    _doubles(tmp_path, videos, DOUBLES_STEM)
+    _doubles(tmp_path, videos, DOUBLES_OTHER, status="degraded")
+    body = c.get("/api/insights/overview?range=all").get_json()
+    dbl = body["doubles"]
+    assert dbl["status"] == "partial" and dbl["reason"]["code"] == "doubles_degraded"
+    assert [r["stem"] for r in dbl["value"]["runs"]] == [DOUBLES_OTHER, DOUBLES_STEM]
+    assert dbl["value"]["athlete"] is None
+    assert body["scope"]["units"] == 0
+    assert {f["code"] for f in body["findings"]} == {"doubles_identity_degraded"}
+    text = json.dumps(body)
+    assert str(tmp_path).replace("\\", "/") not in text and str(tmp_path) not in text

@@ -48,6 +48,7 @@ test('every reason code has text in both languages', () => {
 
 test('every finding code has a title and detail in both languages', () => {
   assert.deepEqual([...FINDING_CODES].sort(), [
+    'doubles_hits_unvalidated', 'doubles_identity_degraded',
     'index_trend', 'rally_estimated', 'recovery_median', 'strokes_coverage_low', 'technique_below_reference',
     'technique_strongest', 'techniques_unscored',
   ]);
@@ -59,6 +60,8 @@ test('every finding code has a title and detail in both languages', () => {
     techniques_unscored: { names: ['net', 'lift', 'drive'] },
     strokes_coverage_low: { classified: 12, total: 40 },
     rally_estimated: { signal: 'swing' },
+    doubles_identity_degraded: { status: 'degraded_teams' },
+    doubles_hits_unvalidated: { named_share: 0.4 },
   };
   for (const code of FINDING_CODES) {
     for (const lang of ['zh', 'en']) {
@@ -79,6 +82,18 @@ test('findingText interpolates the numbers', () => {
   assert.ok(en.detail.includes('4'), en.detail);
   const zh = findingText(f, 'zh');
   assert.ok(zh.title.includes('66') && zh.title.includes('70') && zh.title.includes('吊球'), zh.title);
+});
+
+test('doubles findings show the status token and the named share as a percentage', () => {
+  const deg = findingText({ code: 'doubles_identity_degraded', params: { status: 'degraded' } }, 'en').title;
+  assert.equal(deg, 'Player identities for a doubles match are only partly reliable (degraded).');
+  assert.ok(findingText({ code: 'doubles_identity_degraded', params: { status: 'degraded' } }, 'zh').title.includes('degraded'));
+  const en = findingText({ code: 'doubles_hits_unvalidated', params: { named_share: 0.4 } }, 'en').title;
+  assert.equal(en, 'Who-hit for your doubles matches is unvalidated: 40% of hits were named.');
+  const zh = findingText({ code: 'doubles_hits_unvalidated', params: { named_share: 0.4 } }, 'zh').title;
+  assert.equal(zh, '双打击球人尚未验证：40%的击球已识别到人。');
+  const bad = findingText({ code: 'doubles_hits_unvalidated', params: { named_share: null } }, 'en').title;
+  assert.ok(bad.includes('—') && !/[{}]/.test(bad), bad);
 });
 
 test('index_trend reads up or down by the sign of delta', () => {

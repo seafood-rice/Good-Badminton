@@ -11,7 +11,7 @@ export const REASON_CODES = Object.freeze([
 
 export const FINDING_CODES = Object.freeze([
   'technique_below_reference', 'technique_strongest', 'index_trend', 'recovery_median', 'techniques_unscored',
-  'strokes_coverage_low', 'rally_estimated',
+  'strokes_coverage_low', 'rally_estimated', 'doubles_identity_degraded', 'doubles_hits_unvalidated',
 ]);
 
 export const STRINGS = {
@@ -214,6 +214,10 @@ export const STRINGS = {
     'finding.strokes_coverage_low.detail': '技术与战术数据只基于已分类的击球，建议复核这场比赛。',
     'finding.rally_estimated.title': '回合数据为估计值',
     'finding.rally_estimated.detail': '来源：{signal}。回合长度只是近似值。',
+    'finding.doubles_identity_degraded.title': '双打比赛的球员身份仅部分可靠（{status}）。',
+    'finding.doubles_identity_degraded.detail': '队伍或球员的分配可能有误，这些比赛的单个球员数据仅为近似值。',
+    'finding.doubles_hits_unvalidated.title': '双打击球人尚未验证：{named_share}的击球已识别到人。',
+    'finding.doubles_hits_unvalidated.detail': '击球人由跟踪推断，尚未与人工标注核对。',
 
     // court map
     'heat.title': '球场热力图',
@@ -825,6 +829,10 @@ export const STRINGS = {
     'finding.strokes_coverage_low.detail': 'Technique and tactics figures rest on the classified strokes only. Consider reviewing the match.',
     'finding.rally_estimated.title': 'Rally figures are estimates',
     'finding.rally_estimated.detail': 'Source: {signal}. Rally lengths are approximate.',
+    'finding.doubles_identity_degraded.title': 'Player identities for a doubles match are only partly reliable ({status}).',
+    'finding.doubles_identity_degraded.detail': 'Team or player assignments may be wrong, so per-player figures for these matches are approximate.',
+    'finding.doubles_hits_unvalidated.title': 'Who-hit for your doubles matches is unvalidated: {named_share} of hits were named.',
+    'finding.doubles_hits_unvalidated.detail': 'The hitter is inferred from tracking and has not been checked against labels.',
 
     // court map
     'heat.title': 'Court map',
@@ -1323,6 +1331,15 @@ export function findingText(finding, lang) {
     case 'rally_estimated': {
       const sigKey = 'signal.' + p.signal;
       Object.assign(out, { signal: STRINGS.en[sigKey] !== undefined ? t(sigKey, lang) : String(p.signal === undefined ? '' : p.signal) });
+      break;
+    }
+    case 'doubles_identity_degraded':
+      Object.assign(out, { status: typeof p.status === 'string' ? p.status : '' });
+      break;
+    case 'doubles_hits_unvalidated': {
+      // The share arrives as 0-1; shown as a whole percentage, a dash when unusable.
+      const share = p.named_share === null || p.named_share === undefined || p.named_share === '' ? NaN : Number(p.named_share);
+      Object.assign(out, { named_share: Number.isFinite(share) ? num(Math.round(Math.min(1, Math.max(0, share)) * 100)) + '%' : '—' });
       break;
     }
     default:
