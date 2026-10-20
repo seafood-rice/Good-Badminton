@@ -1,9 +1,15 @@
-window.Kestrel = (function () {
+var Kestrel = (function () {
   'use strict';
   var state = { lang: localStorage.getItem('kestrel_lang') || 'zh',
                 theme: localStorage.getItem('kestrel_theme') ||
                        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
                 screen: 'dashboard', resultsVideo: null, resultsMode: 'match', resultsModes: [] };
+  // Shell integration (spec 6.6): screens render into the element the shell mounts them in, and
+  // navigation between screens is reported through onNavigate instead of a sidebar of our own.
+  var mountEl = null;
+  var navCb = null;
+  // Unmounted: render into a detached element so a late fetch callback cannot touch the page.
+  function mainEl() { return mountEl || document.createElement('div'); }
   function applyTheme() {
     document.documentElement.setAttribute('data-theme', state.theme);
   }
@@ -19,7 +25,7 @@ window.Kestrel = (function () {
   function setLang(lang) { state.lang = lang; localStorage.setItem('kestrel_lang', lang);
     document.documentElement.lang = lang; render(); }
   function setTheme(theme) { state.theme = theme; localStorage.setItem('kestrel_theme', theme);
-    applyTheme(); renderSidebar(); }
+    applyTheme(); }
   var lib = { videos: [], filter: { q: '', tags: [], status: 'all', sort: 'date' } };
   var wiz = { mode: 'match', video: null, step: 'mode', jobId: null, pollIv: null };
   var postureCtx = { stem: null, reps: [], fps: 30, sel: -1 };
@@ -32,7 +38,7 @@ window.Kestrel = (function () {
       pruneFilterTags();
       renderDashboard();
     }).catch(function () {
-      document.getElementById('main').innerHTML = '<p class="error">' +
+      mainEl().innerHTML = '<p class="error">' +
         (state.lang === 'zh' ? '加载失败' : 'Failed to load') + '</p>';
     });
   }
@@ -246,7 +252,7 @@ window.Kestrel = (function () {
                  ['analyzed', state.lang==='zh'?'已分析':'Analyzed'],
                  ['rallies', state.lang==='zh'?'回合数':'Rallies'],
                  ['avg_technique_score', state.lang==='zh'?'技术均分':'Avg Score']];
-    var main = document.getElementById('main');
+    var main = mainEl();
     main.innerHTML =
       '<div class="page-head"><h1>' + (state.lang==='zh'?'视频库':'Video Library') + '</h1>' +
         '<button class="btn-primary" id="go-new">+ ' + (state.lang==='zh'?'新建分析':'New Analysis') + '</button></div>' +
@@ -687,35 +693,6 @@ window.Kestrel = (function () {
     if (btn) btn.onclick = function () { t.remove(); undoFn(); };
     toastTimer = setTimeout(function () { t.remove(); }, 6000);
   }
-  function renderSidebar() {
-    var s = document.getElementById('sidebar');
-    s.className = 'sidebar';
-    s.innerHTML =
-      '<div class="brand"><img src="/static/img/kestrel-mark.svg" width="24" height="24">' +
-        '<span class="brand-name">' + t('brand') + '</span></div>' +
-      '<div class="portal">' + t('portal') + '</div>' +
-      '<nav class="nav">' +
-        '<button class="nav-item" data-screen="dashboard">' + t('nav_dashboard') + '</button>' +
-        '<button class="nav-item" data-screen="new">' + t('nav_new') + '</button>' +
-        (state.resultsVideo ? '<button class="nav-item" data-screen="results">' + t('nav_results') + '</button>' : '') +
-      '</nav><div class="spacer"></div>' +
-      '<div class="side-toggles">' +
-        '<button data-lang="zh">中</button><button data-lang="en">EN</button>' +
-        '<button data-theme="light">' + t('theme_light') + '</button>' +
-        '<button data-theme="dark">' + t('theme_dark') + '</button>' +
-      '</div>' +
-      '<div class="persona"><div class="avatar mono">KL</div>' +
-        '<div><div class="persona-name">' + t('persona') + '</div>' +
-        '<div class="persona-team">' + t('team') + '</div></div></div>';
-    s.querySelectorAll('[data-lang]').forEach(function (b) {
-      b.onclick = function () { setLang(b.getAttribute('data-lang')); }; });
-    s.querySelectorAll('[data-theme]').forEach(function (b) {
-      b.onclick = function () { setTheme(b.getAttribute('data-theme')); }; });
-    s.querySelectorAll('[data-screen]').forEach(function (b) {
-      b.onclick = function () { setScreen(b.getAttribute('data-screen')); };
-      b.classList.toggle('active', b.getAttribute('data-screen') === state.screen);
-    });
-  }
   var WIZ_STEPS_MATCH = [['mode','模式','Mode'],['upload','上传','Upload'],['court','球场','Court'],['config','设置','Config'],['progress','分析','Analyze']];
   var WIZ_STEPS_POSTURE = [['mode','模式','Mode'],['upload','上传','Upload'],['config','设置','Config'],['progress','分析','Analyze']];
   function wizSteps() { return wiz.mode === 'posture' ? WIZ_STEPS_POSTURE : WIZ_STEPS_MATCH; }
@@ -729,7 +706,7 @@ window.Kestrel = (function () {
   }
   function goStep(step) { wiz.step = step; renderWizard(); }
   function renderWizard() {
-    var main = document.getElementById('main');
+    var main = mainEl();
     main.innerHTML =
       '<div class="page-head"><h1>' + (state.lang==='zh'?'新建分析':'New Analysis') + '</h1>' +
         '<button class="btn-ghost" id="wiz-cancel">' + (state.lang==='zh'?'取消':'Cancel') + '</button></div>' +
@@ -1048,10 +1025,10 @@ window.Kestrel = (function () {
     state.resultsMode = mode;
     state.resultsModes = (modes && modes.length) ? modes : [mode];
     state.screen = 'results';
-    render();
+    navigate();
   }
   function renderResults() {
-    var main = document.getElementById('main'); var zh = state.lang === 'zh';
+    var main = mainEl(); var zh = state.lang === 'zh';
     var modes = state.resultsModes && state.resultsModes.length ? state.resultsModes : [state.resultsMode];
     var toggle = '';
     if (modes.length > 1) {
@@ -1949,21 +1926,51 @@ window.Kestrel = (function () {
       else { state.resultsVideo = null; setScreen('dashboard'); }
     }).catch(function () { state.resultsVideo = null; setScreen('dashboard'); });
   }
-  function setScreen(name) { state.screen = name; render(); }
+  function setScreen(name) { state.screen = name; navigate(); }
+  // The shell route for the current screen: dashboard -> #/library, new -> #/new, results -> #/results/<stem>.
+  function routeFor(screen) {
+    if (screen === 'new') { return { name: 'new', params: {}, query: {} }; }
+    if (screen === 'results' && state.resultsVideo) {
+      return { name: 'results', params: { stem: state.resultsVideo }, query: { mode: state.resultsMode } };
+    }
+    return { name: 'library', params: {}, query: {} };
+  }
+  function navigate() {
+    if (navCb) { navCb(routeFor(state.screen)); } else { render(); }
+  }
   function render() {
-    renderSidebar();
+    if (!mountEl) { return; }
     if (state.screen === 'new') { renderWizard(); }
     else if (state.screen === 'results') { renderResults(); }
     else { loadDashboard(); }
   }
-  function init() {
-    applyTheme();
-    document.documentElement.lang = state.lang;
-    render();
+  function mountAt(el, screen) { mountEl = el; state.screen = screen; render(); }
+  function mountLibrary(el) { mountAt(el, 'dashboard'); }
+  function mountNew(el) { mountAt(el, 'new'); }
+  function mountResults(el, stem, mode, modes) {
+    var known = state.resultsVideo === stem ? state.resultsModes : null;
+    state.resultsVideo = stem;
+    state.resultsMode = mode || (known && known[0]) || 'match';
+    state.resultsModes = (modes && modes.length) ? modes
+      : ((known && known.indexOf(state.resultsMode) !== -1) ? known : [state.resultsMode]);
+    mountAt(el, 'results');
   }
-  document.addEventListener('DOMContentLoaded', init);
+  // Leaving the legacy screens: drop the target and close anything appended to <body>.
+  function unmount() { closePop(); closeDeleteModal(); mountEl = null; }
+  function onNavigate(cb) { navCb = typeof cb === 'function' ? cb : null; }
   return { state: state, applyTheme: applyTheme, t: t, setLang: setLang,
-           setTheme: setTheme, renderSidebar: renderSidebar,
+           setTheme: setTheme,
            renderDashboard: renderDashboard, applyFilters: applyFilters,
-           loadDashboard: loadDashboard, setScreen: setScreen, openResults: openResults };
+           loadDashboard: loadDashboard, setScreen: setScreen, openResults: openResults,
+           mountLibrary: mountLibrary, mountNew: mountNew, mountResults: mountResults,
+           unmount: unmount, onNavigate: onNavigate };
 })();
+export default Kestrel;
+export var state = Kestrel.state;
+export var setLang = Kestrel.setLang;
+export var setTheme = Kestrel.setTheme;
+export var mountLibrary = Kestrel.mountLibrary;
+export var mountNew = Kestrel.mountNew;
+export var mountResults = Kestrel.mountResults;
+export var unmount = Kestrel.unmount;
+export var onNavigate = Kestrel.onNavigate;

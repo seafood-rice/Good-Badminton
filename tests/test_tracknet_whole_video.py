@@ -139,6 +139,6 @@ def test_infer_has_progress_parameter_documented_in_contract():
 
 
 def test_kestrel_lists_tracking_stage_between_calibration_and_analysis():
-    js = (ROOT / "static" / "kestrel.js").read_text(encoding="utf-8")
+    js = (ROOT / "static" / "kestrel" / "legacy" / "kestrel-legacy.js").read_text(encoding="utf-8")
     assert re.search(r"tracking_shuttle:\s*\['[^']+',\s*'Tracking shuttle'\]", js)
     assert "'calibrating_court_view','tracking_shuttle','analyzing'" in js

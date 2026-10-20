@@ -1,0 +1,98 @@
+/* Kestrel telemetry UI - design tokens (spec 6.3), fonts, motion keyframes.
+   Loaded AFTER the legacy /static/kestrel.css so these values win. */
+
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:400 700;font-display:swap;
+  src:url('/static/fonts/SpaceGrotesk-Variable.woff2') format('woff2');}
+@font-face{font-family:'Instrument Serif';font-style:normal;font-weight:400;font-display:swap;
+  src:url('/static/fonts/InstrumentSerif-Regular.woff2') format('woff2');}
+@font-face{font-family:'Instrument Serif';font-style:italic;font-weight:400;font-display:swap;
+  src:url('/static/fonts/InstrumentSerif-Italic.woff2') format('woff2');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:400;font-display:swap;
+  src:url('/static/fonts/IBMPlexMono-400.ttf') format('truetype');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:500;font-display:swap;
+  src:url('/static/fonts/IBMPlexMono-500.ttf') format('truetype');}
+@font-face{font-family:'IBM Plex Mono';font-style:normal;font-weight:600;font-display:swap;
+  src:url('/static/fonts/IBMPlexMono-600.ttf') format('truetype');}
+
+/* Night is the default theme. */
+:root,
+:root[data-theme="night"],
+:root[data-theme="dark"]{
+  --bg:#05070A; --surface:#0B1017; --surface2:#111923;
+  --line:#1B2733; --lineHi:#2D4054;
+  --ink:#E6EDF5; --ink2:#9BA9B8; --ink3:#7A8898;
+  --accent:#FF5A36; --accentInk:#FF8A6B; --accentSoft:rgba(255,90,54,.16);
+  --cyan:#7FC8D6; --cyanInk:#7FC8D6; --cyanSoft:rgba(127,200,214,.1);
+  --blue:#9DB0E6; --good:#5FCF9A; --mid:#E8B454; --bad:#F27B86;
+  --dot:rgba(120,170,220,.045); --hatch:rgba(155,169,184,.12);
+  --photoO:.95; --shadow:rgba(0,0,0,.5);
+  color-scheme:dark;
+}
+
+:root[data-theme="day"],
+:root[data-theme="light"]{
+  --bg:#EDF0F3; --surface:#FFFFFF; --surface2:#F5F7F9;
+  --line:#DCE2E8; --lineHi:#B9C4CF;
+  --ink:#0E141B; --ink2:#44505E; --ink3:#5E6B7A;
+  --accent:#FF5A36; --accentInk:#C23A1A; --accentSoft:rgba(255,90,54,.12);
+  --cyan:#1B7F92; --cyanInk:#077486; --cyanSoft:rgba(27,127,146,.1);
+  --blue:#3C58D6; --good:#17794A; --mid:#8A5A00; --bad:#C4262B;
+  --dot:rgba(20,40,70,.07); --hatch:rgba(60,80,100,.1);
+  --photoO:.2; --shadow:rgba(20,40,70,.18);
+  color-scheme:light;
+}
+
+/* Legacy variable aliases: untouched legacy screens (library, wizard, results)
+   adopt the new look. Legacy data-theme="dark"/"light" map to night/day above. */
+:root,
+:root[data-theme]{
+  --paper:var(--bg); --card:var(--surface); --border:var(--line); --fill:var(--surface2);
+  --muted:var(--ink2); --faint:var(--ink3);
+  --sidebar-bg:#070A0E;
+  --accent-soft:var(--accentSoft); --accent-dark:#E64A28;
+  --radius-sm:8px; --radius-md:12px; --radius-lg:18px; --radius-pill:999px;
+  --r-card:14px; --r-ctl:10px;
+  --ease:cubic-bezier(.2,.8,.2,1);
+  --font-ui:'Space Grotesk','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
+  --font-mono:'IBM Plex Mono',ui-monospace,'PingFang SC','Microsoft YaHei',monospace;
+  --font-serif:'Instrument Serif',Georgia,'PingFang SC','Microsoft YaHei',serif;
+}
+
+/* ---- base typography ---- */
+html{background:var(--bg);color:var(--ink);}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-ui);font-size:14px;line-height:1.45;
+  -webkit-font-smoothing:antialiased;}
+a{color:inherit;}
+button{font:inherit;}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.serif{font-family:var(--font-serif);font-weight:400;letter-spacing:-.01em;}
+.serif em{font-style:italic;}
+
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--cyan);outline-offset:2px;}
+
+/* ---- motion keyframes (canvas Foundations) ---- */
+@keyframes kUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes kFade{from{opacity:0}to{opacity:1}}
+@keyframes kIn{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
+@keyframes kPop{from{opacity:0;transform:translate(-50%,-10px) scale(.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+@keyframes kLive{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes kFlow{to{stroke-dashoffset:-160}}
+@keyframes kRing{0%{transform:scale(.4);opacity:.8}100%{transform:scale(2.4);opacity:0}}
+@keyframes kTravel{0%{offset-distance:0%;opacity:0}8%{opacity:1}92%{opacity:1}100%{offset-distance:100%;opacity:0}}
+@keyframes kReveal{0%{opacity:1}55%{opacity:1}100%{opacity:0;visibility:hidden}}
+@keyframes kGrow{from{opacity:0;transform:scaleY(.2)}to{opacity:1;transform:none}}
+@keyframes railpulse{0%{box-shadow:0 0 0 0 rgba(127,200,214,.6)}100%{box-shadow:0 0 0 8px rgba(127,200,214,0)}}
+
+/* Reduced motion: no transitions, no animation, no smooth scroll. The JS reveal
+   clock and the container transform also check this media query. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    transition:none !important;
+    animation:none !important;
+    scroll-behavior:auto !important;
+  }
+  .ground .shuttle{display:none !important;}
+  /* JS note: shell/transition.js must also skip the container-transform layer
+     (matchMedia('(prefers-reduced-motion: reduce)')) and navigate instantly. */
+}

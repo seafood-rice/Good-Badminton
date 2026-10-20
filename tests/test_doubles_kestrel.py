@@ -1,6 +1,6 @@
 from pathlib import Path
 
-JS = (Path(__file__).resolve().parents[1] / "static" / "kestrel.js").read_text(encoding="utf-8")
+JS = (Path(__file__).resolve().parents[1] / "static" / "kestrel" / "legacy" / "kestrel-legacy.js").read_text(encoding="utf-8")
 
 
 def test_format_select_and_payload():

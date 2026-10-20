@@ -8,6 +8,9 @@ from flask import Flask, request, jsonify, send_file
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
+from badminton_analysis.library import athletes as libathletes
+from badminton_analysis.insights.rally import summarise_rally_payload
+from badminton_analysis.web import athletes_routes, insights_routes
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -21,6 +24,10 @@ TAGS_PATH = PROJECT_ROOT / 'data' / 'library_tags.json'
 # other. One global lock rather than per-video: rename/delete touch the whole
 # file, so a per-stem lock would not prevent the cross-video race.
 _TAGS_LOCK = threading.Lock()
+# Athletes, squads and match records: the same reasoning as the tags (outside
+# outputs/, gitignored), and one lock over every read-modify-write.
+ATHLETES_PATH = PROJECT_ROOT / 'data' / 'athletes.json'
+_ATHLETES_LOCK = threading.Lock()
 TEMPLATES = PROJECT_ROOT / 'templates'
 WEIGHTS = PROJECT_ROOT / 'weights'
 
@@ -30,6 +37,15 @@ TEMPLATES.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024
+# Getters, not values: read at request time so a re-pointed ATHLETES_PATH is honoured.
+athletes_routes.register(app, store_path=lambda: ATHLETES_PATH,
+                         lock=lambda: _ATHLETES_LOCK,
+                         safe_stem=lambda name: _safe_stem(name))
+insights_routes.register(app, videos=lambda: VIDEOS, outputs=lambda: OUTPUTS,
+                         athletes_path=lambda: ATHLETES_PATH,
+                         athletes_lock=lambda: _ATHLETES_LOCK,
+                         jobs=lambda: jobs,
+                         safe_stem=lambda name: _safe_stem(name))
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -184,35 +200,17 @@ def _rally_summary(save_dir):
     measured on any footage (§0.16 measured the swing path only). It is not
     known to be bad, so it is still counted; Kestrel hedges its wording.
     """
-    unknown = {'count': 0, 'suppressed': False, 'label': 'rallies',
-               'signal': None, 'degraded': False, 'failed': False}
     path = os.path.join(str(save_dir), 'rally_segments.json')
     if not os.path.exists(path):
-        return unknown
+        return summarise_rally_payload(None)
     try:
         with open(path, encoding='utf-8') as f:
             payload = json.load(f)
-        rallies = payload.get('rallies', [])
-        if not isinstance(rallies, list):
-            raise ValueError('rallies is not a list')
-        detection = payload.get('detection')
-        if not isinstance(detection, dict):
-            detection = {}
     except Exception as exc:
         print(f'Could not read {path}: {exc!r}; treating the rally count as unknown')
-        return dict(unknown, failed=True)
-
-    signal = detection.get('signal')
-    if signal == 'error':
-        return dict(unknown, failed=True)
-    degraded = bool(detection.get('degraded'))
-    summary = {'count': len(rallies), 'suppressed': False, 'label': 'rallies',
-               'signal': signal, 'degraded': degraded, 'failed': False}
-    if degraded or signal == 'none':
-        summary.update(suppressed=True, label='windows')
-    elif signal == 'swing':
-        summary.update(suppressed=True, label='segments')
-    return summary
+        return summarise_rally_payload([])      # a non-dict payload is the helper's "malformed -> failed" path
+    # a JSON ``null`` is malformed, not "no file" (None means "file absent" to the helper)
+    return summarise_rally_payload([] if payload is None else payload)
 
 
 def _racket_weights(base=None):
@@ -1298,6 +1296,28 @@ def api_delete_preview(video_name):
                     'total_files': total_files, 'total_size_mb': round(total_size, 1)})
 
 
+def _forget_match_record(stem):
+    """Drop ``stem``'s match record from the athlete store after its video is deleted.
+
+    The same contract as the tag cleanup in ``api_delete``: never raises (the
+    files are already gone), writes only when a record exists, and skips a
+    corrupt or unreadable store entirely -- no write, no backup -- since a
+    video delete carries no data worth replacing the file for.
+    """
+    with _ATHLETES_LOCK:
+        try:
+            data = libathletes.load_for_update(ATHLETES_PATH)
+        except (libathletes.StoreCorrupt, OSError) as exc:
+            print(f'Match record cleanup skipped for {stem}: {type(exc).__name__}')
+            return
+        if stem not in data['matches']:
+            return
+        try:
+            libathletes.save(libathletes.set_match(data, stem, None), ATHLETES_PATH)
+        except OSError as exc:
+            print(f'Match record cleanup skipped for {stem}: {exc}')
+
+
 @app.route('/api/delete/<video_name>', methods=['POST'])
 def api_delete(video_name):
     """Permanently delete a scope's files. 409 while an analysis job runs on the video."""
@@ -1348,6 +1368,7 @@ def api_delete(video_name):
                             libtags.save(libtags.forget(data, stem), TAGS_PATH)
                         except OSError as exc:
                             print(f'Tag cleanup skipped for {stem}: {exc}')
+            _forget_match_record(stem)
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})
