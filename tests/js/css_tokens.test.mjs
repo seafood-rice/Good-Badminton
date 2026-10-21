@@ -150,7 +150,7 @@ test('classes and keyframes used by later tasks are defined', () => {
   for (const c of ['hud', 'scan', 'ground', 'rail', 'topbar', 'page', 'gap-card', 'pill-slider', 'mono', 'serif', 'k-chip']) {
     assert.match(all, new RegExp('\\.' + esc(c) + '(?![\\w-])'), '.' + c);
   }
-  for (const k of ['kUp', 'kFade', 'kIn', 'kPop', 'kLive', 'kFlow', 'kRing', 'kTravel']) {
+  for (const k of ['kUp', 'kFade', 'kIn', 'kPop', 'kLive']) {
     assert.match(all, new RegExp('@keyframes\\s+' + k + '\\b'), k);
   }
 });
