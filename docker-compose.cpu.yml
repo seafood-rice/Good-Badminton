@@ -1,0 +1,10 @@
+# CPU-only override. Use together with the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build
+services:
+  app:
+    build:
+      args:
+        ACCEL: cpu
+        BASE_IMAGE: ubuntu:24.04
+    image: good-badminton:cpu
+    deploy: !reset null
