@@ -91,10 +91,12 @@ cd Good-Badminton
 docker compose --profile tools run --rm fetch-weights
 
 # 2. 构建并启动（GPU）
-docker compose up -d --build
+python scripts/docker_build.py          # builds origin/main, never this checkout
+docker compose up -d
 
 # 没有 GPU：叠加 CPU 覆盖文件
-docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+python scripts/docker_build.py --cpu
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 ```
 
 打开 http://localhost:5050 。把视频放进 `./videos`（或在页面里拖拽上传）。

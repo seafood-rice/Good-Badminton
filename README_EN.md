@@ -386,10 +386,12 @@ cd Good-Badminton
 docker compose --profile tools run --rm fetch-weights
 
 # 2. Build and start (GPU)
-docker compose up -d --build
+python scripts/docker_build.py          # builds origin/main, never this checkout
+docker compose up -d
 
 # No GPU: layer the CPU override on top
-docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+python scripts/docker_build.py --cpu
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 ```
 
 Open http://localhost:5050. Put videos in `./videos` (or drag and drop them in the page).

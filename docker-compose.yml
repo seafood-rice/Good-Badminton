@@ -1,15 +1,12 @@
 # Default: NVIDIA GPU. Needs the NVIDIA Container Toolkit on the Docker host.
 # No GPU? Add the CPU override:
-#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 services:
   app:
-    build:
-      context: .
-      args:
-        ACCEL: gpu
-        BASE_IMAGE: nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
-    image: good-badminton:gpu
-    container_name: good-badminton
+    # No build: section on purpose. The image is built from main only, never from this
+    # checkout: python scripts/docker_build.py [--cpu]
+    image: kestrel:gpu
+    container_name: kestrel
     ports:
       - "${GB_PORT:-5050}:5050"
     volumes:
