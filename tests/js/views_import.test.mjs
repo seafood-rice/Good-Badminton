@@ -4,7 +4,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const VIEWS = {
-  'views/matches.js': ['mount', 'matchRows', 'validateRecordForm', 'formFromRecord', 'peekModel', 'buildMatchPeek', 'rowTitle'],
+  'views/matches.js': ['mount', 'matchRows', 'validateRecordForm', 'formFromRecord', 'peekModel', 'buildMatchPeek', 'rowTitle',
+    'cleanParts', 'partStatus', 'linkInfo', 'linkBody', 'rowHasRecord', 'linkLabel', 'eligibleParts', 'eligiblePrimaries'],
   'views/workspace.js': ['mount', 'buildWorkspaceModel', 'summariseRallyPayload', 'rallyCountText', 'capItems', 'matchDate', 'readReduced'],
   'views/players.js': ['mount', 'groupBySquad'],
   'views/pipeline.js': ['mount', 'groupJobs', 'messageText', 'jobsKey', 'createPoller'],

@@ -578,7 +578,7 @@ def test_response_keys_match_the_contract():
     assert set(ov["movement"]) == {"position", "pull"}
     assert set(ov["matches"][0]) == {"stem", "date", "date_source", "side", "athlete",
                                      "opponent", "result", "sets", "tech_index", "status",
-                                     "needs_review", "doubles"}
+                                     "needs_review", "doubles", "parts"}
     for kpi in ov["kpis"].values():
         assert set(kpi) == {"status", "value", "coverage", "reason"}
 
@@ -1363,3 +1363,373 @@ def test_match_win_rate_squad_scope_counts_each_member_identity():
     ov = aggregate.overview(units, data, range_="all")
     assert ov["kpis"]["match_win_rate"]["reason"]["code"] == "doubles_run"
 
+
+
+# ---- split matches: one match recorded as several videos -------------------------------
+
+def _link(data, part, primary, swapped=False):
+    rec, err = lib.validate_match({"part_of": primary, "sides_swapped": swapped}, data, part)
+    assert err is None, err
+    return lib.set_match(data, part, rec)
+
+
+def _split_store(swapped=False, *, winner="upper", sets=None, date="2026-10-10"):
+    """Tanaka (upper in primary ``A``) vs a free-text rival; ``B`` is part 2 of ``A``."""
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"], lower="R. Rival", date=date, winner=winner,
+                  sets=sets if sets is not None else [[21, 10], [21, 15]])
+    return _link(data, "B", "A", swapped), ids
+
+
+def _rows(ov, **where):
+    return [m for m in ov["matches"] if all(m[k] == v for k, v in where.items())]
+
+
+def test_a_split_match_is_one_row_with_its_parts():
+    data, ids = _split_store()
+    units = [_unit("A", upper={"smash": (1, 60.0)}), _unit("B", upper={"smash": (1, 80.0)})]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert [(m["stem"], m["side"]) for m in ov["matches"]] == [("A", "upper")]
+    row = ov["matches"][0]
+    assert row["parts"] == [
+        {"stem": "A", "side": "upper", "status": "analysed", "tech_index": 60.0,
+         "needs_review": False},
+        {"stem": "B", "side": "upper", "status": "analysed", "tech_index": 80.0,
+         "needs_review": False}]
+    assert row["tech_index"] == 70.0                      # pooled over both parts
+    assert (row["athlete"], row["opponent"]) == ("J. Tanaka", "R. Rival")
+    assert (row["result"], row["sets"], row["doubles"]) == ("W", [[21, 10], [21, 15]], False)
+    assert (row["date"], row["date_source"], row["status"]) == ("2026-10-10", "record",
+                                                                  "analysed")
+
+
+def test_an_unlinked_row_has_no_parts():
+    data, ids = _store()
+    ov = aggregate.overview([_unit("A", upper={"smash": (1, 60.0)})], data, range_="all")
+    assert [m["parts"] for m in ov["matches"]] == [[], []]
+
+
+def test_scope_stems_counts_a_split_match_once_but_units_count_each_video():
+    data, ids = _split_store()
+    data = _match(data, "C", upper=ids["tanaka"], lower="R", date="2026-10-09")
+    units = [_unit(s) for s in "ABC"]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert ov["scope"]["stems"] == 2 and ov["scope"]["units"] == 3
+    ov = aggregate.overview(units, data, range_="all")           # no scope: both sides
+    assert ov["scope"]["stems"] == 2 and ov["scope"]["units"] == 6
+
+
+def test_a_win_in_a_split_match_is_counted_once():
+    data, ids = _split_store()
+    units = [_unit("A"), _unit("B")]
+    kpi = aggregate.overview(units, data, athlete=ids["tanaka"],
+                             range_="all")["kpis"]["match_win_rate"]
+    assert kpi["value"] == {"wins": 1, "played": 1, "rate": 1.0}
+    assert kpi["coverage"] == {"n": 1, "of": 1}
+
+
+def test_win_rate_mixes_a_split_match_with_a_plain_one():
+    data, ids = _split_store()
+    data = _match(data, "C", upper=ids["tanaka"], lower="R", date="2026-10-09", winner="lower")
+    units = [_unit(s) for s in "ABC"]
+    kpi = aggregate.overview(units, data, athlete=ids["tanaka"],
+                             range_="all")["kpis"]["match_win_rate"]
+    assert kpi["value"] == {"wins": 1, "played": 2, "rate": 0.5}
+
+
+def test_the_result_is_judged_in_the_primarys_frame_when_sides_are_swapped():
+    data, ids = _split_store(swapped=True)       # Tanaka is the LOWER player in part B
+    units = [_unit("A"), _unit("B")]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert ov["kpis"]["match_win_rate"]["value"] == {"wins": 1, "played": 1, "rate": 1.0}
+    row = ov["matches"][0]
+    assert (row["stem"], row["side"], row["result"]) == ("A", "upper", "W")
+    assert [(p["stem"], p["side"]) for p in row["parts"]] == [("A", "upper"), ("B", "lower")]
+
+
+def test_a_loss_and_oriented_sets_for_the_lower_player_with_a_swapped_part():
+    data, ids = _store()
+    data = _match(data, "A", upper="R. Rival", lower=ids["tanaka"], date="2026-10-10",
+                  winner="upper", sets=[[21, 10], [21, 15]])
+    data = _link(data, "B", "A", swapped=True)
+    ov = aggregate.overview([_unit("A"), _unit("B")], data, athlete=ids["tanaka"], range_="all")
+    row = ov["matches"][0]
+    assert (row["stem"], row["side"], row["result"]) == ("A", "lower", "L")
+    assert row["sets"] == [[10, 21], [15, 21]]            # stored [upper, lower], flipped once
+    assert ov["kpis"]["match_win_rate"]["value"] == {"wins": 0, "played": 1, "rate": 0.0}
+    assert [(p["stem"], p["side"]) for p in row["parts"]] == [("A", "lower"), ("B", "upper")]
+
+
+def test_technique_pools_both_parts_for_the_right_athlete():
+    data, ids = _split_store(swapped=True)
+    units = [_unit("A", upper={"smash": (1, 60.0)}, lower={"smash": (1, 5.0)}),
+             # in part B the players changed ends: Tanaka is the lower player
+             _unit("B", upper={"smash": (1, 10.0)}, lower={"smash": (1, 90.0)})]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert _axes(ov)["smash"] == {"id": "smash", "count": 2, "score": 75.0, "status": "ok"}
+    assert ov["kpis"]["technique_index"]["value"]["value"] == 75.0
+    row = ov["matches"][0]
+    assert row["tech_index"] == 75.0
+    assert [p["tech_index"] for p in row["parts"]] == [60.0, 90.0]
+
+
+def test_without_the_swap_flag_the_part_keeps_the_primarys_sides():
+    data, ids = _split_store(swapped=False)
+    units = [_unit("A", upper={"smash": (1, 60.0)}), _unit("B", upper={"smash": (1, 90.0)},
+                                                                lower={"smash": (1, 5.0)})]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert _axes(ov)["smash"]["score"] == 75.0
+
+
+def test_no_scope_gives_one_row_per_primary_side_pooling_the_swapped_part():
+    data, ids = _split_store(swapped=True)
+    units = [_unit("A", upper={"smash": (1, 60.0)}, lower={"smash": (1, 20.0)}),
+             _unit("B", upper={"smash": (1, 40.0)}, lower={"smash": (1, 100.0)})]
+    ov = aggregate.overview(units, data, range_="all")
+    assert [(m["stem"], m["side"]) for m in ov["matches"]] == [("A", "lower"), ("A", "upper")]
+    upper, lower = _rows(ov, side="upper")[0], _rows(ov, side="lower")[0]
+    assert upper["tech_index"] == 80.0 and lower["tech_index"] == 30.0   # B.lower / B.upper
+    assert [(p["stem"], p["side"]) for p in upper["parts"]] == [("A", "upper"), ("B", "lower")]
+    assert (upper["athlete"], upper["opponent"]) == ("J. Tanaka", "R. Rival")
+    assert (lower["athlete"], lower["opponent"]) == ("R. Rival", "J. Tanaka")
+    assert (upper["result"], lower["result"]) == ("W", "L")
+    assert lower["sets"] == [[10, 21], [15, 21]]
+    assert ov["scope"]["stems"] == 1 and ov["scope"]["units"] == 4
+
+
+def test_trend_has_one_point_per_match_pooled_over_the_parts():
+    data, ids = _split_store()
+    data = _match(data, "C", upper=ids["tanaka"], lower="R", date="2026-10-01")
+    units = [_unit("A", date="2026-10-10", upper={"smash": (1, 60.0)}),
+             _unit("B", date="2026-10-11", upper={"smash": (1, 80.0)}),
+             _unit("C", date="2026-10-01", upper={"smash": (1, 50.0)})]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert ov["trend"]["points"] == [{"date": "2026-10-01", "stem": "C", "index": 50.0},
+                                     {"date": "2026-10-10", "stem": "A", "index": 70.0}]
+    assert ov["kpis"]["technique_index"]["value"]["delta"] == 20.0
+
+
+def test_the_matchs_date_is_the_primarys_effective_date_for_every_part():
+    data, ids = _split_store(date="2026-09-01")
+    units = [_unit("A", date="2026-10-10"), _unit("B", date="2026-10-11")]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    row = ov["matches"][0]
+    assert (row["date"], row["date_source"]) == ("2026-09-01", "record")
+    assert (ov["scope"]["date_from"], ov["scope"]["date_to"]) == ("2026-09-01", "2026-09-01")
+
+
+def test_a_primary_without_a_record_date_uses_its_own_sidecar_date_for_all_parts():
+    data, ids = _split_store(date=None)
+    units = [_unit("A", date="2026-10-10"), _unit("B", date="2026-06-01"),
+             _unit("Z", date="2026-10-20", upper={"smash": (1, 50.0)})]
+    ov = aggregate.overview(units, data, range_="30d")
+    assert {m["stem"] for m in ov["matches"]} == {"A", "Z"}       # B moves with A, not on its own
+    assert _rows(ov, stem="A")[0]["date"] == "2026-10-10"
+    assert ov["scope"]["stems"] == 2
+    only_split = aggregate.overview([units[0], units[1]], data, athlete=ids["tanaka"], range_="7d")
+    assert only_split["scope"]["stems"] == 1
+
+
+def test_an_undated_primary_leaves_the_whole_match_out_of_a_bounded_range():
+    data, ids = _split_store(date=None)
+    units = [_unit("A", date=None), _unit("B", date="2026-10-11"),
+             _unit("D", date="2026-10-12", upper={"smash": (1, 50.0)})]
+    bounded = aggregate.overview(units, data, range_="30d")
+    assert {m["stem"] for m in bounded["matches"]} == {"D"}
+    everything = aggregate.overview(units, data, range_="all")
+    assert everything["scope"]["stems"] == 2
+    undated = _rows(everything, stem="A")[0]
+    assert undated["date"] is None and [p["stem"] for p in undated["parts"]] == ["A", "B"]
+    assert [p["stem"] for p in everything["trend"]["points"]] == ["D"]
+
+
+def test_part_two_not_analysed_yet():
+    data, ids = _split_store()
+    units = [_unit("A", upper={"smash": (1, 60.0)}), {"stem": "B", "insights": None}]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    row = ov["matches"][0]
+    assert row["status"] == "new" and row["tech_index"] == 60.0
+    assert [(p["stem"], p["status"], p["tech_index"]) for p in row["parts"]] == [
+        ("A", "analysed", 60.0), ("B", "new", None)]
+    assert ov["kpis"]["match_win_rate"]["value"]["played"] == 1
+    assert _axes(ov)["smash"]["score"] == 60.0
+
+
+def test_part_two_with_no_outputs_at_all_is_listed_as_new():
+    data, ids = _split_store()
+    ov = aggregate.overview([_unit("A", upper={"smash": (1, 60.0)})], data,
+                            athlete=ids["tanaka"], range_="all")
+    row = ov["matches"][0]
+    assert row["status"] == "new"
+    assert row["parts"] == [
+        {"stem": "A", "side": "upper", "status": "analysed", "tech_index": 60.0,
+         "needs_review": False},
+        {"stem": "B", "side": "upper", "status": "new", "tech_index": None,
+         "needs_review": False}]
+
+
+def test_the_row_status_is_the_least_finished_part():
+    data, ids = _split_store()
+    units = [_unit("A", upper={"smash": (1, 60.0)}), _unit("B", upper={"smash": (1, 60.0)})]
+    status = lambda **kw: aggregate.overview(                       # noqa: E731
+        units, data, athlete=ids["tanaka"], range_="all", **kw)["matches"][0]["status"]
+    assert status() == "analysed"
+    assert status(running_stems=frozenset({"B"})) == "processing"
+    mixed = [units[0], {"stem": "B", "insights": None}]
+    assert aggregate.overview(mixed, data, athlete=ids["tanaka"], range_="all",
+                              running_stems=frozenset({"A"}))["matches"][0]["status"] \
+        == "processing"                                              # processing beats new
+
+
+def test_needs_review_if_any_part_needs_review():
+    data, ids = _split_store()
+    units = [_unit("A", strokes={"classified": 9, "total": 10}),
+             _unit("B", strokes={"classified": 2, "total": 10})]
+    row = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")["matches"][0]
+    assert row["needs_review"] is True
+    assert [p["needs_review"] for p in row["parts"]] == [False, True]
+
+
+def test_rallies_strokes_recovery_and_pulls_pool_across_the_parts():
+    data, ids = _split_store()
+    units = [_unit("A", rally={"durations": [4.0, 6.0], "shots": [4, 6]},
+                   strokes={"classified": 10, "total": 10, "distribution": {"net": 2, "clear": 8},
+                            "by_hitter": {"upper": _hitter(5, 5, net=2, clear=3),
+                                          "lower": _hitter(5, 5, clear=5)}},
+                   recovery={"upper": (1.0, 8, 8)}, pull={"upper": (0.2, 10)}),
+             _unit("B", rally={"durations": [8.0], "shots": [8]},
+                   strokes={"classified": 10, "total": 10, "distribution": {"net": 3, "clear": 7},
+                            "by_hitter": {"upper": _hitter(5, 5, net=3, clear=2),
+                                          "lower": _hitter(5, 5, clear=5)}},
+                   recovery={"upper": (3.0, 8, 8)}, pull={"upper": (0.6, 10)})]
+    ov = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all")
+    assert ov["kpis"]["avg_rally"]["value"]["seconds"] == 6.0       # 3 rallies over 2 videos
+    assert ov["kpis"]["avg_rally"]["coverage"] == {"n": 2, "of": 2}
+    assert ov["kpis"]["strokes"]["value"] == {"classified": 10, "total": 10}
+    assert ov["kpis"]["net_share"]["value"] == {"share": 0.5}
+    assert ov["kpis"]["recovery"]["value"] == {"median_sec": 2.0}
+    assert ov["kpis"]["pull_rear"]["value"] == {"share": 0.4}
+
+
+def test_movement_pools_the_swapped_part_in_the_athletes_own_side():
+    data, ids = _split_store(swapped=True)
+    units = [_unit("A", movement={"upper": (2, 3, 100, 50.0, 1.0)}),
+             _unit("B", movement={"lower": (5, 5, 300, 70.0, 1.0),
+                                  "upper": (9, 9, 999, 1.0, 1.0)})]
+    value = aggregate.overview(units, data, athlete=ids["tanaka"],
+                               range_="all")["movement"]["position"]["value"]
+    assert value["samples"] == 400 and value["distance_m"] == 120.0
+
+
+def test_benchmark_takes_one_index_per_match_and_squad_member():
+    data, ids = _store()
+    data, third = lib.add_athlete(data, "M. Third", ids["squad"])
+    data = _match(data, "T", upper=ids["tanaka"], lower="R", date="2026-10-10")
+    data = _match(data, "I1", upper=ids["ito"], lower="R", date="2026-10-10")
+    data = _link(data, "I2", "I1")
+    data = _match(data, "M", upper=third, lower="R", date="2026-10-10")
+    units = [_unit("T", upper={"smash": (1, 70.0)}),
+             _unit("I1", upper={"smash": (1, 60.0)}), _unit("I2", upper={"smash": (1, 100.0)}),
+             _unit("M", upper={"smash": (1, 50.0)})]
+    bench = aggregate.overview(units, data, athlete=ids["tanaka"],
+                               range_="all")["trend"]["benchmark"]
+    assert bench["value"] == {"index": 65.0}             # median(80 pooled, 50), not (60,100,50)
+    assert bench["coverage"] == {"n": 2, "of": 2}
+
+
+def test_benchmark_group_follows_the_swapped_side_of_the_part():
+    data, ids = _store()
+    data = _match(data, "T", upper=ids["tanaka"], lower="R", date="2026-10-10")
+    data = _match(data, "I1", upper=ids["ito"], lower="R", date="2026-10-10")
+    data = _link(data, "I2", "I1", swapped=True)
+    units = [_unit("T", upper={"smash": (1, 70.0)}),
+             _unit("I1", upper={"smash": (1, 60.0)}),
+             _unit("I2", upper={"smash": (1, 5.0)}, lower={"smash": (1, 100.0)})]
+    bench = aggregate.overview(units, data, athlete=ids["tanaka"],
+                               range_="all")["trend"]["benchmark"]
+    assert bench["value"] == {"index": 80.0}
+
+
+def test_a_dangling_link_is_an_ordinary_unrecorded_video():
+    data, ids = _store()
+    data["matches"]["B"] = {"part_of": "ghost", "sides_swapped": False}
+    data["matches"]["C"] = {"part_of": "C", "sides_swapped": False}
+    ov = aggregate.overview([_unit("B"), _unit("C")], data, range_="all")
+    assert sorted((m["stem"], m["side"]) for m in ov["matches"]) == [
+        ("B", "lower"), ("B", "upper"), ("C", "lower"), ("C", "upper")]
+    assert all(m["parts"] == [] and m["result"] is None for m in ov["matches"])
+    assert ov["scope"]["stems"] == 2
+
+
+def test_a_chained_link_does_not_raise_and_resolves_to_nothing():
+    data, ids = _split_store()
+    data["matches"]["C"] = {"part_of": "B", "sides_swapped": False}       # hand-edited chain
+    ov = aggregate.overview([_unit("A"), _unit("B"), _unit("C")], data,
+                            athlete=ids["tanaka"], range_="all")
+    assert [m["stem"] for m in ov["matches"]] == ["A"]
+    assert [p["stem"] for p in ov["matches"][0]["parts"]] == ["A", "B"]
+
+
+def test_a_part_alone_in_the_sources_shows_under_its_primary():
+    data, ids = _split_store()
+    ov = aggregate.overview([_unit("B", upper={"smash": (1, 80.0)})], data,
+                            athlete=ids["tanaka"], range_="all")
+    row = ov["matches"][0]
+    assert (row["stem"], row["side"], row["status"], row["tech_index"]) == (
+        "A", "upper", "new", 80.0)
+    assert [(p["stem"], p["status"]) for p in row["parts"]] == [("A", "new"), ("B", "analysed")]
+    assert ov["scope"]["stems"] == 1
+
+
+def test_a_split_match_in_a_squad_scope_is_one_row_per_squad_side():
+    data, ids = _split_store(swapped=True)
+    units = [_unit("A"), _unit("B")]
+    ov = aggregate.overview(units, data, squad=ids["squad"], range_="all")
+    assert [(m["stem"], m["side"]) for m in ov["matches"]] == [("A", "upper")]
+    assert ov["kpis"]["match_win_rate"]["coverage"] == {"n": 1, "of": 1}
+
+
+def test_a_doubles_stem_is_never_grouped():
+    data, ids = _split_store()
+    data["matches"]["D"] = {"part_of": "A", "sides_swapped": False}
+    dbl = _unit("D", match_format="doubles")
+    ov = aggregate.overview([_unit("A"), dbl], data, range_="all")
+    assert ov["scope"]["stems"] == 2
+    doubles_rows = [m for m in ov["matches"] if m["doubles"]]
+    assert [m["stem"] for m in doubles_rows] == ["D"]
+    assert "parts" not in doubles_rows[0]                # doubles rows keep their own shape
+
+
+def test_a_part_analysed_as_doubles_is_not_a_phantom_part_of_the_singles_row():
+    data, ids = _store()
+    data = _match(data, "A", upper=ids["tanaka"], lower="R. Rival", date="2026-10-10")
+    data["matches"]["D"] = {"part_of": "A", "sides_swapped": False}
+    units = [_unit("A", upper={"smash": (1, 60.0)}), _unit("D", match_format="doubles")]
+    ov = aggregate.overview(units, data, range_="all")
+    singles = [m for m in ov["matches"] if not m["doubles"]]
+    assert {m["stem"] for m in singles} == {"A"}
+    assert all(m["parts"] == [] and m["status"] == "analysed" for m in singles)
+    assert [m["stem"] for m in ov["matches"] if m["doubles"]] == ["D"]
+
+
+def test_a_primary_analysed_as_doubles_does_not_hide_its_parts():
+    data, ids = _split_store()
+    ov = aggregate.overview([_unit("A", match_format="doubles"), _unit("B")], data,
+                            range_="all")
+    flags = {}
+    for m in ov["matches"]:
+        flags.setdefault(m["stem"], set()).add(m["doubles"])
+    assert all(len(f) == 1 for f in flags.values())          # one doubles flag per stem
+    assert flags == {"A": {True}, "B": {False}}
+    assert ov["scope"]["stems"] == 2
+    assert all(m["parts"] == [] for m in ov["matches"] if not m["doubles"])
+
+
+def test_a_processing_split_row_does_not_report_review_from_another_part():
+    data, ids = _split_store()
+    units = [_unit("A", strokes={"classified": 9, "total": 10}),
+             _unit("B", strokes={"classified": 2, "total": 10})]
+    row = aggregate.overview(units, data, athlete=ids["tanaka"], range_="all",
+                             running_stems=frozenset({"A"}))["matches"][0]
+    assert row["status"] == "processing" and row["needs_review"] is False
+    assert [p["needs_review"] for p in row["parts"]] == [False, True]   # parts keep their own

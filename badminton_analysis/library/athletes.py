@@ -26,6 +26,22 @@ A match record is singles (the four keys above) or doubles::
      "result": {"winner_team": 1 | 2, "sets": [[team1, team2], ...]} | None}
 
 ``record_format`` tells them apart; a record never carries both shapes.
+
+One match is sometimes recorded as several videos (the camera follows the tracked
+player and the recording is cut at the side change). The later videos are *parts*
+of the first one, the *primary*; a part holds only a link and the record is typed
+once, on the primary::
+
+    "<part stem>": {"part_of": "<primary stem>", "sides_swapped": false}
+
+``sides_swapped`` is true when the players changed picture sides (upper/lower)
+between the primary and the part. A link record carries no other key. The primary
+is a stored singles record that is not itself a part (one level: no chains, no
+cycles); doubles are never linked. ``resolve_record`` returns the effective record
+of any stem (a part resolves to the primary's record, sides exchanged when
+swapped) and is total: a dangling or chained link in a hand-edited store resolves
+to ``{}``, it never raises. ``schema_version`` stays 1 (an older reader sees a link
+as a blank singles record, which is harmless).
 """
 import copy
 import datetime
@@ -112,6 +128,16 @@ def _blank_match():
 
 def _blank_doubles():
     return {"date": None, "format": "doubles", "players": {}, "result": None}
+
+
+def is_link(record):
+    """True for a link record (a part of another video's match), by its ``part_of`` key.
+
+    Total: a non-dict is not a link. The key alone decides, so a malformed link in
+    a hand-edited store is still treated as a link (and so resolves to ``{}``)
+    rather than as a blank singles record.
+    """
+    return isinstance(record, dict) and "part_of" in record
 
 
 def record_format(record):
@@ -255,24 +281,74 @@ def _validate_doubles(record, data):
     return clean, None
 
 
-def validate_match(record, data):
+def _clean_link(record, stem=None):
+    """``(clean_link, error)`` for the shape of a link record; no store needed.
+
+    ``invalid_record`` when it carries any key besides ``part_of`` and
+    ``sides_swapped``; ``invalid_link`` for a ``part_of`` that is not a non-empty
+    string (or is ``stem`` itself), or a ``sides_swapped`` that is not a bool
+    (absent means false). Whether the primary exists is ``_validate_link``'s job.
+    """
+    if any(key not in ("part_of", "sides_swapped") for key in record):
+        return None, "invalid_record"
+    primary, swapped = record.get("part_of"), record.get("sides_swapped", False)
+    if not isinstance(primary, str) or not primary or primary == stem:
+        return None, "invalid_link"
+    if not isinstance(swapped, bool):
+        return None, "invalid_link"
+    return {"part_of": primary, "sides_swapped": swapped}, None
+
+
+def _validate_link(record, data, stem):
+    clean, err = _clean_link(record, stem)
+    if err:
+        return None, err
+    primary = data["matches"].get(clean["part_of"])
+    if not isinstance(primary, dict) or is_link(primary) or record_format(primary) == "doubles":
+        return None, "invalid_link"          # missing, itself a part (no chains), or doubles
+    if stem is not None:
+        if has_parts(data, stem):
+            return None, "has_parts"         # first: clearing its record would unlink the parts
+        own = data["matches"].get(stem)
+        if isinstance(own, dict) and not is_link(own) and not _is_blank(own):
+            return None, "part_has_record"   # the user clears the video's own record first
+    return clean, None
+
+
+def validate_match(record, data, stem=None):
     """Validate one match record: ``(clean_record, None)`` or ``(None, code)``.
 
     A singles record always carries ``date``/``upper``/``lower``/``result``; a
     doubles one (``format: "doubles"``) carries ``date``/``format``/``players``/
-    ``result`` and never ``upper``/``lower``. ``data`` (a store dict) is
-    required, so the existence check can never be skipped by accident: a
-    referenced ``athlete_id`` must exist in it (``"unknown_athlete"``). Codes:
-    ``invalid_record``, ``invalid_date``, ``invalid_side``, ``invalid_result``,
-    ``invalid_players``, ``unknown_athlete``. Never mutates ``record``.
+    ``result`` and never ``upper``/``lower``; a link (``part_of``, optional
+    ``sides_swapped``) carries nothing else and is returned with both keys.
+    ``data`` (a store dict) is required, so the existence check can never be
+    skipped by accident: a referenced ``athlete_id`` must exist in it
+    (``"unknown_athlete"``), and a link's primary must be a stored singles record
+    that is not itself a part (``"invalid_link"``).
+
+    ``stem`` is the video the record is for; pass it on every write. Without it the
+    checks that need the video's current state are skipped: a link to itself
+    (``invalid_link``), a link over a video that holds its own record
+    (``part_has_record``), and a doubles or link record over a primary that still
+    has parts (``has_parts``; parts would be orphaned).
+
+    Codes: ``invalid_record``, ``invalid_date``, ``invalid_side``,
+    ``invalid_result``, ``invalid_players``, ``unknown_athlete``, ``invalid_link``,
+    ``part_has_record``, ``has_parts``. Never mutates ``record``.
     """
     if not isinstance(record, dict):
         return None, "invalid_record"
+    if "part_of" in record or "sides_swapped" in record:
+        return _validate_link(record, data, stem)
     fmt = record.get("format")
     if fmt is not None and fmt not in ("singles", "doubles"):
         return None, "invalid_record"
     if fmt == "doubles":
-        return _validate_doubles(record, data)
+        clean, err = _validate_doubles(record, data)
+        if err is None and stem is not None and has_parts(data, stem):
+            return None, "has_parts"
+        return clean, err
     if record.get("players") is not None:
         return None, "invalid_record"
     clean = _blank_match()
@@ -295,6 +371,8 @@ def validate_match(record, data):
 
 
 def _is_blank(record):
+    if is_link(record):
+        return False                  # a link is a real entry, whatever it points at
     if record_format(record) == "doubles":
         players = record.get("players")
         return (record.get("date") is None and record.get("result") is None
@@ -308,12 +386,27 @@ def set_match(data, stem, record):
 
     ``None`` or an all-null record deletes the key -- absence, not an empty
     object on disk. ``record`` is expected to have passed ``validate_match``.
+    A link record (``part_of``) is stored as just ``part_of`` + ``sides_swapped``.
+
+    Deleting a primary's record also deletes its parts' links (they would dangle).
+    Writing a doubles or link record over a stem that still has parts would orphan
+    them the same way, so that raises ``ValueError("has_parts")`` instead.
     """
     out = copy.deepcopy(data)
     if record is None or _is_blank(record):
         out["matches"].pop(stem, None)
+        for part in _part_stems(out["matches"], stem):
+            del out["matches"][part]
+        return out
+    if is_link(record):
+        if has_parts(data, stem):
+            raise ValueError("has_parts")
+        out["matches"][stem] = {"part_of": record.get("part_of"),
+                                "sides_swapped": record.get("sides_swapped") is True}
         return out
     stored = _blank_doubles() if record_format(record) == "doubles" else _blank_match()
+    if stored.get("format") == "doubles" and has_parts(data, stem):
+        raise ValueError("has_parts")
     stored.update({key: copy.deepcopy(record.get(key)) for key in stored})
     if stored.get("format") == "doubles" and not isinstance(stored["players"], dict):
         stored["players"] = {}
@@ -324,6 +417,91 @@ def set_match(data, stem, record):
 def get_match(data, stem):
     """A copy of the stem's record, or ``{}`` when there is none."""
     return copy.deepcopy(data["matches"].get(stem, {}))
+
+
+def _matches(data):
+    """The ``matches`` dict of ``data``, or ``{}`` for a hostile store."""
+    matches = data.get("matches") if isinstance(data, dict) else None
+    return matches if isinstance(matches, dict) else {}
+
+
+def _part_stems(matches, primary):
+    """Stems (sorted) of the link records that name ``primary``, valid or not."""
+    if not isinstance(primary, str):
+        return []
+    return sorted(stem for stem, record in matches.items()
+                  if isinstance(stem, str) and is_link(record)
+                  and record.get("part_of") == primary)
+
+
+def has_parts(data, stem):
+    """True when some link record names ``stem`` as its primary. Total."""
+    return bool(_part_stems(_matches(data), stem))
+
+
+def _valid_primary(matches, link):
+    """The primary's stem and record for a link record, or ``(None, None)``.
+
+    A primary is a stored, non-link, singles record: a missing one, one that is
+    itself a part (chain or cycle), a doubles record or hostile junk all dangle.
+    """
+    primary = link.get("part_of")
+    record = matches.get(primary) if isinstance(primary, str) else None
+    if not isinstance(record, dict) or is_link(record) or record_format(record) == "doubles":
+        return None, None
+    return primary, record
+
+
+def resolve_record(data, stem):
+    """The effective match record of ``stem``; pure, total and a copy.
+
+    - no link: the stored record, or ``{}``.
+    - a linked part: the primary's record plus ``part_of`` and ``sides_swapped``.
+      When swapped, ``upper``/``lower`` and ``result.winner`` are exchanged so the
+      record reads in the part's own picture frame; ``date`` and ``result.sets``
+      are as stored (set scores are not used per video).
+    - a dangling link (primary missing, itself a part, doubles or junk): ``{}``.
+    """
+    matches = _matches(data)
+    record = matches.get(stem) if isinstance(stem, str) else None
+    if not is_link(record):
+        return copy.deepcopy(record) if isinstance(record, dict) else {}
+    primary, source = _valid_primary(matches, record)
+    if primary is None:
+        return {}
+    out = copy.deepcopy(source)
+    swapped = record.get("sides_swapped") is True
+    if swapped:
+        out["upper"], out["lower"] = out.get("lower"), out.get("upper")
+        result = out.get("result")
+        if isinstance(result, dict) and result.get("winner") in SIDES:
+            result["winner"] = "lower" if result["winner"] == "upper" else "upper"
+    out["part_of"], out["sides_swapped"] = primary, swapped
+    return out
+
+
+def parts_of(data, primary):
+    """``[{"stem", "sides_swapped"}]`` of ``primary``'s parts, in stem order.
+
+    Empty unless ``primary`` is a valid primary (a stored singles record that is
+    not itself a part), so it agrees with ``resolve_record`` on what dangles.
+    """
+    matches = _matches(data)
+    if not isinstance(primary, str) or _valid_primary(matches, {"part_of": primary})[0] is None:
+        return []
+    return [{"stem": stem, "sides_swapped": matches[stem].get("sides_swapped") is True}
+            for stem in _part_stems(matches, primary)]
+
+
+def match_view(data, stem):
+    """What ``GET /api/matches/<stem>`` shows: the resolved record, plus ``parts``
+    on a primary that has some. A part carries ``part_of`` / ``sides_swapped`` (from
+    ``resolve_record``); an ordinary record has neither key nor ``parts``."""
+    out = resolve_record(data, stem)
+    parts = parts_of(data, stem)
+    if parts:
+        out["parts"] = parts
+    return out
 
 
 def record_athlete_ids(record):
@@ -588,6 +766,10 @@ def _sanitise(payload):
     validation a write would apply are dropped, a squad reference to a squad
     that no longer exists is cleared, and a match side naming an unknown athlete
     is set to None (the rest of the match is kept), so the rest of the module can rely on the shape it documents.
+    A well-formed link record (only ``part_of`` and ``sides_swapped``, a non-empty
+    ``part_of`` other than its own stem, a bool flag) is kept even if its primary is
+    gone; a malformed one (extra key, non-bool ``sides_swapped``, bad ``part_of``) is
+    dropped like any other invalid record.
     """
     out = empty()
     for squad_id, entry in payload.get("squads", {}).items():
@@ -607,6 +789,13 @@ def _sanitise(payload):
         out["athletes"][athlete_id] = {"name": name, "squad_id": squad_id}
     for stem, record in payload.get("matches", {}).items():
         if not isinstance(stem, str):
+            continue
+        if is_link(record):
+            # Shape only: a well-formed link to a primary that is missing or itself
+            # a part is kept (it just resolves to {}); a malformed link is dropped.
+            clean, err = _clean_link(record, stem)
+            if err is None:
+                out["matches"][stem] = clean
             continue
         if record_format(record) == "doubles":
             record = _degrade_players(record, out)

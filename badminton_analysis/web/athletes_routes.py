@@ -39,6 +39,12 @@ _MATCH_ERRORS = {
     'invalid_result': {'error': '比分结果无效 / invalid result'},
     'invalid_players': {'error': '双打选手信息无效 / invalid doubles players'},
     'unknown_athlete': _UNKNOWN_ATHLETE,
+    # split matches: a video linked as a later part of another video's match
+    'invalid_link': {'error': '无法关联到该比赛 / invalid match link'},
+    'part_has_record': {'error': '该视频已有自己的比赛记录，请先清除 / '
+                                 'this video has its own match record, clear it first'},
+    'has_parts': {'error': '该比赛已关联其他视频，请先取消关联 / '
+                           'this match has linked videos, unlink them first'},
 }
 _GENERIC_VALUE_ERROR = (400, _BAD_BODY)
 
@@ -274,7 +280,10 @@ def register(app, *, store_path, lock, safe_stem):
             return jsonify(_UNKNOWN_VIDEO), 404
         with lock():
             data = libathletes.load(store_path())
-        return jsonify(libathletes.get_match(data, clean_stem))
+        # The effective record: a part reads as its primary's (with part_of and
+        # sides_swapped), a primary with parts also lists them; any other record
+        # is returned exactly as stored.
+        return jsonify(libathletes.match_view(data, clean_stem))
 
     @bp.route('/api/matches/<stem>', methods=['PUT'])
     def put_match(stem):
@@ -292,14 +301,15 @@ def register(app, *, store_path, lock, safe_stem):
                 data, err = edit.load()
                 if err:
                     return err
-                # The store is needed to check that a referenced athlete exists.
-                clean, code = libathletes.validate_match(record, data)
+                # The store is needed to check that a referenced athlete (or a
+                # link's primary) exists, and what this video already holds.
+                clean, code = libathletes.validate_match(record, data, clean_stem)
                 if code:
                     return jsonify(_MATCH_ERRORS.get(code, _MATCH_ERRORS['invalid_record'])), 400
                 data = libathletes.set_match(data, clean_stem, clean)
                 edit.save(data)
         except OSError as exc:
             return _save_failed(exc)
-        return jsonify({'ok': True, 'match': libathletes.get_match(data, clean_stem)})
+        return jsonify({'ok': True, 'match': libathletes.match_view(data, clean_stem)})
 
     app.register_blueprint(bp)

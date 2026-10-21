@@ -97,6 +97,16 @@ has `parts: []`, so every existing consumer is unchanged.
 
 Date range: a group's date is the primary's effective date; all parts are in or out together.
 
+Doubles: doubles rows carry no `parts` key (the UI treats an absent `parts` as `[]`). Linking only
+checks the match record, but doubles is decided by the analysis (the sidecar), so after the entries
+are built every entry grouped under a stem that was analysed as doubles is ungrouped (group = its own
+stem, no swap): a doubles primary's singles-looking parts become ordinary rows, and a part analysed
+as doubles is skipped in its primary's `parts` and keeps its own doubles row. No two rows ever share
+a stem with different doubles flags.
+
+A split row's `needs_review` is true only when every part is analysed (so it is never reported while a
+part is `processing` or `new`); the per-part `needs_review` flags in `parts` are unchanged.
+
 A part whose primary is not in the selected scope (for example scoped to an athlete who only
 appears in part 2 by name mapping) cannot happen because the effective record is the primary's:
 all parts resolve to the same athletes.

@@ -459,6 +459,25 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .mv-name{min-width:220px;}
 .mv-name .kw-row-open{overflow-wrap:anywhere;}
 .mv-sub{margin-top:2px;font-size:12px;color:var(--ink3);overflow-wrap:anywhere;}
+/* split matches: parts chevron, part sub-rows, link section of the editor */
+.mv-chev{all:unset;box-sizing:border-box;cursor:pointer;display:inline-grid;place-items:center;width:24px;height:24px;margin-right:6px;border-radius:6px;color:var(--ink2);vertical-align:middle;}
+.mv-chev:hover{background:var(--surface2);color:var(--ink);}
+.mv-chev:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.mv-chev[aria-expanded="true"]>span{display:inline-block;transform:rotate(90deg);}
+.mv-parts-chip{margin-left:8px;vertical-align:middle;}
+.mv-part-row>td{background:var(--surface2);border-top:1px dashed var(--line);font-size:13px;}
+.mv-part-row.open>td{border-bottom:1px solid var(--line);}
+.mv-part-name{padding-left:38px;}
+.mv-part-stem{overflow-wrap:anywhere;}
+.mv-part-actions{white-space:nowrap;}
+.mv-part-actions .ov-btn{margin-left:6px;}
+.mv-form+.mv-link{padding-top:12px;border-top:1px solid var(--line);}
+.mv-link{display:flex;flex-direction:column;gap:10px;}
+.mv-link-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.mv-link-list li{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.mv-check label{display:inline-flex;align-items:center;gap:6px;}
+.mv-link-go{align-items:flex-end;}
+.mv-linked{margin:0;}
 
 /* Workspace: entrance animations play once; nodes built after the first paint appear at once. */
 .ws.settled .ws-rb,.ws.settled .ws-st{animation:none;}

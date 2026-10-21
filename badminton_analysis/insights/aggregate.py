@@ -19,6 +19,23 @@ athlete who only played doubles still has a non-zero unit count. The selected at
 doubles grids are merged (sample-weighted) into ``movement.position``; nothing else of a
 doubles unit reaches a singles KPI.
 
+A *split match* is one match recorded as several videos (``part_of`` links in the match
+store; singles only). The match record is typed once, on the primary, and each stem's
+effective record is ``lib.resolve_record`` of it, in that video's own picture frame
+(upper/lower exchanged for a part whose players changed ends). Units keep ``(stem,
+side)`` in that frame and gain ``group`` (the primary's stem, or the stem itself) and
+``frame_side`` (the side in the primary's frame). Pooled across the parts, every unit
+counting: radar, technique index, recovery, strokes, net share, movement, pull and the
+rally averages. Counted once per match: ``scope.stems``, ``match_win_rate`` (one
+outcome per group and frame side), the trend (one point per group, dated by the
+primary) and the squad benchmark (one index per group and frame side). The group's
+date is the primary's effective date (its record date, else its own sidecar date),
+so all parts are in or out of a range together. ``matches`` has one row per
+``(group, frame_side)``: ``stem`` is the primary's, ``side`` the frame side, and
+``parts`` lists ``[{stem, side, status, tech_index, needs_review}]`` (``side`` is that
+part's own picture side) for a linked match, ``[]`` for a lone video. Doubles stems are
+never grouped.
+
 Stems without a date (no record date and no usable sidecar date) cannot be
 placed in a range: they are left out of every bounded range (``7d``, ``30d``,
 ``season``) and of the trend, but still count for ``range="all"``.
@@ -145,8 +162,23 @@ def _side_ident(parts, record, side):
     return lib.side_athlete(parts, record, side)
 
 
+def _other(side):
+    return "lower" if side == "upper" else "upper"
+
+
+def _frame_side(entry, side):
+    """``side`` (the entry's own picture side) in the match's primary frame."""
+    return _other(side) if entry["part_swapped"] else side
+
+
 def _make_entries(units_source, parts, running):
-    """One entry per distinct stem: record, date, per-side identity, usable insights."""
+    """One entry per distinct stem: record, date, per-side identity, usable insights.
+
+    ``record`` is the *effective* record (a linked part reads as its primary's, in its
+    own picture frame); ``group`` is the primary's stem for a linked part, else the
+    stem; ``part_swapped`` is true for a part whose players changed picture sides. A
+    group's entries all take the date of its primary (see the module docstring).
+    """
     entries, seen = [], set()
     for item in units_source or []:
         if not isinstance(item, dict) or not isinstance(item.get("stem"), str):
@@ -156,7 +188,7 @@ def _make_entries(units_source, parts, running):
             continue
         seen.add(stem)
         insights = item.get("insights")
-        record = _dict(parts["matches"].get(stem))
+        record = lib.resolve_record(parts, stem)
         record_date = _iso(record.get("date"))
         if record_date:
             date, source = record_date, "record"
@@ -171,18 +203,55 @@ def _make_entries(units_source, parts, running):
             status = "analysed"
         else:
             status = "new"
+        doubles = (_dict(insights).get("match_format") == "doubles"
+                   if status == "analysed" else lib.record_format(record) == "doubles")
+        linked = "part_of" in record and not doubles    # a doubles stem is never grouped
         entries.append({
             "stem": stem, "record": record, "date": date, "date_source": source,
             "status": status,
             # the sidecar decides for an analysed run (only the exact value counts; a missing
             # or malformed one is singles); without one, only the match record can tell
-            "doubles": (_dict(insights).get("match_format") == "doubles"
-                        if status == "analysed" else lib.record_format(record) == "doubles"),
+            "doubles": doubles,
+            "group": record["part_of"] if linked else stem,
+            "part_swapped": linked and record.get("sides_swapped") is True,
             # processing / new stems have no (or in-flux) data: never aggregated
             "insights": insights if status == "analysed" else {},
             "ident": {side: _side_ident(parts, record, side) for side in SIDES},
         })
+    _ungroup_doubles(entries)
+    _share_group_dates(entries)
     return entries
+
+
+def _ungroup_doubles(entries):
+    """Take every entry grouped under a stem that was analysed as doubles out of its group.
+
+    Linking checks the match record, but doubles is decided by the analysis (the
+    sidecar), and a doubles stem is never a primary: its singles-looking parts become
+    ordinary rows, so no stem ever has both a doubles and a split row.
+    """
+    doubles = {e["stem"] for e in entries if e["doubles"]}
+    for e in entries:
+        if e["group"] in doubles:
+            e["group"], e["part_swapped"] = e["stem"], False
+
+
+def _share_group_dates(entries):
+    """Give every entry of a split match the date of its primary.
+
+    The primary's entry decides; when the primary has no entry of its own (never run)
+    the first part in stem order does. A lone video is its own group and is untouched.
+    """
+    by_group = {}
+    for e in entries:
+        by_group.setdefault(e["group"], []).append(e)
+    for group, members in by_group.items():
+        if len(members) < 2:
+            continue
+        lead = next((e for e in members if e["stem"] == group),
+                    min(members, key=lambda e: e["stem"]))
+        for e in members:
+            e["date"], e["date_source"] = lead["date"], lead["date_source"]
 
 
 def _side_selected(ident, athlete, squad, athletes):
@@ -275,17 +344,34 @@ def _radar(scores):
                      for t, c, s in scores]}
 
 
+def _group_index(units):
+    """One technique index for the units of one athlete in one match, or None.
+
+    A lone unit reports its own sidecar ``index``; the units of a split match (its
+    parts, same athlete) are pooled like the radar: per-technique count-weighted, then
+    the mean of the scored techniques. Units without technique data are ignored.
+    """
+    sided = [u for u in units if _unit_side(u) is not None]
+    if not sided:
+        return None
+    if len(sided) == 1:
+        return _bounded(_unit_side(sided[0]).get("index"), *SCORE_RANGE)
+    return _index(_radar_scores(sided))[0]
+
+
 def _trend(entries, units):
-    by_stem = {}
+    """One point per match: a split match is one point, pooled over its parts' units."""
+    by_group = {}
     for u in units:
-        by_stem.setdefault(u["stem"], []).append(u)
-    points = []
+        by_group.setdefault(u["group"], []).append(u)
+    points, seen = [], set()
     for e in entries:
-        if e["date"] is None or e["stem"] not in by_stem:
+        if e["date"] is None or e["group"] not in by_group or e["group"] in seen:
             continue
-        index, _scored = _index(_radar_scores(by_stem[e["stem"]]))
+        seen.add(e["group"])
+        index, _scored = _index(_radar_scores(by_group[e["group"]]))
         if index is not None:
-            points.append({"date": e["date"], "stem": e["stem"], "index": index})
+            points.append({"date": e["date"], "stem": e["group"], "index": index})
     points.sort(key=lambda p: (p["date"], p["stem"]))
     return points
 
@@ -309,7 +395,7 @@ def _benchmark(athlete, parts, all_entries, range_, bounds, has_units):
     squad_id = _dict(parts["athletes"].get(athlete)).get("squad_id") if athlete else None
     if not squad_id:
         return envelope.unavailable("no_benchmark")
-    indexes = []
+    by_match = {}       # (group, frame side) -> the squad member's units over the parts
     for e in all_entries:
         if e["doubles"] or not _in_range(e["date"], range_, bounds):
             continue
@@ -319,10 +405,10 @@ def _benchmark(athlete, parts, all_entries, range_, bounds, has_units):
                 continue
             if _dict(parts["athletes"].get(aid)).get("squad_id") != squad_id:
                 continue
-            unit = {"stem": e["stem"], "side": side, "insights": e["insights"]}
-            index = _bounded(_dict(_unit_side(unit)).get("index"), *SCORE_RANGE)
-            if index is not None:
-                indexes.append(index)
+            by_match.setdefault((e["group"], _frame_side(e, side)), []).append(
+                {"stem": e["stem"], "side": side, "insights": e["insights"]})
+    indexes = [index for index in (_group_index(u) for u in by_match.values())
+               if index is not None]
     if not indexes:
         return envelope.unavailable("no_benchmark")
     return envelope.ok({"index": round(statistics.median(indexes), 1)},
@@ -334,13 +420,17 @@ def _benchmark(athlete, parts, all_entries, range_, bounds, has_units):
 def _match_win_rate(units, scoped, doubles_results=()):
     """Wins over the selected athletes' scored matches, singles and doubles alike.
 
-    A singles unit is judged by its record's ``winner`` side; a doubles unit by its row
+    A singles unit is judged by its record's ``winner`` side (counted once per match and
+    frame side, whatever the number of parts); a doubles unit by its row
     ``result`` (the athlete's team vs the record's ``winner_team``, None when either is
     unknown, e.g. under ``degraded_teams``). ``doubles_results`` holds those, one per
     doubles unit. Coverage = scored units / all selected units.
     """
-    outcomes = []
+    outcomes, counted = [], set()
     for u in units:
+        if (u["group"], u["frame_side"]) in counted:      # a split match is one outcome
+            continue
+        counted.add((u["group"], u["frame_side"]))
         winner = _dict(_dict(u["record"]).get("result")).get("winner")
         outcomes.append(("W" if winner == u["side"] else "L") if winner in SIDES else None)
     outcomes.extend(doubles_results)
@@ -837,24 +927,74 @@ def _sets_pairs(result, side):
     return out
 
 
-def _rows(units, doubles_rows=()):
-    """Singles rows (one per unit) plus the prepared doubles rows, newest first."""
-    rows = []
+_STATUS_RANK = {"processing": 0, "new": 1, "analysed": 2}
+"""Least finished first: a split match is only as done as its slowest part."""
+
+
+def _part_entry(u):
+    return {"stem": u["stem"], "side": u["side"], "status": u["status"],
+            "tech_index": _group_index([u]), "needs_review": _stem_needs_review(u["insights"])}
+
+
+def _row_parts(bucket, parts, doubles_stems=frozenset()):
+    """The ``parts`` of one match row: ``[]`` for a lone video.
+
+    ``bucket`` holds the units of one ``(group, frame_side)``. The primary comes first,
+    then the other parts in stem order. A part the store links but that has no unit
+    (never run, or no outputs yet) is listed as ``new`` with no index, so the row shows
+    the whole match, not just what was analysed. A linked stem analysed as doubles is not
+    a part (it has its own doubles row) and is skipped.
+    """
+    group, frame_side = bucket[0]["group"], bucket[0]["frame_side"]
+    by_stem = {u["stem"]: u for u in bucket}
+    linked = [p for p in lib.parts_of(parts, group) if p["stem"] not in doubles_stems]
+    if len(by_stem) < 2 and not linked:
+        return []
+    swapped = {p["stem"]: p["sides_swapped"] for p in linked}
+    out = []
+    for stem in sorted({group} | set(by_stem) | set(swapped), key=lambda s: (s != group, s)):
+        if stem in by_stem:
+            out.append(_part_entry(by_stem[stem]))
+        else:
+            out.append({"stem": stem,
+                        "side": _other(frame_side) if swapped.get(stem) else frame_side,
+                        "status": "new", "tech_index": None, "needs_review": False})
+    return out
+
+
+def _rows(units, doubles_rows=(), parts=None, doubles_stems=frozenset()):
+    """Singles rows (one per match and frame side) plus the prepared doubles rows, newest first.
+
+    A split match is one row in the primary's frame, built from its primary's unit (or the
+    first part's when the primary has none); ``parts`` is each video's own status and index.
+    """
+    buckets = {}
     for u in units:
-        other = "lower" if u["side"] == "upper" else "upper"
+        buckets.setdefault((u["group"], u["frame_side"]), []).append(u)
+    rows = []
+    for bucket in buckets.values():
+        u = next((x for x in bucket if x["stem"] == x["group"]),
+                 min(bucket, key=lambda x: x["stem"]))
         result = _dict(u["record"]).get("result")
         winner = _dict(result).get("winner")
         outcome = None
         if u["side"] in SIDES and winner in SIDES:       # relative to this unit's own side
             outcome = "W" if winner == u["side"] else "L"
+        row_parts = _row_parts(bucket, parts, doubles_stems)
+        shown = row_parts or [_part_entry(u)]
         rows.append({
-            "stem": u["stem"], "date": u["date"], "date_source": u["date_source"],
-            "side": u["side"], "athlete": u["ident"][u["side"]]["name"],
-            "opponent": u["ident"][other]["name"], "result": outcome,
-            "sets": _sets_pairs(result, u["side"]),
-            "tech_index": _bounded(_dict(_unit_side(u)).get("index"), *SCORE_RANGE),
-            "status": u["status"], "needs_review": _stem_needs_review(u["insights"]),
-            "doubles": False,
+            "stem": u["group"], "date": u["date"], "date_source": u["date_source"],
+            "side": u["frame_side"], "athlete": u["ident"][u["side"]]["name"],
+            "opponent": u["ident"][_other(u["side"])]["name"], "result": outcome,
+            # stored [upper, lower] pairs are not swapped per part: orient by the frame side
+            "sets": _sets_pairs(result, u["frame_side"]),
+            "tech_index": _group_index(bucket),
+            "status": min((p["status"] for p in shown), key=lambda x: _STATUS_RANK.get(x, 3)),
+            # a split row only asks for review once every part is analysed
+            "needs_review": (any(p["needs_review"] for p in shown)
+                             and (not row_parts or all(p["status"] == "analysed"
+                                                       for p in row_parts))),
+            "doubles": False, "parts": row_parts,
         })
     rows.extend(doubles_rows)
     rows.sort(key=lambda r: (r["stem"], r["side"] or "", r.get("athlete_player") or ""))
@@ -906,7 +1046,8 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
     # ``units`` are singles (stem, side) units: they feed every per-player aggregate.
     # ``doubles_units`` are (stem, identity) units of mapped athletes: they feed the
     # ``doubles`` insight, the athlete's court map and the rows. ``scope.units`` counts both.
-    units = [dict(e, side=side) for e, sides in chosen if not e["doubles"] for side in sides]
+    units = [dict(e, side=side, frame_side=_frame_side(e, side))
+             for e, sides in chosen if not e["doubles"] for side in sides]
     doubles_entries = [e for e, _p in chosen if e["doubles"]]
     doubles_units = [dict(e, side=None, pid=pid) for e, picked in chosen if e["doubles"]
                      for pid, _ident in picked]
@@ -949,7 +1090,7 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
                 "squad_id": _dict(athlete_row).get("squad_id")},
             "squad": None if squad_row is None else {
                 "id": squad, "name": _dict(squad_row).get("name")},
-            "range": range_, "stems": len(chosen_entries),
+            "range": range_, "stems": len({e["group"] for e in chosen_entries}),
             "units": len(units) + len(doubles_units),
             "date_from": date_from, "date_to": date_to,
             "generated_at": datetime.datetime.now(datetime.timezone.utc)
@@ -975,7 +1116,8 @@ def overview(units_source, athletes_store, *, athlete=None, squad=None, range_="
         "movement": {"position": player(_position(units, athlete_doubles)),
                      "pull": player(_pull_position(units))},
         "doubles": _doubles_insight(doubles_entries, doubles_units, infos, parts, athlete),
-        "matches": _rows(units, doubles_rows),
+        "matches": _rows(units, doubles_rows, parts,
+                         frozenset(e["stem"] for e in entries if e["doubles"])),
     }
     result["findings"] = build_findings(result)
     return result
