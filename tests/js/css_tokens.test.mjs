@@ -64,7 +64,7 @@ test('theme selectors are scoped to the root element and map legacy dark/light',
   assert.match(css, /:root\[data-theme="day"\]/);
   assert.match(css, /:root\[data-theme="light"\]/);
   // no bare [data-theme...] selector that would hit theme buttons
-  assert.doesNotMatch(css, /(^|[\s,}])\[data-theme[^\]]*\]\s*[,{]/m);
+  assert.doesNotMatch(read('static/kestrel/shell.css'), /(^|[\s,}])\[data-theme[^\]]*\]\s*[,{]/m);
 });
 
 test('legacy alias block comes after both theme blocks', () => {
@@ -118,13 +118,16 @@ test('the OFL 1.1 licence text travels with every bundled font family', () => {
   }
 });
 
+test('ground carries no court drawing or animated shuttle', () => {
+  assert.doesNotMatch(css, /\.ground svg|\.flight\{|\.shuttle\{|\.ring\{/);
+});
+
 test('prefers-reduced-motion block exists and kills motion', () => {
   const m = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/);
   assert.ok(m, 'reduced-motion block missing');
   assert.match(m[1], /animation:\s*none/);
   assert.match(m[1], /transition:\s*none/);
   assert.match(m[1], /!important/);
-  assert.match(m[1], /\.ground \.shuttle\s*\{\s*display:\s*none/);
 });
 
 test('page assets and skeleton are in place', () => {
@@ -147,7 +150,7 @@ test('classes and keyframes used by later tasks are defined', () => {
   for (const c of ['hud', 'scan', 'ground', 'rail', 'topbar', 'page', 'gap-card', 'pill-slider', 'mono', 'serif', 'k-chip']) {
     assert.match(all, new RegExp('\\.' + esc(c) + '(?![\\w-])'), '.' + c);
   }
-  for (const k of ['kUp', 'kFade', 'kIn', 'kPop', 'kLive', 'kFlow', 'kRing', 'kTravel']) {
+  for (const k of ['kUp', 'kFade', 'kIn', 'kPop', 'kLive']) {
     assert.match(all, new RegExp('@keyframes\\s+' + k + '\\b'), k);
   }
 });

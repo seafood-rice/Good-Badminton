@@ -66,10 +66,6 @@
   mask-image:linear-gradient(to bottom,#000 0%,#000 20%,rgba(0,0,0,.5) 52%,rgba(0,0,0,.36) 100%);}
 .ground img{position:absolute;left:-40px;top:-40px;width:calc(100% + 80px);height:calc(100% + 80px);object-fit:cover;
   filter:blur(18px) brightness(.55) saturate(.9);opacity:var(--photoO);}
-.ground svg{position:absolute;left:0;top:0;width:100%;height:1000px;display:block;}
-.flight{stroke-dasharray:6 10;animation:kFlow 14s linear infinite;}
-.shuttle{animation:kTravel 5.5s cubic-bezier(.45,0,.55,1) infinite;}
-.ring{transform-box:fill-box;transform-origin:center;animation:kRing 3.4s ease-out infinite;}
 
 /* ---- command palette and peek drawer ---- */
 .scrim{position:fixed;inset:0;z-index:50;background:rgba(5,7,10,.5);backdrop-filter:blur(6px);animation:kFade .5s var(--ease) both;}
