@@ -304,6 +304,8 @@ Use `--performance-stats` to print a compact timing summary about every 5 second
 
 ## 🚀 Installation
 
+> 🐳 Prefer containers? Jump to [Docker](#-docker).
+
 The default dependencies use CPU PyTorch and ONNX Runtime.
 
 ### Windows
@@ -363,6 +365,62 @@ Switch back to CPU dependencies:
 pip install --force-reinstall -r requirements.txt
 ```
 
+
+## 🐳 Docker
+
+The whole application (Flask UI, analysis pipeline, FFmpeg) ships as one image, so the Docker host needs no Python or FFmpeg.
+
+### Prerequisites
+
+- Docker Engine or Docker Desktop with Compose v2 (`docker compose`, 2.24+ recommended).
+- **GPU (default):** NVIDIA driver plus the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) (Docker Desktop with WSL2 needs nothing extra). Check with `docker run --rm --gpus all ubuntu nvidia-smi`.
+- No GPU? Use the CPU override file below.
+
+### Start
+
+```bash
+git clone https://github.com/seafood-rice/Good-Badminton.git
+cd Good-Badminton
+
+# 1. Download model weights into ./weights (skips files already there)
+docker compose --profile tools run --rm fetch-weights
+
+# 2. Build and start (GPU)
+docker compose up -d --build
+
+# No GPU: layer the CPU override on top
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+```
+
+Open http://localhost:5050. Put videos in `./videos` (or drag and drop them in the page).
+
+```bash
+docker compose logs -f app     # follow logs
+docker compose down            # stop and remove the container (data is kept)
+```
+
+### Verify the GPU
+
+```bash
+docker compose exec app python -c "import torch, onnxruntime as ort; print(torch.cuda.is_available(), ort.get_available_providers())"
+```
+
+Expect `True` and `CUDAExecutionProvider` in the output.
+
+### Data and configuration
+
+| Host folder | In container | Contents |
+|---|---|---|
+| `./videos` | `/app/videos` | Input videos |
+| `./outputs` | `/app/outputs` | Analysis results, annotated video, reports |
+| `./data` | `/app/data` | Library tags, athlete profiles |
+| `./weights` | `/app/weights` | Model weights (`.pt` / `.onnx`, never baked into the image) |
+
+- Optional trained models (racket detector, AI form score, BST, TrackNet, hit detector) are picked up automatically when placed in `./weights`; no rebuild needed.
+- Change the port: `GB_PORT=8080 docker compose up -d`.
+- The GPU image uses CUDA 12.1 PyTorch and `onnxruntime-gpu==1.20.2` (1.20.1 has no Python 3.12 wheel; otherwise the same recipe as the GPU section above); the CPU image uses the CPU pins from `requirements.txt`, which is left unchanged.
+- The container runs as root to avoid bind-mount permission problems on Windows and Docker Desktop; on Linux hosts, files created in `outputs/` are owned by root.
+- The server listens on all interfaces and has no authentication. Only expose port 5050 on a trusted network.
 
 ## 📝 Usage
 
