@@ -573,12 +573,84 @@ export function mount(container, ctx = {}) {
     const time = h('span', { class: 'mono ws-time' }, '0:00');
     const seek = h('input', { type: 'range', class: 'ws-seek', min: '0', max: '0', step: '0.1', value: '0', 'aria-label': t('ws.seek_aria', lang) });
     seek.addEventListener('input', () => seekTo(Number(seek.value), false));
+    // Theater mode: the whole video card fills the browser window (it is moved under <body> so no ancestor
+    // transform can shrink a fixed box) and goes back to its place on exit. Full screen asks the browser to show
+    // the same card, so the overlay tags and controls stay available.
+    const theaterBtn = h('button', { type: 'button', class: 'ws-ibtn ws-theater', 'aria-pressed': 'false', 'aria-label': t('ws.theater', lang), title: t('ws.theater', lang), onclick: () => setTheater(!refs.theater) }, '▭');
+    const fsBtn = h('button', { type: 'button', class: 'ws-ibtn ws-fs', 'aria-pressed': 'false', 'aria-label': t('ws.fullscreen', lang), title: t('ws.fullscreen', lang), onclick: toggleFullscreen }, '⛶');
+    const place = h('span', { class: 'ws-video-slot', hidden: true });
+    const paintModeButtons = () => {
+      const fs = document.fullscreenElement === sec;
+      setAttr(theaterBtn, 'aria-pressed', refs.theater ? 'true' : 'false');
+      setAttr(fsBtn, 'aria-pressed', fs ? 'true' : 'false');
+      const tl = t(refs.theater ? 'ws.theater_exit' : 'ws.theater', lang);
+      setAttr(theaterBtn, 'aria-label', tl);
+      setAttr(theaterBtn, 'title', tl);
+      const fl = t(fs ? 'ws.fullscreen_exit' : 'ws.fullscreen', lang);
+      setAttr(fsBtn, 'aria-label', fl);
+      setAttr(fsBtn, 'title', fl);
+    };
+    function setTheater(on) {
+      on = !!on;
+      if (on === !!refs.theater || state.destroyed) return;
+      refs.theater = on;
+      if (on) {
+        if (sec.parentNode) sec.parentNode.insertBefore(place, sec);
+        document.body.appendChild(sec);
+        document.body.classList.add('ws-theater-open');
+        sec.classList.add('theater');
+      } else {
+        sec.classList.remove('theater');
+        document.body.classList.remove('ws-theater-open');
+        if (place.parentNode) place.parentNode.replaceChild(sec, place);
+      }
+      paintModeButtons();
+    }
+    function toggleFullscreen() {
+      try {
+        if (document.fullscreenElement) {
+          if (document.exitFullscreen) document.exitFullscreen();
+        } else if (sec.requestFullscreen) {
+          const r = sec.requestFullscreen();
+          if (r && typeof r.catch === 'function') r.catch(() => {});
+        }
+      } catch (e) {
+        // ignore: the browser refused full screen
+      }
+    }
+    const onFsChange = () => {
+      sec.classList.toggle('is-fs', document.fullscreenElement === sec);
+      paintModeButtons();
+    };
+    const onKey = (ev) => {
+      if (ev.key === 'Escape' && refs.theater && !document.fullscreenElement) setTheater(false);
+    };
+    const docEvents = typeof document.addEventListener === 'function' && typeof document.removeEventListener === 'function';
+    if (docEvents) {
+      document.addEventListener('fullscreenchange', onFsChange);
+      document.addEventListener('keydown', onKey);
+    }
+    refs.teardownVideoMode = () => {
+      if (docEvents) {
+        document.removeEventListener('fullscreenchange', onFsChange);
+        document.removeEventListener('keydown', onKey);
+      }
+      try {
+        if (document.fullscreenElement === sec && document.exitFullscreen) document.exitFullscreen();
+      } catch (e) {
+        // ignore
+      }
+      if (refs.theater) setTheater(false);
+      if (sec.parentNode === document.body) document.body.removeChild(sec);
+    };
     const ctlRow = h('div', { class: 'ws-ctl' }, [
       h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': t('ws.prev_rally', lang), onclick: () => stepUnit(-1) }, '⏮'),
       playBtn,
       h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': t('ws.next_rally', lang), onclick: () => stepUnit(1) }, '⏭'),
       time,
       seek,
+      theaterBtn,
+      fsBtn,
     ]);
     sec.appendChild(stage);
     sec.appendChild(ctlRow);
@@ -1404,6 +1476,7 @@ export function mount(container, ctx = {}) {
     clock.cancel();
     clearTimeout(settleTimer);
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
+    if (refs.teardownVideoMode) refs.teardownVideoMode();
     const v = refs.video;
     if (v) {
       try {
