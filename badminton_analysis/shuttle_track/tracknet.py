@@ -80,7 +80,35 @@ def _in_roi(x, y, court_roi):
     return lo_x <= x <= hi_x and lo_y <= y <= hi_y
 
 
+# The vendored background (median) image decodes up to ``max_sample_num`` frames at the video's
+# full resolution before taking their median. At the default 1800 frames a 4K video needs about
+# 45 GB and the process is killed by the OOM killer (seen on a 21k-frame 3840x2160 recording).
+MEDIAN_BUDGET_BYTES = 1_500_000_000
+MEDIAN_MIN_FRAMES = 50
+MEDIAN_MAX_FRAMES = 1800
+
+
+def median_sample_count(width, height, budget=MEDIAN_BUDGET_BYTES):
+    """Frames to sample for the median image so the decoded stack stays within ``budget`` bytes."""
+    frame_bytes = max(1, int(width) * int(height) * 3)
+    return max(MEDIAN_MIN_FRAMES, min(MEDIAN_MAX_FRAMES, int(budget // frame_bytes)))
+
+
+def _frame_size(video_path):
+    import cv2
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        cap.release()
+
+
 def track_video(video_path, models, court_roi=None, eval_mode="weight", progress=None):
+    try:
+        w, h = _frame_size(video_path)
+    except Exception:
+        w = h = 0
+    extra = {"max_sample_num": median_sample_count(w, h)} if w > 0 and h > 0 else {}
     pred = _run_prediction(
         video_file=str(video_path),
         tracknet_file=models["tracknet_file"],
@@ -88,6 +116,7 @@ def track_video(video_path, models, court_roi=None, eval_mode="weight", progress
         device=models.get("device"),
         eval_mode=eval_mode,
         progress=progress,
+        **extra,
     )
     traj = {}
     for f, x, y, vis in zip(pred["Frame"], pred["X"], pred["Y"], pred["Visibility"]):
