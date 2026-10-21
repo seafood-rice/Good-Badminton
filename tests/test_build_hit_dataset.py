@@ -66,6 +66,37 @@ def test_clip_window_clamps_negative_start_and_shortens_duration():
     assert enc["hit_frames"].tolist() == [16]
 
 
+def _span(set_no, rally, start, end):
+    return {"set": set_no, "rally": rally, "start": start, "end": end, "hits": []}
+
+
+def test_gap_windows_cover_dead_time_between_consecutive_rallies():
+    spans = [_span(1, 1, 0.0, 10.0), _span(1, 2, 18.0, 30.0), _span(1, 3, 40.0, 50.0)]
+    gaps = bd.gap_windows(spans, offset_sec=0.5, max_sec=15.0)
+    assert [(g["name"], g["start"], g["duration"]) for g in gaps] == [
+        ("gap_s1_r2", 10.5, 8.0), ("gap_s1_r3", 30.5, 10.0)]
+
+
+def test_gap_windows_keep_alternate_ends_of_a_long_gap():
+    spans = [_span(1, 4, 0.0, 10.0), _span(1, 5, 50.0, 60.0), _span(1, 6, 100.0, 110.0)]
+    gaps = bd.gap_windows(spans, 0.0, max_sec=10.0)
+    # before odd rally 5: just after rally 4 ends; before even rally 6: just before its serve
+    assert [(g["name"], g["start"], g["duration"]) for g in gaps] == [
+        ("gap_s1_r5", 10.0, 10.0), ("gap_s1_r6", 90.0, 10.0)]
+
+
+def test_gap_windows_skip_set_breaks_missing_rallies_and_short_gaps():
+    spans = [_span(1, 1, 0.0, 10.0), _span(2, 1, 20.0, 30.0),    # set break
+             _span(2, 3, 35.0, 40.0),                              # rally 2 not labelled
+             _span(2, 4, 41.0, 45.0)]                              # gap shorter than min_sec
+    assert bd.gap_windows(spans, 0.0, max_sec=15.0, min_sec=2.0) == []
+
+
+def test_gap_windows_clamp_to_the_video_start():
+    gaps = bd.gap_windows([_span(1, 1, -5.0, 2.0), _span(1, 2, 8.0, 12.0)], -3.0)
+    assert [(g["start"], g["duration"]) for g in gaps] == [(0.0, 5.0)]
+
+
 def _tiny_clip(path):
     import cv2
     import numpy as np

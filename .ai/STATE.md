@@ -35,16 +35,13 @@ Per-player scoring of 7 techniques is the goal; detection comes first, full cove
 calibrated on pro footage. Sub-project B (full-match stroke recognition, spec
 `docs/superpowers/specs/2026-07-29-match-stroke-recognition-b-design.md`): B1 and B11 (rally
 detection) merged; B2-B10 not yet planned. Learned hit detection (part 1 of technique scoring)
-merged as #13; its retraining continues on its branch.
+merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel serving tweak are merged too; retraining continues on its branch.
 
 ## Active work
 
 | Feature | Branch | Paths it touches | State / next action |
 |---|---|---|---|
-| learned-hit-detection | `claude/learned-hit-detection` | `badminton_analysis/stroke/`, `system.py`, `stroke_recog/recognizer.py`, `shuttle_track/tracknet.py`, `third_party/tracknet/`, `static/kestrel.js`, `main.py`, `app.py`, `scripts/*hit*`, `scripts/shuttleset_labels.py`, `tests/test_hit_*` | First model on owner's Axelsen labels: recall 0.80, precision 0.67 (bar 0.60 / 0.70), hitter 0.88. Dead-time rebuild runs detached (`data/hit_dataset_gaps/build.log`; `stop_build.ps1` / `resume_build.ps1` there). Next: when it shows BUILD DONE, retrain on `data/hit_dataset` + `data/hit_dataset_gaps` (val Sindhu), re-score the 4 Axelsen stretches. Spec/plan: `docs/superpowers/*/2026-10-04-learned-hit-detection*`. Branch carries a local `app.py` tweak (serve `kestrel.html` at `/`, bind `0.0.0.0`). |
-| doubles-match-analysis | `claude/doubles-match-analysis` | doubles pipeline, Kestrel doubles notice | Implementation complete per branch (`b80a113`); not merged. Needs owner review/PR. |
-| doubles-hardening | `claude/doubles-hardening` | doubles sub-stage progress, tests | Done per branch (`6f70fb5`); not merged. Needs owner review/PR. |
-| kestrel-telemetry-ui | `claude/kestral-sports-ui-design-015bc4` (PR #17) | `static/kestrel/`, `static/kestrel.js` (moved to `static/kestrel/legacy/kestrel-legacy.js`), `kestrel.html`, `badminton_analysis/insights/`, `badminton_analysis/library/athletes.py`, `badminton_analysis/web/`, `app.py` (route registration), `tests/` | Implemented and reviewed, including doubles support (per-identity athlete mapping, doubles insights, doubles screens; spec `docs/superpowers/specs/2026-10-20-kestrel-doubles-support-design.md`); awaiting owner review/merge. Other branches that edit `static/kestrel.js` need to rebase onto the moved file. Spec/plan: `docs/superpowers/*/2026-10-19-kestrel-telemetry-ui*`; status: `.ai/workstreams/kestrel-telemetry-ui.md`. |
+| learned-hit-detection | `claude/learned-hit-detection` | `badminton_analysis/stroke/`, `system.py`, `stroke_recog/recognizer.py`, `shuttle_track/tracknet.py`, `third_party/tracknet/`, `static/kestrel/legacy/kestrel-legacy.js`, `main.py`, `app.py`, `scripts/*hit*`, `scripts/shuttleset_labels.py`, `tests/test_hit_*` | First model on owner's Axelsen labels: recall 0.80, precision 0.67 (bar 0.60 / 0.70), hitter 0.88. Dead-time rebuild runs detached (`data/hit_dataset_gaps/build.log`; `stop_build.ps1` / `resume_build.ps1` there). Next: when it shows BUILD DONE, retrain on `data/hit_dataset` + `data/hit_dataset_gaps` (val Sindhu), re-score the 4 Axelsen stretches. Spec/plan: `docs/superpowers/*/2026-10-04-learned-hit-detection*`. `app.py` now serves `kestrel.html` at `/` and binds `0.0.0.0` (merged). |
 
 ## Decisions that still matter
 
