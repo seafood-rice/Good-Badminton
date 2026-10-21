@@ -1,0 +1,22 @@
+.git
+.gitignore
+.venv
+.claude
+.codex
+.superpowers
+.gstack
+.tokensave
+__pycache__
+*.pyc
+.pytest_cache
+# State and models are bind-mounted, never baked into the image
+videos
+outputs
+data
+weights
+runs
+*.pt
+# Local-only files
+BirdEye Prototype.html
+*.log
+run.bat

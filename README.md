@@ -29,6 +29,8 @@
 
 ## 🚀 快速开始
 
+> 🐳 想直接用 Docker？跳到 [Docker 部署](#-docker-部署)。
+
 ### 1. 安装
 
 ```bash
@@ -68,6 +70,62 @@ python app.py
 ```bash
 python main.py --video-path videos/demo.mp4
 ```
+
+## 🐳 Docker 部署
+
+整个应用（Flask 界面 + 分析流水线 + FFmpeg）打包成一个镜像，Docker 主机上无需安装 Python 或 FFmpeg。
+
+### 前置条件
+
+- Docker Engine 或 Docker Desktop，带 Compose v2（`docker compose`，建议 2.24+）。
+- **GPU（默认）**：NVIDIA 驱动 + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)（Docker Desktop + WSL2 无需额外安装）。用 `docker run --rm --gpus all ubuntu nvidia-smi` 验证。
+- 没有 GPU？使用下面的 CPU 覆盖文件。
+
+### 启动
+
+```bash
+git clone https://github.com/seafood-rice/Good-Badminton.git
+cd Good-Badminton
+
+# 1. 下载模型权重到 ./weights（已存在则跳过）
+docker compose --profile tools run --rm fetch-weights
+
+# 2. 构建并启动（GPU）
+docker compose up -d --build
+
+# 没有 GPU：叠加 CPU 覆盖文件
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+```
+
+打开 http://localhost:5050 。把视频放进 `./videos`（或在页面里拖拽上传）。
+
+```bash
+docker compose logs -f app     # 查看日志
+docker compose down            # 停止并移除容器（数据保留）
+```
+
+### 验证 GPU
+
+```bash
+docker compose exec app python -c "import torch, onnxruntime as ort; print(torch.cuda.is_available(), ort.get_available_providers())"
+```
+
+期望输出包含 `True` 和 `CUDAExecutionProvider`。
+
+### 数据与配置
+
+| 宿主机目录 | 容器内 | 内容 |
+|---|---|---|
+| `./videos` | `/app/videos` | 输入视频 |
+| `./outputs` | `/app/outputs` | 分析结果、标注视频、报告 |
+| `./data` | `/app/data` | 资料库标签、运动员档案 |
+| `./weights` | `/app/weights` | 模型权重（`.pt` / `.onnx`，不会打进镜像） |
+
+- 可选的训练模型（球拍检测、AI 评分、BST、TrackNet、击球检测）放进 `./weights` 即可被自动识别，无需重新构建。
+- 更换端口：`GB_PORT=8080 docker compose up -d`。
+- GPU 镜像使用 CUDA 12.1 PyTorch 与 `onnxruntime-gpu==1.20.2`（1.20.1 没有 Python 3.12 轮子，其余与上文 GPU 加速方案一致）；CPU 镜像使用 `requirements.txt` 中的 CPU 版本。`requirements.txt` 本身不变。
+- 容器以 root 运行，避免 Windows / Docker Desktop 下绑定挂载的权限问题；Linux 主机上 `outputs/` 内的文件归 root 所有。
+- 服务默认监听所有网卡且没有身份验证，请只在可信网络中暴露 5050 端口。
 
 ## 🌐 Web 界面使用指南
 
