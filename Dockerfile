@@ -1,4 +1,4 @@
-# Good Badminton: one image, two flavours selected at build time.
+# Kestrel: one image, two flavours selected at build time.
 #   GPU (default): CUDA 12.6 + cuDNN 9 runtime, torch 2.5.1+cu121, onnxruntime-gpu 1.20.2
 #   CPU          : plain Ubuntu, torch 2.5.1+cpu, onnxruntime 1.18.1 (as in requirements.txt)
 # Python 3.12 (Ubuntu 24.04) is required: positional-encodings==6.0.4 needs >=3.12.
