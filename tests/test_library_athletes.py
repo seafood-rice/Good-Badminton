@@ -1025,3 +1025,266 @@ def test_doubles_record_survives_save_then_load(tmp_path):
     data = ath.set_match(data, "clip", ath.validate_match(record, data)[0])
     ath.save(data, p)
     assert ath.load(p) == data
+
+
+# ------------------------------------------------------ split matches (links)
+
+def _linked(sides_swapped=False, *, primary="p1", part="p2"):
+    """A store with a singles primary record and one linked part."""
+    data, tanaka, ito = _with_two_athletes()
+    record = {"date": "2026-10-11", "upper": {"athlete_id": tanaka}, "lower": {"athlete_id": ito},
+              "result": {"winner": "upper", "sets": [[21, 18], [15, 21], [21, 19]]}}
+    data = ath.set_match(data, primary, ath.validate_match(record, data, primary)[0])
+    link = {"part_of": primary, "sides_swapped": sides_swapped}
+    clean, err = ath.validate_match(link, data, part)
+    assert err is None, err
+    return ath.set_match(data, part, clean), tanaka, ito
+
+
+def test_validate_match_accepts_a_link_and_defaults_the_swap_flag():
+    data, _, _ = _linked()
+    clean, err = ath.validate_match({"part_of": "p1"}, data, "p3")
+    assert err is None
+    assert clean == {"part_of": "p1", "sides_swapped": False}
+    clean, err = ath.validate_match({"part_of": "p1", "sides_swapped": True}, data, "p3")
+    assert (clean, err) == ({"part_of": "p1", "sides_swapped": True}, None)
+
+
+def test_a_third_part_may_point_at_the_same_primary():
+    data, _, _ = _linked()
+    clean, _err = ath.validate_match({"part_of": "p1"}, data, "p3")
+    data = ath.set_match(data, "p3", clean)
+    assert [p["stem"] for p in ath.parts_of(data, "p1")] == ["p2", "p3"]
+
+
+@pytest.mark.parametrize("link,stem", [
+    ({"part_of": "p2"}, "p2"),                       # itself
+    ({"part_of": "ghost"}, "p3"),                    # primary has no record
+    ({"part_of": ""}, "p3"),                         # empty
+    ({"part_of": 5}, "p3"),                          # not a string
+    ({"part_of": ["p1"]}, "p3"),                     # unhashable
+    ({"part_of": None}, "p3"),
+    ({"sides_swapped": True}, "p3"),                 # no target at all
+    ({"part_of": "p1", "sides_swapped": "yes"}, "p3"),   # not a bool
+    ({"part_of": "p1", "sides_swapped": 1}, "p3"),       # ints are not bools
+    ({"part_of": "p2"}, "p3"),                       # chain: p2 is itself a part
+])
+def test_validate_match_rejects_an_invalid_link(link, stem):
+    data, _, _ = _linked()
+    clean, err = ath.validate_match(link, data, stem)
+    assert (clean, err) == (None, "invalid_link")
+
+
+def test_validate_match_rejects_a_doubles_primary():
+    data, ids = _with_four()
+    data = ath.set_match(data, "dbl", ath.validate_match(_doubles({"P1": {"name": "A"}}), data)[0])
+    assert ath.validate_match({"part_of": "dbl"}, data, "p2") == (None, "invalid_link")
+
+
+@pytest.mark.parametrize("extra", [{"date": "2026-10-11"}, {"upper": None}, {"lower": None},
+                                   {"result": None}, {"players": {}}, {"format": "singles"},
+                                   {"format": "doubles"}, {"note": "x"}])
+def test_a_link_record_carries_no_other_key(extra):
+    data, _, _ = _linked()
+    clean, err = ath.validate_match({"part_of": "p1", **extra}, data, "p3")
+    assert (clean, err) == (None, "invalid_record")
+
+
+def test_linking_over_a_video_with_its_own_record_is_part_has_record():
+    data, _, _ = _linked()
+    data = ath.set_match(data, "p3", {"date": "2026-10-12"})
+    assert ath.validate_match({"part_of": "p1"}, data, "p3") == (None, "part_has_record")
+
+
+def test_linking_over_a_blank_or_an_existing_link_is_allowed():
+    data, _, _ = _linked()
+    assert ath.validate_match({"part_of": "p1"}, data, "never-seen")[1] is None
+    data = ath.set_match(data, "p0", {"date": "2026-10-01"})
+    clean, err = ath.validate_match({"part_of": "p0", "sides_swapped": True}, data, "p2")
+    assert err is None                      # p2 is linked to p1 today; re-pointing it is fine
+    data = ath.set_match(data, "p2", clean)
+    assert ath.get_match(data, "p2") == {"part_of": "p0", "sides_swapped": True}
+
+
+def test_a_primary_with_parts_cannot_become_a_part_or_a_doubles_record():
+    data, _, _ = _linked()
+    assert ath.validate_match({"part_of": "p1"}, data, "p1")[1] == "invalid_link"
+    data = ath.set_match(data, "p9", {"date": "2026-10-12"})
+    assert ath.validate_match({"part_of": "p9"}, data, "p1")[1] == "has_parts"
+    assert ath.validate_match(_doubles(), data, "p1") == (None, "has_parts")
+    assert ath.validate_match(_doubles(), data, "p2")[1] is None      # a part may become doubles
+    assert ath.validate_match(_doubles(), data)[1] is None            # no stem: no parts check
+
+
+def test_a_primary_with_parts_may_get_a_new_singles_record():
+    data, tanaka, _ = _linked()
+    clean, err = ath.validate_match({"date": "2026-10-20", "upper": {"name": "Z"}}, data, "p1")
+    assert err is None
+    data = ath.set_match(data, "p1", clean)
+    assert [p["stem"] for p in ath.parts_of(data, "p1")] == ["p2"]
+
+
+def test_validate_match_link_does_not_mutate_its_arguments():
+    data, _, _ = _linked()
+    link = {"part_of": "p1", "sides_swapped": True}
+    before_data, before_link = copy.deepcopy(data), copy.deepcopy(link)
+    ath.validate_match(link, data, "p3")
+    assert data == before_data and link == before_link
+
+
+def test_set_match_writes_a_link_and_a_blank_clears_it():
+    data, _, _ = _linked(True)
+    assert data["matches"]["p2"] == {"part_of": "p1", "sides_swapped": True}
+    assert ath.get_match(data, "p2") == {"part_of": "p1", "sides_swapped": True}
+    cleared = ath.set_match(data, "p2", {})
+    assert "p2" not in cleared["matches"] and "p1" in cleared["matches"]
+    assert "p2" not in ath.set_match(data, "p2", None)["matches"]
+
+
+def test_a_link_is_never_blank():
+    assert not ath._is_blank({"part_of": "p1", "sides_swapped": False})
+
+
+def test_clearing_a_primary_unlinks_its_parts():
+    data, _, _ = _linked()
+    data = ath.set_match(data, "p3", ath.validate_match({"part_of": "p1"}, data, "p3")[0])
+    out = ath.set_match(data, "p1", None)
+    assert out["matches"] == {}
+    assert ath.has_parts(data, "p1") and not ath.has_parts(out, "p1")
+
+
+def test_set_match_refuses_to_orphan_parts_with_a_doubles_record():
+    data, _, _ = _linked()
+    with pytest.raises(ValueError, match="^has_parts$"):
+        ath.set_match(data, "p1", _doubles())
+    with pytest.raises(ValueError, match="^has_parts$"):
+        ath.set_match(data, "p1", {"part_of": "p9", "sides_swapped": False})
+
+
+def test_set_match_does_not_mutate_its_argument_when_unlinking():
+    data, _, _ = _linked()
+    before = copy.deepcopy(data)
+    ath.set_match(data, "p1", None)
+    assert data == before
+
+
+def test_resolve_record_of_an_unlinked_video_is_its_record_or_empty():
+    data, _, _ = _linked()
+    assert ath.resolve_record(data, "p1") == data["matches"]["p1"]
+    assert ath.resolve_record(data, "nope") == {}
+    assert ath.resolve_record(data, "p1") is not data["matches"]["p1"]     # a copy
+
+
+def test_resolve_record_of_a_part_is_the_primarys_record_plus_the_link():
+    data, tanaka, ito = _linked(False)
+    got = ath.resolve_record(data, "p2")
+    assert got == {**data["matches"]["p1"], "part_of": "p1", "sides_swapped": False}
+    assert got["upper"] == {"athlete_id": tanaka} and got["result"]["winner"] == "upper"
+
+
+def test_resolve_record_swaps_sides_and_the_winner_but_not_sets_or_date():
+    data, tanaka, ito = _linked(True)
+    primary = copy.deepcopy(data["matches"]["p1"])
+    got = ath.resolve_record(data, "p2")
+    assert got["upper"] == {"athlete_id": ito} and got["lower"] == {"athlete_id": tanaka}
+    assert got["result"] == {"winner": "lower", "sets": primary["result"]["sets"]}
+    assert got["date"] == "2026-10-11"
+    assert (got["part_of"], got["sides_swapped"]) == ("p1", True)
+    assert data["matches"]["p1"] == primary                 # the stored primary is untouched
+    assert ath.side_athlete(data, got, "upper")["athlete_id"] == ito
+
+
+def test_resolve_record_swaps_a_missing_winner_and_missing_result_safely():
+    data, _, _ = _linked(True)
+    data["matches"]["p1"]["result"] = None
+    assert ath.resolve_record(data, "p2")["result"] is None
+    data["matches"]["p1"]["result"] = {"winner": "nobody", "sets": []}
+    assert ath.resolve_record(data, "p2")["result"] == {"winner": "nobody", "sets": []}
+
+
+@pytest.mark.parametrize("matches", [
+    {"p2": {"part_of": "ghost", "sides_swapped": False}},                        # dangling
+    {"p2": {"part_of": "p2", "sides_swapped": False}},                           # self
+    {"p1": {"part_of": "p2"}, "p2": {"part_of": "p1"}},                          # cycle
+    {"p1": {"part_of": "p0"}, "p0": {"date": "2026-10-11"}, "p2": {"part_of": "p1"}},   # chain
+    {"p1": {"format": "doubles", "players": {}}, "p2": {"part_of": "p1"}},       # doubles primary
+    {"p1": "junk", "p2": {"part_of": "p1"}},                                     # hostile primary
+    {"p2": {"part_of": ["p1"], "sides_swapped": "x"}},                           # hostile link
+    {"p2": {"part_of": None}},
+])
+def test_resolve_record_of_a_broken_link_is_empty_and_never_raises(matches):
+    data = ath.empty()
+    data["matches"] = matches
+    assert ath.resolve_record(data, "p2") == {}
+    assert ath.parts_of(data, "p1") == []
+
+
+def test_resolve_record_is_total_on_a_hostile_store():
+    for data in ({}, {"matches": None}, {"matches": []}, {"matches": {"p": 5}}):
+        assert ath.resolve_record(data, "p") == {}
+        assert ath.parts_of(data, "p") == []
+        assert ath.has_parts(data, "p") is False
+    assert ath.resolve_record(ath.empty(), ["unhashable"]) == {}
+
+
+def test_parts_of_lists_the_parts_in_stem_order_with_their_swap_flag():
+    data, _, _ = _linked(True, part="b-part")
+    clean, _err = ath.validate_match({"part_of": "p1"}, data, "a-part")
+    data = ath.set_match(data, "a-part", clean)
+    assert ath.parts_of(data, "p1") == [{"stem": "a-part", "sides_swapped": False},
+                                        {"stem": "b-part", "sides_swapped": True}]
+    assert ath.parts_of(data, "a-part") == [] and ath.parts_of(data, "nope") == []
+
+
+def test_match_view_adds_parts_to_a_primary_and_the_link_to_a_part():
+    data, _, _ = _linked(True)
+    primary = ath.match_view(data, "p1")
+    assert primary["parts"] == [{"stem": "p2", "sides_swapped": True}]
+    assert "part_of" not in primary
+    part = ath.match_view(data, "p2")
+    assert (part["part_of"], part["sides_swapped"]) == ("p1", True) and "parts" not in part
+    plain = ath.set_match(ath.empty(), "solo", {"date": "2026-10-11"})
+    assert ath.match_view(plain, "solo") == ath.get_match(plain, "solo")
+    assert ath.match_view(plain, "nope") == {}
+
+
+def test_links_reference_no_athlete_so_counts_stay_per_match():
+    data, tanaka, ito = _linked()
+    assert ath.record_athlete_ids(data["matches"]["p2"]) == set()
+    data, rewritten = ath.delete_athlete(data, tanaka)
+    assert rewritten == 1 and data["matches"]["p2"] == {"part_of": "p1", "sides_swapped": False}
+
+
+def test_a_link_survives_save_then_load_and_keeps_its_order(tmp_path):
+    p = tmp_path / "athletes.json"
+    data, _, _ = _linked(True)
+    ath.save(data, p)
+    loaded = ath.load(p)
+    assert loaded == data and list(loaded["matches"]) == ["p1", "p2"]
+    assert ath.load_for_update(p) == data
+
+
+def test_load_keeps_a_dangling_link_but_drops_a_malformed_one(tmp_path):
+    p = tmp_path / "athletes.json"
+    _write_store(p, {"dangling": {"part_of": "ghost", "sides_swapped": False},
+                     "bare": {"part_of": "ghost"},
+                     "extra": {"part_of": "ghost", "date": "2026-10-11"},
+                     "self": {"part_of": "self"},
+                     "empty": {"part_of": ""},
+                     "badflag": {"part_of": "ghost", "sides_swapped": "yes"},
+                     "ok": {"date": "2026-10-11"}})
+    loaded = ath.load(p)
+    assert loaded["matches"] == {"dangling": {"part_of": "ghost", "sides_swapped": False},
+                                 "bare": {"part_of": "ghost", "sides_swapped": False},
+                                 "ok": {"date": "2026-10-11", "upper": None, "lower": None,
+                                        "result": None}}
+    assert ath.resolve_record(loaded, "dangling") == {}
+
+
+def test_link_over_a_primary_with_parts_reports_has_parts():
+    """Not part_has_record: clearing the primary's record would silently unlink its parts."""
+    data, _, _ = _linked()
+    data = ath.set_match(data, "p9", {"date": "2026-10-12"})
+    assert ath.validate_match({"part_of": "p9"}, data, "p1") == (None, "has_parts")
+    assert ath.validate_match({"part_of": "p9"}, data, "p3") == ({"part_of": "p9",
+                                                                  "sides_swapped": False}, None)

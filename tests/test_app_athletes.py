@@ -7,6 +7,7 @@ import pytest
 
 import app as webapp
 from badminton_analysis.library import athletes as libathletes
+from badminton_analysis.web import athletes_routes
 
 BILINGUAL = re.compile(r"^[^/]*[一-鿿][^/]* / [A-Za-z].*$")
 
@@ -723,3 +724,204 @@ def test_doubles_put_on_an_unreadable_store_is_refused_without_writing(client, m
     assert res.status_code == 500
     _assert_static_bilingual(res, tmp_path)
     assert not store.exists()
+
+
+# ------------------------------------------------- split matches (linked parts)
+
+def _split(client, *, parts=("p2",), swapped=False):
+    """A singles primary ``p1`` (athlete A upper, winner upper) with linked ``parts``."""
+    c, videos, outputs, store = client
+    for stem in ("p1", *parts):
+        _video(videos, outputs, stem)
+    a = _add(c, "A")
+    record = {"date": "2026-10-11", "upper": {"athlete_id": a}, "lower": {"name": "R"},
+              "result": {"winner": "upper", "sets": [[21, 18], [21, 19]]}}
+    assert c.put("/api/matches/p1", json=record).status_code == 200
+    for stem in parts:
+        res = c.put(f"/api/matches/{stem}", json={"part_of": "p1", "sides_swapped": swapped})
+        assert res.status_code == 200, res.get_json()
+    return c, videos, outputs, store, a, record
+
+
+def test_put_link_creates_it_and_returns_the_resolved_view(client):
+    c, _videos, _outputs, store, a, record = _split(client, swapped=True)
+    res = c.put("/api/matches/p2", json={"part_of": "p1", "sides_swapped": True})
+    assert res.status_code == 200
+    match = res.get_json()["match"]
+    assert match["part_of"] == "p1" and match["sides_swapped"] is True
+    assert match["upper"] == {"name": "R"} and match["lower"] == {"athlete_id": a}
+    assert match["result"] == {"winner": "lower", "sets": [[21, 18], [21, 19]]}
+    assert libathletes.load(store)["matches"]["p2"] == {"part_of": "p1", "sides_swapped": True}
+
+
+def test_put_link_without_the_swap_flag_defaults_to_false(client):
+    c, videos, outputs, store, *_ = _split(client)
+    _video(videos, outputs, "p3")
+    assert c.put("/api/matches/p3", json={"part_of": "p1"}).status_code == 200
+    assert libathletes.load(store)["matches"]["p3"] == {"part_of": "p1", "sides_swapped": False}
+
+
+def test_get_a_part_returns_the_primarys_record_plus_the_link(client):
+    c, *_rest, a, record = _split(client)
+    got = c.get("/api/matches/p2").get_json()
+    assert got == {**record, "part_of": "p1", "sides_swapped": False}
+
+
+def test_get_a_primary_with_parts_lists_them_in_stem_order(client):
+    c, videos, outputs, store, a, record = _split(client, parts=("p3", "p2"), swapped=True)
+    got = c.get("/api/matches/p1").get_json()
+    assert got == {**record, "parts": [{"stem": "p2", "sides_swapped": True},
+                                       {"stem": "p3", "sides_swapped": True}]}
+    assert "part_of" not in got
+
+
+def test_get_an_ordinary_record_has_neither_link_key(client):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    c.put("/api/matches/clip", json={"date": "2026-10-11"})
+    assert set(c.get("/api/matches/clip").get_json()) == {"date", "upper", "lower", "result"}
+
+
+@pytest.mark.parametrize("body,code", [
+    ({"part_of": "ghost"}, "invalid_link"),
+    ({"part_of": "p3"}, "invalid_link"),                         # itself
+    ({"part_of": "p2"}, "invalid_link"),                         # chain: p2 is a part
+    ({"part_of": ""}, "invalid_link"),
+    ({"part_of": ["p1"]}, "invalid_link"),
+    ({"part_of": "p1", "sides_swapped": "yes"}, "invalid_link"),
+    ({"part_of": "p1", "date": "2026-10-11"}, "invalid_record"),
+])
+def test_put_an_invalid_link_is_400_and_changes_nothing(client, tmp_path, body, code):
+    c, videos, outputs, store, *_ = _split(client)
+    _video(videos, outputs, "p3")
+    before = store.read_bytes()
+    res = c.put("/api/matches/p3", json=body)
+    assert res.status_code == 400
+    _assert_static_bilingual(res, tmp_path)
+    assert res.get_json() == athletes_routes._MATCH_ERRORS[code]
+    assert store.read_bytes() == before
+
+
+def test_the_link_error_codes_have_distinct_bilingual_bodies(client, tmp_path):
+    c, videos, outputs, store, *_ = _split(client)
+    _video(videos, outputs, "p3")
+    invalid = c.put("/api/matches/p3", json={"part_of": "ghost"})
+    c.put("/api/matches/p3", json={"date": "2026-10-12"})
+    own = c.put("/api/matches/p3", json={"part_of": "p1"})
+    primary = c.put("/api/matches/p1", json=_doubles_record({"P1": {"name": "A"}}))
+    for res in (invalid, own, primary):
+        assert res.status_code == 400
+        _assert_static_bilingual(res, tmp_path)
+    assert len({r.get_json()["error"] for r in (invalid, own, primary)}) == 3
+
+
+def test_linking_over_a_video_with_its_own_record_is_refused(client):
+    c, videos, outputs, store, *_ = _split(client)
+    _video(videos, outputs, "p3")
+    assert c.put("/api/matches/p3", json={"date": "2026-10-12"}).status_code == 200
+    res = c.put("/api/matches/p3", json={"part_of": "p1"})
+    assert res.status_code == 400
+    assert c.get("/api/matches/p3").get_json()["date"] == "2026-10-12"
+    # clearing the record first makes it linkable
+    assert c.put("/api/matches/p3", json={}).status_code == 200
+    assert c.put("/api/matches/p3", json={"part_of": "p1"}).status_code == 200
+
+
+def test_a_doubles_record_over_a_primary_with_parts_is_refused(client, tmp_path):
+    c, _v, _o, store, a, record = _split(client)
+    before = store.read_bytes()
+    res = c.put("/api/matches/p1", json=_doubles_record({"P1": {"athlete_id": a}}))
+    assert res.status_code == 400
+    _assert_static_bilingual(res, tmp_path)
+    assert store.read_bytes() == before
+    assert c.get("/api/matches/p2").get_json()["part_of"] == "p1"
+
+
+def test_put_empty_unlinks_a_part_and_leaves_the_primary(client):
+    c, _v, _o, store, a, record = _split(client)
+    assert c.put("/api/matches/p2", json={}).status_code == 200
+    assert c.get("/api/matches/p2").get_json() == {}
+    assert "parts" not in c.get("/api/matches/p1").get_json()
+    assert list(libathletes.load(store)["matches"]) == ["p1"]
+
+
+def test_a_normal_record_replaces_a_link(client):
+    c, *_ = _split(client)
+    assert c.put("/api/matches/p2", json={"date": "2026-10-15"}).status_code == 200
+    assert "part_of" not in c.get("/api/matches/p2").get_json()
+    assert "parts" not in c.get("/api/matches/p1").get_json()
+
+
+def test_re_putting_a_link_replaces_it(client):
+    c, videos, outputs, store, *_ = _split(client)
+    assert c.put("/api/matches/p2", json={"part_of": "p1", "sides_swapped": True}
+                 ).status_code == 200
+    assert libathletes.load(store)["matches"]["p2"]["sides_swapped"] is True
+    assert c.get("/api/matches/p1").get_json()["parts"] == [
+        {"stem": "p2", "sides_swapped": True}]
+
+
+def test_clearing_a_primary_unlinks_its_parts(client):
+    c, _v, _o, store, *_ = _split(client, parts=("p2", "p3"))
+    assert c.put("/api/matches/p1", json={}).status_code == 200
+    assert libathletes.load(store)["matches"] == {}
+
+
+def test_a_link_to_an_unknown_video_stem_in_the_url_is_404(client):
+    c, *_ = _split(client)
+    assert c.put("/api/matches/nope", json={"part_of": "p1"}).status_code == 404
+
+
+def test_link_records_do_not_add_to_athlete_match_counts(client):
+    c, *_rest, a, _record = _split(client, parts=("p2", "p3"))
+    counts = {x["id"]: x["matches"] for x in c.get("/api/athletes").get_json()["athletes"]}
+    assert counts[a] == 1
+
+
+def test_delete_all_of_a_primary_unlinks_its_parts(client):
+    c, videos, outputs, store, *_ = _split(client, parts=("p2", "p3"))
+    assert c.post("/api/delete/p1", json={"scope": "all"}).status_code == 200
+    assert libathletes.load(store)["matches"] == {}
+    assert (videos / "p2.mp4").exists()                  # the parts' own videos stay
+    assert c.get("/api/matches/p2").get_json() == {}
+
+
+def test_delete_all_of_a_part_only_removes_its_own_link(client):
+    c, videos, outputs, store, *_ = _split(client, parts=("p2", "p3"))
+    assert c.post("/api/delete/p2", json={"scope": "all"}).status_code == 200
+    assert sorted(libathletes.load(store)["matches"]) == ["p1", "p3"]
+    assert c.get("/api/matches/p1").get_json()["parts"] == [
+        {"stem": "p3", "sides_swapped": False}]
+
+
+def test_delete_of_a_primary_removes_dangling_links_without_a_record(client):
+    c, videos, outputs, store, *_ = _split(client)
+    data = libathletes.load(store)
+    del data["matches"]["p1"]                           # a hand-edited store: link only
+    libathletes.save(data, store)
+    assert c.post("/api/delete/p1", json={"scope": "all"}).status_code == 200
+    assert libathletes.load(store)["matches"] == {}
+
+
+def test_delete_of_results_only_keeps_the_links(client):
+    c, videos, outputs, store, *_ = _split(client)
+    assert c.post("/api/delete/p1", json={"scope": "match"}).status_code == 200
+    assert sorted(libathletes.load(store)["matches"]) == ["p1", "p2"]
+
+
+def test_delete_all_of_an_unrelated_video_does_not_write_the_store(client, monkeypatch):
+    c, videos, outputs, store, *_ = _split(client)
+    _video(videos, outputs, "solo")
+    saved = []
+    monkeypatch.setattr(libathletes, "save", lambda *a, **k: saved.append(a))
+    assert c.post("/api/delete/solo", json={"scope": "all"}).status_code == 200
+    assert saved == []
+
+
+def test_delete_of_a_primary_on_a_corrupt_store_is_skipped(client):
+    c, videos, outputs, store = client
+    for stem in ("p1", "p2"):
+        _video(videos, outputs, stem)
+    before = _corrupt_store(store)
+    assert c.post("/api/delete/p1", json={"scope": "all"}).status_code == 200
+    assert store.read_bytes() == before

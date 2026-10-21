@@ -1303,6 +1303,10 @@ def _forget_match_record(stem):
     files are already gone), writes only when a record exists, and skips a
     corrupt or unreadable store entirely -- no write, no backup -- since a
     video delete carries no data worth replacing the file for.
+
+    A deleted primary of a split match takes its parts' links with it (they would
+    dangle); the parts' own videos and analyses are untouched, they are just no
+    longer linked. A deleted part only loses its own link.
     """
     with _ATHLETES_LOCK:
         try:
@@ -1310,7 +1314,7 @@ def _forget_match_record(stem):
         except (libathletes.StoreCorrupt, OSError) as exc:
             print(f'Match record cleanup skipped for {stem}: {type(exc).__name__}')
             return
-        if stem not in data['matches']:
+        if stem not in data['matches'] and not libathletes.has_parts(data, stem):
             return
         try:
             libathletes.save(libathletes.set_match(data, stem, None), ATHLETES_PATH)
