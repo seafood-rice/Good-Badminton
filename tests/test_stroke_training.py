@@ -66,3 +66,20 @@ def test_train_smoke_writes_loadable_model(tmp_path):
     assert 0.0 <= loaded["unknown_threshold"] < 1.0
     assert loaded["train_counts"]["smash"] == 2 and loaded["val_matches"] == ["M2"]
     assert "val_metrics" in loaded and loaded["validated_on_owner_footage"] is False
+
+
+def test_load_dji_reports_skipped_rows(tmp_path, capsys):
+    res = tmp_path / "res"
+    (res / "A").mkdir(parents=True)
+    save_signals(res / "A" / "hit_signals.npz", _sig())
+    text = sl.write_sheet([
+        {"name": "A", "split": "train", "fps": 30.0, "clip": "A.mp4",
+         "hits": [{"frame": 61, "time_sec": 2.0, "hitter": "lower"},
+                  {"frame": 91, "time_sec": 3.0, "hitter": "lower"}]}])
+    text = text.replace("|  | 61 |", "| lift | 61 |").replace("|  | 91 |", "| lift | 91 |")
+    text = text.replace("| 3.0000 | near |", "| 3.0000 |  |")
+    sheet = tmp_path / "LABELS.md"
+    sheet.write_text(text, encoding="utf-8")
+    rallies = tsc.load_dji(str(sheet), str(res))
+    assert len(rallies[0].hits) == 1
+    assert "A: skipped 1 labelled row(s) without player or frame" in capsys.readouterr().out

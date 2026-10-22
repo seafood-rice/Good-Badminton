@@ -65,8 +65,12 @@ def main(argv=None):
         if not is_current(payload):
             print(f"{name}: strokes.json missing or from the old classifier; re-label it first")
             return 2
-        with open(os.path.join(a.results_dir, name, "hits.json"), encoding="utf-8") as fh:
-            fps = float(json.load(fh)["fps"])
+        try:
+            with open(os.path.join(a.results_dir, name, "hits.json"), encoding="utf-8") as fh:
+                fps = float(json.load(fh)["fps"])
+        except (OSError, ValueError, KeyError, TypeError):
+            print(f"{name}: hits.json missing or unreadable; re-run the analysis")
+            return 2
         pv, mv = match(sl.labelled_hits(entry), payload["strokes"], fps, a.tol)
         pairs += pv
         missed += mv

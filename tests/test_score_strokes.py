@@ -55,3 +55,10 @@ def test_cli_rejects_stale_strokes(tmp_path):
     _result(tmp_path, "V", [{"frame": 31, "hitter": "lower", "stroke": "net"}], schema=None)
     r = _run(tmp_path)
     assert r.returncode == 2 and "re-label" in (r.stdout + r.stderr)
+
+
+def test_cli_missing_hits_json_exits_2(tmp_path):
+    _result(tmp_path, "V", [{"frame": 31, "hitter": "lower", "stroke": "smash"}])
+    os.remove(tmp_path / "res" / "V" / "hits.json")
+    r = _run(tmp_path)
+    assert r.returncode == 2 and "hits.json missing or unreadable" in r.stdout

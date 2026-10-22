@@ -70,8 +70,11 @@ def load_dji(sheet_path, results_dir, split="train", only=None):
     for name, entry in sheet.items():
         if entry["split"] != "train" or (only is not None and name not in only):
             continue
+        labelled = list(sl.labelled_hits(entry))
         hits = [{"frame": h["frame"], "hitter": h["hitter"], "stroke": h["stroke"]}
-                for h in sl.labelled_hits(entry) if h["hitter"] and h["frame"]]
+                for h in labelled if h["hitter"] and h["frame"]]
+        if len(labelled) > len(hits):
+            print(f"{name}: skipped {len(labelled) - len(hits)} labelled row(s) without player or frame")
         if hits:
             sig = load_signals(os.path.join(results_dir, name, "hit_signals.npz"))
             rallies.append(Rally(sig, hits, f"dji:{name}"))
@@ -167,9 +170,14 @@ def main(argv=None):
     p.add_argument("--device")
     p.add_argument("--out", default=os.path.join(ROOT, "weights", "stroke-classifier.pt"))
     a = p.parse_args(argv)
+    if a.epochs < 1:
+        p.error("--epochs must be at least 1")
     shuttle = [r for d in a.dataset for r in load_shuttleset(d)]
     dji = load_dji(a.dji_labels, a.results_dir) if a.dji_labels else []
     calib = {f"dji:{v}" for v in a.calib_video}
+    for v in a.calib_video:
+        if f"dji:{v}" not in {r.match for r in dji}:
+            print(f"calibration video {v} not found in the train split; ignored")
     train_r = [r for r in shuttle if r.match != a.val_match] + [r for r in dji if r.match not in calib]
     val_r = [r for r in shuttle if r.match == a.val_match] + [r for r in dji if r.match in calib]
     if not train_r or not val_r:
