@@ -1,4 +1,9 @@
-"""Technique scores per side from the posture reports in ``strokes.jsonl``."""
+"""Technique scores per side from the posture reports in ``strokes.jsonl``.
+
+A report without a ``scored`` key predates the one stroke classifier (spec 2026-10-22
+section 4.6): its label came from the old rule classifier, so it is never counted. When
+every usable report is such a one, the insight is unavailable with ``stale_technique``.
+"""
 import statistics
 
 from . import envelope
@@ -28,10 +33,15 @@ def _side(reports):
 
 def technique_insight(run):
     by_side = {s: [] for s in SIDES}
+    usable = stale = 0
     for r in run.tech_reports or []:
         stroke_type, side = r.get("stroke_type"), r.get("player_side")
         # JSON values may be lists/dicts (unhashable): only strings reach a lookup
         if not isinstance(stroke_type, str) or not isinstance(side, str):
+            continue
+        usable += 1
+        if "scored" not in r:
+            stale += 1
             continue
         if r.get("scored") is False:
             continue
@@ -41,7 +51,7 @@ def technique_insight(run):
             continue
         by_side[side].append((tech, number(r.get("overall_score"))))
     if not any(by_side.values()):
-        return envelope.unavailable("no_technique")
+        return envelope.unavailable("stale_technique" if usable and stale == usable else "no_technique")
 
     sides = {s: _side(reports) if reports else None for s, reports in by_side.items()}
     scored = {t for side in sides.values() if side

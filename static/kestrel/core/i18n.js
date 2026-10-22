@@ -16,7 +16,7 @@ export const STROKE_GROUP = Object.freeze({
 export const REASON_CODES = Object.freeze([
   'no_data', 'no_rallies', 'signal_swing', 'signal_degraded', 'no_strokes_file', 'no_technique', 'few_hits',
   'no_hits', 'unscored_technique', 'no_point_outcome', 'no_results_entered', 'no_benchmark', 'no_positions',
-  'low_stroke_coverage', 'doubles_run', 'not_doubles', 'no_players', 'doubles_degraded', 'doubles_error',
+  'low_stroke_coverage', 'stale_technique', 'doubles_run', 'not_doubles', 'no_players', 'doubles_degraded', 'doubles_error',
 ]);
 
 export const FINDING_CODES = Object.freeze([
@@ -428,6 +428,7 @@ export const STRINGS = {
     'reason.signal_degraded': '没有可靠的信号，只显示粗略的片段窗口。',
     'reason.no_strokes_file': '这个视频还没有击球检测结果。',
     'reason.no_technique': '还没有技术评分报告。',
+    'reason.stale_technique': '技术评分来自旧版击球识别器，请重新标注。',
     'reason.few_hits': '测到的击球次数偏少，结果仅供参考。',
     'reason.no_hits': '击球次数太少，无法计算。',
     'reason.unscored_technique': '部分技术暂无参考区间：{names}。',
@@ -1094,6 +1095,7 @@ export const STRINGS = {
     'reason.signal_degraded': 'No reliable signal, so only coarse windows are shown.',
     'reason.no_strokes_file': 'This video has no stroke detection results yet.',
     'reason.no_technique': 'No technique reports yet.',
+    'reason.stale_technique': 'Technique scores come from the old stroke classifier — re-label this result.',
     'reason.few_hits': 'Few hits were measured, so the result is indicative only.',
     'reason.no_hits': 'Too few hits to calculate this.',
     'reason.unscored_technique': 'Some techniques have no reference range yet: {names}.',

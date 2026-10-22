@@ -57,6 +57,13 @@ export function distributionText(d, lang) {
     .map(function (g) { return pick(GROUP_LABELS[g], lang) + ' ' + groups[g]; }).join(' · ');
 }
 
+// Technique reports (strokes.jsonl, from /api/technique) written before the one stroke classifier
+// carry no `scored` key: their labels came from the old rule classifier, so none is shown.
+export function techniqueStale(d) {
+  var reports = d && Array.isArray(d.strokes) ? d.strokes : [];
+  return reports.some(function (r) { return !r || typeof r !== 'object' || !has(r, 'scored'); });
+}
+
 export function noticeText(kind, lang) { return has(NOTICES, kind) ? pick(NOTICES[kind], lang) : ''; }
 
 export function noReferenceText(lang) { return pick(NO_REFERENCE, lang); }

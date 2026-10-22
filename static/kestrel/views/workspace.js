@@ -126,7 +126,8 @@ function reportModel(rep) {
  * Pure workspace model. Inputs (each optional, any may be malformed):
  *   rallies     rally_segments.json payload ({rallies, detection, fps}) or a bare rallies array
  *   strokes     strokes.json payload ({strokes}) or a bare array of {frame, hitter, stroke, uncertain, confidence}
- *   techReports /api/technique payload ({summary, strokes}) or a bare array of strokes.jsonl reports
+ *   techReports /api/technique payload ({summary, strokes}) or a bare array of strokes.jsonl reports; a report
+ *               without a `scored` key is pre-change output and is never joined
  *   fps         metadata.json video.fps (falls back to the rally payload's, then the sidecar's)
  *   insights    the /api/insights/video sidecar (rally label when there is no rally file)
  *   athleteSide 'upper' | 'lower' | null: strokes by the other side are the opponent's and are never scored
@@ -149,7 +150,9 @@ export function buildWorkspaceModel(input = {}) {
 
   const doubles = obj(insights).match_format === 'doubles';
   const reps = (doubles ? [] : Array.isArray(techReports) ? techReports : Array.isArray(obj(techReports).strokes) ? techReports.strokes : [])
-    .filter((r) => r && typeof r === 'object' && isNum(r.contact_frame) && SIDES.includes(r.player_side));
+    // A report without `scored` predates the one stroke classifier (rule-classifier label): treat it as absent.
+    .filter((r) => r && typeof r === 'object' && Object.prototype.hasOwnProperty.call(r, 'scored')
+      && isNum(r.contact_frame) && SIDES.includes(r.player_side));
 
   // A bare array (test helpers) counts as a current (schema 2) file; an object must say schema 2.
   const sdoc = Array.isArray(strokes) ? null : obj(strokes);

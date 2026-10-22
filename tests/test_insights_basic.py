@@ -471,7 +471,7 @@ _HOSTILE = [["a"], {"k": 1}, 5, None, True]
 @pytest.mark.parametrize("field", ["stroke_type", "player_side"])
 def test_technique_skips_reports_with_non_string_fields(tmp_path, bad, field):
     out = make_run(tmp_path, reports=[("smash", "lower", 80)])
-    good = {"stroke_type": "smash", "player_side": "lower", "overall_score": 80}
+    good = {"stroke_type": "smash", "player_side": "lower", "overall_score": 80, "scored": True}
     with open(out / "strokes.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(dict(good, **{field: bad})) + "\n")
     ins = technique_insight(load_run(out))
@@ -598,3 +598,20 @@ def test_match_format_with_unreadable_metadata_is_singles(tmp_path):
     out = make_run(tmp_path, "a", match_format="doubles")
     (out / "metadata.json").write_text("{not json", encoding="utf-8")
     assert load_run(out).match_format == "singles"
+
+
+def test_technique_reports_without_scored_key_are_stale(tmp_path):
+    """Pre-change reports (rule classifier, no "scored" key) are never shown or scored."""
+    out = make_run(tmp_path)
+    old = {"stroke_type": "smash", "player_side": "lower", "overall_score": 80}
+    (out / "strokes.jsonl").write_text(json.dumps(old) + "\n", encoding="utf-8")
+    ins = technique_insight(load_run(out))
+    assert ins["status"] == "unavailable" and ins["reason"]["code"] == "stale_technique"
+
+
+def test_technique_stale_reports_skipped_beside_current_ones(tmp_path):
+    out = make_run(tmp_path, reports=[("smash", "lower", 60)])
+    with open(out / "strokes.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"stroke_type": "smash", "player_side": "lower", "overall_score": 100}) + "\n")
+    side = technique_insight(load_run(out))["value"]["by_side"]["lower"]
+    assert side["techniques"]["smash"] == {"count": 1, "avg_score": 60.0}

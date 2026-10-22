@@ -46,12 +46,12 @@ function strokesPayload() {
 function reports() {
   return [
     // 2 frames after the lower smash at 800: joins it
-    { stroke_type: 'smash', contact_frame: 16 * FPS + 2, player_side: 'lower', overall_score: 81.5,
+    { stroke_type: 'smash', contact_frame: 16 * FPS + 2, player_side: 'lower', scored: true, overall_score: 81.5,
       per_metric: { elbow_extension: { measured: 150, score: 90, ideal_range: [140, 160] } } },
     // right frame, wrong side for the upper clear at 600: must NOT join it
-    { stroke_type: 'high_clear', contact_frame: 12 * FPS, player_side: 'lower', overall_score: 40 },
+    { stroke_type: 'high_clear', contact_frame: 12 * FPS, player_side: 'lower', scored: true, overall_score: 40 },
     // right side, 5 frames off the lower serve at 150: too far, must NOT join
-    { stroke_type: 'serve', contact_frame: 3 * FPS + 5, player_side: 'lower', overall_score: 77 },
+    { stroke_type: 'serve', contact_frame: 3 * FPS + 5, player_side: 'lower', scored: true, overall_score: 77 },
   ];
 }
 
@@ -96,7 +96,7 @@ test('workspace: technique reports join by contact_frame within 3 frames AND pla
 test('workspace: opponent strokes are shown but never scored; uncertain strokes are labelled uncertain', () => {
   const m = buildWorkspaceModel({
     rallies: rallyPayload(), strokes: strokesPayload(),
-    techReports: [...reports(), { stroke_type: 'high_clear', contact_frame: 12 * FPS + 1, player_side: 'upper', overall_score: 66 }],
+    techReports: [...reports(), { stroke_type: 'high_clear', contact_frame: 12 * FPS + 1, player_side: 'upper', scored: true, overall_score: 66 }],
     fps: FPS, insights: null, athleteSide: 'lower',
   });
   const clear = m.strokes.find((s) => s.frame === 12 * FPS);
@@ -110,7 +110,7 @@ test('workspace: opponent strokes are shown but never scored; uncertain strokes 
   // with no selected athlete both sides are scored
   const both = buildWorkspaceModel({
     rallies: rallyPayload(), strokes: strokesPayload(),
-    techReports: [{ stroke_type: 'high_clear', contact_frame: 12 * FPS + 1, player_side: 'upper', overall_score: 66 }], fps: FPS,
+    techReports: [{ stroke_type: 'high_clear', contact_frame: 12 * FPS + 1, player_side: 'upper', scored: true, overall_score: 66 }], fps: FPS,
   });
   assert.equal(both.strokes.find((s) => s.frame === 12 * FPS).score, 66);
 });
@@ -557,9 +557,9 @@ test('listScore: the list shows a score only when the joined report is for the s
       { frame: 14 * FPS, hitter: 'lower', stroke: 'unknown', group: null },
     ] },
     techReports: [
-      { stroke_type: 'high_clear', contact_frame: 24 * FPS + 1, player_side: 'upper', overall_score: 66 },
-      { stroke_type: 'smash', contact_frame: 16 * FPS, player_side: 'lower', overall_score: 81.5 },
-      { stroke_type: 'drop_shot', contact_frame: 14 * FPS, player_side: 'lower', overall_score: 50 },
+      { stroke_type: 'high_clear', contact_frame: 24 * FPS + 1, player_side: 'upper', scored: true, overall_score: 66 },
+      { stroke_type: 'smash', contact_frame: 16 * FPS, player_side: 'lower', scored: true, overall_score: 81.5 },
+      { stroke_type: 'drop_shot', contact_frame: 14 * FPS, player_side: 'lower', scored: true, overall_score: 50 },
     ],
   });
   const by = Object.fromEntries(m.strokes.map((s) => [s.frame, s]));
@@ -635,7 +635,7 @@ test('peekModel: a doubles run has no per-player score, even from a stale sideca
 });
 
 test('buildWorkspaceModel: a doubles run joins no technique score to a stroke', () => {
-  const reps = [{ contact_frame: 100, player_side: 'lower', overall_score: 88, stroke_type: 'smash', per_metric: {} }];
+  const reps = [{ contact_frame: 100, player_side: 'lower', scored: true, overall_score: 88, stroke_type: 'smash', per_metric: {} }];
   const strokes = { strokes: [{ frame: 100, hitter: 'lower', stroke: 'smash', uncertain: false }] };
   const singles = buildWorkspaceModel({ rallies: rallyPayload(), strokes, techReports: reps, fps: FPS, insights: { match_format: 'singles' } });
   assert.equal(singles.summary.doubles, false);
@@ -799,4 +799,15 @@ test('technique report joins with the same stroke type', () => {
   const m = buildWorkspaceModel({ strokes, techReports, fps: 30 });
   assert.equal(m.strokes[0].report.technique, 'clear');
   assert.equal(m.strokes[0].report.rawType, 'clear');
+});
+
+test('a technique report without `scored` (pre-change, rule classifier) is never joined', () => {
+  const strokes = { schema: 2, classifier: {}, strokes: [{ frame: 30, hitter: 'lower', stroke: 'clear', group: 'clear' }] };
+  const old = [{ contact_frame: 30, player_side: 'lower', stroke_type: 'high_clear', overall_score: 70 }];
+  const m = buildWorkspaceModel({ strokes, techReports: old, fps: 30 });
+  assert.equal(m.strokes[0].report, null);
+  assert.equal(m.strokes[0].score, null);
+  const both = buildWorkspaceModel({ strokes, techReports: { summary: {}, strokes: [...old,
+    { contact_frame: 31, player_side: 'lower', stroke_type: 'clear', group: 'clear', scored: true, overall_score: 55 }] }, fps: 30 });
+  assert.equal(both.strokes[0].report.overall, 55);
 });

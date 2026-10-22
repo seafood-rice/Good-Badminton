@@ -1282,17 +1282,19 @@ var Kestrel = (function () {
     fetch('/api/technique/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       var status = document.getElementById('tech-status');
       if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = techEmptyText(); return; }
+      // Old reports (no `scored` key) hold rule-classifier labels: show the re-label notice, never them.
+      if (LS.techniqueStale(d)) { status.textContent = LS.noticeText('stale', state.lang); return; }
       status.style.display = 'none';
       var s = d.summary;
       var chips = Object.keys(s.by_type || {}).map(function (k) {
-        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + techniqueLabel(k) + '</b> ' + bt.count + '× · ' + (bt.avg_score == null ? '—' : Math.round(bt.avg_score)) + '</span>'; }).join('');
+        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + escHTML(techniqueLabel(k)) + '</b> ' + bt.count + '× · ' + (bt.avg_score == null ? '—' : Math.round(bt.avg_score)) + '</span>'; }).join('');
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       document.getElementById('tech-summary').innerHTML =
         '<div class="tech-sum"><div class="mono">' + (zh?'击球数':'Strokes') + ': ' + s.stroke_count + '</div>' +
         '<div class="chip-row">' + chips + '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') + '</div>';
       var strokes = d.strokes || [];
       document.getElementById('tech-strokes').innerHTML = strokes.map(function (st, i) {
-        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + techniqueLabel(st.stroke_type) + '</span>' +
+        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + escHTML(techniqueLabel(st.stroke_type)) + '</span>' +
           scoreChipHTML(st.overall_score, st.scored) + '</button>'; }).join('');
       document.querySelectorAll('.stroke-row').forEach(function (b) { b.onclick = function () {
         document.querySelectorAll('.stroke-row').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');

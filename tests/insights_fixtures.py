@@ -128,7 +128,7 @@ def make_run(tmp_path, stem="clip", *, fps=30.0, frames=0, rallies=None, hits=No
     if reports is not None:
         lines = [json.dumps({"stroke_type": t, "contact_frame": i * 30,
                              "player_side": side, "confidence": 0.5,
-                             "overall_score": score, "per_metric": {}})
+                             "overall_score": score, "scored": True, "per_metric": {}})
                  for i, (t, side, score) in enumerate(reports)]
         (out / "strokes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
