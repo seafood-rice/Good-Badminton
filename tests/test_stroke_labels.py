@@ -87,3 +87,26 @@ def test_cli_writes_sheet_from_results(tmp_path):
     assert r.returncode == 0, r.stderr
     sheet = sl.parse_sheet((out / "LABELS.md").read_text(encoding="utf-8"))
     assert sheet["V1"]["split"] == "test" and sheet["V1"]["rows"][0]["frame"] == 31
+
+
+def test_parse_rejects_malformed_time_cell():
+    text = sl.write_sheet(VIDEOS[:1]) + "| 4.2s | near | smash |  |  |\n"
+    with pytest.raises(ValueError, match=r"Dji 2026 0007 D.*4\.2s"):
+        sl.parse_sheet(text)
+
+
+def test_corrected_time_overrides_stale_frame():
+    text = _fill(sl.write_sheet(VIDEOS[:1]), ["smash", "smash"])
+    text = text.replace("| 1.0000 |", "| 2.0000 |", 1)      # owner corrects row 1 to 2.0 s
+    hits = sl.labelled_hits(sl.parse_sheet(text)["Dji 2026 0007 D"])
+    assert [h["frame"] for h in hits] == [121, 121]
+    agree = {"fps": 60.0, "rows": [{"t": 2.0, "player": "far", "stroke": "smash",
+                                    "frame": 122, "status": "labelled"}]}
+    assert sl.labelled_hits(agree)[0]["frame"] == 122
+
+
+def test_indented_rows_parse():
+    text = ("### A (split: test)\nclip: `A.mp4` · fps 30.0000\n\n"
+            "  | 1.0000 | near | smash | 31 |  |\n")
+    rows = sl.parse_sheet(text)["A"]["rows"]
+    assert [(r["t"], r["stroke"], r["frame"]) for r in rows] == [(1.0, "smash", 31)]

@@ -13,6 +13,7 @@ SPLITS = ("train", "test")
 _HEADING = re.compile(r"^###\s+(.+?)\s+\(split:\s*([^)]*?)\s*\)\s*$")
 _FPS = re.compile(r"fps\s+([\d.]+)")
 _NUMBER = re.compile(r"^\d+(\.\d+)?$")
+_SEPARATOR = re.compile(r"^[-:]+$")
 _SIDE = {"lower": "near", "upper": "far"}
 _HITTER = {"near": "lower", "far": "upper"}
 
@@ -79,12 +80,15 @@ def parse_sheet(text):
         if f:
             sheet[name]["fps"] = float(f.group(1))
             continue
-        if not line.startswith("|"):
+        if not line.strip().startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if not cells or not _NUMBER.match(cells[0]):
-            continue                                  # header, separator or empty row
+        first = cells[0]
+        if first == "" or first.lower() == "hit_sec" or _SEPARATOR.match(first):
+            continue                                  # empty, header or separator row
         where = f"{name} row {line.strip()}"
+        if not _NUMBER.match(first):
+            raise ValueError(f"{where}: hit_sec {first!r} must be a number of seconds")
         player = (cells[1] if len(cells) > 1 else "").lower() or None
         if player not in (None, "near", "far"):
             raise ValueError(f"player {player!r} must be near, far or blank in {where}")
@@ -103,8 +107,10 @@ def labelled_hits(entry):
         if r["status"] != "labelled":
             continue
         frame = r["frame"]
-        if frame is None and fps:
-            frame = int(round(r["t"] * fps)) + 1      # time_sec = (frame - 1) / fps
+        # time_sec = (frame - 1) / fps. A written frame that disagrees with the time (the owner
+        # corrected hit_sec) loses to the time, which is what the owner sees and edits.
+        if fps and (frame is None or abs((frame - 1) / fps - r["t"]) > 1.5 / fps):
+            frame = int(round(r["t"] * fps)) + 1
         out.append({"t": r["t"], "frame": frame, "hitter": _HITTER.get(r["player"]),
                     "stroke": r["stroke"]})
     return out
