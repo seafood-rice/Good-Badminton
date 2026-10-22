@@ -2,11 +2,10 @@
 import statistics
 
 from . import envelope
+from ..stroke.stroke_types import PROFILE_GROUP, group_of
 from .loaders import SIDES, number
 
 TECHNIQUES = ["smash", "clear", "drop", "net", "lift", "drive", "serve"]
-REPORT_TO_TECH = {"high_clear": "clear", "drop_shot": "drop", "smash": "smash", "serve": "serve"}
-"""Report vocabulary -> display technique; net, lift and drive have no reports."""
 REFERENCE = {"lo": 70, "hi": 100, "source": "literature"}
 """A technique's mean score is "inside the reference range" at ``>= lo``."""
 
@@ -34,7 +33,10 @@ def technique_insight(run):
         # JSON values may be lists/dicts (unhashable): only strings reach a lookup
         if not isinstance(stroke_type, str) or not isinstance(side, str):
             continue
-        tech = REPORT_TO_TECH.get(stroke_type)
+        if r.get("scored") is False:
+            continue
+        tech = r.get("group") if isinstance(r.get("group"), str) else (
+            group_of(stroke_type) or PROFILE_GROUP.get(stroke_type))
         if tech is None or side not in by_side:
             continue
         by_side[side].append((tech, number(r.get("overall_score"))))

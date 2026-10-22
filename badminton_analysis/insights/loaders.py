@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..stroke.stroke_classifier import is_current
+
 SIDES = ("upper", "lower")
 
 
@@ -183,8 +185,11 @@ def _load_strokes(out_dir, notes):
     doc = _json_object(out_dir, "strokes.json", notes)
     if doc is None:
         return None, None
-    raw = doc.get("strokes")
     meta = {k: v for k, v in doc.items() if k != "strokes"}
+    if not is_current(doc):
+        notes.append("strokes.json: from the old classifier; re-label")
+        return None, meta
+    raw = doc.get("strokes")
     if not isinstance(raw, list):
         notes.append("strokes.json: no strokes list")
         return None, meta

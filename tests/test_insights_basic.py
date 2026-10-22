@@ -11,7 +11,7 @@ from badminton_analysis.insights.loaders import Run, load_run
 from badminton_analysis.insights.rally import rally_insight, summarise_rally_payload
 from badminton_analysis.insights.strokes import strokes_insight
 from badminton_analysis.insights.technique import (
-    REFERENCE, REPORT_TO_TECH, TECHNIQUES, technique_insight)
+    REFERENCE, TECHNIQUES, technique_insight)
 from tests.insights_fixtures import make_run
 
 
@@ -109,7 +109,7 @@ def test_load_run_skips_bad_hits_and_strokes_and_reports(tmp_path):
         {"frame": 6, "time_sec": "x", "hitter": "lower"},
         {"frame": 7, "time_sec": 0.7, "hitter": "nobody"},
         "junk"]}), encoding="utf-8")
-    (tmp_path / "strokes.json").write_text(json.dumps({"strokes": [{"frame": 1}, 3]}),
+    (tmp_path / "strokes.json").write_text(json.dumps({"schema": 2, "strokes": [{"frame": 1}, 3]}),
                                            encoding="utf-8")
     (tmp_path / "strokes.jsonl").write_text('{"stroke_type": "smash"}\ngarbage\n[1]\n',
                                             encoding="utf-8")
@@ -364,9 +364,9 @@ def test_strokes_threshold_is_inclusive_at_sixty_percent(tmp_path):
         "status"] == "partial"
 
 
-def test_strokes_uncertain_flag_counts_even_with_a_stroke_name(tmp_path):
-    out = make_run(tmp_path, strokes=[{"hitter": "lower", "stroke": "net", "uncertain": True},
-                                      {"hitter": "lower", "stroke": "net", "uncertain": False}])
+def test_strokes_unknown_label_counts_as_uncertain(tmp_path):
+    out = make_run(tmp_path, strokes=[{"hitter": "lower", "stroke": "unknown", "group": None},
+                                      {"hitter": "lower", "stroke": "net_shot", "group": "net"}])
     v = strokes_insight(load_run(out))["value"]
     assert (v["classified"], v["uncertain"]) == (1, 1)
 
@@ -382,8 +382,6 @@ def test_strokes_missing_or_empty_is_unavailable(tmp_path):
 
 def test_technique_constants():
     assert TECHNIQUES == ["smash", "clear", "drop", "net", "lift", "drive", "serve"]
-    assert REPORT_TO_TECH == {"high_clear": "clear", "drop_shot": "drop",
-                              "smash": "smash", "serve": "serve"}
     assert REFERENCE == {"lo": 70, "hi": 100, "source": "literature"}
 
 
@@ -471,10 +469,10 @@ def test_technique_only_hostile_reports_is_unavailable(tmp_path):
 @pytest.mark.parametrize("bad", [["x"], {"k": 1}, 5, None])
 def test_strokes_survive_non_string_hitter_and_stroke(tmp_path, bad):
     out = make_run(tmp_path)
-    (out / "strokes.json").write_text(json.dumps({"strokes": [
-        {"hitter": "lower", "stroke": "net", "uncertain": False},
-        {"hitter": bad, "stroke": "net", "uncertain": False},
-        {"hitter": "upper", "stroke": bad, "uncertain": False}]}), encoding="utf-8")
+    (out / "strokes.json").write_text(json.dumps({"schema": 2, "strokes": [
+        {"hitter": "lower", "stroke": "net_shot", "group": "net"},
+        {"hitter": bad, "stroke": "net_shot", "group": "net"},
+        {"hitter": "upper", "stroke": "net_shot", "group": bad}]}), encoding="utf-8")
     v = strokes_insight(load_run(out))["value"]
     assert v["total"] == 3
     assert v["distribution"] == {"net": 2}            # a non-string stroke is not classified
@@ -547,7 +545,7 @@ def test_strokes_per_hitter_distribution_counts_classified_strokes_of_that_hitte
     out = make_run(tmp_path, strokes=[
         ("upper", "net"), ("upper", "net"), ("upper", "smash"), ("upper", "uncertain"),
         ("lower", "clear"), ("lower", "net"),
-        {"frame": 1, "hitter": "nobody", "stroke": "net", "uncertain": False}])
+        {"frame": 1, "hitter": "nobody", "stroke": "net_shot", "group": "net"}])
     v = strokes_insight(load_run(out))["value"]
     assert v["distribution"] == {"net": 4, "smash": 1, "clear": 1}     # stem-wide, unchanged
     assert v["by_hitter"]["upper"]["distribution"] == {"net": 2, "smash": 1}

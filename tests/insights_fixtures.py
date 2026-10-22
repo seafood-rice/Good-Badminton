@@ -7,6 +7,8 @@ analysed runs.
 import json
 from pathlib import Path
 
+from badminton_analysis.stroke.stroke_types import group_of
+
 NET_Y = 6.7
 BASE = {"upper": (3.05, 3.35), "lower": (3.05, 10.05)}
 
@@ -110,15 +112,17 @@ def make_run(tmp_path, stem="clip", *, fps=30.0, frames=0, rallies=None, hits=No
                 entry = dict(item)
             else:
                 hitter, stroke = item[0], item[1]
+                unknown = stroke == "uncertain"
                 entry = {"frame": item[2] if len(item) > 2 else i * 30,
-                         "hitter": hitter, "stroke": stroke,
-                         "uncertain": stroke == "uncertain"}
+                         "hitter": hitter, "stroke": "unknown" if unknown else stroke,
+                         "group": None if unknown else (group_of(stroke) or stroke),
+                         "confidence": 0.5}
             entries.append(entry)
         distribution = {}
         for e in entries:
-            distribution[e.get("stroke")] = distribution.get(e.get("stroke"), 0) + 1
+            distribution[e.get("group")] = distribution.get(e.get("group"), 0) + 1
         _write_json(out / "strokes.json", {
-            "strokes": entries, "distribution": distribution,
+            "schema": 2, "classifier": None, "strokes": entries, "distribution": distribution,
             "hit_source": "learned", "shuttle_source": "tracknet"})
 
     if reports is not None:

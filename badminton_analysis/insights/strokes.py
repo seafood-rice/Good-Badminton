@@ -1,4 +1,8 @@
-"""Stroke-classification coverage for one run (spec 5.3 "Strokes")."""
+"""Stroke-classification coverage for one run (spec 5.3 "Strokes").
+
+Distributions count the label's technique ``group`` (schema-2 strokes.json), not the
+fine stroke type. A stroke is uncertain when it is "unknown" or has no string group.
+"""
 from . import envelope
 from .loaders import SIDES
 
@@ -7,10 +11,9 @@ OK_COVERAGE = 0.6
 
 
 def _is_uncertain(stroke):
-    """Flagged uncertain, named "uncertain", or without a usable (string) name."""
-    name = stroke.get("stroke")
-    return (bool(stroke.get("uncertain")) or not isinstance(name, str)
-            or not name or name == "uncertain")
+    """Labelled "unknown", or without a usable (string) group."""
+    group = stroke.get("group")
+    return stroke.get("stroke") == "unknown" or not isinstance(group, str) or not group
 
 
 def strokes_insight(run):
@@ -30,10 +33,10 @@ def strokes_insight(run):
             by_hitter[hitter]["classified"] += sure
             if sure:
                 per = by_hitter[hitter]["distribution"]
-                per[s["stroke"]] = per.get(s["stroke"], 0) + 1
+                per[s["group"]] = per.get(s["group"], 0) + 1
         if sure:
             classified += 1
-            name = s.get("stroke")
+            name = s["group"]
             distribution[name] = distribution.get(name, 0) + 1
 
     value = {"total": total, "classified": classified, "uncertain": total - classified,
