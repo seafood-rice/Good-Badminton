@@ -28,6 +28,7 @@ def test_no_model_writes_unknown_with_null_classifier(tmp_path):
     p = _read(tmp_path)
     assert p["schema"] == 2 and p["classifier"] is None
     assert [l["stroke"] for l in labels] == ["unknown"] == [s["stroke"] for s in p["strokes"]]
+    assert p["reason"] == "no stroke model"
 
 
 def test_model_labels_hits(tmp_path):
@@ -37,13 +38,43 @@ def test_model_labels_hits(tmp_path):
     _bare(tmp_path, str(path))._run_stroke_classification()
     p = _read(tmp_path)
     assert p["classifier"]["weights_sha256"] and p["strokes"][0]["stroke"] != "unknown"
+    assert "reason" not in p
 
 
 def test_incompatible_model_is_unknown_not_fatal(tmp_path):
     bad = tmp_path / "w.pt"
     bad.write_bytes(b"not a model")
     _bare(tmp_path, str(bad))._run_stroke_classification()
-    assert _read(tmp_path)["classifier"] is None
+    p = _read(tmp_path)
+    assert p["classifier"] is None and p["reason"].startswith("classifier failed: ")
+
+
+def _weights(tmp_path):
+    path = tmp_path / "w.pt"
+    smod.save_stroke_model(smod.StrokeNet(INPUT_DIM, hidden=8, levels=1), smod.base_meta(8, 1, 0.0), path)
+    return str(path)
+
+
+def test_classify_failure_after_load_is_unknown_with_reason(tmp_path, monkeypatch):
+    from badminton_analysis.stroke import stroke_classifier as sc
+
+    def boom(*_a, **_k):
+        raise RuntimeError("cuda gone")
+    monkeypatch.setattr(sc, "classify_hits", boom)
+    labels = _bare(tmp_path, _weights(tmp_path))._run_stroke_classification()
+    p = _read(tmp_path)
+    assert p["classifier"] is None and p["reason"] == "classifier failed: RuntimeError"
+    assert [l["stroke"] for l in labels] == ["unknown"] == [s["stroke"] for s in p["strokes"]]
+
+
+def test_model_without_hit_signals_says_why(tmp_path, capsys):
+    s = _bare(tmp_path, _weights(tmp_path))
+    s._hit_signals = None
+    s._run_stroke_classification()
+    p = _read(tmp_path)
+    assert p["classifier"] is None and p["reason"] == "hit signals unavailable"
+    assert p["strokes"][0]["stroke"] == "unknown"
+    assert "signals are unavailable" in capsys.readouterr().out
 
 
 def test_withheld_removes_stale_file(tmp_path):

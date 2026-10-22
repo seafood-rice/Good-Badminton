@@ -53,11 +53,15 @@ def classify_hits(sig, hits, model, meta):
     return sorted(labels, key=lambda l: l["frame"])
 
 
-def build_payload(labels, info, hit_source, shuttle_source):
-    return {"schema": STROKES_SCHEMA, "classifier": info, "strokes": labels,
-            "distribution": dict(Counter(l["stroke"] for l in labels)),
-            "groups": dict(Counter(l["group"] for l in labels if l["group"])),
-            "hit_source": hit_source, "shuttle_source": shuttle_source}
+def build_payload(labels, info, hit_source, shuttle_source, reason=None):
+    """The schema-2 strokes.json. ``reason`` (only when given) says why every hit is unknown."""
+    payload = {"schema": STROKES_SCHEMA, "classifier": info, "strokes": labels,
+               "distribution": dict(Counter(l["stroke"] for l in labels)),
+               "groups": dict(Counter(l["group"] for l in labels if l["group"])),
+               "hit_source": hit_source, "shuttle_source": shuttle_source}
+    if reason is not None:
+        payload["reason"] = reason
+    return payload
 
 
 def is_current(payload):

@@ -1,10 +1,13 @@
 """Re-label a finished result with the current stroke classifier (spec 2026-10-22 section 4.6).
 
-  python -m badminton_analysis.stroke.relabel [--weights weights/stroke-classifier.pt] <result_dir>...
+  python -m badminton_analysis.stroke.relabel [--weights weights/stroke-classifier.pt]       [--allow-unknown] <result_dir>...
 
 Uses the saved hit inputs (hit_signals.npz, hits.json), so the video is not re-processed.
 Rewrites strokes.json (schema 2), re-scores strokes.jsonl / technique_summary.json from
 each report's measured metrics, and removes the cached training_plan.json.
+
+Without the weights file a result is left untouched ("skipped": "weights not found"), so
+good labels are never replaced by all-unknown ones; --allow-unknown writes them anyway.
 """
 import argparse
 import json
@@ -29,13 +32,17 @@ def _json(path):
         return None
 
 
-def relabel(result_dir, weights):
+def relabel(result_dir, weights, allow_unknown=False):
     meta = _json(os.path.join(result_dir, "metadata.json")) or {}
     if meta.get("match_format") == "doubles":
         return {"result": result_dir, "skipped": "doubles"}
     det = (_json(os.path.join(result_dir, "rally_segments.json")) or {}).get("detection") or {}
     if det.get("stroke_labels_withheld", bool(det.get("degraded"))):
         return {"result": result_dir, "skipped": "labels withheld"}
+    if not (weights and os.path.isfile(weights)) and not allow_unknown:
+        print(f"{result_dir}: stroke weights not found ({weights}); left untouched "
+              f"(pass --allow-unknown to label every hit unknown)")
+        return {"result": result_dir, "skipped": "weights not found"}
     hits_doc = _json(os.path.join(result_dir, "hits.json"))
     if not hits_doc or not hits_doc.get("hits"):
         return {"result": result_dir, "skipped": "no hits.json"}
@@ -65,7 +72,7 @@ def relabel(result_dir, weights):
                     bad += 1
         if bad:
             print(f"{result_dir}: skipped {bad} unusable line(s) in strokes.jsonl")
-    labels, info = None, None
+    labels, info, reason = None, None, "no stroke model"
     if weights and os.path.isfile(weights):
         try:
             model, mmeta, info = sc.load_classifier(weights)
@@ -74,10 +81,14 @@ def relabel(result_dir, weights):
         except Exception as exc:
             print(f"{result_dir}: classifier unavailable ({exc!r}); every hit is unknown")
             labels, info = None, None
+            reason = f"classifier failed: {type(exc).__name__}"
+        else:
+            reason = None
     if labels is None:
         labels = sc.unknown_labels(hits)
     write_json(os.path.join(result_dir, "strokes.json"),
-               sc.build_payload(labels, info, hits_doc.get("source"), hits_doc.get("shuttle_source")))
+               sc.build_payload(labels, info, hits_doc.get("source"), hits_doc.get("shuttle_source"),
+                                reason=reason))
     by_key = {(l["frame"], l["hitter"]): l for l in labels}
     n_reports = 0
     if reports is not None:
@@ -102,9 +113,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[1].strip())
     p.add_argument("results", nargs="+")
     p.add_argument("--weights", default=DEFAULT_WEIGHTS)
+    p.add_argument("--allow-unknown", action="store_true",
+                   help="without the weights file, still rewrite every hit as unknown")
     a = p.parse_args(argv)
     for d in a.results:
-        print(json.dumps(relabel(d, a.weights)))
+        print(json.dumps(relabel(d, a.weights, allow_unknown=a.allow_unknown)))
     return 0
 
 

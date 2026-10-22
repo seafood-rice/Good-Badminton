@@ -40,12 +40,32 @@ def test_relabel_converts_old_result(tmp_path):
     assert summary["labelled"] == 1 and summary["reports"] == 1
 
 
+def test_relabel_without_weights_refuses_and_leaves_result(tmp_path, capsys):
+    d = tmp_path / "V"
+    _old_result(d)
+    before = {f: (d / f).read_bytes() for f in ("strokes.json", "strokes.jsonl", "training_plan.json")}
+    summary = relabel.relabel(str(d), str(tmp_path / "missing.pt"))
+    assert summary["skipped"] == "weights not found"
+    assert {f: (d / f).read_bytes() for f in before} == before
+    assert "--allow-unknown" in capsys.readouterr().out
+    assert relabel.main(["--weights", str(tmp_path / "missing.pt"), str(d)]) == 0
+    assert {f: (d / f).read_bytes() for f in before} == before
+
+
+def test_relabel_cli_allow_unknown_writes_unknown(tmp_path):
+    d = tmp_path / "V"
+    _old_result(d)
+    relabel.main(["--weights", str(tmp_path / "missing.pt"), "--allow-unknown", str(d)])
+    assert json.loads((d / "strokes.json").read_text(encoding="utf-8"))["strokes"][0]["stroke"] == "unknown"
+
+
 def test_relabel_without_weights_marks_unknown(tmp_path):
     d = tmp_path / "V"
     _old_result(d)
-    relabel.relabel(str(d), str(tmp_path / "missing.pt"))
+    relabel.relabel(str(d), str(tmp_path / "missing.pt"), allow_unknown=True)
     s = json.loads((d / "strokes.json").read_text(encoding="utf-8"))
     assert s["classifier"] is None and s["strokes"][0]["stroke"] == "unknown"
+    assert s["reason"] == "no stroke model"
     rep = json.loads((d / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert rep["scored"] is False
 
@@ -100,7 +120,7 @@ def test_relabel_idempotent_and_keeps_measured(tmp_path, monkeypatch):
     _old_result(d)
     orig = _reports(d)[0]["per_metric"]
     metrics = {k: v["measured"] for k, v in orig.items()}
-    relabel.relabel(str(d), str(tmp_path / "missing.pt"))
+    relabel.relabel(str(d), str(tmp_path / "missing.pt"), allow_unknown=True)
     first = _reports(d)[0]
     assert first["scored"] is False and first["measured"] == metrics
     w = _weights(tmp_path)

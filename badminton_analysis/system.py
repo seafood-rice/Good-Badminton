@@ -1738,21 +1738,28 @@ class BadmintonAnalysisSystem:
         hits = getattr(self, "_hit_list", None)
         if not hits:
             return []
-        labels, info = None, None
+        labels, info, reason = None, None, None
         model_path = getattr(self, "stroke_model_path", None)
         signals = getattr(self, "_hit_signals", None)
-        if model_path and signals is not None:
+        if not model_path:
+            reason = "no stroke model"
+        elif signals is None:
+            reason = "hit signals unavailable"
+            print("Stroke classifier not run, every hit is unknown: the hit detector's "
+                  "per-frame signals are unavailable for this run.")
+        else:
             try:
                 model, meta, info = sc.load_classifier(model_path)
                 labels = sc.classify_hits(signals, hits, model, meta)
             except Exception as exc:
                 print(f"Stroke classifier unavailable, every hit is unknown: {exc!r}")
                 labels, info = None, None
+                reason = f"classifier failed: {type(exc).__name__}"
         if labels is None:
             labels = sc.unknown_labels(hits)
         try:
             _write_json(path, sc.build_payload(labels, info, getattr(self, "_hit_source", None),
-                                               getattr(self, "_shuttle_source", None)))
+                                               getattr(self, "_shuttle_source", None), reason=reason))
             print(f"Stroke classification: {len(labels)} hits -> {path}")
         except Exception as exc:
             print(f"strokes.json could not be written: {exc!r}")

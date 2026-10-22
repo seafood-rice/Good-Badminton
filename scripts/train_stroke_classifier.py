@@ -81,12 +81,19 @@ def load_dji(sheet_path, results_dir, split="train", only=None):
     return rallies
 
 
+HIT_OFFSET_STEPS = 2   # augmented training: each hit moves by up to this many 30 Hz steps
+
+
 def _windows(rally, rng=None):
-    sig, idx = rally.sig, None
+    sig, idx, hits = rally.sig, None, rally.hits
     if rng is not None:
         sig = augment(sig, rng)
         idx = jittered_index(sig.n_frames, sig.fps, rng)
-    X, ok = extract(sig, rally.hits, idx)
+        # the hit detector's frame is not exact: train on hits off by up to +-2 steps
+        offsets = rng.integers(-HIT_OFFSET_STEPS, HIT_OFFSET_STEPS + 1, len(hits))
+        hits = [dict(h, frame=int(h["frame"]) + int(round(o * sig.fps / 30.0)))
+                for h, o in zip(hits, offsets)]
+    X, ok = extract(sig, hits, idx)
     y = np.array([STROKE_TYPES.index(h["stroke"]) for h in rally.hits], np.int64)
     return X[ok], y[ok]
 
