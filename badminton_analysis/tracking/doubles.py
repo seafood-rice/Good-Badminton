@@ -21,7 +21,7 @@ from .multi import Detection, MultiTracker, filter_tracklets
 DOUBLES_OUTPUTS = ("tracklets.jsonl", "players.json")
 DOUBLES_GLOBS = ("heatmap_P*.png", "heatmap_team*.png")
 PLAYERS_VIDEO = "detect_{video_name}_players.mp4"
-STROKES_WITHHELD = "doubles: BST is a singles model"
+STROKES_WITHHELD = "doubles: the stroke classifier is singles-only"
 SPEED_CAP_MPS = 8.0
 JITTER_M = 0.05
 NAMED_EVIDENCE = ("shuttle", "swing")

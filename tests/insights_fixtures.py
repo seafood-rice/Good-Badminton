@@ -379,7 +379,7 @@ def make_doubles_run(tmp_path, stem="doubles", *, status="ok", players=_DEFAULT,
                              "hits_named_share": (round(named / len(listed), 4) if listed
                                                   else 0.0),
                              "hits_single_candidate": 0},
-                   "stroke_labels_withheld": "doubles: BST is a singles model",
+                   "stroke_labels_withheld": "doubles: the stroke classifier is singles-only",
                    "validated": False}
         if identity_video is _DEFAULT:
             identity_video = {"status": "ok", "file": f"detect_{stem}_players.mp4",
