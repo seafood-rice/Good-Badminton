@@ -50,7 +50,7 @@ def test_build_match_summary_counts_strengths():
     reports = [
         _report("smash", 80, [], strong_metrics=["elbow_extension", "knee_flexion"]),
         _report("smash", 60, [], strong_metrics=["elbow_extension"]),
-        _report("serve", None, [], strong_metrics=["wrist_snap"]),
+        _report("serve", 70, [], strong_metrics=["wrist_snap"]),
     ]
     summary = build_match_summary(reports)
     assert summary["stroke_count"] == 3

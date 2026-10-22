@@ -2031,25 +2031,6 @@ class TechniqueAnalysisRunner:
         except Exception:
             return None
 
-    def _build_classifier_window(self, contact_frame, window_start, window_end, frame_lookup):
-        racket_head, nose, shoulder, hip, elbow_angle, centroid = [], [], [], [], [], []
-        contact_index = 0
-        for offset, idx in enumerate(range(window_start, window_end + 1)):
-            rec = frame_lookup(idx) or {}
-            if idx == contact_frame:
-                contact_index = offset
-            racket_head.append(rec.get("racket_head"))
-            nose.append(rec.get("nose"))
-            shoulder.append(rec.get("shoulder"))
-            hip.append(rec.get("hip"))
-            elbow_angle.append(rec.get("elbow_angle"))
-            centroid.append(rec.get("centroid"))
-        return {
-            "contact_index": contact_index, "racket_head": racket_head, "nose": nose,
-            "shoulder": shoulder, "hip": hip, "elbow_angle": elbow_angle,
-            "centroid": centroid, "fps": self.fps,
-        }
-
     def _window_frames(self, window_start, window_end, frame_lookup):
         frames = []
         for idx in range(window_start, window_end + 1):
@@ -2065,11 +2046,11 @@ class TechniqueAnalysisRunner:
             })
         return frames
 
-    def run(self, track, frame_lookup, hits=None):
+    def run(self, track, frame_lookup, hits=None, strokes=None):
         """``hits`` (optional): the shared hit list, already filtered to the player this
-        runner analyses; when given it replaces the contact rule."""
+        runner analyses; when given it replaces the contact rule. ``strokes``
+        (optional): frame -> shared label; a hit without a label is ``unknown``."""
         from .stroke.events import CONTACT_M, detect_contacts, StrokeEvent
-        from .stroke.classifier import classify_stroke
         if hits is None:
             contacts = detect_contacts(
                 track, window_pre=self.window_pre, window_post=self.window_post,
@@ -2083,9 +2064,9 @@ class TechniqueAnalysisRunner:
         reports = []
         events = []
         for c in contacts:
-            cw = self._build_classifier_window(
-                c["contact_frame"], c["window_start"], c["window_end"], frame_lookup)
-            stroke_type, conf = classify_stroke(cw)
+            label = (strokes or {}).get(c["contact_frame"]) or {}
+            stroke_type = label.get("stroke") or "unknown"
+            conf = label.get("confidence")
             # player_side from the contact frame's centroid if available, else "unknown"
             contact_rec = frame_lookup(c["contact_frame"]) or {}
             side = contact_rec.get("player_side", "unknown")

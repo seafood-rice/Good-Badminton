@@ -52,5 +52,9 @@ def test_runner_produces_one_report_per_contact():
     reports, events = runner.run(track, frame_lookup)
     assert len(reports) == 1
     assert len(events) == 1
-    assert reports[0]["stroke_type"] in {"high_clear", "smash", "drop_shot", "serve"}
+    # No shared label for the contact: labelled unknown, not scored.
+    assert reports[0]["stroke_type"] == "unknown" and reports[0]["scored"] is False
+    reports, events = runner.run(
+        track, frame_lookup, strokes={contact_frame: {"stroke": "smash", "confidence": 0.8}})
+    assert reports[0]["stroke_type"] == "smash" and reports[0]["scored"] is True
     assert "overall_score" in reports[0]
