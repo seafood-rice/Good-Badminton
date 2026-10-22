@@ -174,3 +174,16 @@ def detect_contacts_multi(track, contact_px=80.0, contact_m=None, scale=None,
         })
         last_contact_frame[best_side] = frame
     return contacts
+
+
+def hit_events(track):
+    """Derive ``[{"frame": int, "hitter": "lower"|"upper"}, ...]`` from a
+    both-player contact track (``{frame, racket_lower, racket_upper, shuttle}``
+    records), sorted by frame ascending (sorted explicitly rather than relying
+    on ``detect_contacts_multi`` / the input track already being in frame
+    order). The hitter comes straight from ``detect_contacts_multi``'s
+    shuttle-proximity attribution.
+    """
+    contacts = detect_contacts_multi(track)
+    events = [{"frame": c["contact_frame"], "hitter": c["hitter"]} for c in contacts]
+    return sorted(events, key=lambda e: e["frame"])

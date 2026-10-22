@@ -1321,7 +1321,7 @@ def test_the_constructor_accepts_rally_signal_and_defaults_to_auto():
 def test_process_video_writes_segments_after_the_frame_loop():
     src = inspect.getsource(sysmod.BadmintonAnalysisSystem.process_video)
     assert (src.index("self._process_frame(") < src.index("self._write_rally_segments(")
-            < src.index("self._run_stroke_recognition("))
+            < src.index("self._run_stroke_classification("))
 
 
 # --- R20: rally_signal="courtview" reproduces today's rally_segments.json ----------
@@ -1419,27 +1419,26 @@ def test_the_courtview_pin_never_calls_the_segmenter(tmp_path, monkeypatch):
 # --- Task 10: a degraded segmentation withholds stroke labels (§12a-C) -------
 
 def _bare_system_for_recognition(tmp_path, monkeypatch, rally_detection, missing=False):
-    """A bare instance whose BST recognizer is a recording fake."""
-    from badminton_analysis.stroke_recog import recognizer as recog_mod
+    """A bare instance with a shared hit list whose stroke labelling is recorded."""
+    from badminton_analysis.stroke import stroke_classifier as sc
 
     calls = []
+    real_unknown = sc.unknown_labels
 
-    class _FakeRecognizer:
-        def __init__(self, weights):
-            calls.append(("init", weights))
+    def _recording_unknown(hits):
+        calls.append(("classify",))
+        return real_unknown(hits)
 
-        def label_rally(self, *args, **kwargs):
-            calls.append(("label_rally",))
-            return [{"stroke": "smash"}, {"stroke": "smash"}, {"stroke": "clear"}]
-
-    monkeypatch.setattr(recog_mod, "StrokeRecognizer", _FakeRecognizer)
+    monkeypatch.setattr(sc, "unknown_labels", _recording_unknown)
     # write_json is a lazily-loaded runtime global of system.py (set by
     # load_runtime_dependencies); supply it so this test passes when run alone.
     from badminton_analysis.data.writer import write_json as _real_write_json
     monkeypatch.setattr(sysmod, "write_json", _real_write_json, raising=False)
     s = sysmod.BadmintonAnalysisSystem.__new__(sysmod.BadmintonAnalysisSystem)
     s.save_dir = str(tmp_path)
-    s.bst_weights = "weights/bst.pt"        # pretend weights exist
+    s.stroke_model_path = None              # no model: every hit is "unknown"
+    s._hit_list = [{"frame": f, "hitter": "lower", "confidence": None} for f in (10, 40, 70)]
+    s._hit_signals, s._hit_source = None, "contact_rule"
     s._analysis_track_both = []
     s._analysis_frames = {}
     s.court_corners = DJI_QUAD
@@ -1450,15 +1449,15 @@ def _bare_system_for_recognition(tmp_path, monkeypatch, rally_detection, missing
     return s, calls
 
 
-def test_degraded_segmentation_skips_stroke_recognition(tmp_path, monkeypatch, capsys):
+def test_degraded_segmentation_skips_stroke_classification(tmp_path, monkeypatch, capsys):
     """Labels over windows that are not rallies would be noise presented as strokes."""
     s, calls = _bare_system_for_recognition(
         tmp_path, monkeypatch,
         {"signal": "none", "degraded": True, "reason": "no usable signal"})
 
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
 
-    assert calls == []                       # the recognizer was never built or run
+    assert calls == []                       # the classifier never ran
     assert not (tmp_path / "strokes.json").exists()
     out = capsys.readouterr().out.lower()
     assert "stroke labels withheld" in out
@@ -1471,9 +1470,9 @@ def test_non_degraded_segmentation_does_not_block_recognition(tmp_path, monkeypa
         tmp_path, monkeypatch,
         {"signal": "shuttle", "degraded": False, "reason": "dense"})
 
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
 
-    assert ("label_rally",) in calls
+    assert ("classify",) in calls
     assert (tmp_path / "strokes.json").exists()
     assert "withheld" not in capsys.readouterr().out.lower()
 
@@ -1484,9 +1483,9 @@ def test_segmenter_error_is_not_degraded_recognition_still_runs(tmp_path, monkey
         tmp_path, monkeypatch,
         {"signal": "error", "degraded": False, "error": True, "reason": "ValueError"})
 
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
 
-    assert ("label_rally",) in calls
+    assert ("classify",) in calls
     assert (tmp_path / "strokes.json").exists()
     assert "withheld" not in capsys.readouterr().out.lower()
 
@@ -1496,9 +1495,9 @@ def test_missing_rally_detection_recognition_runs_as_before(tmp_path, monkeypatc
     s, calls = _bare_system_for_recognition(tmp_path, monkeypatch, None, missing=True)
     assert not hasattr(s, "rally_detection")
 
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
 
-    assert ("label_rally",) in calls
+    assert ("classify",) in calls
     assert (tmp_path / "strokes.json").exists()
     assert "withheld" not in capsys.readouterr().out.lower()
 
@@ -1570,9 +1569,9 @@ def test_a_segmenter_error_does_not_withhold_stroke_labels(tmp_path, monkeypatch
     assert s.rally_detection["stroke_labels_withheld"] is False
     capsys.readouterr()
 
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
 
-    assert ("label_rally",) in calls                  # recognition was reached
+    assert ("classify",) in calls                  # recognition was reached
     assert "stale" not in (tmp_path / "strokes.json").read_text(encoding="utf-8")
     assert "withheld" not in capsys.readouterr().out.lower()
 
@@ -1583,7 +1582,7 @@ def test_recognition_follows_the_recorded_withheld_flag(tmp_path, monkeypatch, c
         tmp_path, monkeypatch,
         {"signal": "swing", "degraded": False, "stroke_labels_withheld": True,
          "reason": "r"})
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
     assert calls == [] and "withheld" in capsys.readouterr().out.lower()
 
 
@@ -1599,7 +1598,7 @@ def test_withholding_removes_the_previous_runs_stroke_labels(tmp_path, monkeypat
     summary = tmp_path / "technique_summary.json"
     summary.write_text("{}", encoding="utf-8")
 
-    s._run_stroke_recognition()
+    s._run_stroke_classification()
 
     assert calls == []
     assert not (tmp_path / "strokes.json").exists()
@@ -1615,6 +1614,6 @@ def test_a_failed_removal_of_stale_labels_is_logged_and_not_fatal(tmp_path, monk
         raise PermissionError("in use")
 
     monkeypatch.setattr(sysmod.os, "remove", _locked)
-    s._run_stroke_recognition()                       # must not raise
+    s._run_stroke_classification()                       # must not raise
     out = capsys.readouterr().out
     assert "strokes.json" in out and "withheld" in out.lower()

@@ -1,6 +1,6 @@
 """Tests for hit/hitter extraction from the both-player contact track.
 
-See badminton_analysis/stroke_recog/hits.py and
+See badminton_analysis/stroke/events.py::hit_events and
 badminton_analysis/stroke/events.py::detect_contacts_multi. Pre-B1, hitter
 came from a frame_lookup's cached "player_side" (~always "lower" in a real
 match -- the known bug). Post-B1, hitter comes directly from
@@ -8,7 +8,8 @@ detect_contacts_multi's own shuttle-proximity attribution, so it no longer
 depends on frame_lookup / pose data being available at all.
 """
 
-from badminton_analysis.stroke_recog import hits
+from badminton_analysis.stroke import events as events_mod
+from badminton_analysis.stroke.events import hit_events
 
 
 def _shuttle_pos(f, first, second):
@@ -35,7 +36,7 @@ def _track_with_two_contacts(first=30, second=90, n=120, first_side="lower", sec
 
 def test_hit_events_attributes_hitter_from_contact_track_not_lookup():
     track = _track_with_two_contacts(30, 90, first_side="lower", second_side="upper")
-    events = hits.hit_events(track)
+    events = hit_events(track)
     assert len(events) == 2
     assert [e["frame"] for e in events] == sorted(e["frame"] for e in events)
     assert events[0]["frame"] == 30 and events[0]["hitter"] == "lower"
@@ -46,23 +47,23 @@ def test_hit_events_upper_only_hits_now_register():
     """The pre-B1 regression target: an upper-court-only rally must yield
     hitter == "upper", not be silently dropped or misattributed to "lower"."""
     track = _track_with_two_contacts(30, 90, first_side="upper", second_side="upper")
-    events = hits.hit_events(track)
+    events = hit_events(track)
     assert len(events) == 2
     assert all(e["hitter"] == "upper" for e in events)
 
 
 def test_hit_events_empty_track_returns_empty_list():
-    assert hits.hit_events([]) == []
+    assert hit_events([]) == []
 
 
 def test_hit_events_sorted_by_frame_even_if_contacts_unordered(monkeypatch):
     monkeypatch.setattr(
-        hits, "detect_contacts_multi",
+        events_mod, "detect_contacts_multi",
         lambda track: [
             {"contact_frame": 90, "hitter": "upper"},
             {"contact_frame": 30, "hitter": "lower"},
             {"contact_frame": 60, "hitter": "lower"},
         ],
     )
-    events = hits.hit_events([])
+    events = hit_events([])
     assert [e["frame"] for e in events] == [30, 60, 90]

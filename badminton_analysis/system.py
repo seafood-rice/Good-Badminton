@@ -290,7 +290,7 @@ class BadmintonAnalysisSystem:
                  pose_mode='balanced', pose_family='rtmpose',
                  yolo_pose_model='yolo11n-pose.pt', show_pose_roi=True,
                  analyze_technique=False, racket_model_path=None, dominant_hand="right",
-                 bst_weights=None, tracknet_weights=None, inpaintnet_weights=None,
+                 stroke_model_path=None, tracknet_weights=None, inpaintnet_weights=None,
                  tracknet_mode="weight",
                  analysis_quality="accurate", court_view_threshold=None,
                  rally_signal="auto", hit_model_path=None,
@@ -332,14 +332,14 @@ class BadmintonAnalysisSystem:
             self.analyze_technique = False  # dense analytics need every frame
         self.racket_model_path = racket_model_path
         self.dominant_hand = dominant_hand
-        self.bst_weights = bst_weights
+        self.stroke_model_path = stroke_model_path
         self.tracknet_weights = tracknet_weights
         self.inpaintnet_weights = inpaintnet_weights
         self.tracknet_mode = self._normalize_tracknet_mode(tracknet_mode)
         self._shuttle_trajectory = None
         self._shuttle_source = "yolo"
         self._analysis_track = []   # contact detection track
-        self._analysis_track_both = []  # both-player contact track (contacts/BST only)
+        self._analysis_track_both = []  # both-player contact track (contacts and hit list)
         # Per-court-frame track for post-loop rally segmentation. Recorded on EVERY
         # run (technique analysis on or off, fast or accurate), unlike the two
         # tracks above: it is what makes rally windows computable afterwards.
@@ -536,13 +536,13 @@ class BadmintonAnalysisSystem:
         print(f"处理速度比: {processing_time/video_duration:.2f}x")
 
         self._write_progress("visualizing")
-        hits = self._run_hit_detection(fps, frame_count)
+        self._run_hit_detection(fps, frame_count)
         if self.match_format == "doubles":
             self._withhold_singles_outputs_for_doubles()
         else:
+            labels = self._run_stroke_classification()
             if self.analyze_technique:
-                self._run_technique_analysis(hits)
-            self._run_stroke_recognition(hits)
+                self._run_technique_analysis(labels)
         self._run_doubles_stage(fps, self._doubles_frames)
 
         self._cleanup(cap)
@@ -1560,7 +1560,12 @@ class BadmintonAnalysisSystem:
         a previous run's hit outputs are removed (they would describe another run).
         The previous run's outputs are removed first in every case, so a run that
         fails before writing leaves no stale files behind.
+
+        Also records ``self._hit_list`` (the list written to hits.json),
+        ``self._hit_signals`` and ``self._hit_source`` for the stroke classifier
+        and technique analysis; each stays None when it was not produced.
         """
+        self._hit_list = self._hit_signals = self._hit_source = None
         for name in self._HIT_OUTPUTS:
             try:
                 os.remove(os.path.join(self.save_dir, name))
@@ -1574,7 +1579,7 @@ class BadmintonAnalysisSystem:
         try:
             from .stroke import hit_detector as hd
             from .stroke import hit_signals as hs
-            from .stroke_recog.hits import hit_events
+            from .stroke.events import hit_events
         except Exception as exc:  # never fatal: fall back to the contact rule
             print(f"Hit detection unavailable, using the contact rule: {exc!r}")
             return None
@@ -1586,6 +1591,7 @@ class BadmintonAnalysisSystem:
             signals = hs.build_signals(fps, last_frame, self._analysis_frames, shuttle,
                                        self.court_corners, (self.frame_width, self.frame_height))
             hs.save_signals(os.path.join(self.save_dir, "hit_signals.npz"), signals)
+            self._hit_signals = signals
         except Exception as exc:
             print(f"Hit signals unavailable: {exc!r}")
 
@@ -1629,6 +1635,7 @@ class BadmintonAnalysisSystem:
             # A malformed hit would break every consumer, so reject the whole list here.
             for h in listed:
                 int(h["frame"]), h["hitter"]
+            self._hit_list, self._hit_source = listed, source
             self._write_hits_json(fps, source, reason, model_info, coverage, listed)
             print(f"Hit detection: {len(listed)} hits ({source}"
                   f"{'; ' + reason if reason else ''})")
@@ -1671,7 +1678,7 @@ class BadmintonAnalysisSystem:
         except Exception as exc:
             print(f"hits.json could not be written: {exc!r}")
 
-    def _run_technique_analysis(self, hits=None):
+    def _run_technique_analysis(self, labels=None):
         from .analysis.biomechanics import BiomechanicalAnalyzer
         from .analysis.technique_writer import write_stroke_reports, build_match_summary
         runner = TechniqueAnalysisRunner(
@@ -1681,95 +1688,75 @@ class BadmintonAnalysisSystem:
             fps=self.fps,
             court_corners=getattr(self, "court_corners", None),
         )
+        hits = getattr(self, "_hit_list", None)
         if hits is not None:
             # The runner reads single-player pose fields (the frame's tracked
             # player), so it only gets that player's hits (B spec open question F).
             hits = [h for h in hits
                     if (self._analysis_frames.get(h["frame"]) or {}).get("player_side") == h["hitter"]]
-        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get, hits=hits)
+        strokes = {int(l["frame"]): l for l in labels or []}
+        reports, _events = runner.run(self._analysis_track, self._analysis_frames.get,
+                                      hits=hits, strokes=strokes)
         strokes_path = os.path.join(self.save_dir, "strokes.jsonl")
         summary_path = os.path.join(self.save_dir, "technique_summary.json")
         write_stroke_reports(strokes_path, reports)
         write_json(summary_path, build_match_summary(reports))
         print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
 
-    def _run_stroke_recognition(self, hits=None):
-        """Post-loop BST coarse stroke labeling -- entirely optional.
+    def _run_stroke_classification(self):
+        """Label the shared hit list with the one stroke classifier -> strokes.json (schema 2).
 
-        No-ops (writes nothing) unless ``self.bst_weights`` was passed to the
-        constructor. Uses ``self._analysis_track_both`` (both players' racket
-        points per frame, Task 6) so hits by EITHER player are detected and
-        correctly attributed, and ``self.court_corners`` -- the 4-point court
-        quad -- rather than ``self.court_roi_corners`` (a 2-point pose ROI):
-        ``build_inputs`` -> ``CourtMapper`` requires exactly 4 corners.
-
-        Never fatal: any exception is caught here and only turns stroke
-        recognition off for this run. Writes nothing when there are no hits,
-        so ``strokes.json``'s presence stays a meaningful signal.
-
-        BST's person-0 ("hitter") and person-1 ("opponent") slots are both
-        filled from the actual hitter/opponent, chosen by shuttle proximity
-        at the contact frame -- no longer a zero-filled opponent (fixed by
-        B1; previously the tracked/near player's pose leaked into person-0
-        even for far-player hits).
+        Withheld (no file, a previous one removed) when rally segmentation is degraded
+        (owner decision 12a-C). No hits -> no file. Without a usable model every hit is
+        "unknown" and classifier is null: there is no other classifier to fall back to.
+        Never fatal.
 
         Withheld entirely when rally segmentation is degraded (owner decision
-        §12a-C): BST labels computed over coarse windows that do not
-        correspond to rallies are close to noise, and shipping them behind a
-        badge is weaker than the impression that strokes were detected. When
-        B6 adds per-rally invocation, the same ``degraded`` flag skips
-        individual segments instead of the whole run. A segmenter ERROR
-        (``signal: "error"``, ``degraded: False``) is not a degraded
-        segmentation and does not withhold; nor does a missing
-        ``rally_detection`` (older runs, bare instances).
+        §12a-C): labels computed over coarse windows that do not correspond to
+        rallies are close to noise, and shipping them behind a badge is weaker
+        than the impression that strokes were detected. When B6 adds per-rally
+        invocation, the same ``degraded`` flag skips individual segments instead
+        of the whole run. A segmenter ERROR (``signal: "error"``,
+        ``degraded: False``) is not a degraded segmentation and does not
+        withhold; nor does a missing ``rally_detection`` (older runs, bare
+        instances).
         """
+        from .data.writer import write_json as _write_json
+        from .stroke import stroke_classifier as sc
+        path = os.path.join(self.save_dir, "strokes.json")
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"Could not remove the previous run's stroke labels {path}: {exc}")
         detection = getattr(self, "rally_detection", None) or {}
-        # The decision is the one recorded in rally_segments.json
-        # (``stroke_labels_withheld``); a detection without the key (bare
-        # instances) falls back to ``degraded``, which that key is derived from.
         if detection.get("stroke_labels_withheld", bool(detection.get("degraded"))):
             print("Stroke labels withheld: segmentation unreliable -- "
-                  f"{detection.get('reason') or 'no reason recorded'}. Labels over "
-                  "windows that are not rallies would be noise, so none are produced.")
-            # An earlier run's labels must not survive beside this run's
-            # "withheld" statement. Only this step's own output (strokes.json);
-            # strokes.jsonl and technique_summary.json belong to technique analysis.
-            stale = os.path.join(self.save_dir, "strokes.json")
+                  f"{detection.get('reason') or 'no reason recorded'}.")
+            return []
+        hits = getattr(self, "_hit_list", None)
+        if not hits:
+            return []
+        labels, info = None, None
+        model_path = getattr(self, "stroke_model_path", None)
+        signals = getattr(self, "_hit_signals", None)
+        if model_path and signals is not None:
             try:
-                os.remove(stale)
-                print(f"Removed the previous run's stroke labels: {stale}")
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                print(f"Could not remove the previous run's stroke labels {stale}: {exc}")
-            return
-
-        if not self.bst_weights:
-            return
-
+                model, meta, info = sc.load_classifier(model_path)
+                labels = sc.classify_hits(signals, hits, model, meta)
+            except Exception as exc:
+                print(f"Stroke classifier unavailable, every hit is unknown: {exc!r}")
+                labels, info = None, None
+        if labels is None:
+            labels = sc.unknown_labels(hits)
         try:
-            from collections import Counter
-            from .stroke_recog.recognizer import StrokeRecognizer
-
-            labels = StrokeRecognizer(self.bst_weights).label_rally(
-                self._analysis_track_both, self._analysis_frames.get,
-                self.court_corners, (self.frame_width, self.frame_height),
-                hits=hits,
-            )
-            if not labels:
-                return
-            strokes_path = os.path.join(self.save_dir, "strokes.json")
-            distribution = dict(Counter(label["stroke"] for label in labels))
-            payload = {"strokes": labels, "distribution": distribution}
-            if hits is not None:
-                payload["hit_source"] = "learned"
-            if self._shuttle_source == "tracknet":
-                payload["shuttle_source"] = "tracknet"
-            write_json(strokes_path, payload)
-            print(f"Stroke recognition: {len(labels)} strokes -> {strokes_path}")
-        except Exception as e:
-            print(f"Stroke recognition skipped: {e}")
-            return
+            _write_json(path, sc.build_payload(labels, info, getattr(self, "_hit_source", None),
+                                               getattr(self, "_shuttle_source", None)))
+            print(f"Stroke classification: {len(labels)} hits -> {path}")
+        except Exception as exc:
+            print(f"strokes.json could not be written: {exc!r}")
+        return labels
 
     def _get_template_path(self):
         """Get the court template image path."""
