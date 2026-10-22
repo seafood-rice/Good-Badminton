@@ -2,7 +2,7 @@
 
 Runs AFTER the frame loop, not inside it. Nothing in the loop consumes rally
 segments live -- they are written post-loop, and everything that needs them
-(per-rally BST, rally_id, coverage metadata) happens later still -- so
+(stroke-label withholding, rally_id, coverage metadata) happens later still -- so
 segmenting offline costs nothing, may use non-causal windows, and can be
 re-run without re-processing the video.
 

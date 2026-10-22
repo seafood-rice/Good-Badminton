@@ -6,9 +6,10 @@ Frame indices returned here are 0-based (TrackNet's own convention); the
 +1 alignment to the match loop's 1-based frame_count is applied by the
 pipeline integration (see system.py::_run_shuttle_pretrack), not here.
 
-third_party/tracknet and third_party/bst both expose a bare top-level module
-named ``model``. Importing both vendored packages in the same process would
-let whichever one runs first win the ``sys.modules['model']`` cache slot, so
+third_party/tracknet exposes a bare top-level module named ``model``, as does
+the still-vendored third_party/bst (nothing imports it since the stroke
+classifier replaced BST) and any other bare ``model`` on sys.path. Whichever
+is imported first would win the ``sys.modules['model']`` cache slot, so
 all vendored-tracknet imports must go through ``vendored_imports()`` below,
 which evicts any colliding cached modules for the duration of the import and
 restores the previous state on exit.
@@ -29,8 +30,8 @@ def _is_vendor_module(name):
 @contextlib.contextmanager
 def vendored_imports():
     """Import vendored TrackNetV3 modules in isolation so they never collide
-    with third_party/bst's 'model' package across one process's sys.modules
-    cache. Evicts cached colliding modules, puts the tracknet vendor dir first
+    with another bare 'model' package (e.g. third_party/bst's) across one
+    process's sys.modules cache. Evicts cached colliding modules, puts the tracknet vendor dir first
     on sys.path, and on exit removes whatever it imported + restores originals.
     """
     saved = {n: m for n, m in list(sys.modules.items()) if _is_vendor_module(n)}

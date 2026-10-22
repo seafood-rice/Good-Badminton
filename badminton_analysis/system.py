@@ -1149,9 +1149,9 @@ class BadmintonAnalysisSystem:
            players near the projected net) hands that same person's keypoints
            to both sides, because two independent nearest-neighbour searches
            over the same list can return the same element. That fabricates a
-           phantom opponent: BST's person-1 slot becomes a near-duplicate of
-           the hitter (worse than the honest zero-fill it replaced), and the
-           duplicated racket point ties in
+           phantom opponent: the other player's slot in the hit signals
+           becomes a near-duplicate of the hitter (worse than the honest
+           zero-fill it replaced), and the duplicated racket point ties in
            stroke.events.detect_contacts_multi, whose tie-break then sends
            every such contact to "lower" -- misattributing genuine upper-side
            hits, i.e. defeating the very fix this capture path exists for.
@@ -1278,7 +1278,7 @@ class BadmintonAnalysisSystem:
             "frame": frame_count, "racket_head": racket_head, "shuttle": shuttle,
         })
 
-        # --- B1: additive both-player capture (contacts/BST only; the
+        # --- B1: additive both-player capture (contacts and hit list only; the
         # single-player fields above are unchanged and keep driving
         # TechniqueAnalysisRunner exactly as before) ---
         from .analysis.joint_angles import infer_racket_head as _infer_racket_head_both

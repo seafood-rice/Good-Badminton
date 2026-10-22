@@ -65,7 +65,7 @@ Video preview: `assets/demo_en.mp4`.
 
 Enable technique analysis to automatically detect stroke types, analyze key joint angles, generate biomechanical scores with improvement suggestions, and create personalized training plans.
 
-Stroke types come from one learned classifier that recognises 12 types (short serve, long serve, clear, lift, smash, drop, net shot, block, cross-net, net rush, drive, push, plus unknown), grouped into 7 groups: serve, clear, drop, net, lift, drive, and smash. The model is trained with `scripts/train_stroke_classifier.py` and installed as `weights/stroke-classifier.pt` and `weights/stroke-classifier.json`; use `--stroke-model` to point at another path. Older results can be re-labelled with `python -m badminton_analysis.stroke.relabel <result_dir>`.
+Stroke types come from one learned classifier that recognises 12 types (short serve, long serve, clear, lift, smash, drop, net shot, block, cross-court net, net rush, drive, push, plus unknown), grouped into 7 groups: serve, clear, drop, net, lift, drive, and smash. The model is trained with `scripts/train_stroke_classifier.py` and installed as `weights/stroke-classifier.pt` and `weights/stroke-classifier.json`; use `--stroke-model` to point at another path. Older results can be re-labelled with `python -m badminton_analysis.stroke.relabel <result_dir>`.
 
 ### Enabling Technique Analysis
 
