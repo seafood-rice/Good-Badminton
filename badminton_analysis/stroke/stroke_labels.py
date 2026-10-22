@@ -69,6 +69,9 @@ def parse_sheet(text):
             name, split = m.group(1), m.group(2).strip().lower()
             if split not in SPLITS:
                 raise ValueError(f"{name}: split must be train or test, not {split!r}")
+            if name in sheet:
+                # A repeated heading could put one video in both splits (a test-split leak).
+                raise ValueError(f"{name}: repeated '### {name}' section; keep one per video")
             sheet[name] = {"split": split, "fps": None, "rows": []}
             continue
         if line.startswith("#"):

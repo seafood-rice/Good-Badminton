@@ -7,12 +7,14 @@ Usage:
 
 Each <video> is a result folder name under --results-dir that has hits.json. Videos named
 with --test go to the test split, the rest to train. An existing LABELS.md is never
-overwritten unless --force is given (it holds the owner's labels).
+overwritten unless --force is given (it holds the owner's labels); --force first copies it
+to LABELS.md.bak (LABELS.md.bak.N when that exists).
 """
 import argparse
 import glob
 import json
 import os
+import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -58,6 +60,15 @@ def burn_in_clip(src, dst, width=CLIP_WIDTH):
     return k
 
 
+def backup_path(path):
+    """First free name of path.bak, path.bak.1, path.bak.2, ..."""
+    candidate, n = path + ".bak", 0
+    while os.path.exists(candidate):
+        n += 1
+        candidate = f"{path}.bak.{n}"
+    return candidate
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("videos", nargs="*")
@@ -88,6 +99,10 @@ def main(argv=None):
         p.error(f"--test names videos not listed: {sorted(unknown_test)}")
 
     os.makedirs(a.out, exist_ok=True)
+    if os.path.exists(sheet_path):
+        backup = backup_path(sheet_path)
+        shutil.copy2(sheet_path, backup)
+        print(f"copied the existing {sheet_path} to {backup}")
     entries = []
     for name in a.videos:
         with open(os.path.join(a.results_dir, name, "hits.json"), encoding="utf-8") as fh:

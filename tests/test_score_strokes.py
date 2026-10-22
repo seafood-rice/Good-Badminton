@@ -62,3 +62,31 @@ def test_cli_missing_hits_json_exits_2(tmp_path):
     os.remove(tmp_path / "res" / "V" / "hits.json")
     r = _run(tmp_path)
     assert r.returncode == 2 and "hits.json missing or unreadable" in r.stdout
+
+
+def _sidecar(tmp_path, train=(), val=()):
+    w = tmp_path / "w" / "stroke-classifier.pt"
+    w.parent.mkdir()
+    (tmp_path / "w" / "stroke-classifier.json").write_text(
+        json.dumps({"train_matches": list(train), "val_matches": list(val)}), encoding="utf-8")
+    return w
+
+
+def test_cli_refuses_video_the_model_trained_on(tmp_path):
+    _result(tmp_path, "V", [{"frame": 31, "hitter": "lower", "stroke": "smash"}])
+    r = _run(tmp_path, "--weights", str(_sidecar(tmp_path, train=["dji:V", "Some_ShuttleSet"])))
+    assert r.returncode == 2 and "train_matches" in r.stdout and "V" in r.stdout
+
+
+def test_cli_refuses_video_the_model_calibrated_on(tmp_path):
+    _result(tmp_path, "V", [{"frame": 31, "hitter": "lower", "stroke": "smash"}])
+    r = _run(tmp_path, "--weights", str(_sidecar(tmp_path, val=["dji:V"])))
+    assert r.returncode == 2 and "held-out" in r.stdout
+
+
+def test_cli_scores_held_out_video_and_warns_without_sidecar(tmp_path):
+    _result(tmp_path, "V", [{"frame": 31, "hitter": "lower", "stroke": "smash"}])
+    r = _run(tmp_path, "--weights", str(_sidecar(tmp_path, train=["dji:Other"])))
+    assert r.returncode == 1 and "warning" not in r.stdout
+    r = _run(tmp_path, "--weights", str(tmp_path / "absent.pt"))
+    assert r.returncode == 1 and "warning: no sidecar" in r.stdout

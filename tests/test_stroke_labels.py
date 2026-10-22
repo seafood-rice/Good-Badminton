@@ -110,3 +110,29 @@ def test_indented_rows_parse():
             "  | 1.0000 | near | smash | 31 |  |\n")
     rows = sl.parse_sheet(text)["A"]["rows"]
     assert [(r["t"], r["stroke"], r["frame"]) for r in rows] == [(1.0, "smash", 31)]
+
+
+def test_parse_rejects_repeated_video_heading():
+    text = sl.write_sheet(VIDEOS[:1])
+    twice = text + text.split("\n", 1)[1].replace("split: test", "split: train")
+    with pytest.raises(ValueError, match="repeated"):
+        sl.parse_sheet(twice)
+
+
+def test_force_backs_up_existing_sheet(tmp_path):
+    import json
+    res = tmp_path / "res" / "V1"
+    res.mkdir(parents=True)
+    (res / "hits.json").write_text(json.dumps({"fps": 30.0, "hits": []}), encoding="utf-8")
+    out = tmp_path / "sheet"
+    out.mkdir()
+    (out / "LABELS.md").write_text("owner work 1", encoding="utf-8")
+    cmd = [sys.executable, "scripts/make_stroke_label_sheet.py", "--results-dir", str(tmp_path / "res"),
+           "--out", str(out), "--no-clips", "--force", "V1"]
+    assert subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+    assert (out / "LABELS.md.bak").read_text(encoding="utf-8") == "owner work 1"
+    (out / "LABELS.md").write_text("owner work 2", encoding="utf-8")
+    assert subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+    assert (out / "LABELS.md.bak").read_text(encoding="utf-8") == "owner work 1"
+    assert (out / "LABELS.md.bak.1").read_text(encoding="utf-8") == "owner work 2"
+    assert "### V1 (split: train)" in (out / "LABELS.md").read_text(encoding="utf-8")

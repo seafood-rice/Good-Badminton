@@ -2,10 +2,11 @@
 
 Usage:
   python scripts/score_strokes.py --labels outputs/dji-stroke-labels/LABELS.md \
-      [--results-dir outputs] [--split test] [--tol 0.2] [--json result.json]
+      [--results-dir outputs] [--split test] [--tol 0.2] [--json result.json]       [--weights weights/stroke-classifier.pt]
 
 Exit 0 = the owner's bar is met, 1 = not met, 2 = a result's strokes.json is missing or
-from the old classifier (re-label it first).
+from the old classifier (re-label it first), or a scored video was trained or calibrated on
+(the model's sidecar lists it in train_matches or val_matches).
 """
 import argparse
 import json
@@ -19,6 +20,18 @@ if ROOT not in sys.path:
 from badminton_analysis.stroke import stroke_labels as sl  # noqa: E402
 from badminton_analysis.stroke.stroke_classifier import is_current  # noqa: E402
 from badminton_analysis.stroke.stroke_metrics import check_bar, score  # noqa: E402
+from badminton_analysis.stroke.stroke_model import meta_path  # noqa: E402
+
+
+def leaked_videos(weights, names):
+    """Scored videos the model saw in training or calibration; None when there is no sidecar."""
+    sidecar = meta_path(weights)
+    if not os.path.isfile(sidecar):
+        return None
+    with open(sidecar, encoding="utf-8") as fh:
+        meta = json.load(fh)
+    seen = set(meta.get("train_matches") or []) | set(meta.get("val_matches") or [])
+    return sorted(n for n in names if f"dji:{n}" in seen)
 
 
 def match(labelled, predicted, fps, tol=0.2):
@@ -49,9 +62,20 @@ def main(argv=None):
     p.add_argument("--split", default="test", choices=["test", "train"])
     p.add_argument("--tol", type=float, default=0.2)
     p.add_argument("--json")
+    p.add_argument("--weights", default=os.path.join(ROOT, "weights", "stroke-classifier.pt"),
+                   help="the model whose strokes.json files are scored (its sidecar is checked)")
     a = p.parse_args(argv)
     with open(a.labels, encoding="utf-8") as fh:
         sheet = sl.parse_sheet(fh.read())
+    names = [n for n, e in sheet.items() if e["split"] == a.split]
+    leaked = leaked_videos(a.weights, names)
+    if leaked is None:
+        print(f"warning: no sidecar for {a.weights}; cannot check that the scored videos "
+              f"were held out of training")
+    elif leaked:
+        print(f"{', '.join(leaked)}: in the model's train_matches/val_matches "
+              f"({meta_path(a.weights)}); scoring them would not measure held-out accuracy")
+        return 2
     pairs, missed, videos = [], 0, []
     for name, entry in sheet.items():
         if entry["split"] != a.split:
