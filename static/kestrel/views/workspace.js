@@ -3,7 +3,7 @@
 // is a DOM layer over it. Honesty rules: there is no point outcome, so nothing is marked won or lost; swing
 // segments are "segments (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so;
 // opponent strokes are shown but never scored.
-import { t, TECHNIQUE_IDS } from '../core/i18n.js';
+import { t, TECHNIQUE_IDS, STROKE_TYPE_IDS, STROKE_GROUP } from '../core/i18n.js';
 import { fmtDate, fmtDuration, fmtNumber, isApproxDate } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
 import { formatHash } from '../core/router.js';
@@ -13,7 +13,8 @@ import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
 import { doublesWorkspaceModel, doublesVideoFiles, hitsInWindow } from './doubles_model.js';
 
 const SIDES = ['upper', 'lower'];
-const STROKE_MAP = Object.freeze({ high_clear: 'clear', drop_shot: 'drop' });
+// Technique reports written before the unified classifier name a profile, not a stroke type.
+const LEGACY_PROFILE = Object.freeze({ high_clear: 'clear', drop_shot: 'drop', smash: 'smash', serve: 'serve' });
 /** A stroke belongs to a rally when it falls in [start - 0.5, end + 0.5] (the server's shots_per_rally rule). */
 export const RALLY_PAD_SEC = 0.5;
 /** A technique report joins a stroke within this many frames of its contact frame (same side only). */
@@ -110,10 +111,11 @@ function reportModel(rep) {
       ideal: Array.isArray(m.ideal_range) && m.ideal_range.length === 2 && m.ideal_range.every(isNum) ? [m.ideal_range[0], m.ideal_range[1]] : null,
     }));
   const raw = typeof rep.stroke_type === 'string' ? rep.stroke_type : '';
-  const mapped = STROKE_MAP[raw] || raw;
+  const technique = TECHNIQUE_IDS.includes(rep.group) ? rep.group : STROKE_GROUP[raw] || LEGACY_PROFILE[raw] || null;
   return {
-    technique: TECHNIQUE_IDS.includes(mapped) ? mapped : null,
+    technique: TECHNIQUE_IDS.includes(technique) ? technique : null,
     rawType: raw,
+    scored: rep.scored !== false,
     overall: isNum(rep.overall_score) ? rep.overall_score : null,
     contactFrame: rep.contact_frame,
     metrics,
@@ -129,7 +131,7 @@ function reportModel(rep) {
  *   insights    the /api/insights/video sidecar (rally label when there is no rally file)
  *   athleteSide 'upper' | 'lower' | null: strokes by the other side are the opponent's and are never scored
  * Returns {fps, rallies:[{id,n,start,end,len,strokeCount,degraded}],
- *   strokes:[{i,frame,time,hitter,label,uncertain,confidence,opponent,score|null,report|null,rallyId|null}], summary}.
+ *   strokes:[{i,frame,time,hitter,label,type,uncertain,confidence,opponent,score|null,report|null,rallyId|null}], summary}.
  * A doubles run (insights.match_format === 'doubles') joins no technique report to a stroke: its per-side data is
  * one representative per side of a 4-player match, not a player. `summary.doubles` says so.
  */
@@ -149,15 +151,22 @@ export function buildWorkspaceModel(input = {}) {
   const reps = (doubles ? [] : Array.isArray(techReports) ? techReports : Array.isArray(obj(techReports).strokes) ? techReports.strokes : [])
     .filter((r) => r && typeof r === 'object' && isNum(r.contact_frame) && SIDES.includes(r.player_side));
 
+  // A bare array (test helpers) counts as a current (schema 2) file; an object must say schema 2.
+  const sdoc = Array.isArray(strokes) ? null : obj(strokes);
+  const current = sdoc === null || sdoc.schema === 2;
   const rawStrokes = Array.isArray(strokes) ? strokes : Array.isArray(obj(strokes).strokes) ? strokes.strokes : [];
+  const strokeNotice = rawStrokes.length === 0 ? null : !current ? 'stale'
+    : sdoc === null ? null
+    : sdoc.classifier === null ? 'no_model'
+    : obj(sdoc.classifier).validated_on_owner_footage === true ? null : 'unverified';
   const list = rawStrokes.filter((s) => s && typeof s === 'object').map((s, k) => {
     const frame = isNum(s.frame) ? s.frame : null;
     const time = frame !== null && f ? round2(frame / f) : isNum(s.time_sec) ? round2(s.time_sec) : null;
     const hitter = SIDES.includes(s.hitter) ? s.hitter : null;
     const raw = typeof s.stroke === 'string' ? s.stroke : '';
-    const mapped = STROKE_MAP[raw] || raw;
-    const known = TECHNIQUE_IDS.includes(mapped);
-    const uncertain = withheld || s.uncertain === true || !known;
+    const known = current && STROKE_TYPE_IDS.includes(raw);
+    const group = known ? (typeof s.group === 'string' ? s.group : STROKE_GROUP[raw]) : null;
+    const uncertain = withheld || s.uncertain === true || !known || !TECHNIQUE_IDS.includes(group);
     const opponent = side !== null && hitter !== null && hitter !== side;
     let report = null;
     if (!opponent && hitter !== null && frame !== null) {
@@ -175,7 +184,8 @@ export function buildWorkspaceModel(input = {}) {
       frame,
       time,
       hitter,
-      label: uncertain ? 'uncertain' : mapped,
+      label: uncertain ? 'uncertain' : group,
+      type: uncertain ? 'uncertain' : raw,
       uncertain,
       confidence: isNum(s.confidence) ? s.confidence : null,
       opponent,
@@ -194,6 +204,7 @@ export function buildWorkspaceModel(input = {}) {
       ...base,
       countShown: base.suppressed || base.failed ? null : base.count,
       withheld,
+      strokeNotice,
       doubles,
       hasFile,
       strokes: { total: list.length, uncertain: nUnc, classified: list.length - nUnc },
@@ -283,6 +294,11 @@ function signalNote(summary, lang, nRallies) {
 
 function techLabel(id, lang) {
   return id === 'uncertain' ? t('ws.uncertain', lang) : t('technique.' + id, lang);
+}
+
+/** A stroke's display name: its 12-type name (not the group name). */
+function strokeName(s, lang) {
+  return s.type === 'uncertain' ? t('ws.uncertain', lang) : t('stroke.' + s.type, lang);
 }
 
 function techCode(id, lang) {
@@ -772,7 +788,7 @@ export function mount(container, ctx = {}) {
       const inUnit = unitStrokes();
       const pos = inUnit.findIndex((x) => x.i === st.i);
       refs.tags.appendChild(h('span', { class: 'mono ws-tag accent' }, t('ws.tag.stroke', lang, {
-        i: pos >= 0 ? pos + 1 : st.i, n: pos >= 0 ? inUnit.length : state.model.strokes.length, technique: techLabel(st.label, lang).toUpperCase(),
+        i: pos >= 0 ? pos + 1 : st.i, n: pos >= 0 ? inUnit.length : state.model.strokes.length, technique: strokeName(st, lang).toUpperCase(),
       })));
     }
     const s = state.model.summary;
@@ -1023,8 +1039,8 @@ export function mount(container, ctx = {}) {
         type: 'button',
         class: `ws-st tc-${s.label}` + (s.uncertain ? ' unc' : '') + (s.opponent ? ' opp' : '') + (state.sel === s.i ? ' on' : ''),
         'aria-pressed': state.sel === s.i ? 'true' : 'false',
-        'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: techLabel(s.label, lang) }) + ', ' + (s.hitter ? sideName(s.hitter) : '—'),
-        title: `${techLabel(s.label, lang)} · ${clockText(s.time)}`,
+        'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: strokeName(s, lang) }) + ', ' + (s.hitter ? sideName(s.hitter) : '—'),
+        title: `${strokeName(s, lang)} · ${clockText(s.time)}`,
         onclick: () => selectStroke(s.i, 'strip'),
       }, techCode(s.label, lang));
       refs.stripBtns.set(s.i, btn);
@@ -1054,6 +1070,8 @@ export function mount(container, ctx = {}) {
     const sec = h('section', { class: 'card hud ws-list', 'aria-label': t('ws.strokes_in_rally', lang) });
     refs.filterHost = h('div', { class: 'ws-filters', role: 'group', 'aria-label': t('ws.filter_aria', lang) });
     sec.appendChild(h('div', { class: 'ws-sec-head' }, [h('h2', { class: 'card-title' }, t('ws.strokes_in_rally', lang)), refs.filterHost]));
+    const notice = state.model.summary.strokeNotice;
+    if (notice) sec.appendChild(h('div', { class: 'kw-foot-muted', id: 'ws-stroke-notice' }, t('ws.stroke_' + notice, lang)));
     refs.tableWrap = h('div', { class: 'ws-table-wrap' });
     sec.appendChild(refs.tableWrap);
     return sec;
@@ -1112,10 +1130,10 @@ export function mount(container, ctx = {}) {
     const rows = cap.items.map((s) => {
       const btn = h('button', {
         type: 'button', class: 'ws-row-btn',
-        'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: techLabel(s.label, lang) }),
+        'aria-label': t('ws.stroke_aria', lang, { n: s.i, technique: strokeName(s, lang) }),
         'aria-current': state.sel === s.i ? 'true' : null,
         onclick: () => selectStroke(s.i, 'list'),
-      }, [h('span', { class: `ws-dot tc-${s.label}`, 'aria-hidden': 'true' }), techLabel(s.label, lang)]);
+      }, [h('span', { class: `ws-dot tc-${s.label}`, 'aria-hidden': 'true' }), strokeName(s, lang)]);
       const tr = h('tr', { class: 'ws-row' + (state.sel === s.i ? ' on' : '') + (s.uncertain ? ' unc' : '') }, [
         h('td', { class: 'mono kw-muted' }, String(s.i)),
         h('td', { class: 'mono kw-muted' }, clockText(s.time)),
@@ -1214,7 +1232,7 @@ export function mount(container, ctx = {}) {
       return sec;
     }
     const unit = state.model.rallies.find((r) => r.id === st.rallyId);
-    sec.appendChild(h('h2', { class: 'ws-insp-title' }, t('ws.stroke_title', lang, { n: st.i, technique: techLabel(st.label, lang) })));
+    sec.appendChild(h('h2', { class: 'ws-insp-title' }, t('ws.stroke_title', lang, { n: st.i, technique: strokeName(st, lang) })));
     sec.appendChild(h('div', { class: 'card-sub' }, [st.hitter ? sideName(st.hitter) : '—', clockText(st.time), unit ? unitTitle(unit) : null].filter(Boolean).join(' · ')));
     if (st.uncertain) sec.appendChild(h('div', { class: 'ws-note' }, t('ws.uncertain_note', lang)));
     if (st.opponent) {
@@ -1222,6 +1240,10 @@ export function mount(container, ctx = {}) {
       return sec;
     }
     const rep = st.report;
+    if (rep && rep.scored === false) {
+      sec.appendChild(h('div', { class: 'ws-note dashed' }, t('ws.no_reference', lang)));
+      return sec;
+    }
     if (!rep || rep.overall === null) {
       sec.appendChild(h('div', { class: 'ws-note dashed' }, t('ws.no_report', lang)));
       return sec;
@@ -1285,7 +1307,7 @@ export function mount(container, ctx = {}) {
       row(t('ws.summary.strokes', lang), String(strokes.length));
     }
     const last = strokes[strokes.length - 1];
-    if (last && !state.dbl) row(t('ws.summary.last_stroke', lang), t('ws.by', lang, { label: techLabel(last.label, lang), name: last.hitter ? sideName(last.hitter) : '—' }));
+    if (last && !state.dbl) row(t('ws.summary.last_stroke', lang), t('ws.by', lang, { label: strokeName(last, lang), name: last.hitter ? sideName(last.hitter) : '—' }));
     sec.appendChild(dl);
     const note = signalNote(m.summary, lang, m.rallies.length);
     if (note) sec.appendChild(h('div', { class: 'ws-sum-note' }, note));
@@ -1337,7 +1359,7 @@ export function mount(container, ctx = {}) {
     if (announce && refs.live) {
       const st = currentStroke();
       setText(refs.live, st
-        ? [t('ws.stroke_title', lang, { n: st.i, technique: techLabel(st.label, lang) }), st.score !== null ? num1(st.score) : null].filter(Boolean).join(', ')
+        ? [t('ws.stroke_title', lang, { n: st.i, technique: strokeName(st, lang) }), st.score !== null ? num1(st.score) : null].filter(Boolean).join(', ')
         : '');
     }
   }

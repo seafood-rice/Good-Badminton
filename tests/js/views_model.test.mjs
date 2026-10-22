@@ -31,12 +31,14 @@ function rallyPayload(signal = 'shuttle', extra = {}) {
 
 function strokesPayload() {
   return {
+    schema: 2,
+    classifier: { validated_on_owner_footage: true },
     strokes: [
-      { frame: 3 * FPS, hitter: 'lower', stroke: 'serve', uncertain: false, confidence: 0.9 }, // rally 1
-      { frame: 12 * FPS, hitter: 'upper', stroke: 'clear', uncertain: false, confidence: 0.8 }, // rally 2
-      { frame: 14 * FPS, hitter: 'lower', stroke: 'uncertain', uncertain: true, confidence: 0.1 }, // rally 2
-      { frame: 16 * FPS, hitter: 'lower', stroke: 'smash', uncertain: false, confidence: 0.7 }, // rally 2
-      { frame: 24 * FPS, hitter: 'upper', stroke: 'net', uncertain: false, confidence: 0.6 }, // between rallies
+      { frame: 3 * FPS, hitter: 'lower', stroke: 'short_serve', group: 'serve', confidence: 0.9 }, // rally 1
+      { frame: 12 * FPS, hitter: 'upper', stroke: 'clear', group: 'clear', confidence: 0.8 }, // rally 2
+      { frame: 14 * FPS, hitter: 'lower', stroke: 'unknown', group: null, confidence: 0.1 }, // rally 2
+      { frame: 16 * FPS, hitter: 'lower', stroke: 'smash', group: 'smash', confidence: 0.7 }, // rally 2
+      { frame: 24 * FPS, hitter: 'upper', stroke: 'net_shot', group: 'net', confidence: 0.6 }, // between rallies
     ],
   };
 }
@@ -549,10 +551,10 @@ test('listScore: the list shows a score only when the joined report is for the s
   // the join is by frame + side; a report for another technique is shown as "as <technique>" without a score
   const m = buildWorkspaceModel({
     rallies: rallyPayload(), fps: FPS,
-    strokes: { strokes: [
-      { frame: 24 * FPS, hitter: 'upper', stroke: 'net', uncertain: false },
-      { frame: 16 * FPS, hitter: 'lower', stroke: 'smash', uncertain: false },
-      { frame: 14 * FPS, hitter: 'lower', stroke: 'uncertain', uncertain: true },
+    strokes: { schema: 2, classifier: {}, strokes: [
+      { frame: 24 * FPS, hitter: 'upper', stroke: 'net_shot', group: 'net' },
+      { frame: 16 * FPS, hitter: 'lower', stroke: 'smash', group: 'smash' },
+      { frame: 14 * FPS, hitter: 'lower', stroke: 'unknown', group: null },
     ] },
     techReports: [
       { stroke_type: 'high_clear', contact_frame: 24 * FPS + 1, player_side: 'upper', overall_score: 66 },
@@ -767,4 +769,34 @@ test('jobStage: doubles sub-stages from a substage field or the bilingual progre
   const m = jobsModel([{ id: 'j', status: 'running', stage: 'visualizing', substage: 'doubles_identity', progress: 40 }], 'en');
   assert.equal(m.rows[0].title, 'Identifying players');
   assert.equal(jobsModel([{ id: 'j', status: 'running', stage: 'doubles_video' }], 'zh').rows[0].title, t('stage.doubles_video', 'zh'));
+});
+
+test('stroke types and groups come straight from schema-2 strokes.json', () => {
+  const strokes = { schema: 2, classifier: { validated_on_owner_footage: true }, strokes: [
+    { frame: 30, hitter: 'lower', stroke: 'push', group: 'drive', confidence: 0.9 },
+    { frame: 60, hitter: 'upper', stroke: 'unknown', group: null, confidence: 0.2 }] };
+  const m = buildWorkspaceModel({ strokes, fps: 30 });
+  assert.deepEqual(m.strokes.map((s) => [s.type, s.label, s.uncertain]),
+    [['push', 'drive', false], ['uncertain', 'uncertain', true]]);
+  assert.equal(m.summary.strokeNotice, null);
+});
+
+test('stale strokes file shows no labels and a re-label notice', () => {
+  const m = buildWorkspaceModel({ strokes: { strokes: [{ frame: 30, hitter: 'lower', stroke: 'net' }] }, fps: 30 });
+  assert.equal(m.strokes[0].label, 'uncertain');
+  assert.equal(m.summary.strokeNotice, 'stale');
+});
+
+test('unverified and missing-model notices', () => {
+  const base = { schema: 2, strokes: [{ frame: 1, hitter: 'lower', stroke: 'smash', group: 'smash' }] };
+  assert.equal(buildWorkspaceModel({ strokes: { ...base, classifier: null } }).summary.strokeNotice, 'no_model');
+  assert.equal(buildWorkspaceModel({ strokes: { ...base, classifier: {} } }).summary.strokeNotice, 'unverified');
+});
+
+test('technique report joins with the same stroke type', () => {
+  const strokes = { schema: 2, classifier: {}, strokes: [{ frame: 30, hitter: 'lower', stroke: 'clear', group: 'clear' }] };
+  const techReports = [{ contact_frame: 30, player_side: 'lower', stroke_type: 'clear', group: 'clear', scored: true, overall_score: 70 }];
+  const m = buildWorkspaceModel({ strokes, techReports, fps: 30 });
+  assert.equal(m.strokes[0].report.technique, 'clear');
+  assert.equal(m.strokes[0].report.rawType, 'clear');
 });
