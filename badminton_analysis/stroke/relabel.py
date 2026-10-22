@@ -40,7 +40,31 @@ def relabel(result_dir, weights):
     if not hits_doc or not hits_doc.get("hits"):
         return {"result": result_dir, "skipped": "no hits.json"}
     hits = [{"frame": int(h["frame"]), "hitter": h["hitter"], "confidence": h.get("confidence")}
-            for h in hits_doc["hits"]]
+            for h in hits_doc["hits"]
+            if isinstance(h, dict) and h.get("frame") is not None and h.get("hitter")]
+    if len(hits) != len(hits_doc["hits"]):
+        print(f"{result_dir}: skipped {len(hits_doc['hits']) - len(hits)} unusable hit(s)")
+    if not hits:
+        return {"result": result_dir, "skipped": "no hits.json"}
+    # parse the old reports before writing anything, so a bad file leaves the result untouched
+    reports_path = os.path.join(result_dir, "strokes.jsonl")
+    reports = None
+    if os.path.isfile(reports_path):
+        reports, bad = [], 0
+        with open(reports_path, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    rec = None
+                if isinstance(rec, dict):
+                    reports.append(rec)
+                else:
+                    bad += 1
+        if bad:
+            print(f"{result_dir}: skipped {bad} unusable line(s) in strokes.jsonl")
     labels, info = None, None
     if weights and os.path.isfile(weights):
         try:
@@ -55,11 +79,8 @@ def relabel(result_dir, weights):
     write_json(os.path.join(result_dir, "strokes.json"),
                sc.build_payload(labels, info, hits_doc.get("source"), hits_doc.get("shuttle_source")))
     by_key = {(l["frame"], l["hitter"]): l for l in labels}
-    reports_path = os.path.join(result_dir, "strokes.jsonl")
     n_reports = 0
-    if os.path.isfile(reports_path):
-        with open(reports_path, encoding="utf-8") as fh:
-            reports = [json.loads(line) for line in fh if line.strip()]
+    if reports is not None:
         new = []
         for r in reports:
             label = by_key.get((r.get("contact_frame"), r.get("player_side"))) or {}

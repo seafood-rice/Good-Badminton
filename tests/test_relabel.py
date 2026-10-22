@@ -72,3 +72,78 @@ def test_insights_ignore_old_strokes_and_count_groups(tmp_path):
                    {"stroke": "unknown", "group": None, "hitter": "upper"}]
     v = strokes_insight(Run())["value"]
     assert v["distribution"] == {"drive": 2} and v["uncertain"] == 1
+
+
+def _weights(tmp_path):
+    m = smod.StrokeNet(INPUT_DIM, hidden=8, levels=1)
+    w = tmp_path / "w.pt"
+    smod.save_stroke_model(m, smod.base_meta(8, 1, 0.0), w)
+    return str(w)
+
+
+def _reports(d):
+    return [json.loads(x) for x in (d / "strokes.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_relabel_skips_withheld(tmp_path):
+    for name, det in (("A", {"stroke_labels_withheld": True}), ("B", {"degraded": True})):
+        d = tmp_path / name
+        _old_result(d)
+        (d / "rally_segments.json").write_text(json.dumps({"detection": det}), encoding="utf-8")
+        before = [(d / f).read_bytes() for f in ("strokes.json", "strokes.jsonl")]
+        assert relabel.relabel(str(d), _weights(tmp_path))["skipped"] == "labels withheld"
+        assert [(d / f).read_bytes() for f in ("strokes.json", "strokes.jsonl")] == before
+
+
+def test_relabel_idempotent_and_keeps_measured(tmp_path, monkeypatch):
+    d = tmp_path / "V"
+    _old_result(d)
+    orig = _reports(d)[0]["per_metric"]
+    metrics = {k: v["measured"] for k, v in orig.items()}
+    relabel.relabel(str(d), str(tmp_path / "missing.pt"))
+    first = _reports(d)[0]
+    assert first["scored"] is False and first["measured"] == metrics
+    w = _weights(tmp_path)
+    # random-init weights may pick an unprofiled type; pin a profiled one
+    monkeypatch.setattr(relabel.sc, "classify_hits", lambda sig, hits, model, meta: [
+        {"frame": h["frame"], "hitter": h["hitter"], "stroke": "clear", "group": "clear",
+         "confidence": 0.9} for h in hits])
+    relabel.relabel(str(d), w)
+    second = _reports(d)[0]
+    assert second["scored"] is True and second["measured"] == metrics
+    second_bytes = (d / "strokes.jsonl").read_bytes()
+    relabel.relabel(str(d), w)
+    third = _reports(d)[0]
+    assert third["measured"] == metrics
+    assert (d / "strokes.jsonl").read_bytes() == second_bytes
+
+
+def test_relabel_report_without_matching_hit(tmp_path):
+    d = tmp_path / "V"
+    _old_result(d)
+    rep = _reports(d)[0]
+    rep["contact_frame"] = 999
+    (d / "strokes.jsonl").write_text(json.dumps(rep) + "\n", encoding="utf-8")
+    relabel.relabel(str(d), _weights(tmp_path))
+    out = _reports(d)[0]
+    assert out["stroke_type"] == "unknown" and out["scored"] is False
+
+
+def test_relabel_corrupt_report_line_is_skipped(tmp_path, capsys):
+    d = tmp_path / "V"
+    _old_result(d)
+    with open(d / "strokes.jsonl", "a", encoding="utf-8") as fh:
+        fh.write("{not json\n[1]\n")
+    summary = relabel.relabel(str(d), _weights(tmp_path))
+    assert summary["reports"] == 1 and len(_reports(d)) == 1
+    assert "skipped 2 unusable line(s)" in capsys.readouterr().out
+    assert json.loads((d / "strokes.json").read_text(encoding="utf-8"))["schema"] == 2
+
+
+def test_relabel_skips_hit_without_frame_or_hitter(tmp_path):
+    d = tmp_path / "V"
+    _old_result(d)
+    doc = json.loads((d / "hits.json").read_text(encoding="utf-8"))
+    doc["hits"] += [{"hitter": "upper"}, {"frame": 160}]
+    (d / "hits.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert relabel.relabel(str(d), _weights(tmp_path))["labelled"] == 1

@@ -385,6 +385,27 @@ def test_technique_constants():
     assert REFERENCE == {"lo": 70, "hi": 100, "source": "literature"}
 
 
+@pytest.mark.parametrize("stroke_type,expected", [
+    ("short_serve", "serve"), ("long_serve", "serve"), ("clear", "clear"), ("lift", "lift"),
+    ("smash", "smash"), ("drop", "drop"), ("net_shot", "net"), ("block", "net"),
+    ("cross_net", "net"), ("net_rush", "net"), ("drive", "drive"), ("push", "drive"),
+    ("high_clear", "clear"), ("drop_shot", "drop"), ("serve", "serve")])
+def test_technique_maps_ids_and_legacy_names(tmp_path, stroke_type, expected):
+    out = make_run(tmp_path, reports=[(stroke_type, "lower", 77)])
+    side = technique_insight(load_run(out))["value"]["by_side"]["lower"]
+    assert side["techniques"][expected] == {"count": 1, "avg_score": 77.0}
+    assert sum(v["count"] for v in side["techniques"].values()) == 1
+
+
+def test_technique_all_unscored_reports_is_unavailable(tmp_path):
+    out = make_run(tmp_path)
+    (out / "strokes.jsonl").write_text(json.dumps(
+        {"stroke_type": "smash", "player_side": "lower", "overall_score": 80,
+         "scored": False}) + "\n", encoding="utf-8")
+    ins = technique_insight(load_run(out))
+    assert ins["status"] == "unavailable" and ins["reason"]["code"] == "no_technique"
+
+
 def test_technique_groups_scores_and_index(tmp_path):
     out = make_run(tmp_path, reports=[("high_clear", "lower", 50), ("high_clear", "lower", 70),
                                       ("serve", "lower", 80)])
