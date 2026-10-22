@@ -1,3 +1,5 @@
+Unused since 2026-10-22; kept vendored pending a removal decision.
+
 # BST vendoring contract (ShuttleSet-25-merged)
 
 This records the exact facts read from the vendored source of

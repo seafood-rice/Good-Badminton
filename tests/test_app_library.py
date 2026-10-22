@@ -155,7 +155,7 @@ def test_stats_empty(client, monkeypatch):
 def test_models_false_when_weights_absent(client, tmp_path, monkeypatch):
     c, videos, outputs = client
     monkeypatch.setattr(webapp, "PROJECT_ROOT", tmp_path)
-    assert c.get("/api/models").get_json() == {"racket": False, "quality": False, "bst": False,
+    assert c.get("/api/models").get_json() == {"racket": False, "quality": False, "stroke": False,
                                                 "tracknet": False, "lift": False, "hit_detector": False}
 
 
@@ -166,7 +166,23 @@ def test_models_true_when_weights_installed(client, tmp_path, monkeypatch):
     weights.mkdir()
     (weights / "yolo11n-racket.pt").write_bytes(b"n")
     (weights / "quality-high_clear.pt").write_bytes(b"q")
-    (weights / "bst-shuttleset.pt").write_bytes(b"b")
+    (weights / "stroke-classifier.pt").write_bytes(b"s")
+    (weights / "stroke-classifier.json").write_text("{}", encoding="utf-8")
     (weights / "motionbert.pt").write_bytes(b"m")
-    assert c.get("/api/models").get_json() == {"racket": True, "quality": True, "bst": True,
+    assert c.get("/api/models").get_json() == {"racket": True, "quality": True, "stroke": True,
                                                 "tracknet": False, "lift": True, "hit_detector": False}
+
+
+def test_models_reports_stroke_classifier(client, tmp_path, monkeypatch):
+    import app as app_mod
+    c, videos, outputs = client
+    monkeypatch.setattr(app_mod, "_stroke_weights", lambda base=None: "w.pt")
+    body = c.get("/api/models").get_json()
+    assert body["stroke"] is True and "bst" not in body
+
+
+def test_stroke_weights_need_the_sidecar(tmp_path):
+    (tmp_path / "stroke-classifier.pt").write_bytes(b"s")
+    assert webapp._stroke_weights(base=tmp_path) is None
+    (tmp_path / "stroke-classifier.json").write_text("{}", encoding="utf-8")
+    assert webapp._stroke_weights(base=tmp_path) == str(tmp_path / "stroke-classifier.pt")

@@ -3,10 +3,20 @@
 
 export const TECHNIQUE_IDS = Object.freeze(['smash', 'clear', 'drop', 'net', 'lift', 'drive', 'serve']);
 
+export const STROKE_TYPE_IDS = Object.freeze([
+  'short_serve', 'long_serve', 'clear', 'lift', 'smash', 'drop', 'net_shot', 'block', 'cross_net', 'net_rush', 'drive', 'push',
+]);
+
+// Each of the 12 stroke types belongs to one of the 7 technique groups (filters, colours, radar).
+export const STROKE_GROUP = Object.freeze({
+  short_serve: 'serve', long_serve: 'serve', clear: 'clear', lift: 'lift', smash: 'smash', drop: 'drop',
+  net_shot: 'net', block: 'net', cross_net: 'net', net_rush: 'net', drive: 'drive', push: 'drive',
+});
+
 export const REASON_CODES = Object.freeze([
   'no_data', 'no_rallies', 'signal_swing', 'signal_degraded', 'no_strokes_file', 'no_technique', 'few_hits',
   'no_hits', 'unscored_technique', 'no_point_outcome', 'no_results_entered', 'no_benchmark', 'no_positions',
-  'low_stroke_coverage', 'doubles_run', 'not_doubles', 'no_players', 'doubles_degraded', 'doubles_error',
+  'low_stroke_coverage', 'stale_technique', 'doubles_run', 'not_doubles', 'no_players', 'doubles_degraded', 'doubles_error',
 ]);
 
 export const FINDING_CODES = Object.freeze([
@@ -418,6 +428,7 @@ export const STRINGS = {
     'reason.signal_degraded': '没有可靠的信号，只显示粗略的片段窗口。',
     'reason.no_strokes_file': '这个视频还没有击球检测结果。',
     'reason.no_technique': '还没有技术评分报告。',
+    'reason.stale_technique': '技术评分来自旧版击球识别器，请重新标注。',
     'reason.few_hits': '测到的击球次数偏少，结果仅供参考。',
     'reason.no_hits': '击球次数太少，无法计算。',
     'reason.unscored_technique': '部分技术暂无参考区间：{names}。',
@@ -532,6 +543,22 @@ export const STRINGS = {
     'ws.outside_note': '有 {n} 次击球不在任何{label}内，可在“全部击球”中查看。',
     'ws.timeline_lane': '单一轨道：没有记录得分结果，所以不标注输赢。',
     'ws.uncertain': '不确定',
+    'stroke.short_serve': '发短球',
+    'stroke.long_serve': '发长球',
+    'stroke.clear': '高远球',
+    'stroke.lift': '挑球',
+    'stroke.smash': '杀球',
+    'stroke.drop': '吊球',
+    'stroke.net_shot': '放网',
+    'stroke.block': '挡网',
+    'stroke.cross_net': '勾对角',
+    'stroke.net_rush': '扑球',
+    'stroke.drive': '平抽球',
+    'stroke.push': '推球',
+    'ws.stroke_unverified': '击球类型识别尚未在你的视频上验证准确率。',
+    'ws.stroke_stale': '击球标签来自旧版识别器，请重新标注。',
+    'ws.stroke_no_model': '未安装击球识别模型。',
+    'ws.no_reference': '暂无参考范围，未评分。',
     'ws.uncertain_note': '分类器对这次击球没有把握，因此不标注击球类型。',
     'ws.opponent_tag': '对手',
     'ws.no_report': '没有与这次击球对应的技术报告。',
@@ -662,7 +689,7 @@ export const STRINGS = {
     'dbl.ws.last_hit': '最后一次击球',
     'dbl.ws.players_video': '球员视频',
     'dbl.ws.named_line': '{total} 次击球中 {named} 次已归属（{pct}）',
-    'dbl.strokes_withheld': '双打不提供击球类型（BST 为单打模型）。',
+    'dbl.strokes_withheld': '双打不提供击球类型（击球识别仅支持单打）。',
   },
 
   en: {
@@ -1068,6 +1095,7 @@ export const STRINGS = {
     'reason.signal_degraded': 'No reliable signal, so only coarse windows are shown.',
     'reason.no_strokes_file': 'This video has no stroke detection results yet.',
     'reason.no_technique': 'No technique reports yet.',
+    'reason.stale_technique': 'Technique scores come from the old stroke classifier — re-label this result.',
     'reason.few_hits': 'Few hits were measured, so the result is indicative only.',
     'reason.no_hits': 'Too few hits to calculate this.',
     'reason.unscored_technique': 'Some techniques have no reference range yet: {names}.',
@@ -1182,6 +1210,22 @@ export const STRINGS = {
     'ws.outside_note': '{n} strokes fall outside every {label}; see them under All strokes.',
     'ws.timeline_lane': 'One lane: no point outcome is recorded, so nothing is marked won or lost.',
     'ws.uncertain': 'Uncertain',
+    'stroke.short_serve': 'Short serve',
+    'stroke.long_serve': 'Long serve',
+    'stroke.clear': 'Clear',
+    'stroke.lift': 'Lift',
+    'stroke.smash': 'Smash',
+    'stroke.drop': 'Drop',
+    'stroke.net_shot': 'Net shot',
+    'stroke.block': 'Block',
+    'stroke.cross_net': 'Cross-court net',
+    'stroke.net_rush': 'Net rush',
+    'stroke.drive': 'Drive',
+    'stroke.push': 'Push',
+    'ws.stroke_unverified': 'Stroke accuracy not yet verified on your footage.',
+    'ws.stroke_stale': 'Stroke labels out of date — re-label this result.',
+    'ws.stroke_no_model': 'Stroke model not installed.',
+    'ws.no_reference': 'No reference ranges yet — not scored.',
     'ws.uncertain_note': 'The classifier was not confident about this stroke, so its type is not claimed.',
     'ws.opponent_tag': 'opponent',
     'ws.no_report': 'No technique report matches this stroke.',
@@ -1312,7 +1356,7 @@ export const STRINGS = {
     'dbl.ws.last_hit': 'Last hit',
     'dbl.ws.players_video': 'Players video',
     'dbl.ws.named_line': 'Hits named: {named} of {total} ({pct})',
-    'dbl.strokes_withheld': 'Stroke types withheld for doubles (BST is a singles model).',
+    'dbl.strokes_withheld': 'Stroke types withheld for doubles (the stroke classifier is singles-only).',
   },
 };
 
@@ -1328,6 +1372,11 @@ export function t(key, lang, params) {
     const v = params ? params[name] : undefined;
     return v === undefined || v === null ? '' : String(v);
   });
+}
+
+/** Display name of one of the 12 stroke types. */
+export function strokeTypeLabel(id, lang) {
+  return t('stroke.' + id, lang);
 }
 
 function techName(id, lang) {

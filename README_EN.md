@@ -65,6 +65,8 @@ Video preview: `assets/demo_en.mp4`.
 
 Enable technique analysis to automatically detect stroke types, analyze key joint angles, generate biomechanical scores with improvement suggestions, and create personalized training plans.
 
+Stroke types come from one learned classifier that recognises 12 types (short serve, long serve, clear, lift, smash, drop, net shot, block, cross-court net, net rush, drive, push, plus unknown), grouped into 7 groups: serve, clear, drop, net, lift, drive, and smash. The model is trained with `scripts/train_stroke_classifier.py` and installed as `weights/stroke-classifier.pt` and `weights/stroke-classifier.json`; use `--stroke-model` to point at another path. Older results can be re-labelled with `python -m badminton_analysis.stroke.relabel <result_dir>`.
+
 ### Enabling Technique Analysis
 
 Add the `--analyze-technique` flag to the command line:
@@ -418,7 +420,7 @@ Expect `True` and `CUDAExecutionProvider` in the output.
 | `./data` | `/app/data` | Library tags, athlete profiles |
 | `./weights` | `/app/weights` | Model weights (`.pt` / `.onnx`, never baked into the image) |
 
-- Optional trained models (racket detector, AI form score, BST, TrackNet, hit detector) are picked up automatically when placed in `./weights`; no rebuild needed.
+- Optional trained models (racket detector, AI form score, stroke classifier, TrackNet, hit detector) are picked up automatically when placed in `./weights`; no rebuild needed.
 - Change the port: `GB_PORT=8080 docker compose up -d`.
 - The GPU image uses CUDA 12.1 PyTorch and `onnxruntime-gpu==1.20.2` (1.20.1 has no Python 3.12 wheel; otherwise the same recipe as the GPU section above); the CPU image uses the CPU pins from `requirements.txt`, which is left unchanged.
 - The container runs as root to avoid bind-mount permission problems on Windows and Docker Desktop; on Linux hosts, files created in `outputs/` are owned by root.
@@ -501,6 +503,7 @@ RTMPose / RTMO modes:
 --language {zh,en}                   Visualization language
 --analyze-technique                  Enable stroke technique analysis (disabled by default)
 --racket-model                       Path to YOLO racket detection model; optional, kinematic inference is used if not provided
+--stroke-model                        Path to stroke classifier weights; optional
 --dominant-hand                      Player's racket hand: right or left (default right)
 ```
 

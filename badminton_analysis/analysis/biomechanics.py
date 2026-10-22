@@ -5,6 +5,7 @@ from . import joint_angles as ja
 from .scoring import score_stroke
 from .reference_ranges import REFERENCE_RANGES
 from .reference_ranges_3d import REFERENCE_RANGES_3D
+from ..stroke.stroke_types import PROFILE_GROUP, group_of, profile_for
 
 _METRIC_LABEL = {
     "elbow_extension": "Elbow extension",
@@ -85,9 +86,6 @@ class BiomechanicalAnalyzer:
             m3d = ja.compute_joint_angles_3d(kp3d, dominant=self.dominant)
             for name in ja.METRICS_3D_CAPABLE:
                 metrics[name] = m3d.get(name)
-            ranges = REFERENCE_RANGES_3D
-        else:
-            ranges = REFERENCE_RANGES
 
         # weight transfer: window-start centroid -> contact centroid, normalized by shoulder width
         start_centroid = next((w["centroid"] for w in window_frames if w.get("centroid") is not None), None)
@@ -98,38 +96,48 @@ class BiomechanicalAnalyzer:
             wt = ja.weight_transfer_ratio(start_centroid, contact_centroid, shoulder_w)
         metrics["weight_transfer"] = wt
 
-        scored = score_stroke(metrics, stroke_event.stroke_type, ranges=ranges)
+        return build_report(
+            stroke_event.stroke_type, stroke_event.contact_frame, stroke_event.player_side,
+            stroke_event.confidence, metrics, "3d" if used_3d else "2d",
+            metrics2d if used_3d else None)
 
-        # Per-metric feature-space labels + 2D shadow for the 3D-capable metrics.
-        for name, entry in scored["per_metric"].items():
-            if used_3d and name in ja.METRICS_3D_CAPABLE:
-                entry["feature_space"] = "3d"
-                entry["measured_shadow_2d"] = metrics2d.get(name)
-            else:
-                entry["feature_space"] = "2d"
 
-        weaknesses = []
-        for metric in scored["weaknesses"]:
-            entry = scored["per_metric"][metric]
-            weaknesses.append({
-                "metric": metric,
-                "measured": entry["measured"],
-                "ideal_range": entry["ideal_range"],
-                "direction": entry["direction"],
-                "severity": entry["severity"],
-                "description": _describe(metric, entry),
-                "feature_space": entry.get("feature_space"),
-                "measured_shadow_2d": entry.get("measured_shadow_2d"),
-            })
+def build_report(stroke_type, contact_frame, player_side, confidence, metrics,
+                 feature_space, shadow_2d=None):
+    """Technique report for one stroke. A type without a reference profile is labelled, not scored."""
+    profile = profile_for(stroke_type)
+    base = {"stroke_type": stroke_type, "profile": profile,
+            "group": group_of(stroke_type) or PROFILE_GROUP.get(stroke_type),
+            "contact_frame": contact_frame, "player_side": player_side,
+            "confidence": confidence, "measured": dict(metrics), "feature_space": feature_space}
+    if profile is None:
+        return {**base, "scored": False, "overall_score": None, "per_metric": {},
+                "weaknesses": [], "strengths": []}
+    ranges = REFERENCE_RANGES_3D if feature_space == "3d" else REFERENCE_RANGES
+    scored = score_stroke(metrics, profile, ranges=ranges)
+    for name, entry in scored["per_metric"].items():
+        if feature_space == "3d" and name in ja.METRICS_3D_CAPABLE:
+            entry["feature_space"] = "3d"
+            entry["measured_shadow_2d"] = (shadow_2d or {}).get(name)
+        else:
+            entry["feature_space"] = "2d"
+    weaknesses = []
+    for metric in scored["weaknesses"]:
+        entry = scored["per_metric"][metric]
+        weaknesses.append({
+            "metric": metric, "measured": entry["measured"], "ideal_range": entry["ideal_range"],
+            "direction": entry["direction"], "severity": entry["severity"],
+            "description": _describe(metric, entry), "feature_space": entry.get("feature_space"),
+            "measured_shadow_2d": entry.get("measured_shadow_2d")})
+    return {**base, "scored": True, "overall_score": scored["overall"],
+            "per_metric": scored["per_metric"], "weaknesses": weaknesses,
+            "strengths": scored["strengths"]}
 
-        return {
-            "stroke_type": stroke_event.stroke_type,
-            "contact_frame": stroke_event.contact_frame,
-            "player_side": stroke_event.player_side,
-            "confidence": stroke_event.confidence,
-            "overall_score": scored["overall"],
-            "per_metric": scored["per_metric"],
-            "weaknesses": weaknesses,
-            "strengths": scored["strengths"],
-            "feature_space": "3d" if used_3d else "2d",
-        }
+
+def rescore_report(report, stroke_type):
+    metrics = report.get("measured")
+    if not isinstance(metrics, dict):
+        metrics = {k: v.get("measured") for k, v in (report.get("per_metric") or {}).items()}
+    shadow = {k: v.get("measured_shadow_2d") for k, v in (report.get("per_metric") or {}).items()}
+    return build_report(stroke_type, report.get("contact_frame"), report.get("player_side"),
+                        report.get("confidence"), metrics, report.get("feature_space") or "2d", shadow)

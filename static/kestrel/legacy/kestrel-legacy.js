@@ -1,3 +1,4 @@
+import * as LS from './strokes.js';
 var Kestrel = (function () {
   'use strict';
   var state = { lang: localStorage.getItem('kestrel_lang') || 'zh',
@@ -1063,16 +1064,10 @@ var Kestrel = (function () {
     drop_shot: ['吊球', 'Drop shot'], serve: ['发球', 'Serve']
   };
   function strokeTypeLabel(k) { var m = STROKE_TYPE_LABELS[k]; return m ? (state.lang==='zh'?m[0]:m[1]) : String(k).replace(/_/g,' '); }
-  // Coarse stroke-type vocabulary from the BST rally labeler (Task 6 outputs/<stem>/strokes.json),
-  // distinct from STROKE_TYPE_LABELS above (which covers the biomechanics posture-drill stroke set).
-  var STROKE_COARSE_LABELS = {
-    serve: ['发球', 'Serve'], clear: ['高远球', 'Clear'], smash: ['杀球', 'Smash'],
-    drop: ['吊球', 'Drop'], drive: ['平抽球', 'Drive'], net: ['网前球', 'Net']
-  };
-  var STROKE_COARSE_ORDER = ['serve', 'clear', 'smash', 'drop', 'drive', 'net'];
-  function strokeCoarseLabel(k) {
-    var m = STROKE_COARSE_LABELS[k];
-    return m ? (state.lang === 'zh' ? m[0] : m[1]) : String(k == null ? '' : k).replace(/_/g, ' ');
+  // 12 stroke types and 7 groups from the one stroke classifier: see ./strokes.js (LS).
+  // A technique label: one of the 12 stroke types, else a drill name (STROKE_TYPE_LABELS above).
+  function techniqueLabel(k) {
+    return k === 'unknown' || LS.isStrokeType(k) ? LS.strokeLabel(k, state.lang) : strokeTypeLabel(k);
   }
   function weaknessLineHTML(w) {
     var zh = state.lang === 'zh';
@@ -1084,7 +1079,8 @@ var Kestrel = (function () {
     return '<li>' + parts.join(' · ') + '</li>';
   }
   function scoreHue(s) { return s >= 70 ? 'var(--good)' : (s >= 40 ? 'var(--mid)' : 'var(--bad)'); }
-  function scoreChipHTML(score) {
+  function scoreChipHTML(score, scored) {
+    if (scored === false) return '<span class="muted mono">' + escHTML(LS.noReferenceText(state.lang)) + '</span>';
     var sc = (score === null || score === undefined) ? null : Math.round(score);
     return '<span class="score-chip mono" style="background:' + (sc === null ? 'var(--faint)' : scoreHue(sc)) + '">' + (sc === null ? '—' : sc) + '</span>';
   }
@@ -1187,9 +1183,9 @@ var Kestrel = (function () {
         .catch(function () { btn.textContent = zh?'生成回合剪辑':'Generate clips'; btn.disabled = false; alert(zh ? '网络错误，请重试' : 'Network error — please try again'); });
     };
 
-    // Rally stroke-type timeline + distribution (BST; Task 6 outputs/<stem>/strokes.json).
-    // Presence-keyed: this file only exists when BST weights were present at analysis
-    // time, so a 404/absent/malformed response must render nothing (no error, no empty box).
+    // Rally stroke timeline + distribution (outputs/<stem>/strokes.json, schema 2, the one stroke
+    // classifier). A 404/absent/malformed response renders nothing. An old-schema file is stale:
+    // no labels, only the re-label notice.
     fetch('/api/output/' + stem + '/strokes.json').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       if (!d) return;
       var strokes = Array.isArray(d.strokes) ? d.strokes : [];
@@ -1201,25 +1197,25 @@ var Kestrel = (function () {
         }
       }
       if (strokes.length) {
-        document.getElementById('stroke-timeline').innerHTML = strokes.map(function (s, i) {
-          var uncertain = !!(s && s.uncertain);
-          var label = strokeCoarseLabel(s && s.stroke);
-          var title = uncertain ? ' title="' + (zh ? '不确定' : 'Uncertain') + '"' : '';
-          var item = '<span class="timeline-item' + (uncertain ? ' muted' : '') + '"' + title + '>' + label + '</span>';
-          return i < strokes.length - 1 ? item + '<span class="timeline-arrow">→</span>' : item;
+        var items = LS.timelineItems(d, state.lang);
+        document.getElementById('stroke-timeline').innerHTML = items.map(function (it, i) {
+          var title = it.muted ? ' title="' + escHTML(it.text) + '"' : '';
+          var item = '<span class="timeline-item' + (it.muted ? ' muted' : '') + '"' + title + '>' + escHTML(it.text) + '</span>';
+          return i < items.length - 1 ? item + '<span class="timeline-arrow">→</span>' : item;
         }).join('');
-        var tbox = document.getElementById('timeline-box'); if (tbox) tbox.style.display = '';
-      }
-      var dist = (d.distribution && typeof d.distribution === 'object') ? d.distribution : null;
-      if (dist) {
-        // "uncertain" is already shown muted in the timeline above; exclude it here
-        // so it doesn't fall through strokeCoarseLabel() untranslated in the distribution line.
-        var keys = STROKE_COARSE_ORDER.filter(function (k) { return dist[k] > 0; })
-          .concat(Object.keys(dist).filter(function (k) { return k !== 'uncertain' && STROKE_COARSE_ORDER.indexOf(k) === -1 && dist[k] > 0; }));
-        if (keys.length) {
-          document.getElementById('dist-list').textContent = keys.map(function (k) { return strokeCoarseLabel(k) + ' ' + dist[k]; }).join(' · ');
-          var dbox = document.getElementById('dist-box'); if (dbox) dbox.style.display = '';
+        var kind = LS.strokeNotice(d);
+        var tbox = document.getElementById('timeline-box');
+        if (kind && tbox && !document.getElementById('stroke-notice')) {
+          var p = document.createElement('p');
+          p.className = 'muted'; p.id = 'stroke-notice'; p.textContent = LS.noticeText(kind, state.lang);
+          tbox.insertBefore(p, document.getElementById('stroke-timeline'));
         }
+        if (tbox) tbox.style.display = '';
+      }
+      var dtext = LS.distributionText(d, state.lang);
+      if (dtext) {
+        document.getElementById('dist-list').textContent = dtext;
+        var dbox = document.getElementById('dist-box'); if (dbox) dbox.style.display = '';
       }
     }).catch(function () {});
 
@@ -1277,7 +1273,7 @@ var Kestrel = (function () {
         (zh ? '距离' : 'Distance') + '</th><th>' + (zh ? '均速 / 最高' : 'Avg / max speed') + '</th><th>' + (zh ? '击球' : 'Hits') + '</th></tr></thead><tbody>' +
         rows + '</tbody></table>' +
         '<p class="chip">' + (zh ? '击球归属：未验证（' + share + '% 已命名）' : 'Who hit: unvalidated (' + share + '% named)') + '</p>' +
-        '<p class="muted">' + (zh ? '双打不提供击球类型（BST 为单打模型）' : 'Stroke types withheld for doubles (BST is a singles model)') + '</p>' +
+        '<p class="muted">' + (zh ? '双打不提供击球类型（击球识别仅支持单打）' : 'Stroke types withheld for doubles (the stroke classifier is singles-only)') + '</p>' +
         '<div class="viz-row">' + heat + '</div>' + videoLine;
       box.style.display = '';
     }).catch(function () {});
@@ -1286,18 +1282,20 @@ var Kestrel = (function () {
     fetch('/api/technique/' + stem).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
       var status = document.getElementById('tech-status');
       if (!d || !d.summary || !d.summary.stroke_count) { status.textContent = techEmptyText(); return; }
+      // Old reports (no `scored` key) hold rule-classifier labels: show the re-label notice, never them.
+      if (LS.techniqueStale(d)) { status.textContent = LS.noticeText('stale', state.lang); return; }
       status.style.display = 'none';
       var s = d.summary;
       var chips = Object.keys(s.by_type || {}).map(function (k) {
-        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + strokeTypeLabel(k) + '</b> ' + bt.count + '× · ' + (bt.avg_score == null ? '—' : Math.round(bt.avg_score)) + '</span>'; }).join('');
+        var bt = s.by_type[k]; return '<span class="chip-metric"><b>' + escHTML(techniqueLabel(k)) + '</b> ' + bt.count + '× · ' + (bt.avg_score == null ? '—' : Math.round(bt.avg_score)) + '</span>'; }).join('');
       var weak = (s.recurring_weaknesses || []).slice(0,3).map(function (w) { return '<li>' + metricLabel(w.metric) + ' ×' + w.count + '</li>'; }).join('');
       document.getElementById('tech-summary').innerHTML =
         '<div class="tech-sum"><div class="mono">' + (zh?'击球数':'Strokes') + ': ' + s.stroke_count + '</div>' +
         '<div class="chip-row">' + chips + '</div>' + (weak ? '<div class="weak"><span class="muted">' + (zh?'常见问题':'Recurring') + '</span><ul>' + weak + '</ul></div>' : '') + '</div>';
       var strokes = d.strokes || [];
       document.getElementById('tech-strokes').innerHTML = strokes.map(function (st, i) {
-        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + strokeTypeLabel(st.stroke_type) + '</span>' +
-          scoreChipHTML(st.overall_score) + '</button>'; }).join('');
+        return '<button class="stroke-row" data-i="' + i + '"><span class="stroke-type">' + escHTML(techniqueLabel(st.stroke_type)) + '</span>' +
+          scoreChipHTML(st.overall_score, st.scored) + '</button>'; }).join('');
       document.querySelectorAll('.stroke-row').forEach(function (b) { b.onclick = function () {
         document.querySelectorAll('.stroke-row').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');
         var st = strokes[Number(b.getAttribute('data-i'))];

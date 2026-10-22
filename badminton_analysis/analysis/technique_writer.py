@@ -23,8 +23,9 @@ def build_match_summary(reports):
     for r in reports:
         st = r["stroke_type"]
         by_type_count[st] += 1
-        if r.get("overall_score") is not None:
-            by_type_scores[st].append(r["overall_score"])
+        if not (r.get("scored", True) and r.get("overall_score") is not None):
+            continue
+        by_type_scores[st].append(r["overall_score"])
         for w in r.get("weaknesses", []):
             weakness_counter[w["metric"]] += 1
         for s in r.get("strengths", []):
@@ -41,6 +42,8 @@ def build_match_summary(reports):
 
     return {
         "stroke_count": len(reports),
+        "scored_count": sum(1 for r in reports
+                            if r.get("scored", True) and r.get("overall_score") is not None),
         "by_type": by_type,
         "recurring_weaknesses": _ranked(weakness_counter),
         "strengths": _ranked(strength_counter),

@@ -123,7 +123,7 @@ docker compose exec app python -c "import torch, onnxruntime as ort; print(torch
 | `./data` | `/app/data` | 资料库标签、运动员档案 |
 | `./weights` | `/app/weights` | 模型权重（`.pt` / `.onnx`，不会打进镜像） |
 
-- 可选的训练模型（球拍检测、AI 评分、BST、TrackNet、击球检测）放进 `./weights` 即可被自动识别，无需重新构建。
+- 可选的训练模型（球拍检测、AI 评分、击球类型分类器、TrackNet、击球检测）放进 `./weights` 即可被自动识别，无需重新构建。
 - 更换端口：`GB_PORT=8080 docker compose up -d`。
 - GPU 镜像使用 CUDA 12.1 PyTorch 与 `onnxruntime-gpu==1.20.2`（1.20.1 没有 Python 3.12 轮子，其余与上文 GPU 加速方案一致）；CPU 镜像使用 `requirements.txt` 中的 CPU 版本。`requirements.txt` 本身不变。
 - 容器以 root 运行，避免 Windows / Docker Desktop 下绑定挂载的权限问题；Linux 主机上 `outputs/` 内的文件归 root 所有。
@@ -184,6 +184,8 @@ docker compose exec app python -c "import torch, onnxruntime as ort; print(torch
 ## 🎯 击球技术分析
 
 启用技术分析后，系统会自动识别击球类型，分析关键关节角度，生成生物力学评分和改进建议，并生成个性化训练计划。
+
+击球类型由统一的学习型分类器识别，共 12 类（发短球、发长球、高远球、挑球、杀球、吊球、放网、挡网、勾对角、扑球、平抽球、推球，以及未知），归并为 7 组：发球、高远球、吊球、网前球、挑球、平抽球、杀球。模型由 `scripts/train_stroke_classifier.py` 训练，安装为 `weights/stroke-classifier.pt` 和 `weights/stroke-classifier.json`；可用 `--stroke-model` 指定路径。旧结果可用 `python -m badminton_analysis.stroke.relabel <结果目录>` 重新标注。
 
 ### 启用技术分析
 
@@ -462,6 +464,7 @@ badminton_analysis/
 --display false            关闭 OpenCV 窗口（服务器模式）
 --analyze-technique        启用击球技术分析（默认关闭）
 --racket-model             球拍检测模型路径，可选；不提供时使用运动学推断
+--stroke-model              击球类型分类器权重路径，可选
 --dominant-hand            持拍手：right 或 left（默认 right）
 ```
 

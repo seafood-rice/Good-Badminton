@@ -30,8 +30,7 @@ def build_parser():
                         help='启用击球姿态生物力学分析，输出 strokes.jsonl 与 technique_summary.json')
     parser.add_argument('--racket-model', default='weights/yolo11s-racket.pt', type=str,
                         help='YOLO 球拍检测模型路径（用于击球分析）')
-    parser.add_argument('--bst-model', default=None, type=str,
-                        help='BST 击球类型识别模型路径（可选，用于击球分析）')
+    parser.add_argument('--stroke-model', default=None, type=str, help='击球类型识别模型路径（可选）/ stroke classifier weights (optional)')
     parser.add_argument('--tracknet-model', default=None, type=str,
                         help='TrackNetV3 追踪模型路径（可选，密集羽毛球轨迹）')
     parser.add_argument('--inpaintnet-model', default=None, type=str,
@@ -76,7 +75,7 @@ def main():
         analyze_technique=args.analyze_technique,
         racket_model_path=args.racket_model,
         dominant_hand=args.dominant_hand,
-        bst_weights=args.bst_model,
+        stroke_model_path=args.stroke_model,
         tracknet_weights=args.tracknet_model,
         inpaintnet_weights=args.inpaintnet_model,
         tracknet_mode=args.tracknet_mode,

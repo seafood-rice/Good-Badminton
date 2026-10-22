@@ -41,7 +41,7 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 
 | Feature | Branch | Paths it touches | State / next action |
 |---|---|---|---|
-| learned-hit-detection | `claude/learned-hit-detection` | `badminton_analysis/stroke/`, `system.py`, `stroke_recog/recognizer.py`, `shuttle_track/tracknet.py`, `third_party/tracknet/`, `static/kestrel/legacy/kestrel-legacy.js`, `main.py`, `app.py`, `scripts/*hit*`, `scripts/shuttleset_labels.py`, `tests/test_hit_*` | First model on owner's Axelsen labels: recall 0.80, precision 0.67 (bar 0.60 / 0.70), hitter 0.88. Dead-time rebuild runs detached (`data/hit_dataset_gaps/build.log`; `stop_build.ps1` / `resume_build.ps1` there). Next: when it shows BUILD DONE, retrain on `data/hit_dataset` + `data/hit_dataset_gaps` (val Sindhu), re-score the 4 Axelsen stretches. Spec/plan: `docs/superpowers/*/2026-10-04-learned-hit-detection*`. `app.py` now serves `kestrel.html` at `/` and binds `0.0.0.0` (merged). |
+| learned-hit-detection | `claude/learned-hit-detection` | `badminton_analysis/stroke/`, `system.py`, `stroke_recog/recognizer.py`, `shuttle_track/tracknet.py`, `third_party/tracknet/`, `static/kestrel/legacy/kestrel-legacy.js`, `main.py`, `app.py`, `scripts/*hit*`, `scripts/shuttleset_labels.py`, `tests/test_hit_*` | First model on owner's Axelsen labels: recall 0.80, precision 0.67 (bar 0.60 / 0.70), hitter 0.88. Dead-time rebuild runs detached (`data/hit_dataset_gaps/build.log`; `stop_build.ps1` / `resume_build.ps1` there). Next: when it shows BUILD DONE, retrain on `data/hit_dataset` + `data/hit_dataset_gaps` (val Sindhu), re-score the 4 Axelsen stretches. Spec/plan: `docs/superpowers/*/2026-10-04-learned-hit-detection*`. `app.py` now serves `kestrel.html` at `/` and binds `0.0.0.0` (merged). Note: claude/stroke-timeline-mismatch-2bfb29 deletes stroke_recog/; rebase before touching it. |
 | split-match-linking | `claude/match-split-side-change-58a409` | `badminton_analysis/library/athletes.py`, `insights/aggregate.py`, `web/athletes_routes.py`, `app.py` (`_forget_match_record`), `static/kestrel/views/matches.js`, `static/kestrel/core/i18n.js` | Spec `docs/superpowers/specs/2026-10-21-split-match-linking-design.md`. Built: link a video as part N of a match (manual, sides-swapped flag); one expandable Matches row. Verified 2026-10-21: full pytest 2047 passed / 2 skipped, `node --test tests/js/*.test.mjs` 280 passed, live UI + API check on seeded data. Next: owner review/merge of the PR; then delete this row. Follow-ups: explicit `{part_of: null}` unlink (stale-tab safety), `has_record` flag on overview rows (UI guesses today). |
 | docker-migration-compose | `claude/docker-migration-compose-a48190` | `Dockerfile`, `.dockerignore`, `docker-compose*.yml`, `README.md`, `README_EN.md` | Image + compose (GPU default, CPU override) and README Docker sections done. Verified on RTX 4090 host: both images build; GPU image sees CUDA (torch + onnxruntime CUDA session); stack healthy; `pytest` in GPU image 1936 passed, 3 skipped (`test_ai_overlap.py` excluded, needs `git`). Not run: `fetch-weights` download, a real analysis on a video with weights. Delete this row when merged. |
 
@@ -58,6 +58,12 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 
 ## Blockers and loose ends
 
+- Stroke classifier (spec `docs/superpowers/specs/2026-10-22-unified-stroke-classifier-design.md`): owner
+  accuracy bar not yet measured. Owner labels `outputs/dji-stroke-labels/LABELS.md` (0014 = test; add 1-2
+  more test videos so every group has >= 20 test hits), then retrain with `--dji-labels`, relabel, and run
+  `scripts/score_strokes.py --split test`. First model (`weights/stroke-classifier.pt`, ShuttleSet only): Sindhu
+  group accuracy 0.867, drive recall 0.49. After merge, relabel existing results with
+  `python -m badminton_analysis.stroke.relabel <result_dir>`.
 - B11 shuttle-segmentation path is unvalidated on footage (needs an owner-run full Axelsen run).
 - `stroke/shot_boundary.py` is standalone, not wired in; no real broadcast sample exists.
 - B11 follow-ups: CLI flags in `main.py` for gate/signal pins; legacy `web_ui.html` clip button;

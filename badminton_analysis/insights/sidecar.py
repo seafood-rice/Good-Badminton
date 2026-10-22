@@ -20,7 +20,7 @@ from .rally import rally_insight
 from .strokes import strokes_insight
 from .technique import technique_insight
 
-INSIGHTS_VERSION = 6
+INSIGHTS_VERSION = 7
 SCHEMA_VERSION = 1
 SIDECAR_NAME = "insights.json"
 INPUT_FILES = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json",

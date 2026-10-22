@@ -242,11 +242,11 @@ def _lift_weights(base=None):
     return str(p) if p.is_file() else None
 
 
-def _bst_weights(base=None):
-    """Path to trained BST stroke-recognition weights when installed, else None."""
+def _stroke_weights(base=None):
+    """Path to the stroke classifier weights when both they and their .json sidecar are installed, else None."""
     base = Path(base) if base is not None else (PROJECT_ROOT / 'weights')
-    p = base / 'bst-shuttleset.pt'
-    return str(p) if p.is_file() else None
+    p = base / 'stroke-classifier.pt'
+    return str(p) if p.is_file() and p.with_suffix('.json').is_file() else None
 
 
 def _tracknet_weights(base=None):
@@ -687,10 +687,10 @@ def api_stats():
 
 @app.route('/api/models')
 def api_models():
-    """Which optional trained models (racket detector, AI quality scorer, BST stroke recognizer, 3D pose lifter, learned hit detector) are installed."""
+    """Which optional trained models (racket detector, AI quality scorer, stroke classifier, 3D pose lifter, learned hit detector) are installed."""
     return jsonify({'racket': _racket_weights() is not None,
                     'quality': _quality_weights() is not None,
-                    'bst': _bst_weights() is not None,
+                    'stroke': _stroke_weights() is not None,
                     'tracknet': _tracknet_weights() is not None,
                     'lift': _lift_weights() is not None,
                     'hit_detector': _hit_model_weights() is not None})
@@ -892,9 +892,9 @@ def api_analyze():
     if racket_weights:
         cmd += ['--racket-model', racket_weights]
 
-    bst_weights = _bst_weights()
-    if bst_weights:
-        cmd += ['--bst-model', bst_weights]
+    stroke_weights = _stroke_weights()
+    if stroke_weights:
+        cmd += ['--stroke-model', stroke_weights]
 
     tracknet_weights = _tracknet_weights()
     if tracknet_weights:

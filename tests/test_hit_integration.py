@@ -8,8 +8,6 @@ from badminton_analysis import system as system_mod
 from badminton_analysis.data.writer import write_json
 from badminton_analysis.stroke import hit_detector as hd
 from badminton_analysis.stroke import hit_model as hm
-from badminton_analysis.stroke_recog import recognizer as recognizer_mod
-from badminton_analysis.stroke_recog.recognizer import StrokeRecognizer
 from badminton_analysis.system import BadmintonAnalysisSystem, TechniqueAnalysisRunner
 from tests.hit_fixtures import CORNERS, pose_at
 
@@ -21,7 +19,7 @@ def _system(tmp_path, monkeypatch, **kw):
     s = object.__new__(BadmintonAnalysisSystem)
     s.analyze_technique = kw.get("analyze_technique", True)
     s.hit_model_path = kw.get("hit_model_path", "weights/hit-detector.pt")
-    s.bst_weights = None
+    s.stroke_model_path = None
     s.save_dir = str(tmp_path)
     s.court_corners = CORNERS.tolist()
     s.frame_width, s.frame_height = 1280, 720
@@ -93,6 +91,7 @@ def test_learned_hits_written_with_provenance_time_and_rally(tmp_path, monkeypat
                {"frame": 80, "hitter": "lower", "confidence": 0.7}]
     monkeypatch.setattr(hd, "detect_hits", lambda sig, model, meta: learned)
     assert s._run_hit_detection(30.0, N) == learned
+    assert s._hit_list == learned and s._hit_source == "learned"
     payload = _hits_json(tmp_path)
     assert payload["source"] == "learned" and payload["reason"] is None
     assert payload["model"] == {"sha256": "a" * 64, "schema": 1, "threshold": 0.4, "min_spacing_sec": 0.3}
@@ -175,17 +174,6 @@ def test_fast_mode_removes_stale_hit_outputs(tmp_path, monkeypatch):
     assert not (tmp_path / "hit_signals.npz").exists()
 
 
-def test_recognizer_uses_injected_hits(monkeypatch):
-    rec = StrokeRecognizer("w.pt")
-    rec._load_attempted, rec._model = True, object()
-    monkeypatch.setattr(recognizer_mod, "hit_events", lambda track: (_ for _ in ()).throw(AssertionError("contact rule used")))
-    monkeypatch.setattr(recognizer_mod, "build_inputs", lambda *a, **k: None)
-    out = rec.label_rally([], lambda f: None, CORNERS.tolist(), (1280, 720),
-                          hits=[{"frame": 40, "hitter": "upper", "confidence": 0.8}])
-    assert out == [{"frame": 40, "hitter": "upper", "stroke": "uncertain", "confidence": 0.0,
-                    "uncertain": True, "hit_confidence": 0.8}]
-
-
 def test_technique_runner_uses_injected_hits(monkeypatch):
     import badminton_analysis.stroke.events as events
 
@@ -193,9 +181,7 @@ def test_technique_runner_uses_injected_hits(monkeypatch):
     runner = TechniqueAnalysisRunner.__new__(TechniqueAnalysisRunner)
     runner.window_pre, runner.window_post, runner.scale = 20, 15, None
     seen = []
-    runner._build_classifier_window = lambda c, a, b, lookup: {"contact_index": 0}
     runner._window_frames = lambda a, b, lookup: []
-    monkeypatch.setattr("badminton_analysis.stroke.classifier.classify_stroke", lambda w: ("smash", 0.9))
     runner.analyzer = type("A", (), {"analyze": lambda self, ev, frames: seen.append(ev) or {"ok": 1}})()
     reports, evs = runner.run([], lambda f: {"player_side": "lower"},
                               hits=[{"frame": 50, "hitter": "lower"}, {"frame": 10, "hitter": "lower"}])
@@ -208,32 +194,34 @@ def test_technique_analysis_gets_only_the_tracked_players_hits(tmp_path, monkeyp
     s._racket_detector, s.dominant_hand, s.fps = None, "right", 30.0
     captured = {}
 
-    def fake_run(self, track, lookup, hits=None):
-        captured["hits"] = hits
+    def fake_run(self, track, lookup, hits=None, strokes=None):
+        captured["hits"], captured["strokes"] = hits, strokes
         return [], []
 
     monkeypatch.setattr(TechniqueAnalysisRunner, "run", fake_run)
-    s._run_technique_analysis([{"frame": 5, "hitter": "lower"}, {"frame": 9, "hitter": "upper"}])
+    s._hit_list = [{"frame": 5, "hitter": "lower"}, {"frame": 9, "hitter": "upper"}]
+    label = {"frame": 5, "hitter": "lower", "stroke": "smash", "confidence": 0.8}
+    s._run_technique_analysis([label])
     assert captured["hits"] == [{"frame": 5, "hitter": "lower"}]
+    assert captured["strokes"] == {5: label}
 
 
-def test_contact_rule_strokes_json_unchanged(tmp_path, monkeypatch):
-    s = _system(tmp_path, monkeypatch)
-    s.bst_weights = "bst.pt"
+def test_hit_list_feeds_schema2_strokes_json(tmp_path, monkeypatch):
+    s = _system(tmp_path, monkeypatch, hit_model_path=None)
     s.rally_detection = None
-    s._shuttle_source = "yolo"
-    monkeypatch.setattr(StrokeRecognizer, "label_rally",
-                        lambda self, *a, hits=None, **k: [{"frame": 3, "hitter": "lower", "stroke": "net",
-                                                           "confidence": 0.9, "uncertain": False}])
-    s._run_stroke_recognition(None)
+    s._analysis_track_both = []
+    s._run_hit_detection(30.0, N)
+    assert s._hit_source == "contact_rule" and s._hit_list == [] and s._hit_signals is not None
+    assert s._run_stroke_classification() == [] and not (tmp_path / "strokes.json").exists()
+    s._hit_list, s._hit_source = [{"frame": 3, "hitter": "lower", "confidence": 0.9}], "learned"
+    s._run_stroke_classification()
     payload = json.loads((tmp_path / "strokes.json").read_text())
-    assert set(payload) == {"strokes", "distribution"}
-    s._run_stroke_recognition([{"frame": 3, "hitter": "lower", "confidence": 0.9}])
-    assert json.loads((tmp_path / "strokes.json").read_text())["hit_source"] == "learned"
+    assert payload["schema"] == 2 and payload["hit_source"] == "learned"
+    assert [x["stroke"] for x in payload["strokes"]] == ["unknown"]
 
 
 def test_contact_rule_listing_failure_is_not_fatal(tmp_path, monkeypatch):
-    import badminton_analysis.stroke_recog.hits as hits_mod
+    import badminton_analysis.stroke.events as hits_mod
 
     s = _system(tmp_path, monkeypatch, hit_model_path=None)
     monkeypatch.setattr(hits_mod, "hit_events", lambda track: (_ for _ in ()).throw(RuntimeError("bad track")))
