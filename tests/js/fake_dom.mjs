@@ -10,14 +10,15 @@ export class FakeText {
 
 function simple(tok) {
   const checks = [];
-  const re = /([.#]?[\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]/g;
+  // Attribute tests first, so the words inside a quoted value are never read as tag / class tokens.
+  const re = /\[([\w-]+)(?:="((?:[^"\\]|\\.)*)")?\]|([.#]?[\w-]+)/g;
   let hit;
   while ((hit = re.exec(tok))) {
     const m = hit;
-    if (m[1] && m[1][0] === '.') checks.push((el) => el.classList.contains(m[1].slice(1)));
-    else if (m[1] && m[1][0] === '#') checks.push((el) => el.getAttribute('id') === m[1].slice(1));
-    else if (m[1]) checks.push((el) => el.tagName === m[1].toUpperCase());
-    else checks.push((el) => el.hasAttribute(m[2]) && (m[3] === undefined || el.getAttribute(m[2]) === m[3].replace(/\\(.)/g, '$1')));
+    if (m[1]) checks.push((el) => el.hasAttribute(m[1]) && (m[2] === undefined || el.getAttribute(m[1]) === m[2].replace(/\\(.)/g, '$1')));
+    else if (m[3][0] === '.') checks.push((el) => el.classList.contains(m[3].slice(1)));
+    else if (m[3][0] === '#') checks.push((el) => el.getAttribute('id') === m[3].slice(1));
+    else checks.push((el) => el.tagName === m[3].toUpperCase());
   }
   return (el) => checks.every((c) => c(el));
 }

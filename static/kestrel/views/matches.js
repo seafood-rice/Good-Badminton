@@ -1,5 +1,8 @@
 // Matches view (#/matches, spec 6.5): the scope's analysed matches with result chips and an inline match-record
-// editor (PUT /api/matches/<stem>); a row opens the workspace with the container transform. Also the match peek
+// editor (PUT /api/matches/<stem>); a row opens the workspace with the container transform. Since spec 2026-10-24
+// it is also the video library: unscoped it lists every video file (views/library_model.js joins /api/videos onto
+// the match rows), with search, status / tag filters, sort, a table or card grid (kestrel_matches_view) and the
+// per-video tools (widgets/videotools.js: tags, tag manager, delete). Also the match peek
 // drawer the overview opens (buildMatchPeek). matchRows / validateRecordForm / formFromRecord / peekModel are
 // pure and tested. Results come only from the record the user enters: there is no point outcome.
 // Split-match linking (spec 2026-10-21): a match recorded as several videos is one expandable row ("N parts"
@@ -14,6 +17,12 @@ import { api, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, approxMark } from '../widgets/frame.js';
 import { rallyCountText } from './workspace.js';
 import { IDENTITY_IDS, doublesPeekModel, identityOptionLabel, identityColor } from './doubles_model.js';
+import { prefs, PREF_KEYS } from '../core/prefs.js';
+import {
+  libraryRows, activeStemsOf, rowTags, tagLabel, isSysTag, filterRows, sortRows, tagCounts, isFiltered, openTarget,
+  STATUS_FILTERS, EMPTY_FILTER,
+} from './library_model.js';
+import { openTagEditor, openTagManager, openDeleteDialog, closeTool } from '../widgets/videotools.js';
 
 const SIDES = ['upper', 'lower'];
 const OTHER = '__other';
@@ -695,7 +704,13 @@ export function mount(container, ctx = {}) {
   if (!container || !hasDOM()) return noop;
   const lang = langOf(ctx);
   // `expanded`: stems of the split matches whose part sub-rows are open (kept across list reloads).
-  const state = { ctx, rows: null, error: null, editing: null, destroyed: false, scopeKey: null, expanded: new Set() };
+  // `videos`: the /api/videos list (null when it failed: `videosOk` false, match rows only). `filter` / `sort` last for
+  // the visit; `view` ('table' | 'grid') is remembered per browser.
+  const savedView = prefs.get(PREF_KEYS.matchesView, 'table');
+  const state = {
+    ctx, rows: null, error: null, editing: null, destroyed: false, scopeKey: null, expanded: new Set(),
+    videos: null, videosOk: true, filter: { ...EMPTY_FILTER, tags: [] }, sort: 'date', view: savedView === 'grid' ? 'grid' : 'table',
+  };
   let ctl = null;
   let reqId = 0;
   let animated = [];
@@ -714,34 +729,54 @@ export function mount(container, ctx = {}) {
   }
 
 
+  function scopeName(sc) {
+    const s = storeState(state.ctx);
+    const a = obj(s.athletes);
+    const find = (list, id) => (Array.isArray(list) ? list : []).find((x) => x && x.id === id);
+    const hit = (sc.athlete && find(a.athletes, sc.athlete)) || (sc.squad && find(a.squads, sc.squad));
+    return hit && hit.name ? String(hit.name) : sc.athlete || sc.squad;
+  }
+
   function header() {
-    const n = state.rows ? state.rows.length : 0;
+    const sc = scope();
+    const scoped = !!(sc.athlete || sc.squad);
+    let summary = null;
+    if (state.rows) {
+      if (scoped) summary = t('lib.summary_scoped', lang, { n: fmtNumber(state.rows.length) });
+      else if (state.videosOk) {
+        const vids = state.videos || [];
+        summary = t('lib.summary', lang, { n: fmtNumber(vids.length), a: fmtNumber(vids.filter((v) => v && (v.has_match || v.has_posture)).length) });
+      } else summary = t('mv.sub', lang, { n: fmtNumber(state.rows.length) });
+    }
     return h('div', { class: 'ov-head' }, [
       h('div', { class: 'ov-head-l' }, [
         h('div', { class: 'mono ov-eyebrow' }, t('mv.eyebrow', lang)),
         h('h1', { class: 'page-title serif' }, t('nav.matches', lang)),
-        state.rows ? h('div', { class: 'ov-summary' }, t('mv.sub', lang, { n: fmtNumber(n) })) : null,
+        summary ? h('div', { class: 'ov-summary' }, summary) : null,
       ]),
       h('div', { class: 'ov-actions' }, [h('a', { href: '#/new', class: 'ov-btn primary' }, t('btn.new_analysis', lang))]),
     ]);
   }
 
   function resultChip(r) {
+    if (r.kind === 'video') return h('span', { class: 'mono kw-muted' }, '\u2014');
     if (r.result) return h('span', { class: 'mono kw-res ' + (r.result === 'W' ? 'win' : 'loss') }, t('result.' + r.result, lang));
     return h('span', { class: 'mono kw-res none' }, t('matches.add_result', lang));
   }
 
+  const STATUS_TONE = { analysed: 'good', posture: 'good', needs_review: 'mid', processing: 'cyan' };
   function statusChip(r) {
-    const tone = r.status === 'analysed' ? 'good' : r.status === 'needs_review' ? 'mid' : r.status === 'processing' ? 'cyan' : '';
+    const tone = STATUS_TONE[r.status] || '';
     return h('span', { class: 'k-chip' + (tone ? ' ' + tone : '') }, [h('span', { class: 'kw-dot', 'aria-hidden': 'true' }), t('status.' + r.status, lang)]);
   }
 
   const attrSel = (attr, stem) => `[${attr}="${String(stem).replace(/["\\]/g, '\\$&')}"]`;
 
-  /** Focus a match row's control after a reload: its parts chevron when it has one, else its record button. */
+  /** Focus a row's control after a reload: its parts chevron, record button, menu button or title, in that order. */
   function focusRow(stem) {
-    const el = root.querySelector(attrSel('data-expand', stem)) || root.querySelector(attrSel('data-rec', stem));
+    const el = ['data-expand', 'data-rec', 'data-menu', 'data-open'].map((a) => root.querySelector(attrSel(a, stem))).find(Boolean);
     if (el && typeof el.focus === 'function') el.focus();
+    return !!el;
   }
 
   function toggleExpand(stem) {
@@ -756,13 +791,41 @@ export function mount(container, ctx = {}) {
     if (btn) btn.focus();
   }
 
+  const fmtDur = (sec) => (isNum(sec) && sec > 0 ? `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}` : '');
+
+  /** The video's first frame (the server percent-encodes the stem in `thumb`) with its duration; a blank tile without one. */
+  function thumb(video, cls) {
+    const v = obj(video);
+    const dur = fmtDur(v.duration_sec);
+    return h('span', { class: 'mv-thumb ' + (cls || ''), 'aria-hidden': 'true' }, [
+      typeof v.thumb === 'string' && v.thumb ? h('img', { src: v.thumb, alt: '', loading: 'lazy', decoding: 'async' }) : null,
+      dur ? h('span', { class: 'mono mv-dur' }, dur) : null,
+    ]);
+  }
+
+  function tagLine(r) {
+    // Every match row is a match: its "Match" system tag would only repeat that (it still filters in the tag bar).
+    const tags = rowTags(r).filter((x) => !(x === 'match' && r.kind === 'match'));
+    if (!tags.length) return null;
+    return h('div', { class: 'mv-tags' }, tags.map((x) => h('span', {
+      class: 'mv-vtag' + (isSysTag(x) ? ' sys' : '') + (state.filter.tags.includes(x) ? ' hit' : ''),
+    }, tagLabel(x, lang))));
+  }
+
+  /** Title and subtitle: "A vs. B" / stem for a match, the stem / file name for a video row. */
+  function titleOf(r) {
+    if (r.kind !== 'video') return rowTitle(r, lang);
+    const file = str(obj(r.video).filename);
+    return { title: r.stem, sub: file && file !== r.stem ? file : '' };
+  }
+
   /** One sub-row of an expanded split match: part label, video, side, tech index, status, Open and (parts 2+) Link. */
   function partRow(r, p, i) {
     const label = t('link.part_label', lang, { n: i + 1 });
     const tr = h('tr', { class: 'mv-part-row' + (i > 0 && state.editing === p.stem ? ' open' : ''), 'data-part': p.stem });
     const open = h('button', {
       type: 'button', class: 'ov-btn small', 'aria-label': `${t('mv.open_aria', lang, { name: p.stem })} (${label})`,
-      onclick: () => openRow({ stem: p.stem }, tr),
+      onclick: () => openRow({ kind: 'match', stem: p.stem }, tr),
     }, t('link.open', lang));
     const linkBtn = i === 0 ? null : h('button', {
       type: 'button', class: 'ov-btn small', 'aria-expanded': state.editing === p.stem ? 'true' : 'false',
@@ -770,7 +833,7 @@ export function mount(container, ctx = {}) {
       onclick: () => toggleEditor(p.stem),
     }, t('link.part_btn', lang));
     [
-      h('td', { class: 'mv-name mv-part-name' }, [h('span', { class: 'k-chip' }, label), ' ', h('span', { class: 'mv-part-stem' }, p.stem)]),
+      h('td', { class: 'mv-name mv-part-name' }, [thumb(p.video, 'small'), h('span', { class: 'k-chip' }, label), ' ', h('span', { class: 'mv-part-stem' }, p.stem)]),
       h('td', { colspan: '3', class: 'mono kw-muted' }, p.side ? sideLabel(p.side, lang) : '\u2014'),
       h('td', { class: 'mono kw-num' }, num1(p.tech_index)),
       h('td', null, statusChip({ status: partStatus(p) })),
@@ -780,57 +843,190 @@ export function mount(container, ctx = {}) {
   }
 
   function openRow(r, anchor) {
-    go(state.ctx, anchor, formatHash('matches', { stem: r.stem }));
+    go(state.ctx, anchor, openTarget(r));
   }
 
-  function render({ reveal = false } = {}) {
+  // ----- the "..." menu (Edit tags, Classic results, Posture report, Delete video) -----
+  let menu = null;
+
+  function closeMenu(focusBack = true) {
+    if (!menu) return;
+    const { node, btn, onDoc } = menu;
+    menu = null;
+    if (node.parentNode) node.parentNode.removeChild(node);
+    if (typeof document.removeEventListener === 'function') document.removeEventListener('pointerdown', onDoc, true);
+    btn.setAttribute('aria-expanded', 'false');
+    if (focusBack && typeof btn.focus === 'function') btn.focus();
+  }
+
+  function knownUserTags() {
+    const out = new Set();
+    for (const v of state.videos || []) for (const x of Array.isArray(v && v.tags) ? v.tags : []) out.add(x);
+    return [...out];
+  }
+
+  /** After a tool closed: reload when it changed something, then put focus back on the row (or the next one). */
+  async function afterTool(stem, changed, nextStem) {
     if (state.destroyed) return;
-    root.textContent = '';
-    const head = header();
-    root.appendChild(head);
-    animated = [head];
-    if (state.error && !state.rows) {
-      const card = h('div', { class: 'card ov-state', role: 'alert' }, [
-        h('div', { class: 'k-label' }, t('error.load.title', lang)),
-        h('div', { class: 'ov-state-body' }, errorText(state.error, lang)),
-        h('button', { type: 'button', class: 'ov-btn small', onclick: () => load() }, t('btn.retry', lang)),
-      ]);
-      root.appendChild(card);
-      return;
+    if (changed) await load({ reveal: false });
+    if (state.destroyed) return;
+    if (!focusRow(stem) && !(nextStem && focusRow(nextStem))) {
+      const search = root.querySelector('.mv-search');
+      if (search) search.focus();
     }
-    if (!state.rows) {
-      root.appendChild(h('div', { class: 'card ov-state', role: 'status', 'aria-busy': 'true' }, [
-        h('div', { class: 'k-label' }, t('state.loading', lang)), h('div', { class: 'ov-skel' }),
-      ]));
-      return;
+  }
+
+  function menuItems(r, nextStem) {
+    const v = obj(r.video);
+    const stem = r.stem;
+    const items = [{ key: 'lib.menu.tags', run: () => openTagEditor({ video: v, lang, knownTags: knownUserTags(), onClose: ({ changed }) => afterTool(stem, changed) }) }];
+    if (v.has_match) items.push({ key: 'lib.menu.classic', run: () => go(state.ctx, null, formatHash('results', { stem }, { mode: 'match' })) });
+    if (v.has_posture) items.push({ key: 'lib.menu.posture', run: () => go(state.ctx, null, formatHash('results', { stem }, { mode: 'posture' })) });
+    items.push({
+      key: 'lib.menu.delete', danger: true,
+      run: () => openDeleteDialog({
+        stem, lang,
+        onClose: ({ deleted }) => {
+          if (deleted && typeof state.ctx.toast === 'function') state.ctx.toast(t('lib.del.done', lang, { name: stem }));
+          afterTool(stem, deleted, nextStem);
+        },
+      }),
+    });
+    return items;
+  }
+
+  function openMenu(r, btn, nextStem) {
+    if (menu && menu.btn === btn) { closeMenu(); return; }
+    closeMenu(false);
+    const node = h('div', { class: 'mv-menu', role: 'menu', 'aria-label': t('lib.menu_aria', lang, { name: r.stem }) });
+    const buttons = menuItems(r, nextStem).map((it) => h('button', {
+      type: 'button', role: 'menuitem', class: 'mv-menu-i' + (it.danger ? ' danger' : ''), 'data-item': it.key,
+      onclick: () => { closeMenu(false); it.run(); },
+    }, t(it.key, lang)));
+    buttons.forEach((b) => node.appendChild(b));
+    node.addEventListener('keydown', (e) => {
+      const i = buttons.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); closeMenu(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); buttons[(i + 1) % buttons.length].focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); buttons[(i - 1 + buttons.length) % buttons.length].focus(); }
+      else if (e.key === 'Tab') closeMenu(false);
+    });
+    const onDoc = (e) => { if (menu && !node.contains(e.target) && !btn.contains(e.target)) closeMenu(false); };
+    if (typeof document.addEventListener === 'function') document.addEventListener('pointerdown', onDoc, true);
+    btn.parentNode.appendChild(node);
+    btn.setAttribute('aria-expanded', 'true');
+    menu = { node, btn, onDoc };
+    buttons[0].focus();
+  }
+
+  /** The row's action buttons: Record (match rows) or Analyse (unanalysed videos), then "..." when the file exists. */
+  function actions(r, name, nextStem) {
+    const out = [];
+    if (r.kind === 'match') {
+      out.push(h('button', {
+        type: 'button', class: 'ov-btn small', 'aria-expanded': state.editing === r.stem ? 'true' : 'false',
+        'aria-label': t('mv.record_aria', lang, { name }), 'data-rec': r.stem,
+        onclick: () => toggleEditor(r.stem),
+      }, t('mv.record_btn', lang)));
+    } else if (r.status === 'new' || r.status === 'court_set') {
+      out.push(h('a', { href: formatHash('new'), class: 'ov-btn small', 'aria-label': t('lib.analyse_aria', lang, { name }) }, t('lib.analyse', lang)));
     }
-    if (state.error) {
-      root.appendChild(h('div', { class: 'ov-alert', role: 'alert' }, [
-        h('strong', null, t('error.refresh.title', lang)), h('span', null, errorText(state.error, lang)),
-        h('button', { type: 'button', class: 'ov-btn small', onclick: () => load() }, t('btn.retry', lang)),
-      ]));
+    if (r.video) {
+      const btn = h('button', {
+        type: 'button', class: 'ov-btn small mv-more', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+        'aria-label': t('lib.menu_aria', lang, { name }), title: t('lib.menu', lang), 'data-menu': r.stem,
+        onclick: () => openMenu(r, btn, nextStem),
+      }, h('span', { 'aria-hidden': 'true' }, '\u22EF'));
+      out.push(h('span', { class: 'mv-menu-wrap' }, btn));
+    } else out.push(h('span', { class: 'mv-more-ph', 'aria-hidden': 'true' }));     // keeps the buttons aligned
+    return h('span', { class: 'mv-acts' }, out);
+  }
+
+  /** Ignore clicks that land on a control inside a row or card (they have their own action). */
+  const onControl = (e) => !!(e.target && typeof e.target.closest === 'function' && e.target.closest('button,a,input,select,.mv-menu'));
+
+  // ----- toolbar, tag bar, list -----
+  let listHost = null;
+
+  function filterBar() {
+    const search = h('input', {
+      type: 'search', class: 'mv-input mv-search', placeholder: t('lib.search', lang), 'aria-label': t('lib.search', lang), value: state.filter.q,
+    });
+    search.value = state.filter.q;
+    search.addEventListener('input', () => { state.filter = { ...state.filter, q: search.value }; renderList(); });
+    const select = (label, value, options, onPick, cls) => {
+      const sel = h('select', { class: 'mv-input small ' + cls, 'aria-label': label },
+        options.map(([v, text]) => h('option', { value: v }, text)));
+      sel.value = value;
+      sel.addEventListener('change', () => onPick(sel.value));
+      return sel;
+    };
+    const status = select(t('lib.status', lang), state.filter.status, STATUS_FILTERS.map((s) => [s, t('lib.status.' + s, lang)]),
+      (v) => { state.filter = { ...state.filter, status: v }; renderList(); }, 'mv-status');
+    const sort = select(t('lib.sort', lang), state.sort, [['date', t('lib.sort.date', lang)], ['name', t('lib.sort.name', lang)]],
+      (v) => { state.sort = v; renderList(); }, 'mv-sort');
+    const views = h('div', { class: 'seg2 mv-views', role: 'group', 'aria-label': t('lib.view', lang) }, ['table', 'grid'].map((v) => h('button', {
+      type: 'button', 'aria-pressed': state.view === v ? 'true' : 'false', 'data-view-btn': v,
+      onclick: () => {
+        if (state.view === v) return;
+        state.view = v;
+        prefs.set(PREF_KEYS.matchesView, v);
+        closeMenu(false);
+        for (const b of views.querySelectorAll('[data-view-btn]')) b.setAttribute('aria-pressed', b.getAttribute('data-view-btn') === v ? 'true' : 'false');
+        renderList();
+      },
+    }, t('lib.view.' + v, lang))));
+    return h('div', { class: 'mv-toolbar' }, [search, status, sort, views]);
+  }
+
+  function tagBar(counts) {
+    const active = state.filter.tags;
+    const bar = h('div', { class: 'mv-tagbar', role: 'group', 'aria-label': t('lib.tags', lang) }, [h('span', { class: 'k-label' }, t('lib.tags', lang))]);
+    counts.forEach((c) => bar.appendChild(h('button', {
+      type: 'button', class: 'mv-tchip' + (c.sys ? ' sys' : '') + (c.active ? ' on' : ''), 'aria-pressed': c.active ? 'true' : 'false',
+      'data-tagchip': c.tag, disabled: !c.active && c.count === 0, 'aria-label': t('lib.tag_chip_aria', lang, { tag: c.label, n: c.count }),
+      onclick: () => {
+        state.filter = { ...state.filter, tags: c.active ? active.filter((x) => x !== c.tag) : [...active, c.tag] };
+        renderList();
+        const again = root.querySelector(attrSel('data-tagchip', c.tag));
+        if (again && !again.disabled) again.focus();
+      },
+    }, [c.label, ' ', h('span', { class: 'mono mv-tcount' }, String(c.count))])));
+    if (active.length) {
+      bar.appendChild(h('button', { type: 'button', class: 'mv-linkbtn', onclick: () => { state.filter = { ...state.filter, tags: [] }; renderList(); } }, t('lib.tags.clear', lang)));
     }
-    if (!state.rows.length) {
-      const sc = scope();
-      root.appendChild(h('div', { class: 'card ov-state ov-empty' }, [
-        h('div', { class: 'ov-empty-title' }, t(sc.athlete || sc.squad ? 'matches.empty.title' : 'mv.empty.title', lang)),
-        h('div', { class: 'ov-state-body' }, t(sc.athlete || sc.squad ? 'matches.empty.body' : 'mv.empty.body', lang)),
-        h('a', { href: '#/new', class: 'ov-btn primary' }, t('btn.new_analysis', lang)),
-      ]));
-      return;
+    if (state.videosOk) {
+      bar.appendChild(h('button', {
+        type: 'button', class: 'mv-linkbtn mv-manage',
+        onclick: () => openTagManager({
+          videos: state.videos || [], lang,
+          onClose: ({ changed }) => { if (changed) load({ reveal: false }).then(() => { const b = root.querySelector('.mv-manage'); if (b) b.focus(); }); },
+          onChanged: () => load({ reveal: false }),
+        }),
+      }, t('lib.tags.manage', lang)));
     }
+    return bar;
+  }
+
+  function clearFilters() {
+    state.filter = { ...EMPTY_FILTER, tags: [] };
+    render();
+    const search = root.querySelector('.mv-search');
+    if (search) search.focus();
+  }
+
+  function tableView(shown) {
     const th = (key, cls) => h('th', { scope: 'col', class: cls || null }, t(key, lang));
     const body = h('tbody');
-    state.rows.forEach((r) => {
-      const { title: name, sub } = rowTitle(r, lang);
+    shown.forEach((r, idx) => {
+      const { title: name, sub } = titleOf(r);
+      const nextStem = (shown[idx + 1] || shown[idx - 1] || {}).stem;
       const tr = h('tr', {
-        class: 'trow mv-row' + (state.editing === r.stem ? ' open' : ''),
-        onclick: (e) => {
-          if (e.target && typeof e.target.closest === 'function' && e.target.closest('button,a,input,select')) return;
-          openRow(r, tr);
-        },
+        class: 'trow mv-row' + (r.kind === 'video' ? ' mv-vrow' : '') + (state.editing === r.stem ? ' open' : ''),
+        'data-row': r.stem,
+        onclick: (e) => { if (!onControl(e)) openRow(r, tr); },
       });
-      const openBtn = h('button', { type: 'button', class: 'kw-row-open', 'aria-label': t('mv.open_aria', lang, { name }), onclick: () => openRow(r, tr) }, name);
+      const openBtn = h('button', { type: 'button', class: 'kw-row-open', 'aria-label': t('mv.open_aria', lang, { name }), 'data-open': r.stem, onclick: () => openRow(r, tr) }, name);
       // A split match (2+ videos): a chevron toggles one sub-row per part (the first part is the primary video).
       const split = r.parts.length >= 2;
       const expanded = split && state.expanded.has(r.stem);
@@ -839,21 +1035,23 @@ export function mount(container, ctx = {}) {
         'aria-label': t(expanded ? 'link.collapse_aria' : 'link.expand_aria', lang, { name }),
         onclick: () => toggleExpand(r.stem),
       }, h('span', { 'aria-hidden': 'true' }, '\u25B8')) : null;
-      const recBtn = h('button', {
-        type: 'button', class: 'ov-btn small', 'aria-expanded': state.editing === r.stem ? 'true' : 'false',
-        'aria-label': t('mv.record_aria', lang, { name }), 'data-rec': r.stem,
-        onclick: () => toggleEditor(r.stem),
-      }, t('mv.record_btn', lang));
       [
-        h('td', { class: 'mv-name' }, [chev, openBtn,
-          split ? h('span', { class: 'k-chip cyan mv-parts-chip' }, t('link.parts_chip', lang, { n: r.parts.length })) : null,
-          r.doubles ? h('span', { class: 'k-chip kw-doubles' }, t('doubles.chip', lang)) : null, h('div', { class: 'mv-sub' }, sub)]),
+        h('td', { class: 'mv-name' }, h('div', { class: 'mv-namecell' }, [
+          thumb(r.video),
+          h('div', { class: 'mv-namebody' }, [
+            h('div', null, [chev, openBtn,
+              split ? h('span', { class: 'k-chip cyan mv-parts-chip' }, t('link.parts_chip', lang, { n: r.parts.length })) : null,
+              r.doubles ? h('span', { class: 'k-chip kw-doubles' }, t('doubles.chip', lang)) : null]),
+            sub ? h('div', { class: 'mv-sub' }, sub) : null,
+            tagLine(r),
+          ]),
+        ])),
         h('td', { class: 'mono kw-muted kw-col-date' }, [fmtDate(r.date, lang), r.dateApprox ? approxMark(lang) : null]),
         h('td', null, resultChip(r)),
         h('td', { class: 'mono kw-muted' }, r.sets.length ? r.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ') : '—'),
         h('td', { class: 'mono kw-num' }, num1(r.techIndex)),
         h('td', null, statusChip(r)),
-        h('td', { class: 'kw-num' }, recBtn),
+        h('td', { class: 'kw-num' }, actions(r, name, nextStem)),
       ].forEach((td) => tr.appendChild(td));
       body.appendChild(tr);
       animated.push(tr);
@@ -881,7 +1079,167 @@ export function mount(container, ctx = {}) {
       ])),
       body,
     ]);
-    root.appendChild(h('section', { class: 'card hud mv-card', 'aria-label': t('nav.matches', lang) }, h('div', { class: 'kw-scroll' }, table)));
+    return h('section', { class: 'card hud mv-card', 'aria-label': t('nav.matches', lang) }, h('div', { class: 'kw-scroll' }, table));
+  }
+
+  /** Grid: a split match's parts as a panel under its card (Open per part, Link for parts 2+, the part's editor). */
+  function gridParts(r) {
+    const panel = h('div', { class: 'mv-grid-panel mv-grid-parts' });
+    r.parts.forEach((p, i) => {
+      const label = t('link.part_label', lang, { n: i + 1 });
+      const line = h('div', { class: 'mv-gpart', 'data-part': p.stem }, [
+        thumb(p.video, 'small'),
+        h('span', { class: 'k-chip' }, label),
+        h('span', { class: 'mv-part-stem' }, p.stem),
+        h('span', { class: 'mono kw-muted' }, p.side ? sideLabel(p.side, lang) : '\u2014'),
+        h('span', { class: 'mono' }, num1(p.tech_index)),
+        statusChip({ status: partStatus(p) }),
+        h('span', { class: 'mv-part-actions' }, [
+          h('button', { type: 'button', class: 'ov-btn small', 'aria-label': `${t('mv.open_aria', lang, { name: p.stem })} (${label})`, onclick: () => openRow({ kind: 'match', stem: p.stem }, null) }, t('link.open', lang)),
+          i === 0 ? null : h('button', {
+            type: 'button', class: 'ov-btn small', 'aria-expanded': state.editing === p.stem ? 'true' : 'false',
+            'aria-label': t('link.part_aria', lang, { name: p.stem }), 'data-rec': p.stem, onclick: () => toggleEditor(p.stem),
+          }, t('link.part_btn', lang)),
+        ]),
+      ]);
+      panel.appendChild(line);
+      if (i > 0 && state.editing === p.stem) {
+        const cell = h('div', { class: 'mv-edit-cell' });
+        panel.appendChild(cell);
+        buildEditor(cell, { stem: p.stem, doubles: false }, p.stem);
+      }
+    });
+    return panel;
+  }
+
+  function gridView(shown) {
+    const grid = h('section', { class: 'mv-grid', 'aria-label': t('nav.matches', lang) });
+    shown.forEach((r, idx) => {
+      const { title: name, sub } = titleOf(r);
+      const nextStem = (shown[idx + 1] || shown[idx - 1] || {}).stem;
+      const split = r.parts.length >= 2;
+      const expanded = split && state.expanded.has(r.stem);
+      const card = h('article', {
+        class: 'card mv-cardv' + (r.kind === 'video' ? ' mv-vrow' : '') + (state.editing === r.stem || expanded ? ' open' : ''), 'data-row': r.stem,
+        onclick: (e) => { if (!onControl(e)) openRow(r, card); },
+      });
+      const chips = h('span', { class: 'mv-cchips' }, [
+        split ? h('span', { class: 'k-chip cyan' }, t('link.parts_chip', lang, { n: r.parts.length })) : null,
+        r.doubles ? h('span', { class: 'k-chip kw-doubles' }, t('doubles.chip', lang)) : null,
+      ]);
+      const top = h('div', { class: 'mv-cthumb' }, [thumb(r.video, 'large'), chips]);
+      const meta = h('div', { class: 'mv-cmeta' }, [
+        h('span', { class: 'mono kw-muted' }, [fmtDate(r.date, lang), r.dateApprox ? approxMark(lang) : null]),
+        statusChip(r),
+        r.kind === 'match' ? resultChip(r) : null,
+        isNum(r.techIndex) ? h('span', { class: 'mono mv-ctech', title: t('matches.col.tech', lang) }, num1(r.techIndex)) : null,
+      ]);
+      const chev = split ? h('button', {
+        type: 'button', class: 'ov-btn small mv-chev-btn', 'aria-expanded': expanded ? 'true' : 'false', 'data-expand': r.stem,
+        'aria-label': t(expanded ? 'link.collapse_aria' : 'link.expand_aria', lang, { name }),
+        onclick: () => toggleExpand(r.stem),
+      }, [h('span', { class: 'mv-chev-i', 'aria-hidden': 'true' }, '\u25B8'), ' ', t('link.parts_chip', lang, { n: r.parts.length })]) : null;
+      [
+        top,
+        h('div', { class: 'mv-cbody' }, [
+          h('button', { type: 'button', class: 'kw-row-open mv-ctitle', 'aria-label': t('mv.open_aria', lang, { name }), 'data-open': r.stem, onclick: () => openRow(r, card) }, name),
+          sub ? h('div', { class: 'mv-sub' }, sub) : null,
+          meta,
+          tagLine(r),
+          h('div', { class: 'mv-cacts' }, [chev, actions(r, name, nextStem)]),
+        ]),
+      ].forEach((n) => card.appendChild(n));
+      grid.appendChild(card);
+      animated.push(card);
+      if (state.editing === r.stem) {
+        const panel = h('div', { class: 'mv-grid-panel' });
+        grid.appendChild(panel);
+        buildEditor(panel, r, name);
+      }
+      if (expanded) grid.appendChild(gridParts(r));
+    });
+    return grid;
+  }
+
+  /** Re-render the tag bar, the result line and the list only (the toolbar keeps focus and the caret while typing). */
+  function renderList({ fromRender = false } = {}) {
+    if (!listHost || state.destroyed) return;
+    closeMenu(false);
+    listHost.textContent = '';
+    animated = animated.slice(0, 1);
+    const shown = sortRows(filterRows(state.rows, state.filter, lang), state.sort);
+    const counts = tagCounts(state.rows, state.filter, lang);
+    if (counts.length || state.videosOk) listHost.appendChild(tagBar(counts));
+    if (isFiltered(state.filter)) {
+      listHost.appendChild(h('div', { class: 'mv-resline', role: 'status' }, t('lib.result_line', lang, { n: fmtNumber(shown.length), m: fmtNumber(state.rows.length) })));
+    }
+    if (!shown.length) {
+      listHost.appendChild(h('div', { class: 'card ov-state ov-empty mv-filtered' }, [
+        h('div', { class: 'ov-empty-title' }, t('lib.filtered.title', lang)),
+        h('div', { class: 'ov-state-body' }, t('lib.filtered.body', lang)),
+        h('button', { type: 'button', class: 'ov-btn small', onclick: () => clearFilters() }, t('lib.filtered.clear', lang)),
+      ]));
+      return;
+    }
+    listHost.appendChild(state.view === 'grid' ? gridView(shown) : tableView(shown));
+    if (!fromRender) animated.forEach((el) => revealStyle(el, 1));
+  }
+
+  function render({ reveal = false } = {}) {
+    if (state.destroyed) return;
+    closeMenu(false);
+    root.textContent = '';
+    listHost = null;
+    const head = header();
+    root.appendChild(head);
+    animated = [head];
+    if (state.error && !state.rows) {
+      const card = h('div', { class: 'card ov-state', role: 'alert' }, [
+        h('div', { class: 'k-label' }, t('error.load.title', lang)),
+        h('div', { class: 'ov-state-body' }, errorText(state.error, lang)),
+        h('button', { type: 'button', class: 'ov-btn small', onclick: () => load() }, t('btn.retry', lang)),
+      ]);
+      root.appendChild(card);
+      return;
+    }
+    if (!state.rows) {
+      root.appendChild(h('div', { class: 'card ov-state', role: 'status', 'aria-busy': 'true' }, [
+        h('div', { class: 'k-label' }, t('state.loading', lang)), h('div', { class: 'ov-skel' }),
+      ]));
+      return;
+    }
+    if (state.error) {
+      root.appendChild(h('div', { class: 'ov-alert', role: 'alert' }, [
+        h('strong', null, t('error.refresh.title', lang)), h('span', null, errorText(state.error, lang)),
+        h('button', { type: 'button', class: 'ov-btn small', onclick: () => load() }, t('btn.retry', lang)),
+      ]));
+    }
+    if (!state.videosOk) {
+      root.appendChild(h('div', { class: 'ov-alert mv-videos-failed', role: 'status' }, [
+        h('span', null, t('lib.videos_failed', lang)),
+        h('button', { type: 'button', class: 'ov-btn small', onclick: () => load({ reveal: false }) }, t('btn.retry', lang)),
+      ]));
+    }
+    const sc = scope();
+    const scoped = !!(sc.athlete || sc.squad);
+    if (scoped) {
+      root.appendChild(h('div', { class: 'mv-scope-note', role: 'note' }, [
+        h('span', null, t('lib.scope_note', lang, { scope: scopeName(sc) })), ' ',
+        h('a', { href: formatHash('matches'), class: 'mv-linkbtn' }, t('lib.scope_all', lang)),
+      ]));
+    }
+    if (!state.rows.length) {
+      root.appendChild(h('div', { class: 'card ov-state ov-empty' }, [
+        h('div', { class: 'ov-empty-title' }, t(scoped ? 'matches.empty.title' : state.videosOk ? 'lib.empty.title' : 'mv.empty.title', lang)),
+        h('div', { class: 'ov-state-body' }, t(scoped ? 'matches.empty.body' : state.videosOk ? 'lib.empty.body' : 'mv.empty.body', lang)),
+        h('a', { href: '#/new', class: 'ov-btn primary' }, t('btn.new_analysis', lang)),
+      ]));
+      return;
+    }
+    root.appendChild(filterBar());
+    listHost = h('div', { class: 'mv-list' });
+    root.appendChild(listHost);
+    renderList({ fromRender: true });
     if (reveal) clock.start();
     else { clock.cancel(); animated.forEach((el) => revealStyle(el, 1)); }
   }
@@ -970,7 +1328,7 @@ export function mount(container, ctx = {}) {
   /** The rows the link pickers draw from: always the unscoped list (a scoped one hides the other videos). */
   function candidateRows() {
     const sc = scope();
-    if (!sc.athlete && !sc.squad) return Promise.resolve(state.rows || []);
+    if (!sc.athlete && !sc.squad) return Promise.resolve((state.rows || []).filter((r) => r.kind !== 'video'));
     return api.overview({ range: 'all' }, LONG).then((d) => matchRows(d), () => state.rows || []);
   }
 
@@ -1327,20 +1685,32 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- data -----
+  /** The overview (required) and the video list (optional: a failure leaves match rows and a banner) together. */
   async function load({ reveal = true, quiet = false } = {}) {
     const sc = scope();
     const mine = ++reqId;
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
     ctl = typeof AbortController === 'function' ? new AbortController() : null;
     if (!state.rows) render();
+    const opts = { ...LONG, ...(ctl ? { signal: ctl.signal } : {}) };
     try {
-      const data = await api.overview({ athlete: sc.athlete, squad: sc.squad, range: 'all' }, { ...LONG, ...(ctl ? { signal: ctl.signal } : {}) });
+      const [data, videos] = await Promise.all([
+        api.overview({ athlete: sc.athlete, squad: sc.squad, range: 'all' }, opts),
+        api.videos(opts).then((v) => (Array.isArray(v) ? v : null), (e) => (e && e.kind === 'aborted' ? Promise.reject(e) : null)),
+      ]);
       if (state.destroyed || mine !== reqId) return;
-      state.rows = matchRows(data);
+      const scoped = !!(sc.athlete || sc.squad);
+      const built = libraryRows({ overview: data, videos, activeStems: activeStemsOf(storeState(state.ctx).jobs), scoped });
+      state.rows = built.rows;
+      state.videos = videos;
+      state.videosOk = built.videosOk;
       state.error = null;
       state.scopeKey = sc.athlete + '|' + sc.squad;
       // The open editor may belong to a row or to one of a split match's parts.
       if (state.editing && !state.rows.some((r) => r.stem === state.editing || r.parts.some((p) => p.stem === state.editing))) state.editing = null;
+      // Tags that no longer exist (renamed or deleted) leave the filter.
+      const live = new Set(state.rows.flatMap((r) => rowTags(r)));
+      if (state.filter.tags.some((x) => !live.has(x))) state.filter = { ...state.filter, tags: state.filter.tags.filter((x) => live.has(x)) };
       if (quiet) return;     // a background refresh after a failed link: keep the editor and its error on screen
       render({ reveal });
     } catch (err) {
@@ -1365,6 +1735,8 @@ export function mount(container, ctx = {}) {
     destroy() {
       if (state.destroyed) return;
       state.destroyed = true;
+      closeMenu(false);
+      closeTool();
       clock.cancel();
       if (ctl && typeof ctl.abort === 'function') ctl.abort();
       if (root.parentNode) root.parentNode.removeChild(root);
