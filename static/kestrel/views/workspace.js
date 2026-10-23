@@ -72,8 +72,9 @@ export function mount(container, ctx = {}) {
     headInsights: null,
     whole: null,
     waiting: false,
-    // A part change started from the page (switcher, card): focus the pressed switcher button once it shows.
-    focusSwitcher: false,
+    // A part change started from the page (switcher, card): the part it asked for ('' = Whole match), whose
+    // switcher button gets focus when that part is the next one shown. null = none; any next view clears it.
+    focusPart: null,
     // That stem's /api/videos row (has_posture, thumb, ...) or null; `videos` is the whole list (null: failed).
     videos: null,
     video: null,
@@ -244,7 +245,7 @@ export function mount(container, ctx = {}) {
     if (partStem === currentPart() && (tab === undefined || tab === state.tab)) return;
     const hash = formatHash('matches', { stem: state.info.primary }, q);
     // The body is rebuilt for the new part: without this, focus would drop to <body>.
-    state.focusSwitcher = true;
+    state.focusPart = partStem || '';
     if (ctx.router && typeof ctx.router.navigate === 'function') ctx.router.navigate(hash);
     else setQuery(q);
   }
@@ -323,8 +324,9 @@ export function mount(container, ctx = {}) {
   function buildDoublesHead() {
     const m = state.model;
     const d = state.dbl;
-    const rec = obj(state.record);
-    const ins = obj(state.insights);
+    const hd = headCtx();
+    const rec = obj(hd.record);
+    const ins = obj(hd.insights);
     const date = fmtDate(matchDate(rec, ins), lang);
     const meta = h('div', { class: 'ws-meta' });
     if (d.sets.length) meta.appendChild(h('span', { class: 'mono ws-sets' }, d.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ')));
@@ -956,6 +958,9 @@ export function mount(container, ctx = {}) {
     const iv = obj(obj(state.playersFile).identity_video);
     if (iv.status === 'ok' && typeof iv.file === 'string' && iv.file) {
       sec.appendChild(h('a', { class: 'ws-ident-link', href: endpoints.output(state.stem, iv.file), target: '_blank', rel: 'noopener' }, t('wsx.identity_video', lang)));
+    } else if (iv.status !== 'ok' && typeof iv.reason === 'string' && iv.reason) {
+      // Not made (skipped, failed): the run's own reason, as text.
+      sec.appendChild(h('div', { class: 'kw-muted ws-ident-none' }, t('wsx.identity_unavailable', lang, { reason: iv.reason })));
     }
     if (!d.players.length) {
       sec.appendChild(h('div', { class: 'kw-note' }, t('dbl.no_players', lang)));
@@ -1042,9 +1047,8 @@ export function mount(container, ctx = {}) {
       sec.appendChild(h('ul', { class: 'ws-weak' }, weak.map((w) => {
         const label = metricLabel(w.metric, lang);
         const m = w.measured === null ? '—' : num1(w.measured);
-        return h('li', null, w.ideal
-          ? t('wsx.weak_line', lang, { metric: label, m, lo: num1(w.ideal[0]), hi: num1(w.ideal[1]) })
-          : label);
+        if (w.ideal) return h('li', null, t('wsx.weak_line', lang, { metric: label, m, lo: num1(w.ideal[0]), hi: num1(w.ideal[1]) }));
+        return h('li', null, w.measured !== null ? t('wsx.weak_line_m', lang, { metric: label, m }) : label);
       })));
     }
     return sec;
@@ -1266,7 +1270,7 @@ export function mount(container, ctx = {}) {
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
     const main = h('div', { class: 'ws-main' }, [video, timeline]);
-    const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [move, refs.inspHost, refs.sumHost]);
+    const side = h('aside', { class: 'ws-side', 'aria-label': t('wsx.side_aria', lang) }, [move, refs.inspHost, refs.sumHost]);
     refs.body.appendChild(h('div', { class: 'ws-top' }, [main, side]));
     const tabs = buildTabs();
     refs.body.appendChild(tabs);
@@ -1301,7 +1305,7 @@ export function mount(container, ctx = {}) {
           line(t('scope.strokes_count', lang, { n: fmtNumber(p.strokes.total) })),
           line([t('wsx.parts.tech', lang), ' ', h('span', { class: 'mono' }, p.techIndex === null ? '—' : num1(p.techIndex))]),
         ]
-        : line(t('wsx.parts.not_analysed', lang), 'kw-muted'),
+        : line(t(p.reason === 'error' ? 'error.load.title' : 'wsx.parts.not_analysed', lang), 'kw-muted'),
     ]);
   }
 
@@ -1557,8 +1561,8 @@ export function mount(container, ctx = {}) {
 
   /**
    * The lighter per-part load of the Whole match: rally_segments, strokes, metadata, technique and insights. A part
-   * whose files all fail (not analysed yet, or unreadable) comes back with ok false and is left out of the pools.
-   * Returns null when aborted.
+   * whose files all fail comes back with ok false and is left out of the pools; its `reason` is 'notfound' (every
+   * failure a 404: not analysed yet) or 'error' (unreadable). Returns null when aborted.
    */
   async function loadPartSummary(p, o, athleteSide) {
     const out = (f) => soft(getJSON(endpoints.output(p.stem, f), o));
@@ -1569,8 +1573,11 @@ export function mount(container, ctx = {}) {
     ]);
     if ([rally, strokes, meta, tech, ins].some(isAborted)) return null;
     const video = (state.videos || []).find((v) => v && v.name === p.stem) || null;
-    const ok = [rally, strokes, meta, ins].some((r) => r.ok);
-    if (!ok) return { ...p, video, ok: false };
+    const fileish = [rally, strokes, meta, ins];
+    if (!fileish.some((r) => r.ok)) {
+      // Every file 404: not analysed yet; any other failure (5xx, network): the part could not be read.
+      return { ...p, video, ok: false, reason: fileish.every((r) => r.status === 404) ? 'notfound' : 'error' };
+    }
     const insights = ins.ok ? obj(ins.data) : null;
     const doc = strokes.ok ? strokes.data : null;
     const m = buildWorkspaceModel({ rallies: rallyInput(rally), strokes: doc, fps: obj(obj(meta.data).video).fps, insights });
@@ -1625,11 +1632,11 @@ export function mount(container, ctx = {}) {
     state.tab = resolveTab(state.query);
     if (r.view === 'whole') loadWhole();
     else loadPart(r.partStem || stem);
-    // Both loaders render the switcher's new state synchronously (a loading card or the cached Whole match).
-    if (state.focusSwitcher) {
-      state.focusSwitcher = false;
-      focusNode(refs.partBtns && refs.partBtns.get(currentPart()));
-    }
+    // Both loaders render the switcher's new state synchronously (a loading card or the cached Whole match). A
+    // press whose navigate never arrived must not pull focus on a later change (Back, a link) to another part.
+    const want = state.focusPart;
+    state.focusPart = null;
+    if (want !== null && want === currentPart()) focusNode(refs.partBtns && refs.partBtns.get(want));
   }
 
   /** Read the match record (and a part's primary's), the video list, then show the view the query asks for. */

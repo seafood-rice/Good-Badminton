@@ -259,3 +259,45 @@ test('distribution: classified strokes and the uncertain rest, so the numbers ad
     assert.equal(t('wsx.dist.total', 'zh', { n: 3, u: 1 }), '已分类 3 次 · 不确定 1 次');
   }, { routes });
 });
+
+test('inspector: a weakness with a measured value and no ideal range shows the measured value; with neither, the metric', async () => {
+  const routes = singles();
+  routes['/api/technique/s'].strokes = [{ ...REPORT, weaknesses: [{ metric: 'elbow_extension', measured: 120 }, { metric: 'knee_flexion' }] }];
+  await withPage(async ({ container }) => {
+    container.querySelectorAll('.ws-st')[1].click();
+    const lines = container.querySelectorAll('.ws-insp .ws-weak li').map((li) => li.textContent);
+    assert.deepEqual(lines, ['Elbow extension · measured 120', 'Knee flexion']);
+    assert.equal(t('wsx.weak_line_m', 'zh', { metric: '肘部伸展', m: 120 }), '肘部伸展 · 实测 120');
+  }, { routes });
+});
+
+test('doubles: an identity video that was not made says why (the reason as text); none without a reason', async () => {
+  const routes = doubles();
+  routes[out('d', 'players.json')].identity_video = { status: 'failed', file: null, reason: '<b>render</b> failed' };
+  await withPage(async ({ container }) => {
+    const panel = container.querySelector('.dbl-players');
+    assert.equal(panel.querySelector('.ws-ident-link'), null);
+    const line = panel.querySelector('.ws-ident-none');
+    assert.ok(line, 'unavailable line');
+    assert.ok(line.classList.contains('kw-muted'));
+    assert.equal(line.textContent, 'Player identity video not available: <b>render</b> failed');
+    assert.equal(line.querySelector('b'), null, 'never parsed as HTML');
+  }, { routes, stem: 'd' });
+  const quiet = doubles();
+  quiet[out('d', 'players.json')].identity_video = { status: 'skipped', file: null, reason: null };
+  await withPage(async ({ container }) => {
+    assert.equal(container.querySelector('.dbl-players .ws-ident-none'), null);
+  }, { routes: quiet, stem: 'd' });
+  await withPage(async ({ container }) => {
+    assert.equal(container.querySelector('.dbl-players .ws-ident-none'), null, 'status ok: the link, no line');
+  }, { routes: doubles(), stem: 'd' });
+});
+
+test('the side column is labelled as the match details side panel', async () => {
+  await withPage(async ({ container }) => {
+    const side = container.querySelector('aside.ws-side');
+    assert.equal(side.getAttribute('aria-label'), t('wsx.side_aria', 'en'));
+    assert.equal(t('wsx.side_aria', 'en'), 'Match details side panel');
+    assert.equal(t('wsx.side_aria', 'zh'), '比赛详情侧栏');
+  });
+});

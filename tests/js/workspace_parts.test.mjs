@@ -52,21 +52,31 @@ function routes() {
   };
 }
 
-async function withPage(fn, { stem = 'p1', query = {} } = {}) {
+/**
+ * Mount the page on a stubbed fetch. `table` is the route table, `fail` maps a URL to an HTTP error status, `hold(url)`
+ * may return a promise the reply waits for (it ignores aborts, like a slow server), `before({doc})` runs before
+ * mount, and `router(calls, getInst)` replaces the recording router (whose navigate never dispatches).
+ */
+async function withPage(fn, { stem = 'p1', query = {}, table = routes(), fail = {}, hold = null, before = null, router: makeRouter = null } = {}) {
   const { doc } = installEnv();
+  if (before) before({ doc });
   const savedApi = { ...api };
   const calls = { replace: [], navigate: [], fetched: [] };
-  const table = routes();
   globalThis.fetch = async (url) => {
     calls.fetched.push(url);
+    const wait = hold ? hold(url) : null;
+    if (wait) await wait;
+    if (fail[url]) return { ok: false, status: fail[url], json: async () => ({}) };
     const body = table[url];
     if (body === undefined) return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => body };
   };
   const container = doc.createElement('div');
   doc.body.appendChild(container);
-  const router = { replace: (h) => calls.replace.push(h), navigate: (h) => calls.navigate.push(h) };
-  const inst = mount(container, { params: { stem }, query, lang: 'en', reduced: true, router });
+  let inst = null;
+  const router = makeRouter ? makeRouter(calls, () => inst)
+    : { replace: (h) => calls.replace.push(h), navigate: (h) => calls.navigate.push(h) };
+  inst = mount(container, { params: { stem }, query, lang: 'en', reduced: true, router });
   try {
     await settle();
     await fn({ container, inst, calls, doc });
@@ -218,4 +228,43 @@ test('a part change from a card or the switcher puts focus on the pressed switch
 test('zh: a part reads 第 N 段 like the Matches list', () => {
   assert.equal(t('wsx.parts.n', 'zh', { n: 2 }), '第 2 段');
   assert.equal(t('wsx.parts.n', 'zh', { n: 2 }), t('link.part_label', 'zh', { n: 2 }));
+});
+
+test('whole match: a part whose files all fail with a server error says it could not load; opening it shows the error', async () => {
+  const fail = {};
+  for (const f of ['rally_segments.json', 'strokes.json', 'metadata.json']) fail[out('p2', f)] = 500;
+  fail['/api/insights/video/p2'] = 503;
+  fail['/api/technique/p2'] = 500;
+  await withPage(async ({ container, inst }) => {
+    const cards = container.querySelectorAll('.ws-part-card');
+    assert.match(cards[1].textContent, new RegExp(t('error.load.title', 'en')));
+    assert.doesNotMatch(cards[1].textContent, new RegExp(t('wsx.parts.not_analysed', 'en')));
+    assert.match(cards[2].textContent, new RegExp(t('wsx.parts.not_analysed', 'en')), 'every file 404: still not analysed');
+    assert.doesNotMatch(cards[2].textContent, new RegExp(t('error.load.title', 'en')));
+    inst.setQuery({ part: 'p2' });
+    await settle();
+    assert.ok(container.querySelector('.ws-head'), 'header kept');
+    assert.ok(container.querySelector('.ws-parts'), 'switcher kept');
+    assert.equal(partBtn(container, 'Part 2').getAttribute('aria-pressed'), 'true');
+    const alert = container.querySelector('.ws-body [role="alert"]');
+    assert.ok(alert, 'error state in the body');
+    assert.match(alert.textContent, new RegExp(t('error.load.title', 'en')));
+    assert.ok(alert.querySelectorAll('button').some((b) => b.textContent === t('btn.retry', 'en')));
+    assert.equal(container.querySelector('video'), null);
+  }, { fail });
+});
+
+test('a part press whose navigate never lands does not move focus on a later part change from elsewhere', async () => {
+  await withPage(async ({ container, inst, doc, calls }) => {
+    // The recording router swallows navigate: no setQuery follows the press.
+    container.querySelectorAll('.ws-part-card')[1].click();
+    assert.equal(calls.navigate.length, 1);
+    doc.activeElement = null;
+    inst.setQuery({ part: 'p3' });
+    await settle();
+    assert.equal(doc.activeElement, null, 'a Back-style change to another part leaves focus alone');
+    inst.setQuery({ part: 'p2' });
+    await settle();
+    assert.equal(doc.activeElement, null, 'the stale press is not honoured later either');
+  });
 });
