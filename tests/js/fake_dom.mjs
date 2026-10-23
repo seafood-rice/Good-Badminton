@@ -55,6 +55,7 @@ export class FakeEl {
     this.hidden = false;
     this.value = '';
     this.checked = false;
+    if (this.tagName === 'VIDEO') Object.assign(this, { volume: 1, muted: false, paused: true, readyState: 0, currentTime: 0, play() { return undefined; }, pause() {}, load() {} });
     this.style = { setProperty(k, v) { this[k] = String(v); }, getPropertyValue(k) { return this[k] || ''; } };
     const self = this;
     this.classList = {
@@ -95,6 +96,13 @@ export class FakeEl {
     return c;
   }
   remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+  replaceChild(n, old) {
+    if (n.parentNode) n.parentNode.removeChild(n);
+    const j = this.childNodes.indexOf(old);
+    n.parentNode = this;
+    if (j >= 0) { this.childNodes.splice(j, 1, n); old.parentNode = null; } else this.childNodes.push(n);
+    return old;
+  }
   replaceChildren(...nodes) {
     for (const c of this.childNodes) c.parentNode = null;
     this.childNodes = [];

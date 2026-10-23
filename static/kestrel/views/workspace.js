@@ -10,6 +10,7 @@ import { formatHash } from '../core/router.js';
 import { api, getJSON, endpoints, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets/frame.js';
 import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
+import { createPlayer } from '../widgets/player.js';
 import { doublesWorkspaceModel, doublesVideoFiles, hitsInWindow } from './doubles_model.js';
 import {
   RALLY_PAD_SEC, JOIN_FRAMES, STROKE_PAGE, summariseRallyPayload, buildWorkspaceModel, matchDate, matchDateApprox,
@@ -235,103 +236,6 @@ export function mount(container, ctx = {}) {
 
   // ----- video -----
   function buildVideo() {
-    const sec = h('section', { class: 'card hud ws-video-card', 'aria-label': t('ws.video', lang) });
-    const stage = h('div', { class: 'ws-stage' });
-    const video = h('video', { class: 'ws-video', preload: 'metadata', playsinline: true });
-    const tags = h('div', { class: 'ws-tags' });
-    const sig = h('div', { class: 'ws-tag-r' });
-    const msg = h('div', { class: 'ws-video-msg', role: 'status', hidden: true });
-    stage.appendChild(video);
-    stage.appendChild(tags);
-    stage.appendChild(sig);
-    stage.appendChild(msg);
-    const playBtn = h('button', { type: 'button', class: 'ws-play', 'aria-label': t('ws.play', lang), onclick: togglePlay }, '▶');
-    const time = h('span', { class: 'mono ws-time' }, '0:00');
-    const seek = h('input', { type: 'range', class: 'ws-seek', min: '0', max: '0', step: '0.1', value: '0', 'aria-label': t('ws.seek_aria', lang) });
-    seek.addEventListener('input', () => seekTo(Number(seek.value), false));
-    // Theater mode: the whole video card fills the browser window (it is moved under <body> so no ancestor
-    // transform can shrink a fixed box) and goes back to its place on exit. Full screen asks the browser to show
-    // the same card, so the overlay tags and controls stay available.
-    const theaterBtn = h('button', { type: 'button', class: 'ws-ibtn ws-theater', 'aria-pressed': 'false', 'aria-label': t('ws.theater', lang), title: t('ws.theater', lang), onclick: () => setTheater(!refs.theater) }, '▭');
-    const fsBtn = h('button', { type: 'button', class: 'ws-ibtn ws-fs', 'aria-pressed': 'false', 'aria-label': t('ws.fullscreen', lang), title: t('ws.fullscreen', lang), onclick: toggleFullscreen }, '⛶');
-    const place = h('span', { class: 'ws-video-slot', hidden: true });
-    const paintModeButtons = () => {
-      const fs = document.fullscreenElement === sec;
-      setAttr(theaterBtn, 'aria-pressed', refs.theater ? 'true' : 'false');
-      setAttr(fsBtn, 'aria-pressed', fs ? 'true' : 'false');
-      const tl = t(refs.theater ? 'ws.theater_exit' : 'ws.theater', lang);
-      setAttr(theaterBtn, 'aria-label', tl);
-      setAttr(theaterBtn, 'title', tl);
-      const fl = t(fs ? 'ws.fullscreen_exit' : 'ws.fullscreen', lang);
-      setAttr(fsBtn, 'aria-label', fl);
-      setAttr(fsBtn, 'title', fl);
-    };
-    function setTheater(on) {
-      on = !!on;
-      if (on === !!refs.theater || state.destroyed) return;
-      refs.theater = on;
-      if (on) {
-        if (sec.parentNode) sec.parentNode.insertBefore(place, sec);
-        document.body.appendChild(sec);
-        document.body.classList.add('ws-theater-open');
-        sec.classList.add('theater');
-      } else {
-        sec.classList.remove('theater');
-        document.body.classList.remove('ws-theater-open');
-        if (place.parentNode) place.parentNode.replaceChild(sec, place);
-      }
-      paintModeButtons();
-    }
-    function toggleFullscreen() {
-      try {
-        if (document.fullscreenElement) {
-          if (document.exitFullscreen) document.exitFullscreen();
-        } else if (sec.requestFullscreen) {
-          const r = sec.requestFullscreen();
-          if (r && typeof r.catch === 'function') r.catch(() => {});
-        }
-      } catch (e) {
-        // ignore: the browser refused full screen
-      }
-    }
-    const onFsChange = () => {
-      sec.classList.toggle('is-fs', document.fullscreenElement === sec);
-      paintModeButtons();
-    };
-    const onKey = (ev) => {
-      if (ev.key === 'Escape' && refs.theater && !document.fullscreenElement) setTheater(false);
-    };
-    const docEvents = typeof document.addEventListener === 'function' && typeof document.removeEventListener === 'function';
-    if (docEvents) {
-      document.addEventListener('fullscreenchange', onFsChange);
-      document.addEventListener('keydown', onKey);
-    }
-    refs.teardownVideoMode = () => {
-      if (docEvents) {
-        document.removeEventListener('fullscreenchange', onFsChange);
-        document.removeEventListener('keydown', onKey);
-      }
-      try {
-        if (document.fullscreenElement === sec && document.exitFullscreen) document.exitFullscreen();
-      } catch (e) {
-        // ignore
-      }
-      if (refs.theater) setTheater(false);
-      if (sec.parentNode === document.body) document.body.removeChild(sec);
-    };
-    const ctlRow = h('div', { class: 'ws-ctl' }, [
-      h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': t('ws.prev_rally', lang), onclick: () => stepUnit(-1) }, '⏮'),
-      playBtn,
-      h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': t('ws.next_rally', lang), onclick: () => stepUnit(1) }, '⏭'),
-      time,
-      seek,
-      theaterBtn,
-      fsBtn,
-    ]);
-    sec.appendChild(stage);
-    sec.appendChild(ctlRow);
-    Object.assign(refs, { video, tags, sig, msg, playBtn, time, seek, ctlRow, stage });
-
     // detect_<stem>.mp4 is where app.py leaves the browser-compatible transcode (it replaces the raw file);
     // detect_<stem>_h264.mp4 is tried second for runs where the replace step did not happen.
     // A doubles run plays detect_<stem>_players.mp4 first, only when players.json says its render is ok; if that
@@ -339,92 +243,22 @@ export function mount(container, ctx = {}) {
     const files = state.dbl
       ? doublesVideoFiles(stem, state.dbl.identityVideoOk ? { status: 'ok' } : null)
       : [`detect_${stem}.mp4`, `detect_${stem}_h264.mp4`];
-    const candidates = files.map((f) => endpoints.output(stem, f));
-    let idx = 0;
-    let gotStatus = false;
-    refs.playersVideo = !!(state.dbl && state.dbl.identityVideoOk);
-    const fail = (key) => {
-      if (state.destroyed || idx >= candidates.length) return;
-      idx += 1;
-      refs.playersVideo = false;
-      if (idx < candidates.length) {
-        video.src = candidates[idx];
-        if (state.dbl) paintVideoTags();
-        return;
-      }
-      video.removeAttribute('src');
-      video.hidden = true;
-      msg.hidden = false;
-      setText(msg, t(key, lang));
-      for (const b of ctlRow.querySelectorAll('button,input')) b.disabled = true;
-    };
-    // MediaError codes: 2 network, 3 decode, 4 source not supported (a 404 also lands here). A file that
-    // reached loadedmetadata exists, so a later failure is a playback problem, not a missing video.
-    video.addEventListener('error', () => {
-      const code = video.error && video.error.code;
-      fail(code === 2 ? 'ws.video_network' : gotStatus || code === 3 ? 'ws.video_unplayable' : 'ws.video_missing');
+    const player = createPlayer({
+      files: files.map((f) => endpoints.output(stem, f)),
+      lang,
+      labels: { prev: t('ws.prev_rally', lang), next: t('ws.next_rally', lang) },
+      onPrev: () => stepUnit(-1),
+      onNext: () => stepUnit(1),
+      // The players video was dropped: repaint the overlay tags without its "players video" tag.
+      onSourceFallback: () => { if (state.dbl) paintVideoTags(); },
+      playersVideo: !!(state.dbl && state.dbl.identityVideoOk),
     });
-    video.addEventListener('loadedmetadata', () => {
-      gotStatus = true;
-      // An undecodable MPEG-4 Part 2 track loads with the right duration but no picture.
-      if (!video.videoWidth && !video.videoHeight) {
-        fail('ws.video_unplayable');
-        return;
-      }
-      setAttr(seek, 'max', isNum(video.duration) ? video.duration.toFixed(1) : '0');
-      if (refs.pendingSeek !== undefined) {
-        const s = refs.pendingSeek;
-        refs.pendingSeek = undefined;
-        seekTo(s, false);
-      }
-      paintTime();
-    });
-    video.addEventListener('timeupdate', paintTime);
-    video.addEventListener('play', paintPlay);
-    video.addEventListener('pause', paintPlay);
-    video.src = candidates[0];
-    return sec;
-  }
-
-  function paintTime() {
-    const v = refs.video;
-    if (!v) return;
-    const cur = isNum(v.currentTime) ? v.currentTime : 0;
-    setText(refs.time, `${clockText(cur)} / ${clockText(isNum(v.duration) ? v.duration : null)}`);
-    if (document.activeElement !== refs.seek) refs.seek.value = String(cur.toFixed(1));
-  }
-
-  function paintPlay() {
-    const v = refs.video;
-    const playing = v && !v.paused;
-    setText(refs.playBtn, playing ? '❚❚' : '▶');
-    setAttr(refs.playBtn, 'aria-label', t(playing ? 'ws.pause' : 'ws.play', lang));
-  }
-
-  function togglePlay() {
-    const v = refs.video;
-    if (!v || v.hidden) return;
-    try {
-      if (v.paused) {
-        const p = v.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      } else v.pause();
-    } catch (e) {
-      // ignore: playback is best effort
-    }
+    Object.assign(refs, { player, video: player.video, tags: player.tagsEl, sig: player.sigEl });
+    return player.el;
   }
 
   function seekTo(sec, fromSelection = true) {
-    const v = refs.video;
-    if (!v || !isNum(sec)) return;
-    const target = Math.max(0, sec - (fromSelection ? 0.4 : 0));
-    try {
-      if (v.readyState >= 1) v.currentTime = target;
-      else refs.pendingSeek = target;
-    } catch (e) {
-      refs.pendingSeek = target;
-    }
-    paintTime();
+    if (refs.player) refs.player.seekTo(sec, fromSelection);
   }
 
   function paintVideoTags() {
@@ -434,7 +268,7 @@ export function mount(container, ctx = {}) {
     const st = currentStroke();
     if (u) refs.tags.appendChild(h('span', { class: 'mono ws-tag' }, unitTitle(u).toUpperCase()));
     if (state.dbl) {
-      if (refs.playersVideo) refs.tags.appendChild(h('span', { class: 'mono ws-tag' }, t('dbl.ws.players_video', lang).toUpperCase()));
+      if (refs.player && refs.player.playersVideo) refs.tags.appendChild(h('span', { class: 'mono ws-tag' }, t('dbl.ws.players_video', lang).toUpperCase()));
       const hit = currentHit();
       if (hit) {
         const inUnit = unitHits();
@@ -1158,17 +992,7 @@ export function mount(container, ctx = {}) {
     clock.cancel();
     clearTimeout(settleTimer);
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
-    if (refs.teardownVideoMode) refs.teardownVideoMode();
-    const v = refs.video;
-    if (v) {
-      try {
-        v.pause();
-        v.removeAttribute('src');
-        v.load(); // releases the media connection
-      } catch (e) {
-        // ignore
-      }
-    }
+    if (refs.player) refs.player.destroy();
     if (root.parentNode) root.parentNode.removeChild(root);
   }
 
