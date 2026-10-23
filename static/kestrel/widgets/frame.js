@@ -2,6 +2,7 @@
 // No DOM access at import time, so the pure modules that import this one load under `node --test`.
 import { t } from '../core/i18n.js';
 import { local } from '../core/motion.js';
+import * as info from './info.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -133,8 +134,8 @@ function editControls(title, ctx) {
 }
 
 /**
- * HUD-framed card: title, subtitle, optional right-hand node, body.
- * data: {id, title, sub, flex, label, right}. ctx.slot positions it in the reveal; ctx.edit adds layout controls.
+ * HUD-framed card: title, subtitle, optional right-hand node, an "i" help button (when info.js has text for
+ * data.id), body. data: {id, title, sub, flex, label, right}. ctx.slot positions it in the reveal; ctx.edit adds layout controls.
  * Returns {el, body, subEl, head, update(p)}; update fades/lifts the card and sweeps the scan line.
  */
 export function build(data, ctx = {}) {
@@ -146,6 +147,7 @@ export function build(data, ctx = {}) {
   const head = h('div', { class: 'kw-head' }, [
     h('div', { class: 'kw-titles' }, [h('h2', { class: 'card-title' }, d.title || ''), subEl]),
     d.right || null,
+    info.button(d.id, d.title || '', ctx.lang),
     editControls(d.title || '', ctx),
   ]);
   const body = h('div', { class: 'kw-body' });

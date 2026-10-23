@@ -18,6 +18,7 @@ import { createPalette } from './shell/palette.js';
 import { createPeek } from './shell/peek.js';
 import { navigateWithTransform } from './shell/transition.js';
 import { createGround } from './shell/ground.js';
+import * as widgetInfo from './widgets/info.js';
 
 /** Route table: one lazy loader per view. #/matches/<stem> is the match workspace. */
 export const VIEW_LOADERS = Object.freeze({
@@ -507,11 +508,12 @@ export function start(root) {
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
+      widgetInfo.close(); // a widget help dialog never stays open under the palette
       palette.toggle();
       return;
     }
     if (e.key === '[' && !e.ctrlKey && !e.metaKey && !e.altKey && !isTyping(e.target)
-        && !palette.isOpen() && !peek.isOpen() && !document.querySelector('.modal-overlay, .pop')) {
+        && !palette.isOpen() && !peek.isOpen() && !widgetInfo.isOpen() && !document.querySelector('.modal-overlay, .pop')) {
       toggleCollapse();
     }
   });

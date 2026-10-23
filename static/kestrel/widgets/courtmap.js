@@ -52,9 +52,12 @@ export function build(data, ctx = {}) {
     class: 'kw-court-wrap', role: 'img', 'aria-label': '', tabindex: '0', 'data-fk': 'court-grid',
     onkeydown: (e) => onKey(e), onblur: () => hoverCell(null),
   }, [gridEl, gapEl]);
+  // NET labels the top edge (row 0) and BASELINE the bottom edge, where each line actually is.
   const court = h('div', { class: 'kw-court', onmouseleave: () => hoverCell(null) }, [
+    h('div', { class: 'mono kw-court-axis kw-court-axis-top' }, [h('span', null, t('heat.net', lang))]),
     wrap,
-    h('div', { class: 'mono kw-court-axis' }, [h('span', null, t('heat.net', lang)), readEl, h('span', null, t('heat.baseline', lang))]),
+    h('div', { class: 'mono kw-court-axis' }, [h('span', null, t('heat.baseline', lang))]),
+    h('div', { class: 'mono kw-court-read' }, [readEl]),
   ]);
   const scaleEl = h('div', { class: 'kw-court-scale' }, [
     t('heat.fewer', lang), h('span', { class: 'kw-court-ramp', 'aria-hidden': 'true' }), t('heat.more', lang),

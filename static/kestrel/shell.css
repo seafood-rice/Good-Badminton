@@ -181,6 +181,20 @@
   font-size:12px;color:var(--ink3);}
 .palette-foot .r{margin-left:auto;}
 
+/* widget help dialog (widgets/info.js): the palette's scrim and pop, sections rise in like palette rows */
+.info-root{position:fixed;inset:0;z-index:50;}
+.info-dialog{position:fixed;top:96px;left:50%;transform:translateX(-50%);z-index:51;width:520px;max-width:calc(100% - 32px);
+  max-height:calc(100vh - 140px);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--lineHi);
+  border-radius:16px;box-shadow:0 28px 80px var(--shadow);overflow:hidden;animation:kPop .5s var(--ease) both;}
+.info-dialog:focus{outline:none;}
+.info-head{display:flex;align-items:center;gap:12px;padding:0 18px;min-height:58px;border-bottom:1px solid var(--line);color:var(--cyan);}
+.info-title{flex:1 1 auto;min-width:0;margin:0;color:var(--ink);font-size:16px;font-weight:600;}
+.info-body{display:flex;flex-direction:column;gap:16px;padding:18px 20px 22px;overflow:auto;}
+.info-sec{animation:kUp .5s var(--ease) both;}
+.info-sec-title{margin:0 0 6px;color:var(--cyanInk);}
+.info-sec p{margin:0;color:var(--ink2);font-size:14px;line-height:1.55;white-space:pre-line;}
+@media (max-width:719px){.info-dialog{top:24px;max-height:calc(100vh - 112px);}}
+
 /* peek drawer */
 .peek-root{position:fixed;inset:0;z-index:50;}
 .peek-bar{display:flex;justify-content:flex-end;margin:-14px -14px -12px 0;}
