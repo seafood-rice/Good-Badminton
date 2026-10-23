@@ -151,6 +151,8 @@ export function createPlayer(opts = {}) {
   video.addEventListener('volumechange', paintVolume);
   sec.addEventListener('keydown', (ev) => {
     if (ev.key !== 'm' && ev.key !== 'M') return;
+    // Ctrl / Alt / Meta + M belong to the browser and the OS, not to the mute toggle.
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const tg = ev.target || {};
     if (tg.tagName === 'TEXTAREA' || tg.isContentEditable || (tg.tagName === 'INPUT' && !['range', 'button', 'checkbox'].includes(tg.type))) return;
     if (typeof ev.preventDefault === 'function') ev.preventDefault();

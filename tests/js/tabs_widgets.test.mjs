@@ -71,6 +71,25 @@ test('clips panel: a failure shows the message as text and re-enables the button
   } finally { removeEnv(); }
 });
 
+test('clips panel: an ok reply without any clip URL says no clips were made', async () => {
+  installEnv();
+  try {
+    const p = clipsPanel({ stem: 's', lang: 'en', rallyOk: true, api: { post: async () => ({ ok: true, clips: [] }) } });
+    const btn = buttonWithText(p.el, t('wsx.clips.generate', 'en'));
+    btn.dispatch('click');
+    await tick();
+    assert.equal(p.el.querySelector('.mv-err').textContent, t('wsx.clips.none', 'en'));
+    assert.equal(t('wsx.clips.none', 'en'), 'No clips were made.');
+    assert.equal(p.el.querySelectorAll('.ws-clip').length, 0);
+    assert.equal(btn.disabled, false);
+    // entries without a string url count as none too
+    const p2 = clipsPanel({ stem: 's', lang: 'zh', rallyOk: true, api: { post: async () => ({ ok: true, clips: [{ name: 'x' }, null] }) } });
+    buttonWithText(p2.el, t('wsx.clips.generate', 'zh')).dispatch('click');
+    await tick();
+    assert.equal(p2.el.querySelector('.mv-err').textContent, '没有生成任何剪辑');
+  } finally { removeEnv(); }
+});
+
 test('clips panel: Delete clips opens the clips-scoped dialog; a dismissed dialog keeps the list', async () => {
   installEnv();
   try {

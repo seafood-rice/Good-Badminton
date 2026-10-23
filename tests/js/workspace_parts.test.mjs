@@ -101,7 +101,7 @@ test('whole match: one card per part, the unanalysed part says so, movement per 
     // switcher: Whole match pressed
     assert.equal(partBtn(container, 'Whole match').getAttribute('aria-pressed'), 'true');
     // pooled distribution: p1 (3) + p2 (3)
-    assert.match(panel(container).textContent, /6 strokes/);
+    assert.match(panel(container).textContent, /6 classified · 0 uncertain/);
     assert.equal(panel(container).querySelectorAll('.ws-dist-seg').length, 3);
     // header: parts count and pooled rallies; no posture link, no delete menu
     const head = container.querySelector('.ws-head');
@@ -192,4 +192,30 @@ test('a match without parts keeps the single-video page (no switcher)', async ()
     assert.equal(calls.replace.length, 0);
     assert.equal(everything(container).some((e) => e.textContent === 'Whole match'), false);
   }, { stem: 'solo' });
+});
+
+test('a part change from a card or the switcher puts focus on the pressed switcher button', async () => {
+  await withPage(async ({ container, inst, doc, calls }) => {
+    const card = container.querySelectorAll('.ws-part-card')[1];
+    card.focus();
+    card.click();
+    assert.deepEqual(calls.navigate, [formatHash('matches', { stem: 'p1' }, { part: 'p2' })]);
+    inst.setQuery({ part: 'p2' });
+    assert.equal(doc.activeElement, partBtn(container, 'Part 2'), 'focus on the pressed part, not lost with the old body');
+    await settle();
+    assert.equal(doc.activeElement, partBtn(container, 'Part 2'), 'still there once the part rendered');
+    partBtn(container, 'Whole match').click();
+    inst.setQuery({});
+    assert.equal(doc.activeElement, partBtn(container, 'Whole match'));
+    assert.equal(partBtn(container, 'Whole match').getAttribute('aria-pressed'), 'true');
+    // a part change that did not start on the page (Back / a link) leaves focus alone
+    doc.activeElement = null;
+    inst.setQuery({ part: 'p2' });
+    assert.equal(doc.activeElement, null);
+  });
+});
+
+test('zh: a part reads 第 N 段 like the Matches list', () => {
+  assert.equal(t('wsx.parts.n', 'zh', { n: 2 }), '第 2 段');
+  assert.equal(t('wsx.parts.n', 'zh', { n: 2 }), t('link.part_label', 'zh', { n: 2 }));
 });

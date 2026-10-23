@@ -59,7 +59,10 @@ export function groupJobs(jobs) {
       updated: isNum(j.updated) ? j.updated : null,
       tone: toneOf(status),
       active: isActive,
-      resultsHash: status === 'completed' && stem ? formatHash('results', { stem }, { mode: kind }) : null,
+      // A finished match opens its match details page; a posture run keeps the posture report screen.
+      resultsHash: status === 'completed' && stem
+        ? (kind === 'posture' ? formatHash('results', { stem }, { mode: 'posture' }) : formatHash('matches', { stem }))
+        : null,
     };
     (isActive ? active : finished).push(row);
   }

@@ -72,6 +72,8 @@ export function mount(container, ctx = {}) {
     headInsights: null,
     whole: null,
     waiting: false,
+    // A part change started from the page (switcher, card): focus the pressed switcher button once it shows.
+    focusSwitcher: false,
     // That stem's /api/videos row (has_posture, thumb, ...) or null; `videos` is the whole list (null: failed).
     videos: null,
     video: null,
@@ -241,6 +243,8 @@ export function mount(container, ctx = {}) {
     if (tab !== undefined && tab !== 'strokes') q.tab = tab;
     if (partStem === currentPart() && (tab === undefined || tab === state.tab)) return;
     const hash = formatHash('matches', { stem: state.info.primary }, q);
+    // The body is rebuilt for the new part: without this, focus would drop to <body>.
+    state.focusSwitcher = true;
     if (ctx.router && typeof ctx.router.navigate === 'function') ctx.router.navigate(hash);
     else setQuery(q);
   }
@@ -1106,30 +1110,36 @@ export function mount(container, ctx = {}) {
 
   // ----- strokes tab: distribution by group (+ the TrackNet provenance note) -----
   /**
-   * One video's distribution by default; the Whole match passes the pooled one. `hasStrokes` tells a stale strokes
-   * file (labels out of date) from no strokes at all; `tracknet` adds the provenance note.
+   * One video's distribution by default; the Whole match passes the pooled one. `strokes` is every detected stroke
+   * (the header's count): the groups hold the classified ones only, so the rest shows as uncertain. `hasStrokes`
+   * tells a stale strokes file (labels out of date) from no strokes at all; `tracknet` adds the provenance note.
    */
   function distributionCard({
     d = strokeDistribution(state.strokesDoc),
+    strokes = state.model ? state.model.summary.strokes.total : 0,
     hasStrokes = Array.isArray(obj(state.strokesDoc).strokes) && state.strokesDoc.strokes.length > 0,
     tracknet = trackNetNote(state.strokesDoc),
   } = {}) {
+    const u = Math.max(0, strokes - d.total);
+    const all = d.total + u;
     const sec = h('section', { class: 'card hud ws-dist', 'aria-label': t('wsx.dist.title', lang) });
     sec.appendChild(h('div', { class: 'ws-sec-head' }, [
       h('h2', { class: 'card-title' }, t('wsx.dist.title', lang)),
-      d.total ? h('span', { class: 'card-sub' }, t('wsx.dist.total', lang, { n: fmtNumber(d.total) })) : null,
+      d.total ? h('span', { class: 'card-sub' }, t('wsx.dist.total', lang, { n: fmtNumber(d.total), u: fmtNumber(u) })) : null,
     ]));
     if (!d.total) {
       sec.appendChild(h('div', { class: 'kw-note' }, t(d.stale && hasStrokes ? 'ws.stroke_stale' : 'ws.empty.title', lang)));
     } else {
-      const text = d.groups.map((g) => `${techLabel(g.id, lang)} ${g.count}`).join(', ');
-      sec.appendChild(h('div', { class: 'ws-dist-bar', role: 'img', 'aria-label': text }, d.groups.map((g) => h('span', {
+      // The classified groups, then a muted uncertain segment: the bar adds up to the header's stroke count.
+      const segs = [...d.groups, ...(u ? [{ id: 'uncertain', count: u }] : [])];
+      const text = segs.map((g) => `${techLabel(g.id, lang)} ${g.count}`).join(', ');
+      sec.appendChild(h('div', { class: 'ws-dist-bar', role: 'img', 'aria-label': text }, segs.map((g) => h('span', {
         class: `ws-dist-seg tc-${g.id}`, style: { flex: `${g.count} 1 0` }, title: `${techLabel(g.id, lang)} · ${g.count}`,
       }))));
-      sec.appendChild(h('ul', { class: 'ws-dist-legend' }, d.groups.map((g) => h('li', null, [
+      sec.appendChild(h('ul', { class: 'ws-dist-legend' }, segs.map((g) => h('li', g.id === 'uncertain' ? { class: 'kw-muted' } : null, [
         h('span', { class: `ws-dot tc-${g.id}`, 'aria-hidden': 'true' }),
         techLabel(g.id, lang),
-        h('span', { class: 'mono kw-muted' }, `${g.count} · ${Math.round((g.count / d.total) * 100)}%`),
+        h('span', { class: 'mono kw-muted' }, `${g.count} · ${Math.round((g.count / all) * 100)}%`),
       ]))));
     }
     if (tracknet) sec.appendChild(h('div', { class: 'kw-foot-muted' }, t('wsx.tracknet', lang)));
@@ -1328,7 +1338,9 @@ export function mount(container, ctx = {}) {
     }
     const d = poolDistribution(ok.map((p) => p.dist));
     return h('div', { class: 'ws-strokes-tab' }, [
-      distributionCard({ d, hasStrokes: ok.some((p) => p.strokes.total > 0), tracknet: ok.some((p) => p.tracknet) }),
+      distributionCard({
+        d, strokes: ok.reduce((n, p) => n + p.strokes.total, 0), hasStrokes: ok.some((p) => p.strokes.total > 0), tracknet: ok.some((p) => p.tracknet),
+      }),
       partsTable(),
     ]);
   }
@@ -1613,6 +1625,11 @@ export function mount(container, ctx = {}) {
     state.tab = resolveTab(state.query);
     if (r.view === 'whole') loadWhole();
     else loadPart(r.partStem || stem);
+    // Both loaders render the switcher's new state synchronously (a loading card or the cached Whole match).
+    if (state.focusSwitcher) {
+      state.focusSwitcher = false;
+      focusNode(refs.partBtns && refs.partBtns.get(currentPart()));
+    }
   }
 
   /** Read the match record (and a part's primary's), the video list, then show the view the query asks for. */

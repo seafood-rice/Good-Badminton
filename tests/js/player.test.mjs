@@ -54,6 +54,38 @@ test('player: M toggles mute from inside the card, not from a text field; storag
   } finally { removeEnv(); }
 });
 
+test('player: Ctrl / Alt / Meta + M leave mute alone', () => {
+  installEnv();
+  try {
+    const p = createPlayer({ files: ['/a.mp4'], lang: 'en', prefs: memPrefs() });
+    for (const mod of ['ctrlKey', 'altKey', 'metaKey']) {
+      const ev = p.el.dispatch('keydown', { key: 'm', target: p.video, [mod]: true });
+      assert.equal(p.video.muted, false, mod);
+      assert.equal(ev.defaultPrevented, false, mod + ' keeps its browser meaning');
+    }
+    p.el.dispatch('keydown', { key: 'M', target: p.video, shiftKey: true });
+    assert.equal(p.video.muted, true, 'Shift+M still toggles');
+    p.destroy();
+  } finally { removeEnv(); }
+});
+
+test('player: when every source fails, the mute button and volume slider are disabled with the other controls', () => {
+  installEnv();
+  try {
+    const p = createPlayer({ files: ['/a.mp4', '/b.mp4'], lang: 'en', prefs: memPrefs() });
+    const find = (cls) => everything(p.el).find((e) => e.classList && e.classList.contains(cls));
+    p.video.error = { code: 4 };
+    p.video.dispatch('error');
+    assert.equal(p.video.src, '/b.mp4', 'second candidate tried');
+    assert.equal(find('ws-mute').disabled, false);
+    p.video.dispatch('error');
+    assert.equal(find('ws-mute').disabled, true);
+    assert.equal(find('ws-vol-range').disabled, true);
+    assert.equal(find('ws-play').disabled, true);
+    p.destroy();
+  } finally { removeEnv(); }
+});
+
 test('player: theater button moves the card under body and back', () => {
   installEnv();
   try {

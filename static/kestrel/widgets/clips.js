@@ -36,16 +36,20 @@ export function clipsPanel({ stem, lang, rallyOk = false, api = defaultApi, onDe
     list,
   ]);
 
+  /** List the clips; returns how many had a URL (an ok reply can carry none when every cut failed). */
   function showClips(clips) {
     list.textContent = '';
+    let n = 0;
     for (const c of clips) {
       if (!c || typeof c.url !== 'string') continue;
+      n += 1;
       list.appendChild(h('li', null, h('a', { class: 'ws-clip', href: c.url, download: true }, [
         String(c.name || c.url),
         ' ',
         isNum(c.size_mb) ? h('span', { class: 'mono' }, c.size_mb + ' MB') : null,
       ])));
     }
+    return n;
   }
 
   genBtn.addEventListener('click', async () => {
@@ -58,8 +62,10 @@ export function clipsPanel({ stem, lang, rallyOk = false, api = defaultApi, onDe
     try {
       const res = await api.post('/api/clip', { video: stem, mode: 'highlights', padding: PADDING_SEC });
       if (!alive) return;
-      if (res && res.ok && Array.isArray(res.clips)) showClips(res.clips);
-      else failure = failureText(lang, res && typeof res.error === 'string' ? res.error : '');
+      if (res && res.ok && Array.isArray(res.clips)) {
+        // The server can answer ok with no clip when every cut failed: say so instead of showing nothing.
+        if (!showClips(res.clips)) failure = t('wsx.clips.none', lang);
+      } else failure = failureText(lang, res && typeof res.error === 'string' ? res.error : '');
     } catch (e) {
       if (!alive) return;
       const body = e && e.body && typeof e.body.error === 'string' ? e.body.error : '';

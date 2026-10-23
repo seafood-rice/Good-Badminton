@@ -245,3 +245,17 @@ test('setQuery with the tab already open is a no-op (same panel node, no router 
     assert.equal(calls.navigate.length, 0);
   });
 });
+
+test('distribution: classified strokes and the uncertain rest, so the numbers add up to the header', async () => {
+  const routes = singles();
+  routes[out('s', 'strokes.json')].strokes.push({ frame: 240, hitter: 'lower', stroke: 'smash', group: 'smash', uncertain: true });
+  await withPage(async ({ container }) => {
+    const head = container.querySelector('.ws-head').textContent;
+    assert.match(head, /4 strokes/);
+    const dist = container.querySelector('.ws-dist');
+    assert.match(dist.textContent, /3 classified · 1 uncertain/);
+    assert.ok(dist.querySelector('.ws-dist-seg.tc-uncertain'), 'muted uncertain segment');
+    assert.equal(dist.querySelectorAll('.ws-dist-seg').length, 4);
+    assert.equal(t('wsx.dist.total', 'zh', { n: 3, u: 1 }), '已分类 3 次 · 不确定 1 次');
+  }, { routes });
+});
