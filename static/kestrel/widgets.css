@@ -124,6 +124,13 @@
   display:grid;place-items:center;cursor:pointer;}
 .kw-ctl:hover{color:var(--ink);border-color:var(--lineHi);}
 .kw-ctl:disabled{opacity:.4;cursor:default;}
+/* "i" help button (widgets/info.js) on cards and tiles */
+.kw-info{display:inline-grid;place-items:center;flex:0 0 auto;width:24px;height:24px;padding:0;border:0;border-radius:50%;
+  background:transparent;color:var(--ink3);cursor:pointer;transition:color .2s,background .2s;}
+.kw-info:hover{color:var(--cyanInk);background:var(--cyanSoft);}
+.kw-info:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
+.kw-head > .kw-info{margin-top:2px;}
+.kw-tile-label .kw-info{margin-left:auto;width:22px;height:22px;}
 .kw-hidden>.kw-body{opacity:.35;}
 .kw-hidden-tag{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);}
 .kw-note{font-size:13px;color:var(--ink2);}
@@ -239,7 +246,9 @@
 .kw-court-centre{position:absolute;left:50%;top:29.6%;bottom:0;width:1px;background:var(--lineHi);pointer-events:none;}
 .kw-court-gap{position:absolute;inset:0;align-items:center;justify-content:center;text-align:center;padding:16px;font-size:12.5px;}
 .kw-court-gap strong{color:var(--ink);}
-.kw-court-axis{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:10.5px;color:var(--ink3);}
+.kw-court-axis{display:flex;justify-content:center;margin-top:5px;font-size:10.5px;letter-spacing:.12em;color:var(--ink3);}
+.kw-court-axis-top{margin:0 0 5px;}
+.kw-court-read{min-height:1.5em;margin-top:4px;text-align:center;font-size:11px;color:var(--ink2);}
 .kw-court-scale{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink3);}
 .kw-court-ramp{flex:1;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--accentSoft),var(--accent));}
 

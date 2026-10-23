@@ -4,6 +4,7 @@ import { ease, local } from '../core/motion.js';
 import { fmtNumber } from '../core/format.js';
 import { arcDash, sparkPath } from '../core/geometry.js';
 import * as gap from './gap.js';
+import * as info from './info.js';
 import { h, s, setAttr, setStyle, setText, revealStyle, scanLine, updateScan, icon } from './frame.js';
 
 const R = 30;
@@ -78,6 +79,7 @@ export function build(data, ctx = {}) {
     h('div', { class: 'kw-tile-label' }, [
       h('span', null, tile.label || ''),
       tile.tag ? h('span', { class: 'mono kw-tag' }, tile.tag) : null,
+      info.button(tile.id, tile.label || '', ctx.lang),
     ]),
     h('div', { class: 'kw-tile-main' }, [h('div', { class: 'kw-tile-num' }, [valueEl, unitEl]), visual]),
     delta || note ? h('div', { class: 'kw-tile-foot' }, [delta, note]) : null,

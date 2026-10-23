@@ -2,6 +2,7 @@
 import { t } from '../core/i18n.js';
 import { local } from '../core/motion.js';
 import { h, revealStyle, scanLine, updateScan } from './frame.js';
+import * as info from './info.js';
 
 /**
  * data: {id, label, reason, fix: {href, label}|null, flex}; ctx.slot positions it in the reveal.
@@ -21,7 +22,7 @@ export function build(data, ctx = {}) {
     style: d.flex ? { flex: d.flex } : null,
   }, [
     scan,
-    h('div', { class: 'kw-tile-label' }, d.label || ''),
+    h('div', { class: 'kw-tile-label' }, [h('span', null, d.label || ''), info.button(d.id, d.label || '', lang)]),
     h('span', { class: 'mono kw-gap-dash', 'aria-hidden': 'true' }, '—'),
     h('span', { class: 'kw-gap-title' }, t('gap.title', lang)),
     h('span', { class: 'reason' }, d.reason || t('reason.unknown', lang)),
