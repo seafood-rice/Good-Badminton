@@ -137,7 +137,7 @@ test('t(): interpolation, language fallback and missing keys', () => {
 test('seven techniques, status labels, lenses and shell are all present', () => {
   for (const id of ['smash', 'clear', 'drop', 'net', 'lift', 'drive', 'serve']) assert.ok(STRINGS.en['technique.' + id], id);
   for (const k of ['status.analysed', 'status.processing', 'status.new', 'status.needs_review', 'status.ok', 'status.partial', 'status.unavailable',
-    'lens.overview', 'lens.technique', 'lens.tactics', 'nav.overview', 'nav.matches', 'nav.players', 'nav.library', 'nav.pipeline', 'nav.settings',
+    'lens.overview', 'lens.technique', 'lens.tactics', 'nav.overview', 'nav.matches', 'nav.players', 'nav.pipeline', 'nav.settings',
     'section.analyze', 'section.manage', 'gap.title', 'btn.retry', 'btn.new_analysis', 'tile.technique_index', 'tile.rally_win_rate',
     'empty.library.title', 'range.7d', 'range.30d', 'range.season', 'heat.position', 'heat.pull']) {
     assert.ok(STRINGS.en[k] && STRINGS.zh[k], k);

@@ -5,8 +5,8 @@ import { t } from '../core/i18n.js';
 import { formatHash } from '../core/router.js';
 import { el, icon, ICONS, trapTab, refocus } from './dom.js';
 
-export const PAGE_IDS = Object.freeze(['overview', 'matches', 'players', 'library', 'pipeline']);
-const PAGE_SECTION = { overview: 'analyze', matches: 'analyze', players: 'analyze', library: 'manage', pipeline: 'manage' };
+export const PAGE_IDS = Object.freeze(['overview', 'matches', 'players', 'pipeline']);
+const PAGE_SECTION = { overview: 'analyze', matches: 'analyze', players: 'analyze', pipeline: 'manage' };
 
 const ACTIONS = {
   new_analysis: { label: 'action.new_analysis', hint: 'action.new_analysis.hint', route: () => formatHash('new') },
@@ -14,7 +14,7 @@ const ACTIONS = {
 };
 export const ACTION_IDS = Object.freeze(Object.keys(ACTIONS));
 
-const VIDEO_STATUS = { analyzed: 'status.analysed', court_set: 'status.processing', new: 'status.new' };
+const VIDEO_STATUS = { analyzed: 'status.analysed', court_set: 'status.court_set', new: 'status.new' };
 
 const str = (v) => (typeof v === 'string' ? v : v === null || v === undefined ? '' : String(v));
 

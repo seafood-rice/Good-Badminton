@@ -1,6 +1,6 @@
 // Hash router: parse/format only (navigation and listeners live in main.js). DOM-free.
 //   #/overview?athlete=&squad=&range=&lens=   #/matches   #/matches/<stem>   #/players
-//   #/pipeline   #/library   #/new   #/results/<stem>?mode=
+//   #/pipeline   #/new   #/results/<stem>?mode=   (#/library is a retired alias of #/matches)
 
 // stem: false = no segment, 'optional' = may carry a stem, 'required' = needs a stem.
 const ROUTES = {
@@ -8,7 +8,6 @@ const ROUTES = {
   matches: { stem: 'optional' },
   players: { stem: false },
   pipeline: { stem: false },
-  library: { stem: false },
   new: { stem: false },
   results: { stem: 'required' },
 };
@@ -54,6 +53,8 @@ export function parseHash(hash) {
     return overview();
   }
   const [name, stem, ...rest] = decoded;
+  // The video library page was merged into Matches: its bare hash (with or without a query) still works.
+  if (name === 'library' && stem === undefined) return { name: 'matches', params: {}, query: parseQuery(queryPart) };
   const route = ROUTES[name];
   if (!route || rest.length) return overview();
   if (stem === undefined) {

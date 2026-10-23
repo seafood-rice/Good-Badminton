@@ -43,7 +43,6 @@ function fakeLegacy() {
     setTheme(v) { this.state.theme = v; },
     setLang(v) { this.state.lang = v; },
     onNavigate(cb) { this.navCb = typeof cb === 'function' ? cb : null; },
-    mountLibrary(el) { this.mountEl = el; },
     mountNew(el) { this.mountEl = el; },
     mountResults(el, stem, mode, modes) {
       this.mountEl = el;
@@ -77,7 +76,7 @@ test('a stale mount resolved after a newer one does not clobber it', async () =>
   const router = { navigate: (h) => navs.push(h) };
   const loadA = deferred();
   const cA = container();
-  const pA = mount(cA, { route: route('library'), lang: 'en', theme: 'night', router, loadLegacy: () => loadA.p });
+  const pA = mount(cA, { route: route('new'), lang: 'en', theme: 'night', router, loadLegacy: () => loadA.p });
   cA.remove(); // the shell tears the page down before the module arrives
 
   const cB = container();
@@ -90,8 +89,8 @@ test('a stale mount resolved after a newer one does not clobber it', async () =>
   instA.destroy();
   assert.equal(L.mountEl, hostB, "B's render target survives");
   assert.ok(L.navCb, "B's navigation callback survives");
-  L.navCb({ name: 'library', params: {}, query: {} });
-  assert.deepEqual(navs, ['#/library']);
+  L.navCb({ name: 'matches', params: {}, query: {} });
+  assert.deepEqual(navs, ['#/matches']);
   assert.equal(cA.children.length, 0, 'the stale mount rendered nothing');
 
   instB.destroy();
@@ -108,7 +107,7 @@ test('a deep link still verifying when a newer mount starts never takes over or 
   await new Promise((r) => setTimeout(r, 0)); // A owns the module and waits on /api/videos
 
   const cB = container();
-  const instB = await mount(cB, { route: route('library'), lang: 'en', theme: 'night', loadLegacy: async () => L });
+  const instB = await mount(cB, { route: route('new'), lang: 'en', theme: 'night', loadLegacy: async () => L });
   const hostB = cB.children[0];
   assert.equal(L.mountEl, hostB);
 
@@ -131,7 +130,7 @@ test('an unverifiable deep link shows a retry panel instead of mounting the stem
   const host = c.children[0];
   const retry = host.children.find((n) => n.tagName === 'BUTTON');
   assert.ok(retry, 'retry button');
-  assert.ok(host.children.some((n) => n.tagName === 'A' && n.href === '#/library'));
+  assert.ok(host.children.some((n) => n.tagName === 'A' && n.href === '#/matches'));
   retry.listeners.click();
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(calls, 2);
