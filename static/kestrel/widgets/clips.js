@@ -12,6 +12,9 @@ const PADDING_SEC = 1.5;
 
 const defaultApi = { post: (url, body) => sendJSON('POST', url, body, { timeout: CLIP_TIMEOUT_MS }) };
 
+/** A clip URL the page may link: a same-origin path or an http(s) URL (never javascript:, data:, ...). */
+const linkable = (url) => typeof url === 'string' && /^(\/|https?:\/\/)/i.test(url);
+
 /** What went wrong, as text: the server's own message when the error carries one, else the bilingual generic one. */
 function failureText(lang, detail) {
   const base = t('wsx.clips.failed', lang);
@@ -36,12 +39,12 @@ export function clipsPanel({ stem, lang, rallyOk = false, api = defaultApi, onDe
     list,
   ]);
 
-  /** List the clips; returns how many had a URL (an ok reply can carry none when every cut failed). */
+  /** List the clips; returns how many had a linkable URL (an ok reply can carry none when every cut failed). */
   function showClips(clips) {
     list.textContent = '';
     let n = 0;
     for (const c of clips) {
-      if (!c || typeof c.url !== 'string') continue;
+      if (!c || !linkable(c.url)) continue;
       n += 1;
       list.appendChild(h('li', null, h('a', { class: 'ws-clip', href: c.url, download: true }, [
         String(c.name || c.url),

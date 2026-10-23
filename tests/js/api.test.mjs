@@ -101,3 +101,16 @@ test('library calls: tags, tag rename / delete, delete preview and delete (stems
   ]);
   assert.equal(endpoints.videoTags('q"'), '/api/videos/q%22/tags');
 });
+
+test('deletePreview / deleteVideo keep opts when the scope is passed as undefined (it means "all")', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push([init.method, url, init.body ? JSON.parse(init.body) : undefined]); return resp(200, { ok: true }); };
+  await api.deletePreview('v', undefined, { fetch: fetchImpl });
+  await api.deleteVideo('v', undefined, { fetch: fetchImpl });
+  await api.deletePreview('v', 'clips', { fetch: fetchImpl });
+  assert.deepEqual(seen, [
+    ['GET', '/api/delete-preview/v?scope=all', undefined],
+    ['POST', '/api/delete/v', { scope: 'all' }],
+    ['GET', '/api/delete-preview/v?scope=clips', undefined],
+  ]);
+});

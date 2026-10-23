@@ -127,7 +127,12 @@ export const endpoints = {
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
 };
 
-const scopeArgs = (scope, opts) => (typeof scope === 'string' ? [scope, opts] : ['all', scope]);
+// (stem, 'match', opts) | (stem, undefined, opts) | (stem, opts) | (stem): a missing scope means "all".
+const scopeArgs = (scope, opts) => {
+  if (typeof scope === 'string') return [scope, opts];
+  if (scope === undefined || scope === null) return ['all', opts];
+  return ['all', scope];
+};
 
 /** Ready-made calls. Every function accepts trailing `opts` ({timeout, signal, fetch}). */
 export const api = {

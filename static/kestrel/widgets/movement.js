@@ -11,15 +11,25 @@ const SCATTER = 'position_visualizations/scatter_plots/match_scatter.png';
 
 const str = (v) => (typeof v === 'string' ? v : '');
 const list = (v) => (Array.isArray(v) ? v : []);
+// A players.json file name stays inside the run's output folder: no "..", no backslash, not absolute.
+const safeFile = (v) => { const f = str(v); return f && !f.includes('..') && !f.includes('\\') && !f.startsWith('/') ? f : ''; };
 
-/** One image figure: a button that enlarges it; a load error swaps the image for a "not available" note. */
+/**
+ * One image figure: a button that enlarges it; a load error swaps the image for a "not available" note and the
+ * button goes inert (disabled, no "enlarge" name, no zoom cursor).
+ */
 function figure({ lang, src, name }) {
+  let broken = false;
   const img = h('img', { src, alt: name, loading: 'lazy' });
   const btn = h('button', {
     type: 'button', class: 'ws-move-fig', 'aria-label': t('wsx.move.enlarge', lang, { name }),
-    onclick: () => openImageDialog({ lang, src, title: name }),
+    onclick: () => { if (!broken) openImageDialog({ lang, src, title: name }); },
   }, [img, h('span', { class: 'ws-move-cap mono' }, name)]);
   img.addEventListener('error', () => {
+    broken = true;
+    btn.disabled = true;
+    btn.removeAttribute('aria-label');
+    btn.classList.add('missing');
     btn.replaceChildren(h('div', { class: 'ws-move-missing' }, t('wsx.move.missing', lang)), h('span', { class: 'ws-move-cap mono' }, name));
   });
   return btn;
@@ -42,11 +52,11 @@ export function movementCard({ lang, items, doubles = null } = {}) {
   const base = entries.length ? entries[0].stem : '';
   if (doubles && base) {
     for (const tm of list(doubles.teams)) {
-      if (!tm || !str(tm.file)) continue;
+      if (!tm || !safeFile(tm.file)) continue;
       grid.appendChild(figure({ lang, src: endpoints.output(base, tm.file), name: t('dbl.team', lang, { n: tm.id }) }));
     }
     for (const p of list(doubles.players)) {
-      if (!p || !str(p.file)) continue;
+      if (!p || !safeFile(p.file)) continue;
       grid.appendChild(figure({ lang, src: endpoints.output(base, p.file), name: str(p.label) || str(p.id) }));
     }
   }

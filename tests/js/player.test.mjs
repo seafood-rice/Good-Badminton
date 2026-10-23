@@ -102,3 +102,18 @@ test('player: theater button moves the card under body and back', () => {
     p.destroy();
   } finally { removeEnv(); }
 });
+
+test('player: M does nothing once every source has failed', () => {
+  installEnv();
+  try {
+    const prefs = memPrefs();
+    const p = createPlayer({ files: ['/a.mp4'], lang: 'en', prefs });
+    p.video.error = { code: 4 };
+    p.video.dispatch('error');
+    const ev = p.el.dispatch('keydown', { key: 'm', target: p.el });
+    assert.equal(p.video.muted, false);
+    assert.equal(ev.defaultPrevented, false);
+    assert.equal(prefs.m.has('kestrel_muted'), false, 'nothing saved');
+    p.destroy();
+  } finally { removeEnv(); }
+});
