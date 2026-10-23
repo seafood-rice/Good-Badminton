@@ -6,6 +6,7 @@ export const PREF_KEYS = Object.freeze({
   theme: 'kestrel_theme',
   layout: 'kestrel_layout_v1',
   rail: 'kestrel_rail',
+  matchesView: 'kestrel_matches_view',
 });
 
 /** Legacy values: 'light' -> day, 'dark' -> night. Anything unknown is night. */

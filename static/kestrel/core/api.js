@@ -117,6 +117,11 @@ export const endpoints = {
   squad: (id) => '/api/squads/' + enc(id),
   match: (stem) => '/api/matches/' + enc(stem),
   videos: () => '/api/videos',
+  videoTags: (stem) => '/api/videos/' + enc(stem) + '/tags',
+  tagRename: () => '/api/tags/rename',
+  tag: (name) => '/api/tags/' + enc(name),
+  deletePreview: (stem) => '/api/delete-preview/' + enc(stem) + '?scope=all',
+  deleteVideo: (stem) => '/api/delete/' + enc(stem),
   stats: () => '/api/stats',
   status: (jobId) => '/api/status/' + enc(jobId),
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
@@ -137,6 +142,13 @@ export const api = {
   match: (stem, opts) => getJSON(endpoints.match(stem), opts),
   saveMatch: (stem, record, opts) => sendJSON('PUT', endpoints.match(stem), record, opts),
   videos: (opts) => getJSON(endpoints.videos(), opts),
+  // Library tools (the merged Matches page): whole-list tag replacement, tag rename / delete across videos, and the
+  // "all" delete scope (source video + every output) with its preview. A 409 from deleteVideo means a job is running.
+  setTags: (stem, tags, opts) => sendJSON('PUT', endpoints.videoTags(stem), { tags }, opts),
+  renameTag: (from, to, opts) => sendJSON('POST', endpoints.tagRename(), { from, to }, opts),
+  deleteTag: (name, opts) => sendJSON('DELETE', endpoints.tag(name), undefined, opts),
+  deletePreview: (stem, opts) => getJSON(endpoints.deletePreview(stem), opts),
+  deleteVideo: (stem, opts) => sendJSON('POST', endpoints.deleteVideo(stem), { scope: 'all' }, opts),
   stats: (opts) => getJSON(endpoints.stats(), opts),
   // Doubles run files (spec 2026-10-20 section 2): a 404 means the file is absent (callers treat it as none).
   players: (stem, opts) => getJSON(endpoints.output(stem, 'players.json'), opts),

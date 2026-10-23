@@ -82,3 +82,22 @@ test('api.players / api.hits read the doubles run files; a 404 is an http error 
   await assert.rejects(api.hits('a b', { fetch: fetchImpl }), (e) => e.kind === 'http' && e.status === 404);
   assert.deepEqual(urls, ['/api/output/a%20b/players.json', '/api/output/a%20b/hits.json']);
 });
+
+test('library calls: tags, tag rename / delete, delete preview and delete (stems percent-encoded)', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push([init.method, url, init.body ? JSON.parse(init.body) : undefined]); return resp(200, { ok: true }); };
+  const o = { fetch: fetchImpl };
+  await api.setTags('a b', ['smash'], o);
+  await api.renameTag('old', 'new', o);
+  await api.deleteTag('x/y', o);
+  await api.deletePreview('a b', o);
+  await api.deleteVideo('a b', o);
+  assert.deepEqual(seen, [
+    ['PUT', '/api/videos/a%20b/tags', { tags: ['smash'] }],
+    ['POST', '/api/tags/rename', { from: 'old', to: 'new' }],
+    ['DELETE', '/api/tags/x%2Fy', undefined],
+    ['GET', '/api/delete-preview/a%20b?scope=all', undefined],
+    ['POST', '/api/delete/a%20b', { scope: 'all' }],
+  ]);
+  assert.equal(endpoints.videoTags('q"'), '/api/videos/q%22/tags');
+});
