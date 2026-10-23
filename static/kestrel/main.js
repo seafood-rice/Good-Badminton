@@ -27,7 +27,6 @@ export const VIEW_LOADERS = Object.freeze({
   workspace: () => import('./views/workspace.js'),
   players: () => import('./views/players.js'),
   pipeline: () => import('./views/pipeline.js'),
-  library: () => import('./views/legacy.js'),
   new: () => import('./views/legacy.js'),
   results: () => import('./views/legacy.js'),
 });
@@ -42,7 +41,7 @@ export function viewKey(route) {
 const SCOPE_KEYS = ['athlete', 'squad', 'range'];
 const VIEW_NAV = {
   overview: 'nav.overview', matches: 'nav.matches', workspace: 'nav.matches', players: 'nav.players',
-  pipeline: 'nav.pipeline', library: 'nav.library', new: 'nav.library', results: 'nav.library',
+  pipeline: 'nav.pipeline', new: 'nav.matches', results: 'nav.matches',
 };
 
 /** Routes whose query carries the scope: the overview and the matches list. */
@@ -378,7 +377,7 @@ export function start(root) {
       el('div', { class: 'shell-actions' },
         el('button', { type: 'button', class: 'shell-btn primary', text: t('btn.retry', L), onclick: () => dispatch({ force: true }) }),
         el('a', { class: 'shell-btn', href: formatHash('overview', {}, store.get().scope), text: t('nav.overview', L) }),
-        el('a', { class: 'shell-btn', href: formatHash('library'), text: t('nav.library', L) })))));
+        el('a', { class: 'shell-btn', href: formatHash('matches'), text: t('nav.matches', L) })))));
   }
 
   function restoreScroll(y) {
@@ -458,7 +457,18 @@ export function start(root) {
     return { id, isNew: true };
   }
 
+  // The retired #/library page lives in Matches: show the canonical hash without adding a history entry.
+  function canonicalizeAlias() {
+    if (!/^#\/+library\/?(\?|$)/.test(location.hash)) return;
+    try {
+      history.replaceState(history.state, '', normalize(location.hash));
+    } catch (e) {
+      // ignore: parseHash still routes the alias
+    }
+  }
+
   function dispatch(opts = {}) {
+    canonicalizeAlias();
     const route = parseHash(location.hash);
     const { id, isNew } = entry();
     let restoreY;

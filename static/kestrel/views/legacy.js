@@ -1,5 +1,6 @@
-// Legacy screens (spec 6.6): #/library, #/new and #/results/<stem>?mode= render the former kestrel.js
-// (now legacy/kestrel-legacy.js) into the shell's page. The legacy module is imported lazily on first use.
+// Legacy screens (spec 6.6): #/new and #/results/<stem>?mode= render the former kestrel.js
+// (now legacy/kestrel-legacy.js) into the shell's page. The video library is part of Matches now.
+// The legacy module is imported lazily on first use.
 
 import { formatHash } from '../core/router.js';
 import { t } from '../core/i18n.js';
@@ -38,8 +39,8 @@ function notFound(host, lang, stem, onRetry) {
   p.textContent = t('error.load.title', lang) + ': ' + stem;
   const a = document.createElement('a');
   a.className = 'btn-ghost';
-  a.href = formatHash('library');
-  a.textContent = '← ' + t('nav.library', lang);
+  a.href = formatHash('matches');
+  a.textContent = '← ' + t('nav.matches', lang);
   host.append(p, a);
   if (typeof onRetry === 'function') {
     const b = document.createElement('button');
@@ -58,7 +59,7 @@ function notFound(host, lang, stem, onRetry) {
  */
 export async function mount(container, ctxOrRoute) {
   const ctx = ctxOrRoute && ctxOrRoute.route ? ctxOrRoute : { route: ctxOrRoute };
-  let route = ctx.route && ctx.route.name ? ctx.route : { name: 'library', params: {}, query: {} };
+  let route = ctx.route && ctx.route.name ? ctx.route : { name: 'new', params: {}, query: {} };
   const lang = normLang(ctx.lang || prefs.get(PREF_KEYS.lang, 'zh'));
   const theme = legacyTheme(ctx.theme || prefs.get(PREF_KEYS.theme, 'night'));
   const L = await (typeof ctx.loadLegacy === 'function' ? ctx.loadLegacy() : loadLegacy());
@@ -90,10 +91,6 @@ export async function mount(container, ctxOrRoute) {
     route = next;
     if (route.name === 'new') {
       L.mountNew(host);
-      return;
-    }
-    if (route.name !== 'results') {
-      L.mountLibrary(host);
       return;
     }
     const stem = route.params && route.params.stem;

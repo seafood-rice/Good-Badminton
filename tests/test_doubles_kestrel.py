@@ -13,8 +13,9 @@ def test_format_defaults_from_doubles_tag():
 
 
 def test_format_default_uses_library_stem_not_filename():
-    # wiz.video is a file name; lib.videos[].name is the stem.
-    assert r"x.name === wiz.video.replace(/\.[^.]+$/, '')" in JS
+    # wiz.video is a file name; /api/videos[].name is the stem.
+    assert r"wantStem = wiz.video.replace(/\.[^.]+$/, '')" in JS
+    assert "x.name === wantStem" in JS
 
 
 def test_players_panel_reads_players_json():

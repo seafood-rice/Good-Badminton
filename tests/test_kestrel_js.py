@@ -64,7 +64,10 @@ def test_legacy_script_moved():
     assert "window.Kestrel" not in src
     assert "DOMContentLoaded" not in src
     assert "function renderSidebar" not in src
-    for name in ("mountLibrary", "mountNew", "mountResults", "onNavigate", "setLang", "setTheme"):
+    # the library screen now lives in the Matches view; the legacy module keeps only the wizard and results
+    assert "mountLibrary" not in src
+    assert "function renderDashboard" not in src
+    for name in ("mountNew", "mountResults", "onNavigate", "setLang", "setTheme"):
         assert re.search(r"export (?:var|const|let|function) " + name + r"\b", src), name
 
 

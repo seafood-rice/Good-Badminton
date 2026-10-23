@@ -1,4 +1,4 @@
-// Navigation rail: Overview, Matches, Players | Video library, Pipeline | Settings (language + theme popover).
+// Navigation rail: Overview, Matches, Players | Pipeline | Settings (language + theme popover).
 // One marker glides between destinations; collapses to 68 px (persisted by main.js); a tab bar under 720 px.
 
 import { t } from '../core/i18n.js';
@@ -8,10 +8,10 @@ import { ACTIVE_STATUSES, RUNNING_STATUSES, QUEUED_STATUSES } from '../widgets/p
 
 export const NAV_GROUPS = Object.freeze([
   { id: 'analyze', items: ['overview', 'matches', 'players'] },
-  { id: 'manage', items: ['library', 'pipeline'] },
+  { id: 'manage', items: ['pipeline'] },
 ]);
 
-/** The rail destination a route belongs to (library also owns the wizard and the legacy results). */
+/** The rail destination a route belongs to (matches also owns the wizard and the legacy results; library is its old alias). */
 export function activeNav(route) {
   if (!route || !route.name) return null;
   switch (route.name) {
@@ -19,11 +19,11 @@ export function activeNav(route) {
     case 'matches':
     case 'players':
     case 'pipeline':
-    case 'library':
       return route.name;
+    case 'library':
     case 'new':
     case 'results':
-      return 'library';
+      return 'matches';
     default:
       return null;
   }

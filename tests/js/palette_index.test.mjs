@@ -24,12 +24,12 @@ const byKind = (index, kind) => index.filter((i) => i.kind === kind);
 test('buildIndex returns pages, athletes, matches and actions (en)', () => {
   const index = buildIndex({ athletes: ATHLETES, videos: VIDEOS, lang: 'en' });
   const pages = byKind(index, 'goto');
-  assert.deepEqual(pages.map((p) => p.label), ['Overview', 'Matches', 'Players', 'Video library', 'Pipeline']);
+  assert.deepEqual(pages.map((p) => p.label), ['Overview', 'Matches', 'Players', 'Pipeline']);
   assert.equal(pages[0].route, '#/overview');
-  assert.equal(pages[3].route, '#/library');
+  assert.equal(pages[3].route, '#/pipeline');
   assert.equal(pages[0].kindLabel, 'GO TO');
   assert.equal(pages[0].hint, 'Analyze');
-  assert.equal(pages[4].hint, 'Manage');
+  assert.equal(pages[3].hint, 'Manage');
 
   const players = byKind(index, 'player');
   assert.equal(players.length, 3);
@@ -55,6 +55,11 @@ test('buildIndex returns pages, athletes, matches and actions (en)', () => {
   }
 });
 
+test('buildIndex words a court-set video as Court set, not Processing', () => {
+  const index = buildIndex({ videos: [{ name: 'half', has_match: true, status: 'court_set' }], lang: 'en' });
+  assert.equal(byKind(index, 'match')[0].hint, 'Court set');
+});
+
 test('buildIndex localizes labels in Chinese', () => {
   const index = buildIndex({ athletes: ATHLETES, videos: VIDEOS, lang: 'zh' });
   const pages = byKind(index, 'goto');
@@ -68,14 +73,14 @@ test('buildIndex localizes labels in Chinese', () => {
 
 test('buildIndex tolerates missing or malformed inputs', () => {
   const index = buildIndex({ lang: 'en' });
-  assert.equal(byKind(index, 'goto').length, 5);
+  assert.equal(byKind(index, 'goto').length, 4);
   assert.equal(byKind(index, 'action').length, 2);
   assert.equal(byKind(index, 'player').length, 0);
   assert.equal(byKind(index, 'match').length, 0);
   const odd = buildIndex({ athletes: [{ id: 'a_9', name: 'Array Form' }, null, { id: 'x' }], videos: [null, {}], lang: 'en' });
   assert.deepEqual(byKind(odd, 'player').map((p) => p.label), ['Array Form']);
   assert.equal(byKind(odd, 'match').length, 0);
-  assert.equal(buildIndex().length, 7);
+  assert.equal(buildIndex().length, 6);
 });
 
 test('buildIndex honours explicit pages and actions', () => {
@@ -98,7 +103,7 @@ test('filterIndex is case-insensitive over label, kind and hint', () => {
   assert.deepEqual(filterIndex(index, '  Ito  '), ito);
   // kind: the code and the localized kind label both match (plus the "Players" page by label)
   assert.deepEqual(filterIndex(index, 'player').map((i) => i.kind), ['goto', 'player', 'player', 'player']);
-  assert.equal(filterIndex(index, 'go to').length, 5);
+  assert.equal(filterIndex(index, 'go to').length, 4);
   // hint
   assert.deepEqual(filterIndex(index, 'senior men').map((i) => i.label), ['S. Ito', 'J. Tanaka']);
   assert.deepEqual(filterIndex(index, 'upload and').map((i) => i.label), ['New analysis']);

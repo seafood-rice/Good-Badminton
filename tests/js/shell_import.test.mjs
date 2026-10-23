@@ -24,7 +24,7 @@ test('views/legacy.js exports mount', async () => {
 test('main.js exposes the route table without starting', async () => {
   const mod = await import('../../static/kestrel/main.js');
   assert.deepEqual(Object.keys(mod.VIEW_LOADERS).sort(),
-    ['library', 'matches', 'new', 'overview', 'pipeline', 'players', 'results', 'workspace']);
+    ['matches', 'new', 'overview', 'pipeline', 'players', 'results', 'workspace']);
   assert.equal(mod.viewKey({ name: 'matches', params: { stem: 'a b' }, query: {} }), 'workspace');
   assert.equal(mod.viewKey({ name: 'matches', params: {}, query: {} }), 'matches');
   assert.equal(mod.viewKey({ name: 'results', params: { stem: 'x' }, query: {} }), 'results');
@@ -38,9 +38,9 @@ test('rail: activeNav maps every route to a destination', async () => {
   assert.equal(activeNav(r('matches', 'x')), 'matches');
   assert.equal(activeNav(r('players')), 'players');
   assert.equal(activeNav(r('pipeline')), 'pipeline');
-  assert.equal(activeNav(r('library')), 'library');
-  assert.equal(activeNav(r('new')), 'library');
-  assert.equal(activeNav(r('results', 'x')), 'library');
+  assert.equal(activeNav(r('library')), 'matches', 'the retired library alias belongs to Matches');
+  assert.equal(activeNav(r('new')), 'matches');
+  assert.equal(activeNav(r('results', 'x')), 'matches');
   assert.equal(activeNav(null), null);
 });
 
@@ -70,8 +70,8 @@ test('transition: reduced motion and missing rect navigate instantly, no DOM nee
   await navigateWithTransform(null, '#/players', { reduced: false, navigate });
   await navigateWithTransform({ getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }) }, '#/pipeline', { reduced: () => false, navigate });
   // no document under Node: falls back to an instant navigation instead of throwing
-  await navigateWithTransform(anchor, '#/library', { reduced: false, navigate });
-  assert.deepEqual(went, ['#/matches/x', '#/players', '#/pipeline', '#/library']);
+  await navigateWithTransform(anchor, '#/new', { reduced: false, navigate });
+  assert.deepEqual(went, ['#/matches/x', '#/players', '#/pipeline', '#/new']);
 });
 
 test('transition: the nav gate cancels a superseded or outdated pending navigation', async () => {

@@ -8,9 +8,18 @@ test('parseHash decodes a stem with spaces', () => {
 });
 
 test('parseHash: list routes carry no params', () => {
-  for (const n of ['matches', 'players', 'pipeline', 'library', 'new', 'overview']) {
+  for (const n of ['matches', 'players', 'pipeline', 'new', 'overview']) {
     assert.deepEqual(parseHash('#/' + n), { name: n, params: {}, query: {} });
   }
+});
+
+test('parseHash: the retired #/library is an alias for the matches list', () => {
+  assert.deepEqual(parseHash('#/library'), { name: 'matches', params: {}, query: {} });
+  assert.deepEqual(parseHash('#/library/'), { name: 'matches', params: {}, query: {} });
+  assert.deepEqual(parseHash('#/library?x=1'), { name: 'matches', params: {}, query: { x: '1' } });
+  assert.deepEqual(parseHash('#/library?athlete=a_1&range=7d').query, { athlete: 'a_1', range: '7d' });
+  assert.deepEqual(parseHash('#/library/anything'), { name: 'overview', params: {}, query: {} });
+  assert.ok(!ROUTE_NAMES.includes('library'));
 });
 
 test('parseHash: unknown, empty and malformed hashes default to overview', () => {
@@ -54,5 +63,6 @@ test('formatHash writes the query in insertion order and drops empty values', ()
 test('formatHash falls back to overview for unknown routes', () => {
   assert.equal(formatHash('nonsense'), '#/overview');
   assert.equal(formatHash('results', {}), '#/overview');
+  assert.equal(formatHash('library'), '#/overview');
   assert.ok(ROUTE_NAMES.includes('overview'));
 });
