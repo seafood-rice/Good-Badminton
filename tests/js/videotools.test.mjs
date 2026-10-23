@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { installEnv, removeEnv, tick, everything, buttonWithText, env } from './fake_dom.mjs';
 import { openTagEditor, openTagManager, openDeleteDialog, isOpen, closeTool } from '../../static/kestrel/widgets/videotools.js';
 import { ApiError } from '../../static/kestrel/core/api.js';
+import { t } from '../../static/kestrel/core/i18n.js';
 
 async function withEnv(fn) {
   installEnv();
@@ -137,6 +138,38 @@ test('delete dialog: 409 says an analysis is running and re-enables the buttons;
     await tick(1);
     assert.match(dialogOf(doc).textContent, /Nothing to delete/);
     assert.equal(d2.confirmBtn.disabled, true);
+  });
+});
+
+test('delete dialog: scope "clips" previews and deletes only that scope, with its own title', async () => {
+  await withEnv(async (doc) => {
+    const calls = [];
+    const api = {
+      deletePreview: async (stem, scope) => { calls.push(['preview', stem, scope]); return { ok: true, groups: [{ key: 'clips_rally', files: 3, size_mb: 9 }], total_files: 3, total_size_mb: 9 }; },
+      deleteVideo: async (stem, scope) => { calls.push(['delete', stem, scope]); return { ok: true }; },
+    };
+    const d = openDeleteDialog({ stem: 's', lang: 'en', api, scope: 'clips' });
+    await tick(1);
+    const dlg = dialogOf(doc);
+    assert.equal(dlg.querySelector('.info-title').textContent, t('wsx.del.clips.title', 'en'));
+    assert.match(dlg.textContent, new RegExp(t('wsx.del.clips.warn', 'en').slice(0, 20)));
+    assert.match(dlg.textContent, /Rally clips/);
+    d.confirmBtn.click();
+    await tick(1);
+    assert.deepEqual(calls, [['preview', 's', 'clips'], ['delete', 's', 'clips']]);
+  });
+});
+
+test('delete dialog: scope "match" uses the match title; the default scope stays "all"', async () => {
+  await withEnv(async (doc) => {
+    const calls = [];
+    const api = { deletePreview: async (stem, scope) => { calls.push(scope); return { ok: true, groups: [], total_files: 0 }; } };
+    openDeleteDialog({ stem: 's', lang: 'en', api, scope: 'match' });
+    assert.equal(dialogOf(doc).querySelector('.info-title').textContent, t('wsx.del.match.title', 'en'));
+    closeTool();
+    openDeleteDialog({ stem: 's', lang: 'en', api });
+    assert.equal(dialogOf(doc).querySelector('.info-title').textContent, t('lib.del.title', 'en'));
+    assert.deepEqual(calls, ['match', 'all']);
   });
 });
 

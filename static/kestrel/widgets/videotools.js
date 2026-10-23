@@ -30,7 +30,7 @@ export function closeTool() {
  * The shared dialog frame. Returns {dialog, body, actions, close(result), busy(on)}; `onClose(result)` runs once,
  * after focus went back to the opener. A busy dialog ignores Escape and the scrim.
  */
-function frame({ lang, title, sub, kind, onClose }) {
+function frame({ lang, title, sub, kind, cls, onClose }) {
   if (current) current.close();
   const opener = typeof document !== 'undefined' ? document.activeElement : null;
   const titleId = `mv-dlg-${Math.random().toString(36).slice(2, 8)}`;
@@ -40,7 +40,7 @@ function frame({ lang, title, sub, kind, onClose }) {
   const body = h('div', { class: 'info-body mv-dlg-body' });
   const actions = h('div', { class: 'mv-actions mv-dlg-actions' });
   const dialog = h('div', {
-    class: 'info-dialog mv-dlg', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, 'data-tool': kind, tabindex: '-1',
+    class: 'info-dialog mv-dlg' + (cls ? ' ' + cls : ''), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, 'data-tool': kind, tabindex: '-1',
   }, [
     h('div', { class: 'info-head' }, [
       h('div', { class: 'mv-dlg-titles' }, [
@@ -377,24 +377,43 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
   return { close: () => f.close(null) };
 }
 
+// ---------- image viewer ----------
+
+/** Show one image large in the shared dialog frame (Escape, the scrim and Close dismiss it; focus returns). */
+export function openImageDialog({ lang, src, title } = {}) {
+  const f = frame({ lang, kind: 'image', cls: 'ws-img-dialog', title: str(title) });
+  f.body.appendChild(h('img', { src: str(src), alt: str(title) }));
+  f.actions.appendChild(h('button', { type: 'button', class: 'ov-btn small', onclick: () => f.close(null) }, t('btn.close', lang)));
+  f.closeBtn.focus();
+  return { close: () => f.close(null) };
+}
+
 // ---------- delete video ----------
 
+const SCOPE_TEXT = {
+  all: { title: 'lib.del.title', warn: 'lib.del.warn' },
+  match: { title: 'wsx.del.match.title', warn: 'wsx.del.match.warn' },
+  clips: { title: 'wsx.del.clips.title', warn: 'wsx.del.clips.warn' },
+};
+
 /**
- * Delete a video and every output (scope "all"). opts: {stem, lang, api, onClose({deleted})}. The confirm button
- * stays disabled until the preview lists something to delete; a 409 means an analysis is running on the video.
+ * Delete a video and every output (scope "all", the default), a match's analysis results ("match") or only its
+ * generated clips ("clips"). opts: {stem, lang, api, onClose({deleted}), scope}. The confirm button stays disabled
+ * until the preview lists something to delete; a 409 means an analysis is running on the video.
  */
-export function openDeleteDialog({ stem, lang, api = defaultApi, onClose } = {}) {
+export function openDeleteDialog({ stem, lang, api = defaultApi, onClose, scope = 'all' } = {}) {
   const name = str(stem);
+  const text = SCOPE_TEXT[scope] || SCOPE_TEXT.all;
   let deleted = false;
   const f = frame({
-    lang, kind: 'delete', title: t('lib.del.title', lang), sub: name,
+    lang, kind: 'delete', title: t(text.title, lang), sub: name,
     onClose: () => { if (typeof onClose === 'function') onClose({ deleted }); },
   });
   const rows = h('div', { class: 'mv-del-rows mv-hint', role: 'status' }, t('state.loading', lang));
   const err = h('div', { class: 'mv-err form', role: 'alert' });
   const cancel = h('button', { type: 'button', class: 'ov-btn small', onclick: () => f.close(null) }, t('btn.cancel', lang));
   const confirmBtn = h('button', { type: 'button', class: 'ov-btn small danger mv-del-go', disabled: true }, t('lib.del.confirm', lang));
-  f.body.appendChild(h('p', { class: 'mv-del-warn' }, t('lib.del.warn', lang)));
+  f.body.appendChild(h('p', { class: 'mv-del-warn' }, t(text.warn, lang)));
   f.body.appendChild(rows);
   f.body.appendChild(err);
   f.actions.appendChild(cancel);
@@ -404,7 +423,7 @@ export function openDeleteDialog({ stem, lang, api = defaultApi, onClose } = {})
     h('span', null, label), h('span', { class: 'mono' }, t('lib.del.files', lang, { n, mb })),
   ]);
 
-  api.deletePreview(name).then((d) => {
+  api.deletePreview(name, scope).then((d) => {
     if (!f.root.parentNode) return;      // dismissed while the preview loaded
     if (!d || !d.ok) { rows.textContent = t('lib.del.preview_failed', lang); return; }
     if (!d.total_files) { rows.textContent = t('lib.del.nothing', lang); return; }
@@ -429,7 +448,7 @@ export function openDeleteDialog({ stem, lang, api = defaultApi, onClose } = {})
     confirmBtn.textContent = t('lib.del.busy', lang);
     err.textContent = '';
     try {
-      await api.deleteVideo(name);
+      await api.deleteVideo(name, scope);
       deleted = true;
       f.busy(false);
       f.close({ deleted: true });

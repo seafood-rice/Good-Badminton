@@ -625,6 +625,15 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .mv-del-row{display:flex;justify-content:space-between;gap:12px;font-size:13px;}
 .mv-del-row.total{padding-top:6px;border-top:1px solid var(--line);font-weight:600;}
 .mv-undo{display:flex;align-items:center;gap:12px;}
+/* match details: movement card and the enlarged image dialog */
+.ws-move-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;}
+.ws-move-fig{all:unset;box-sizing:border-box;cursor:zoom-in;display:flex;flex-direction:column;gap:4px;min-width:0;border-radius:6px;}
+.ws-move-fig:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.ws-move-fig img{width:100%;aspect-ratio:auto;border-radius:4px;border:1px solid var(--line);background:var(--surface2);display:block;}
+.ws-move-cap{font-size:10.5px;color:var(--ink3);overflow-wrap:anywhere;}
+.ws-move-missing{display:grid;place-items:center;min-height:72px;padding:8px;border:1px dashed var(--line);border-radius:4px;background:var(--surface2);font-size:12px;color:var(--ink3);text-align:center;}
+.ws-img-dialog{width:min(94vw,1240px);}
+.ws-img-dialog img{max-width:min(90vw,1200px);max-height:80vh;margin:0 auto;display:block;}
 @media (max-width:719px){
   .mv-search{flex-basis:100%;}
   .mv-grid{grid-template-columns:1fr;}
