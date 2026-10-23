@@ -231,13 +231,14 @@ var Kestrel = (function () {
     // file name; /api/videos[].name is the stem. Non-blocking: a fetch failure keeps the default.
     if (!isPosture) {
       var wantStem = wiz.video.replace(/\.[^.]+$/, '');
+      var wantVideo = wiz.video;
       var fmt0 = document.getElementById('cfg-format');
       var fmtInitial = fmt0 ? fmt0.value : null;
       fetch('/api/videos').then(function (r) { return r.ok ? r.json() : null; }).then(function (vids) {
         var vv = (vids || []).filter(function (x) { return x.name === wantStem; })[0];
-        var fmt = document.getElementById('cfg-format');
-        // late answer: never override a format the user already picked
-        if (vv && fmt && fmt.value === fmtInitial && (vv.tags || []).indexOf('doubles') !== -1) fmt.value = 'doubles';
+        // A late answer only applies to the same form for the same video, and never overrides a pick.
+        if (!fmt0 || !fmt0.isConnected || wiz.video !== wantVideo) return;
+        if (vv && fmt0.value === fmtInitial && (vv.tags || []).indexOf('doubles') !== -1) fmt0.value = 'doubles';
       }).catch(function () {});
     }
     // Availability chips: non-blocking, so a fetch failure just renders nothing.

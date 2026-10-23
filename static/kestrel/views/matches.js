@@ -770,11 +770,14 @@ export function mount(container, ctx = {}) {
     return h('span', { class: 'k-chip' + (tone ? ' ' + tone : '') }, [h('span', { class: 'kw-dot', 'aria-hidden': 'true' }), t('status.' + r.status, lang)]);
   }
 
-  const attrSel = (attr, stem) => `[${attr}="${String(stem).replace(/["\\]/g, '\\$&')}"]`;
+  // CSS.escape copes with any stem (newlines included); the fallback (no CSS global, e.g. under node) escapes quotes.
+  const cssEsc = (v) => (typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function' ? CSS.escape(String(v)) : String(v).replace(/["\\]/g, '\\$&'));
+  const attrSel = (attr, stem) => `[${attr}="${cssEsc(stem)}"]`;
+  const ROW_FOCUS = ['data-expand', 'data-rec', 'data-menu', 'data-open'];
 
-  /** Focus a row's control after a reload: its parts chevron, record button, menu button or title, in that order. */
-  function focusRow(stem) {
-    const el = ['data-expand', 'data-rec', 'data-menu', 'data-open'].map((a) => root.querySelector(attrSel(a, stem))).find(Boolean);
+  /** Focus a row's control after a reload: by default its parts chevron, record button, menu button or title. */
+  function focusRow(stem, order = ROW_FOCUS) {
+    const el = order.map((a) => root.querySelector(attrSel(a, stem))).find(Boolean);
     if (el && typeof el.focus === 'function') el.focus();
     return !!el;
   }
@@ -851,10 +854,14 @@ export function mount(container, ctx = {}) {
 
   function closeMenu(focusBack = true) {
     if (!menu) return;
-    const { node, btn, onDoc } = menu;
+    const { node, btn, onDoc, onMove } = menu;
     menu = null;
     if (node.parentNode) node.parentNode.removeChild(node);
     if (typeof document.removeEventListener === 'function') document.removeEventListener('pointerdown', onDoc, true);
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
+    }
     btn.setAttribute('aria-expanded', 'false');
     if (focusBack && typeof btn.focus === 'function') btn.focus();
   }
@@ -870,7 +877,9 @@ export function mount(container, ctx = {}) {
     if (state.destroyed) return;
     if (changed) await load({ reveal: false });
     if (state.destroyed) return;
-    if (!focusRow(stem) && !(nextStem && focusRow(nextStem))) {
+    // Back on the row's "..." button (the tool was opened from it), else the next row's.
+    const order = ['data-menu', ...ROW_FOCUS];
+    if (!focusRow(stem, order) && !(nextStem && focusRow(nextStem, order))) {
       const search = root.querySelector('.mv-search');
       if (search) search.focus();
     }
@@ -895,6 +904,17 @@ export function mount(container, ctx = {}) {
     return items;
   }
 
+  /** Under the button, right-aligned to it; above it when there is no room below. */
+  function placeMenu(node, btn) {
+    if (typeof btn.getBoundingClientRect !== 'function' || typeof window === 'undefined') return;
+    const r = btn.getBoundingClientRect();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const mh = node.offsetHeight || 0;
+    node.style.right = Math.max(8, vw - r.right) + 'px';
+    node.style.top = (r.bottom + 6 + mh > vh && r.top - 6 - mh > 0 ? r.top - 6 - mh : r.bottom + 6) + 'px';
+  }
+
   function openMenu(r, btn, nextStem) {
     if (menu && menu.btn === btn) { closeMenu(); return; }
     closeMenu(false);
@@ -909,13 +929,21 @@ export function mount(container, ctx = {}) {
       if (e.key === 'Escape') { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); closeMenu(); }
       else if (e.key === 'ArrowDown') { e.preventDefault(); buttons[(i + 1) % buttons.length].focus(); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); buttons[(i - 1 + buttons.length) % buttons.length].focus(); }
-      else if (e.key === 'Tab') closeMenu(false);
+      // Tab leaves the menu from its button, so focus moves on to the control after it.
+      else if (e.key === 'Tab') closeMenu();
     });
     const onDoc = (e) => { if (menu && !node.contains(e.target) && !btn.contains(e.target)) closeMenu(false); };
+    // The menu sits on <body> (the table's scroll box would clip it), fixed under its button: scrolling closes it.
+    const onMove = () => closeMenu(false);
     if (typeof document.addEventListener === 'function') document.addEventListener('pointerdown', onDoc, true);
-    btn.parentNode.appendChild(node);
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('scroll', onMove, true);
+      window.addEventListener('resize', onMove);
+    }
+    document.body.appendChild(node);
+    placeMenu(node, btn);
     btn.setAttribute('aria-expanded', 'true');
-    menu = { node, btn, onDoc };
+    menu = { node, btn, onDoc, onMove };
     buttons[0].focus();
   }
 
@@ -947,6 +975,15 @@ export function mount(container, ctx = {}) {
 
   // ----- toolbar, tag bar, list -----
   let listHost = null;
+  // The open editor while renderList() rebuilds the list: moved into the new row, not rebuilt (keeps typed input).
+  let keptEditor = null;
+
+  function mountEditor(cell, row, name) {
+    if (keptEditor && keptEditor.stem === row.stem) {
+      cell.appendChild(keptEditor.node);
+      keptEditor = null;
+    } else buildEditor(cell, row, name);
+  }
 
   function filterBar() {
     const search = h('input', {
@@ -1058,7 +1095,7 @@ export function mount(container, ctx = {}) {
       if (state.editing === r.stem) {
         const cell = h('td', { colspan: '7', class: 'mv-edit-cell' });
         body.appendChild(h('tr', { class: 'mv-edit-row' }, cell));
-        buildEditor(cell, r, name);
+        mountEditor(cell, r, name);
       }
       if (expanded) {
         r.parts.forEach((p, i) => {
@@ -1067,7 +1104,7 @@ export function mount(container, ctx = {}) {
           if (i > 0 && state.editing === p.stem) {
             const pcell = h('td', { colspan: '7', class: 'mv-edit-cell' });
             body.appendChild(h('tr', { class: 'mv-edit-row' }, pcell));
-            buildEditor(pcell, { stem: p.stem, doubles: false }, p.stem);
+            mountEditor(pcell, { stem: p.stem, doubles: false }, p.stem);
           }
         });
       }
@@ -1106,7 +1143,7 @@ export function mount(container, ctx = {}) {
       if (i > 0 && state.editing === p.stem) {
         const cell = h('div', { class: 'mv-edit-cell' });
         panel.appendChild(cell);
-        buildEditor(cell, { stem: p.stem, doubles: false }, p.stem);
+        mountEditor(cell, { stem: p.stem, doubles: false }, p.stem);
       }
     });
     return panel;
@@ -1154,7 +1191,7 @@ export function mount(container, ctx = {}) {
       if (state.editing === r.stem) {
         const panel = h('div', { class: 'mv-grid-panel' });
         grid.appendChild(panel);
-        buildEditor(panel, r, name);
+        mountEditor(panel, r, name);
       }
       if (expanded) grid.appendChild(gridParts(r));
     });
@@ -1165,6 +1202,8 @@ export function mount(container, ctx = {}) {
   function renderList({ fromRender = false } = {}) {
     if (!listHost || state.destroyed) return;
     closeMenu(false);
+    const open = state.editing ? listHost.querySelector('.mv-editor') : null;
+    keptEditor = open ? { stem: state.editing, node: open } : null;
     listHost.textContent = '';
     animated = animated.slice(0, 1);
     const shown = sortRows(filterRows(state.rows, state.filter, lang), state.sort);
@@ -1174,6 +1213,7 @@ export function mount(container, ctx = {}) {
       listHost.appendChild(h('div', { class: 'mv-resline', role: 'status' }, t('lib.result_line', lang, { n: fmtNumber(shown.length), m: fmtNumber(state.rows.length) })));
     }
     if (!shown.length) {
+      keptEditor = null;
       listHost.appendChild(h('div', { class: 'card ov-state ov-empty mv-filtered' }, [
         h('div', { class: 'ov-empty-title' }, t('lib.filtered.title', lang)),
         h('div', { class: 'ov-state-body' }, t('lib.filtered.body', lang)),
@@ -1182,6 +1222,7 @@ export function mount(container, ctx = {}) {
       return;
     }
     listHost.appendChild(state.view === 'grid' ? gridView(shown) : tableView(shown));
+    keptEditor = null;     // its row was filtered out: the next open builds a fresh one
     if (!fromRender) animated.forEach((el) => revealStyle(el, 1));
   }
 

@@ -5,13 +5,13 @@
 import { t } from '../core/i18n.js';
 import { formatHash } from '../core/router.js';
 import { matchRows, rowTitle } from './matches.js';
+import { ACTIVE_STATUSES } from '../widgets/pipeline.js';
 
 export const SYS_TAGS = Object.freeze(['match', 'drill']);
 export const STATUS_FILTERS = Object.freeze(['all', 'analysed', 'needs_review', 'processing', 'not_analysed', 'posture']);
 export const SORTS = Object.freeze(['date', 'name']);
 export const EMPTY_FILTER = Object.freeze({ q: '', status: 'all', tags: Object.freeze([]) });
 
-const ACTIVE_JOB = ['pending', 'running', 'reencoding'];
 const VIDEO_EXT = /\.(mp4|mov|avi|mkv|webm)$/i;
 const TAG_MAX = 40;
 // Which row statuses each filter group keeps ('all' keeps everything).
@@ -26,13 +26,13 @@ const STATUS_GROUP = {
 const str = (v) => (typeof v === 'string' ? v : '');
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 
-/** Pure: stems with a job in flight, from the /api/jobs body (an array or {jobs}); the file extension is dropped. */
+/** Pure: stems with a job in flight, from the /api/jobs rows (`video` is the stem; a file extension is dropped). */
 export function activeStemsOf(jobs) {
   const list = Array.isArray(jobs) ? jobs : Array.isArray(obj(jobs).jobs) ? jobs.jobs : [];
   const out = new Set();
   for (const j of list) {
-    if (!j || !ACTIVE_JOB.includes(j.status)) continue;
-    const name = str(j.video_name).replace(VIDEO_EXT, '');
+    if (!j || !ACTIVE_STATUSES.includes(j.status)) continue;
+    const name = str(j.video || j.video_name).replace(VIDEO_EXT, '');
     if (name) out.add(name);
   }
   return out;

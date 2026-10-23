@@ -145,6 +145,7 @@ export function openTagEditor({ video, lang, knownTags = [], api = defaultApi, o
 
   function lock(on) {
     saving = on;
+    f.busy(on);
     input.disabled = on;
     addBtn.disabled = on;
     for (const b of chips.querySelectorAll('button')) b.disabled = on;
@@ -236,6 +237,7 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
   const list = (Array.isArray(videos) ? videos : []).filter((v) => v && str(v.name)).map((v) => ({ name: v.name, tags: userTags(v) }));
   let changed = false;
   let editing = null;
+  let renameDraft = null;      // what was typed for `editing`: kept when a rename fails
   let confirming = null;
   let busy = false;
   const f = frame({
@@ -258,12 +260,21 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
     return [...c.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }
 
+  /** While a rename / delete runs every control is disabled in place (a redraw would drop the typed name). */
+  function setBusy(on) {
+    busy = on;
+    f.busy(on);
+    if (on) for (const c of rowsEl.querySelectorAll('button,input')) c.disabled = true;
+  }
+
   async function doRename(from, to) {
+    if (busy) return;
+    renameDraft = str(to);
     const why = tagError(to);
     if (why) { err.textContent = t(why, lang); return; }
     const target = normTag(to);
     if (target === from) { editing = null; draw(); return; }
-    busy = true;
+    setBusy(true);
     err.textContent = '';
     try {
       const res = await api.renameTag(from, target);
@@ -273,16 +284,18 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
       }
       changed = true;
       editing = null;
+      renameDraft = null;
       status.textContent = t(res && res.merged ? 'lib.tagman.merged' : 'lib.tagman.renamed', lang, { tag: target });
     } catch (e) {
       err.textContent = e && e.messages && e.status !== 409 ? errorText(e, lang) : t('lib.tagman.failed', lang);
     }
-    busy = false;
+    setBusy(false);
     draw();
   }
 
   async function doDelete(tag) {
-    busy = true;
+    if (busy) return;
+    setBusy(true);
     err.textContent = '';
     const stems = list.filter((v) => v.tags.includes(tag)).map((v) => v.name);
     try {
@@ -294,7 +307,7 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
     } catch (e) {
       err.textContent = e && e.messages ? errorText(e, lang) : t('lib.tagman.failed', lang);
     }
-    busy = false;
+    setBusy(false);
     draw();
   }
 
@@ -326,10 +339,10 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
       const li = h('li', { class: 'mv-tagman-row', 'data-tag': tag });
       if (editing === tag) {
         const input = h('input', { type: 'text', class: 'mv-input small', value: tag, maxlength: '60', 'aria-label': t('lib.tagman.rename_aria', lang, { tag }) });
-        input.value = tag;
+        input.value = renameDraft !== null ? renameDraft : tag;
         const save = h('button', { type: 'button', class: 'ov-btn small primary', 'data-save': tag, disabled: busy, onclick: () => doRename(tag, input.value) }, t('btn.save', lang));
         input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); doRename(tag, input.value); }
+          if (e.key === 'Enter') { e.preventDefault(); if (!busy) doRename(tag, input.value); }
           if (e.key === 'Escape') { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); editing = null; draw(); }
         });
         li.appendChild(input);
@@ -348,7 +361,7 @@ export function openTagManager({ videos = [], lang, api = defaultApi, onClose, o
       } else {
         li.appendChild(h('button', {
           type: 'button', class: 'ov-btn small', 'data-ren': tag, disabled: busy, 'aria-label': t('lib.tagman.rename_aria', lang, { tag }),
-          onclick: () => { editing = tag; confirming = null; err.textContent = ''; draw(); },
+          onclick: () => { editing = tag; renameDraft = null; confirming = null; err.textContent = ''; draw(); },
         }, t('btn.rename', lang)));
         li.appendChild(h('button', {
           type: 'button', class: 'ov-btn small danger', 'data-del': tag, disabled: busy, 'aria-label': t('lib.tagman.delete_aria', lang, { tag }),

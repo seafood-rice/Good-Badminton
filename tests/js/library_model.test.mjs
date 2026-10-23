@@ -75,13 +75,16 @@ test('libraryRows: a video with an active job reads as processing', () => {
   assert.equal(rows[0].status, 'processing');
 });
 
-test('activeStemsOf: pending / running / re-encoding jobs, by video file stem', () => {
+test('activeStemsOf: pending / running / re-encoding / detached jobs from /api/jobs rows (video = stem)', () => {
   const got = activeStemsOf([
-    { status: 'running', video_name: 'a b.mp4' }, { status: 'pending', video_name: 'c.MOV' },
-    { status: 'done', video_name: 'd.mp4' }, { status: 'reencoding', video_name: 'e' }, null,
+    { id: 'j1', status: 'running', video: 'a b' }, { id: 'j2', status: 'pending', video: 'c' },
+    { id: 'j3', status: 'done', video: 'd' }, { id: 'j4', status: 'reencoding', video: 'e' },
+    { id: 'j5', status: 'detached', video: 'f' }, { status: 'error', video: 'g' }, null, { status: 'running' },
   ]);
-  assert.deepEqual([...got].sort(), ['a b', 'c', 'e']);
-  assert.deepEqual([...activeStemsOf({ jobs: [{ status: 'running', video_name: 'x.mp4' }] })], ['x']);
+  assert.deepEqual([...got].sort(), ['a b', 'c', 'e', 'f']);
+  assert.deepEqual([...activeStemsOf({ jobs: [{ status: 'running', video: 'x' }] })], ['x']);
+  // a raw job dict (video_name is a file name) works too
+  assert.deepEqual([...activeStemsOf([{ status: 'running', video_name: 'clip.MOV' }])], ['clip']);
   assert.equal(activeStemsOf(undefined).size, 0);
 });
 

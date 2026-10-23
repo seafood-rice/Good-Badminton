@@ -178,3 +178,41 @@ test('tag manager: rename reports a merge; delete confirms, then Undo puts the t
     assert.match(dlg.textContent, /final/);
   });
 });
+
+test('tag manager: a double click on Delete sends one request', async () => {
+  await withEnv(async (doc) => {
+    let n = 0;
+    let release;
+    const api = { deleteTag: () => { n += 1; return new Promise((r) => { release = r; }); } };
+    openTagManager({ videos: [{ name: 'a', tags: ['x'] }], lang: 'en', api });
+    const dlg = dialogOf(doc);
+    dlg.querySelector('[data-del="x"]').click();
+    const go = dlg.querySelector('[data-confirm="x"]');
+    go.click();
+    go.disabled = false;      // even if the button were re-enabled, the busy guard holds
+    go.click();
+    assert.equal(n, 1);
+    release({ ok: true });
+    await tick(1);
+  });
+});
+
+test('tag editor: Escape during a save is ignored; the close reports the saved change', async () => {
+  await withEnv(async (doc) => {
+    let release;
+    const api = { setTags: (stem, tags) => new Promise((r) => { release = () => r({ ok: true, tags }); }) };
+    let closed = null;
+    const ed = openTagEditor({ video: { name: 'v', tags: [] }, lang: 'en', api, onClose: (r) => { closed = r; } });
+    ed.input.value = 'smash';
+    ed.input.dispatch('keydown', { key: 'Enter' });
+    const dlg = dialogOf(doc);
+    dlg.dispatch('keydown', { key: 'Escape' });
+    assert.ok(isOpen(), 'still open while saving');
+    assert.equal(closed, null);
+    release();
+    await tick(1);
+    dlg.dispatch('keydown', { key: 'Escape' });
+    assert.equal(isOpen(), false);
+    assert.deepEqual(closed, { changed: true, tags: ['smash'] });
+  });
+});

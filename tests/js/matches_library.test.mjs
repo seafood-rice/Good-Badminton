@@ -161,19 +161,19 @@ test('the "..." menu of an odd stem lists the right items; Escape closes it back
     const btn = container.querySelector(`[data-menu="${ODD.replace(/"/g, '\\"')}"]`);
     assert.ok(btn, 'menu button found by an escaped selector');
     btn.click();
-    const menu = container.querySelector('.mv-menu');
+    const menu = doc.body.querySelector('.mv-menu');
     assert.deepEqual(everything(menu).map((e) => e.getAttribute('data-item')), ['lib.menu.tags', 'lib.menu.classic', 'lib.menu.posture', 'lib.menu.delete']);
     assert.equal(btn.getAttribute('aria-expanded'), 'true');
     menu.dispatch('keydown', { key: 'Escape' });
-    assert.equal(container.querySelector('.mv-menu'), null);
+    assert.equal(doc.body.querySelector('.mv-menu'), null);
     assert.equal(doc.activeElement, btn);
     // posture report goes to the legacy results screen
     btn.click();
-    container.querySelector('[data-item="lib.menu.posture"]').click();
+    doc.body.querySelector('[data-item="lib.menu.posture"]').click();
     assert.deepEqual(calls.nav, ['#/results/odd%20%22name%22%20x?mode=posture']);
     // a new video has only tags and delete
     container.querySelector('[data-menu="fresh"]').click();
-    assert.deepEqual(everything(container.querySelector('.mv-menu')).map((e) => e.getAttribute('data-item')), ['lib.menu.tags', 'lib.menu.delete']);
+    assert.deepEqual(everything(doc.body.querySelector('.mv-menu')).map((e) => e.getAttribute('data-item')), ['lib.menu.tags', 'lib.menu.delete']);
   });
 });
 
@@ -183,7 +183,7 @@ test('Delete video: dialog, delete, toast, reload; focus moves to the next row',
     api.deletePreview = async () => ({ ok: true, groups: [{ key: 'source', files: 1, size_mb: 3 }], total_files: 1, total_size_mb: 3 });
     api.deleteVideo = async (stem) => { calls.deleted.push(stem); gone = true; return { ok: true }; };
     container.querySelector('[data-menu="drill1"]').click();
-    container.querySelector('[data-item="lib.menu.delete"]').click();
+    doc.body.querySelector('[data-item="lib.menu.delete"]').click();
     await tick(1);
     const dlg = doc.body.querySelector('.mv-dlg');
     assert.ok(dlg);
@@ -212,4 +212,34 @@ test('an empty library says so and offers a new analysis', async () => {
     assert.match(container.textContent, /No videos yet/);
     assert.ok(everything(container).some((e) => e.tagName === 'A' && e.getAttribute('href') === '#/new'));
   }, { overview: () => ({ matches: [] }), videos: () => [] });
+});
+
+test('a video with a running job (store.jobs, the /api/jobs rows) reads Processing and opens the pipeline', async () => {
+  await withView(async ({ container, calls }) => {
+    const fresh = container.querySelector('[data-row="fresh"]');
+    assert.match(fresh.textContent, /Processing/);
+    container.querySelector('[data-open="fresh"]').click();
+    assert.deepEqual(calls.nav, ['#/pipeline']);
+  }, { ctx: { store: { get: () => ({ jobs: [{ id: 'fresh', video: 'fresh', status: 'running' }] }) } } });
+});
+
+test('an open record editor survives typing in search: same node, typed value kept, no refetch, focus stays', async () => {
+  let fetches = 0;
+  await withView(async ({ container, doc }) => {
+    api.match = async () => { fetches += 1; return { date: '2026-10-01' }; };
+    container.querySelector('[data-rec="m1"]').click();
+    await tick(5);
+    const date = container.querySelector('#mv-date');
+    assert.ok(date, 'editor open');
+    date.value = '2026-10-09';
+    const search = container.querySelector('.mv-search');
+    search.focus();
+    search.value = 'Lee';
+    search.dispatch('input');
+    await tick(5);
+    assert.equal(container.querySelector('#mv-date'), date, 'the same editor, moved into the new row');
+    assert.equal(date.value, '2026-10-09');
+    assert.equal(fetches, 1);
+    assert.equal(doc.activeElement, search);
+  });
 });
