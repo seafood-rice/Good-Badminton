@@ -120,12 +120,14 @@ export const endpoints = {
   videoTags: (stem) => '/api/videos/' + enc(stem) + '/tags',
   tagRename: () => '/api/tags/rename',
   tag: (name) => '/api/tags/' + enc(name),
-  deletePreview: (stem) => '/api/delete-preview/' + enc(stem) + '?scope=all',
+  deletePreview: (stem, scope = 'all') => '/api/delete-preview/' + enc(stem) + '?scope=' + enc(scope),
   deleteVideo: (stem) => '/api/delete/' + enc(stem),
   stats: () => '/api/stats',
   status: (jobId) => '/api/status/' + enc(jobId),
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
 };
+
+const scopeArgs = (scope, opts) => (typeof scope === 'string' ? [scope, opts] : ['all', scope]);
 
 /** Ready-made calls. Every function accepts trailing `opts` ({timeout, signal, fetch}). */
 export const api = {
@@ -147,8 +149,15 @@ export const api = {
   setTags: (stem, tags, opts) => sendJSON('PUT', endpoints.videoTags(stem), { tags }, opts),
   renameTag: (from, to, opts) => sendJSON('POST', endpoints.tagRename(), { from, to }, opts),
   deleteTag: (name, opts) => sendJSON('DELETE', endpoints.tag(name), undefined, opts),
-  deletePreview: (stem, opts) => getJSON(endpoints.deletePreview(stem), opts),
-  deleteVideo: (stem, opts) => sendJSON('POST', endpoints.deleteVideo(stem), { scope: 'all' }, opts),
+  // `scope` ("all" | "match" | "clips" ...) is optional: a call without one (or with opts in its place) means "all".
+  deletePreview: (stem, scope, opts) => {
+    const [sc, o] = scopeArgs(scope, opts);
+    return getJSON(endpoints.deletePreview(stem, sc), o);
+  },
+  deleteVideo: (stem, scope, opts) => {
+    const [sc, o] = scopeArgs(scope, opts);
+    return sendJSON('POST', endpoints.deleteVideo(stem), { scope: sc }, o);
+  },
   stats: (opts) => getJSON(endpoints.stats(), opts),
   // Doubles run files (spec 2026-10-20 section 2): a 404 means the file is absent (callers treat it as none).
   players: (stem, opts) => getJSON(endpoints.output(stem, 'players.json'), opts),

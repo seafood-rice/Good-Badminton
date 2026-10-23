@@ -303,7 +303,9 @@ test('groupJobs: active jobs first, finished after, newest-first order kept with
   assert.equal(g.active[0].progress, 42);
   assert.equal(g.active[2].progress, 0);
   assert.equal(g.finished[0].stem, 'v1');
-  assert.equal(g.finished[0].resultsHash, '#/results/v1?mode=match');
+  assert.equal(g.finished[0].resultsHash, '#/matches/v1', 'a finished match opens its match details page');
+  assert.equal(groupJobs([{ id: 'p', video: 'v9', kind: 'posture', status: 'completed', progress: 100 }]).finished[0].resultsHash,
+    '#/results/v9?mode=posture', 'a posture run keeps the posture report');
   assert.equal(g.finished[1].resultsHash, null, 'a failed job has no results link');
   assert.equal(groupJobs([]).anyActive, false);
   assert.equal(groupJobs({ jobs: [{ id: 'x', status: 'running' }] }).active.length, 1);

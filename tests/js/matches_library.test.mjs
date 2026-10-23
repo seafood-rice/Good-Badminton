@@ -162,7 +162,7 @@ test('the "..." menu of an odd stem lists the right items; Escape closes it back
     assert.ok(btn, 'menu button found by an escaped selector');
     btn.click();
     const menu = doc.body.querySelector('.mv-menu');
-    assert.deepEqual(everything(menu).map((e) => e.getAttribute('data-item')), ['lib.menu.tags', 'lib.menu.classic', 'lib.menu.posture', 'lib.menu.delete']);
+    assert.deepEqual(everything(menu).map((e) => e.getAttribute('data-item')), ['lib.menu.tags', 'lib.menu.posture', 'lib.menu.delete']);
     assert.equal(btn.getAttribute('aria-expanded'), 'true');
     menu.dispatch('keydown', { key: 'Escape' });
     assert.equal(doc.body.querySelector('.mv-menu'), null);

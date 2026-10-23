@@ -1,378 +1,52 @@
-// Match workspace (#/matches/<stem>, spec 6.5): the annotated video, a single-lane rally timeline, the stroke
-// strip and list, the stroke inspector and the rally summary. buildWorkspaceModel() is pure and tested; mount()
-// is a DOM layer over it. Honesty rules: there is no point outcome, so nothing is marked won or lost; swing
-// segments are "segments (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so;
-// opponent strokes are shown but never scored.
-import { t, TECHNIQUE_IDS, STROKE_TYPE_IDS, STROKE_GROUP } from '../core/i18n.js';
-import { fmtDate, fmtDuration, fmtNumber, isApproxDate } from '../core/format.js';
+// Match details page (#/matches/<stem>, spec 2026-10-24 sections 4 and 6), layout A: on top the annotated video
+// with the rally timeline and stroke strip, beside it the movement card, the stroke inspector (doubles: the players
+// panel) and the rally summary; below, the Strokes | Technique | Clips | Training plan tabs. The header carries
+// Back, the Posture report link (when the video has a posture run) and a "..." menu (Delete analysis results). A
+// split match (spec section 5) is always shown under its primary's stem with a part switcher (Whole match | Part N):
+// `?part=<stem>` shows that part as the page above, no `part` shows the Whole match view (part cards, movement per
+// part, pooled strokes and technique). The pure logic (buildWorkspaceModel and the text helpers) lives in
+// workspace_model.js and is re-exported here; mount() is the DOM layer over it. Honesty rules: there is no point
+// outcome, so nothing is marked won or lost; swing segments are "segments (estimated)", degraded ones "windows";
+// uncertain strokes are muted and labelled so; opponent strokes are shown but never scored.
+import { t, TECHNIQUE_IDS } from '../core/i18n.js';
+import { fmtDate, fmtNumber, fmtDuration } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
 import { formatHash } from '../core/router.js';
 import { api, getJSON, endpoints, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets/frame.js';
 import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
+import { createPlayer } from '../widgets/player.js';
+import { movementCard } from '../widgets/movement.js';
+import { techniquePanel } from '../widgets/technique.js';
+import { clipsPanel } from '../widgets/clips.js';
+import { planPanel } from '../widgets/plan.js';
+import { openDeleteDialog } from '../widgets/videotools.js';
 import { doublesWorkspaceModel, doublesVideoFiles, hitsInWindow } from './doubles_model.js';
+import {
+  RALLY_PAD_SEC, JOIN_FRAMES, STROKE_PAGE, summariseRallyPayload, buildWorkspaceModel, matchDate, matchDateApprox,
+  listScore, rallyInput, rallyCountText, capItems, readReduced, resolveFps, soft, nameFor, unitKey, signalNote,
+  techLabel, strokeName, techCode, metricLabel, clockText, num1, isNum, obj, SIDES,
+  TABS, resolveTab, strokeDistribution, trackNetNote, techniqueSummary, weaknessLines,
+  matchParts, resolvePartQuery, poolDistribution, poolTechnique, poolRallyCounts, partTechIndex,
+} from './workspace_model.js';
 
-const SIDES = ['upper', 'lower'];
-// Technique reports written before the unified classifier name a profile, not a stroke type.
-const LEGACY_PROFILE = Object.freeze({ high_clear: 'clear', drop_shot: 'drop', smash: 'smash', serve: 'serve' });
-/** A stroke belongs to a rally when it falls in [start - 0.5, end + 0.5] (the server's shots_per_rally rule). */
-export const RALLY_PAD_SEC = 0.5;
-/** A technique report joins a stroke within this many frames of its contact frame (same side only). */
-export const JOIN_FRAMES = 3;
-const DEFAULT_REF = Object.freeze({ lo: 70, hi: 100 });
+export {
+  RALLY_PAD_SEC, JOIN_FRAMES, STROKE_PAGE, summariseRallyPayload, buildWorkspaceModel, matchDate, matchDateApprox,
+  listScore, rallyInput, rallyCountText, capItems, readReduced,
+};
+
 const LONG = { timeout: 60000 };
 const SETTLE_MS = 2600;
 
-const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
-const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-const round2 = (x) => Math.round(x * 100) / 100;
-const num1 = (v) => String(+Number(v).toFixed(1));
-
-/**
- * What a parsed rally_segments.json may honestly claim (mirror of badminton_analysis.insights.rally
- * .summarise_rally_payload): {count, suppressed, label, signal, degraded, failed}. `null` = no file.
- */
-export function summariseRallyPayload(payload) {
-  const unknown = { count: 0, suppressed: false, label: 'rallies', signal: null, degraded: false, failed: false };
-  if (payload === null || payload === undefined) return unknown;
-  if (typeof payload !== 'object' || Array.isArray(payload)) return { ...unknown, failed: true };
-  const rallies = payload.rallies === undefined ? [] : payload.rallies;
-  if (!Array.isArray(rallies)) return { ...unknown, failed: true };
-  const det = obj(payload.detection);
-  const signal = det.signal === undefined ? null : det.signal;
-  if (signal === 'error') return { ...unknown, failed: true };
-  const degraded = !!det.degraded;
-  const out = { count: rallies.length, suppressed: false, label: 'rallies', signal, degraded, failed: false };
-  if (degraded || signal === 'none') Object.assign(out, { suppressed: true, label: 'windows' });
-  else if (signal === 'swing') Object.assign(out, { suppressed: true, label: 'segments' });
-  return out;
-}
-
-function summaryFromInsights(insights) {
-  const ins = obj(obj(insights).rally);
-  const v = obj(ins.value);
-  if (ins.status === 'unavailable' || !['rallies', 'segments', 'windows'].includes(v.label)) return null;
-  return {
-    count: isNum(v.count) ? v.count : 0,
-    suppressed: !!v.suppressed || v.label !== 'rallies',
-    label: v.label,
-    signal: typeof v.signal === 'string' ? v.signal : null,
-    degraded: v.label === 'windows',
-    failed: false,
-  };
-}
-
-function resolveFps(fps, payload, insights) {
-  if (isNum(fps) && fps > 0) return fps;
-  const pf = obj(payload).fps;
-  if (isNum(pf) && pf > 0) return pf;
-  const inf = obj(insights).fps;
-  return isNum(inf) && inf > 0 ? inf : null;
-}
-
-function rallyEntries(payload, fps) {
-  const list = Array.isArray(obj(payload).rallies) ? payload.rallies : [];
-  const out = [];
-  list.forEach((r, idx) => {
-    if (!r || typeof r !== 'object') return;
-    let start = isNum(r.start_sec) ? r.start_sec : null;
-    let end = isNum(r.end_sec) ? r.end_sec : null;
-    if ((start === null || end === null) && fps && isNum(r.start_frame) && isNum(r.end_frame)) {
-      start = r.start_frame / fps;
-      end = r.end_frame / fps;
-    }
-    if (start === null || end === null || end < start) return;
-    out.push({ id: isNum(r.id) ? r.id : idx + 1, n: out.length + 1, start: round2(start), end: round2(end), len: round2(end - start),
-      degraded: !!r.degraded, strokeCount: 0 });
-  });
-  return out;
-}
-
-function rallyFor(time, rallies) {
-  if (time === null) return null;
-  const exact = rallies.find((r) => time >= r.start && time <= r.end);
-  if (exact) return exact;
-  let best = null;
-  let bestD = Infinity;
-  for (const r of rallies) {
-    const d = time < r.start ? r.start - time : time - r.end;
-    if (d <= RALLY_PAD_SEC && d < bestD) { best = r; bestD = d; }
-  }
-  return best;
-}
-
-function reportModel(rep) {
-  const metrics = Object.entries(obj(rep.per_metric))
-    .filter(([, m]) => m && typeof m === 'object')
-    .map(([id, m]) => ({
-      id,
-      score: isNum(m.score) ? m.score : null,
-      measured: isNum(m.measured) ? m.measured : null,
-      ideal: Array.isArray(m.ideal_range) && m.ideal_range.length === 2 && m.ideal_range.every(isNum) ? [m.ideal_range[0], m.ideal_range[1]] : null,
-    }));
-  const raw = typeof rep.stroke_type === 'string' ? rep.stroke_type : '';
-  const technique = TECHNIQUE_IDS.includes(rep.group) ? rep.group : STROKE_GROUP[raw] || LEGACY_PROFILE[raw] || null;
-  return {
-    technique: TECHNIQUE_IDS.includes(technique) ? technique : null,
-    rawType: raw,
-    scored: rep.scored !== false,
-    overall: isNum(rep.overall_score) ? rep.overall_score : null,
-    contactFrame: rep.contact_frame,
-    metrics,
-  };
-}
-
-/**
- * Pure workspace model. Inputs (each optional, any may be malformed):
- *   rallies     rally_segments.json payload ({rallies, detection, fps}) or a bare rallies array
- *   strokes     strokes.json payload ({strokes}) or a bare array of {frame, hitter, stroke, uncertain, confidence}
- *   techReports /api/technique payload ({summary, strokes}) or a bare array of strokes.jsonl reports; a report
- *               without a `scored` key is pre-change output and is never joined
- *   fps         metadata.json video.fps (falls back to the rally payload's, then the sidecar's)
- *   insights    the /api/insights/video sidecar (rally label when there is no rally file)
- *   athleteSide 'upper' | 'lower' | null: strokes by the other side are the opponent's and are never scored
- * Returns {fps, rallies:[{id,n,start,end,len,strokeCount,degraded}],
- *   strokes:[{i,frame,time,hitter,label,type,uncertain,confidence,opponent,score|null,report|null,rallyId|null}], summary}.
- * A doubles run (insights.match_format === 'doubles') joins no technique report to a stroke: its per-side data is
- * one representative per side of a 4-player match, not a player. `summary.doubles` says so.
- */
-export function buildWorkspaceModel(input = {}) {
-  const { rallies, strokes, techReports, fps, insights, athleteSide } = obj(input);
-  const payload = Array.isArray(rallies) ? { rallies } : rallies;
-  const hasFile = payload !== undefined && payload !== null;
-  const base = hasFile ? summariseRallyPayload(payload) : summaryFromInsights(insights) || summariseRallyPayload(null);
-  const f = resolveFps(fps, payload, insights);
-  const det = obj(obj(payload).detection);
-  // Degraded runs withhold stroke labels unless the file says otherwise (older files carry no flag).
-  const withheld = typeof det.stroke_labels_withheld === 'boolean' ? det.stroke_labels_withheld : !!det.degraded;
-  const units = hasFile && !base.failed ? rallyEntries(payload, f) : [];
-  const side = SIDES.includes(athleteSide) ? athleteSide : null;
-
-  const doubles = obj(insights).match_format === 'doubles';
-  const reps = (doubles ? [] : Array.isArray(techReports) ? techReports : Array.isArray(obj(techReports).strokes) ? techReports.strokes : [])
-    // A report without `scored` predates the one stroke classifier (rule-classifier label): treat it as absent.
-    .filter((r) => r && typeof r === 'object' && Object.prototype.hasOwnProperty.call(r, 'scored')
-      && isNum(r.contact_frame) && SIDES.includes(r.player_side));
-
-  // A bare array (test helpers) counts as a current (schema 2) file; an object must say schema 2.
-  const sdoc = Array.isArray(strokes) ? null : obj(strokes);
-  const current = sdoc === null || sdoc.schema === 2;
-  const rawStrokes = Array.isArray(strokes) ? strokes : Array.isArray(obj(strokes).strokes) ? strokes.strokes : [];
-  const strokeNotice = rawStrokes.length === 0 ? null : !current ? 'stale'
-    : sdoc === null ? null
-    : sdoc.classifier === null ? 'no_model'
-    : obj(sdoc.classifier).validated_on_owner_footage === true ? null : 'unverified';
-  const list = rawStrokes.filter((s) => s && typeof s === 'object').map((s, k) => {
-    const frame = isNum(s.frame) ? s.frame : null;
-    const time = frame !== null && f ? round2(frame / f) : isNum(s.time_sec) ? round2(s.time_sec) : null;
-    const hitter = SIDES.includes(s.hitter) ? s.hitter : null;
-    const raw = typeof s.stroke === 'string' ? s.stroke : '';
-    const known = current && STROKE_TYPE_IDS.includes(raw);
-    const group = known ? (typeof s.group === 'string' ? s.group : STROKE_GROUP[raw]) : null;
-    const uncertain = withheld || s.uncertain === true || !known || !TECHNIQUE_IDS.includes(group);
-    const opponent = side !== null && hitter !== null && hitter !== side;
-    let report = null;
-    if (!opponent && hitter !== null && frame !== null) {
-      let bestD = Infinity;
-      for (const r of reps) {
-        const d = Math.abs(r.contact_frame - frame);
-        if (r.player_side === hitter && d <= JOIN_FRAMES && d < bestD) { report = r; bestD = d; }
-      }
-    }
-    const rep = report ? reportModel(report) : null;
-    const unit = rallyFor(time, units);
-    if (unit) unit.strokeCount += 1;
-    return {
-      i: k + 1,
-      frame,
-      time,
-      hitter,
-      label: uncertain ? 'uncertain' : group,
-      type: uncertain ? 'uncertain' : raw,
-      uncertain,
-      confidence: isNum(s.confidence) ? s.confidence : null,
-      opponent,
-      score: rep && rep.overall !== null ? rep.overall : null,
-      report: rep,
-      rallyId: unit ? unit.id : null,
-    };
-  });
-
-  const nUnc = list.filter((s) => s.uncertain).length;
-  return {
-    fps: f,
-    rallies: units,
-    strokes: list,
-    summary: {
-      ...base,
-      countShown: base.suppressed || base.failed ? null : base.count,
-      withheld,
-      strokeNotice,
-      doubles,
-      hasFile,
-      strokes: { total: list.length, uncertain: nUnc, classified: list.length - nUnc },
-      scored: list.filter((s) => s.score !== null).length,
-      outside: units.length ? list.filter((s) => s.time !== null && s.rallyId === null).length : 0,
-      reference: { ...DEFAULT_REF },
-    },
-  };
-}
-
-/**
- * The date a match is shown under: the match record's date, else the insights sidecar's `date.value` (filename
- * date, or the video's mtime when the name has none). Never the run files' own mtime. ISO string or null.
- */
-export function matchDate(record, insights) {
-  const iso = /^\d{4}-\d{2}-\d{2}$/;
-  const r = obj(record).date;
-  if (typeof r === 'string' && iso.test(r)) return r;
-  const v = obj(obj(insights).date).value;
-  return typeof v === 'string' && iso.test(v.slice(0, 10)) ? v.slice(0, 10) : null;
-}
-
-/** Pure: true when matchDate() fell back to a sidecar date taken from a file mtime (shown as "approx."). */
-export function matchDateApprox(record, insights) {
-  const r = obj(record).date;
-  if (typeof r === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r)) return false;
-  return isApproxDate(matchDate(null, insights), obj(obj(insights).date).source);
-}
-
-/**
- * Pure: what the stroke list's score column shows. A report joins a stroke by frame and side only, so its
- * technique may differ from the stroke's label (a 'net' stroke next to a 'clear' report): then the list shows
- * no score, only a muted "as <technique>" (the inspector says "scored as"). {score: number|null, as: id|null}.
- */
-export function listScore(stroke) {
-  const s = obj(stroke);
-  const rep = s.report && typeof s.report === 'object' ? s.report : null;
-  if (!rep || !isNum(s.score)) return { score: null, as: null };
-  if (rep.technique && rep.technique === s.label) return { score: s.score, as: null };
-  return { score: null, as: rep.technique || null };
-}
-
-/** buildWorkspaceModel's `rallies` for a rally file that exists but could not be read: summarises as failed. */
-const RALLY_UNREADABLE = Object.freeze({ rallies: null });
-
-/**
- * Pure: the soft() result of fetching rally_segments.json -> buildWorkspaceModel's `rallies` input. A 404 is
- * an absent file (undefined: "No rallies detected"); a file that exists but fails to parse, or any other
- * failed fetch, is RALLY_UNREADABLE ("Rally detection failed"), never mistaken for "no rallies".
- */
-export function rallyInput(res) {
-  const r = obj(res);
-  if (r.ok) return r.data === null || r.data === undefined ? RALLY_UNREADABLE : r.data;
-  if (r.status === 404) return undefined;
-  return RALLY_UNREADABLE;
-}
-
-// ---------- text helpers shared by the DOM layer ----------
-
-/** Rally-count sentence with the honest label (spec 3). */
-export function rallyCountText(summary, lang) {
-  const s = obj(summary);
-  if (s.failed) return t('ws.count.failed', lang);
-  const n = isNum(s.count) ? s.count : 0;
-  if (!n) return t('ws.count.none', lang);
-  if (s.label === 'windows') return t('ws.count.windows', lang, { n: fmtNumber(n) });
-  if (s.label === 'segments') return t('ws.count.segments', lang, { n: fmtNumber(n) });
-  if (s.signal === 'shuttle') return t('ws.count.rallies_shuttle', lang, { n: fmtNumber(n) });
-  return t('ws.count.rallies', lang, { n: fmtNumber(n) });
-}
-
-function unitKey(summary) {
-  const l = obj(summary).label;
-  return l === 'windows' ? 'ws.unit.window' : l === 'segments' ? 'ws.unit.segment' : 'ws.unit.rally';
-}
-
-function signalNote(summary, lang, nRallies) {
-  const s = obj(summary);
-  if (s.failed) return t('ws.signal_note.failed', lang);
-  if (!nRallies) return t('ws.signal_note.none', lang);
-  if (s.label === 'windows') return t('ws.signal_note.degraded', lang);
-  if (s.label === 'segments') return t('ws.signal_note.swing', lang);
-  if (s.signal === 'shuttle') return t('ws.signal_note.shuttle_hedged', lang);
-  if (s.signal === 'courtview') return t('ws.signal_note.courtview', lang);
-  return '';
-}
-
-function techLabel(id, lang) {
-  return id === 'uncertain' ? t('ws.uncertain', lang) : t('technique.' + id, lang);
-}
-
-/** A stroke's display name: its 12-type name (not the group name). */
-function strokeName(s, lang) {
-  return s.type === 'uncertain' ? t('ws.uncertain', lang) : t('stroke.' + s.type, lang);
-}
-
-function techCode(id, lang) {
-  if (id === 'uncertain') return '?';
-  const label = techLabel(id, lang);
-  return lang === 'zh' ? label.charAt(0) : label.slice(0, 2).toUpperCase();
-}
-
-function metricLabel(id, lang) {
-  const key = 'metric.' + id;
-  const v = t(key, lang);
-  return v !== key ? v : String(id).replace(/_/g, ' ');
-}
-
-function clockText(sec) {
-  return isNum(sec) ? fmtDuration(sec) : '—';
-}
-
-function reducedMotion() {
-  try {
-    return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  } catch (e) {
-    return false;
-  }
-}
-
-/** ctx.reduced may be a boolean (main.js getter) or a function; otherwise the media query decides. */
-export function readReduced(ctx) {
-  const r = obj(ctx).reduced;
-  if (typeof r === 'function') return !!r();
-  if (typeof r === 'boolean') return r;
-  return reducedMotion();
-}
-
-/** Strokes per page in the strip and the list: 1000+ strokes never become 1000 tab stops at once. */
-export const STROKE_PAGE = 200;
-
-/**
- * Pure: the first `limit` items (grown in whole pages so the selected item, when `isSelected` finds one, is
- * always included). Returns {items, rest, limit}.
- */
-export function capItems(items, limit = STROKE_PAGE, isSelected = null) {
-  const list = Array.isArray(items) ? items : [];
-  let lim = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : STROKE_PAGE;
-  if (typeof isSelected === 'function') {
-    const k = list.findIndex(isSelected);
-    if (k >= lim) lim = Math.ceil((k + 1) / STROKE_PAGE) * STROKE_PAGE;
-  }
-  return { items: list.slice(0, lim), rest: Math.max(0, list.length - lim), limit: lim };
-}
-
-/** GET that never throws: {ok, data, status, error}. */
-function soft(promise) {
-  return promise.then((data) => ({ ok: true, data, status: 200, error: null }))
-    .catch((error) => ({ ok: false, data: null, status: error && error.status ? error.status : 0, error }));
-}
-
-function nameFor(record, side, athletes) {
-  const entry = obj(obj(record)[side]);
-  if (typeof entry.athlete_id === 'string') {
-    const a = (Array.isArray(obj(athletes).athletes) ? athletes.athletes : []).find((x) => x && x.id === entry.athlete_id);
-    if (a && typeof a.name === 'string' && a.name) return a.name;
-  }
-  return typeof entry.name === 'string' && entry.name ? entry.name : null;
-}
-
 // ---------- DOM ----------
 
-/** Mount the workspace for ctx.params.stem. Returns {destroy()}. */
+/**
+ * Mount the match details page for ctx.params.stem. Returns {destroy(), setQuery(query)}: setQuery follows a new
+ * query of the same route in place: a tab change without reloading the video, a `part` change (split matches) by
+ * loading that part or the Whole match under the same header and switcher.
+ */
 export function mount(container, ctx = {}) {
-  const noop = { destroy() {} };
+  const noop = { destroy() {}, setQuery() {} };
   if (!container || !hasDOM()) return noop;
   const stem = String(obj(ctx.params).stem || '');
   const lang = ctx.lang === 'en' ? 'en' : 'zh';
@@ -381,6 +55,31 @@ export function mount(container, ctx = {}) {
 
   const state = {
     destroyed: false,
+    // The route's query (kept so a tab change rewrites the hash with the rest of it) and the open tab.
+    query: { ...obj(ctx.query) },
+    tab: resolveTab(ctx.query),
+    // The stem whose data is shown (the route's stem for a single video, the selected part's for a split match).
+    stem,
+    // Split matches: `info` = matchParts() of the primary's record (null until the record is read), `view` =
+    // 'single' | 'whole' | 'part', `partStem` the selected part, `head` = the primary's {record, names,
+    // athleteSide} the header always shows, `headInsights` the primary's sidecar (date fallback), `whole` the
+    // per-part summaries of the Whole match view (kept for the visit), `waiting` = a redirect is pending.
+    info: null,
+    split: false,
+    view: 'single',
+    partStem: null,
+    head: null,
+    headInsights: null,
+    whole: null,
+    waiting: false,
+    // A part change started from the page (switcher, card): focus the pressed switcher button once it shows.
+    focusSwitcher: false,
+    // That stem's /api/videos row (has_posture, thumb, ...) or null; `videos` is the whole list (null: failed).
+    videos: null,
+    video: null,
+    strokesDoc: null,
+    tech: null,
+    playersFile: null,
     model: null,
     record: {},
     athleteSide: null,
@@ -398,6 +97,11 @@ export function mount(container, ctx = {}) {
     hitListLimit: STROKE_PAGE,
   };
   const refs = {};
+  // Tab bodies, built on first open and kept (the clips and plan panels hold their own state and requests).
+  let panels = {};
+  let menu = null;
+  // The /api/matches soft() results read so far, by stem (a stem's record is fetched once per visit).
+  const recs = {};
   let ctl = null;
   let sections = [];
   let settleTimer = null;
@@ -450,24 +154,119 @@ export function mount(container, ctx = {}) {
     return (state.dbl && state.dbl.title.text) || stem;
   }
 
-  // ----- loading / error / not found -----
-  function renderStatus(kind, err) {
-    root.textContent = '';
+  // ----- teardown, loading / error / not found -----
+  /**
+   * Release what one rendered view holds before another replaces it: the open menu (and its document listener),
+   * the kept tab panels (their requests), the player (its media connection and document listeners) and the reveal.
+   */
+  function teardown() {
+    closeMenu(false);
+    destroyPanels();
+    if (refs.player) refs.player.destroy();
+    Object.assign(refs, { player: null, video: null, tags: null, sig: null, tabPanel: null, tabBtns: null });
+    clock.cancel();
+    sections = [];
+  }
+
+  /** A loading / not found / error card. `retry` reloads (default: the whole page). */
+  function statusCard(kind, err, { title = 'ws.not_found.title', s = stem, retry = () => load() } = {}) {
     const card = h('div', { class: 'card ov-state', role: kind === 'loading' ? 'status' : 'alert', 'aria-busy': kind === 'loading' ? 'true' : null });
     if (kind === 'loading') {
       card.appendChild(h('div', { class: 'k-label' }, t('state.loading', lang)));
       card.appendChild(h('div', { class: 'ov-skel' }));
     } else if (kind === 'notfound') {
-      card.appendChild(h('div', { class: 'ov-empty-title' }, t('ws.not_found.title', lang)));
-      card.appendChild(h('div', { class: 'ov-state-body' }, t('ws.not_found.body', lang, { stem })));
+      card.appendChild(h('div', { class: 'ov-empty-title' }, t(title, lang)));
+      card.appendChild(h('div', { class: 'ov-state-body' }, t('ws.not_found.body', lang, { stem: s })));
       card.appendChild(h('a', { href: '#/matches', class: 'ov-btn small' }, t('nav.matches', lang)));
     } else {
       card.appendChild(h('div', { class: 'k-label' }, t('error.load.title', lang)));
       card.appendChild(h('div', { class: 'ov-state-body' }, errorText(err, lang)));
-      card.appendChild(h('button', { type: 'button', class: 'ov-btn small', onclick: () => load() }, t('btn.retry', lang)));
+      card.appendChild(h('button', { type: 'button', class: 'ov-btn small', onclick: retry }, t('btn.retry', lang)));
     }
+    return card;
+  }
+
+  /** The whole page as one state card (before there is a header to show). */
+  function renderStatus(kind, err) {
+    teardown();
+    refs.framed = false;
+    root.textContent = '';
     root.appendChild(breadcrumb(stem));
-    root.appendChild(card);
+    root.appendChild(statusCard(kind, err));
+  }
+
+  /**
+   * Split matches: a state card in the page body under the kept header and switcher (a part loading, a part with
+   * no outputs, a part that failed to load).
+   */
+  function renderBodyStatus(kind, err) {
+    teardown();
+    if (!refs.framed) frame();
+    swapNode('crumb', breadcrumb(crumbText()));
+    swapNode('head', buildHead());
+    paintSwitcher();
+    const s = state.partStem || stem;
+    refs.body.textContent = '';
+    refs.body.appendChild(statusCard(kind, err, { title: 'wsx.parts.not_analysed', s, retry: () => showView() }));
+  }
+
+  // ----- page frame: breadcrumb, header, switcher (split matches), body, live region -----
+  /** Build the frame once; the views swap the breadcrumb and header nodes and refill the body. */
+  function frame() {
+    root.textContent = '';
+    refs.crumb = h('nav', { class: 'ws-crumbs' });
+    refs.head = h('div', { class: 'ws-head' });
+    refs.switcher = state.split ? buildSwitcher() : null;
+    refs.body = h('div', { class: 'ws-body' });
+    // One persistent polite live region: a short line per selection, not the whole inspector.
+    refs.live = h('div', { class: 'ws-sr', role: 'status', 'aria-live': 'polite' });
+    [refs.crumb, refs.head, refs.switcher, refs.body, refs.live].forEach((n) => { if (n) root.appendChild(n); });
+    refs.framed = true;
+  }
+
+  function swapNode(key, node) {
+    const old = refs[key];
+    if (old && old.parentNode === root) root.replaceChild(node, old);
+    refs[key] = node;
+  }
+
+  // ----- split matches: the part switcher -----
+  /** The selected part ('' = Whole match). */
+  const currentPart = () => (state.view === 'whole' ? '' : state.partStem || '');
+
+  /** Open a part ('' = Whole match) through the router (a history entry); the page follows via setQuery. */
+  function goPart(partStem, tab) {
+    const q = { ...state.query };
+    delete q.part;
+    if (tab !== undefined) delete q.tab;
+    if (partStem) q.part = partStem;
+    if (tab !== undefined && tab !== 'strokes') q.tab = tab;
+    if (partStem === currentPart() && (tab === undefined || tab === state.tab)) return;
+    const hash = formatHash('matches', { stem: state.info.primary }, q);
+    // The body is rebuilt for the new part: without this, focus would drop to <body>.
+    state.focusSwitcher = true;
+    if (ctx.router && typeof ctx.router.navigate === 'function') ctx.router.navigate(hash);
+    else setQuery(q);
+  }
+
+  function buildSwitcher() {
+    refs.partBtns = new Map();
+    const nav = h('nav', { class: 'ws-parts', 'aria-label': t('wsx.parts.aria', lang) });
+    const add = (key, label, swapped) => {
+      const btn = h('button', {
+        type: 'button', class: 'ws-part-btn', 'aria-pressed': 'false', 'data-part': key, onclick: () => goPart(key),
+      }, [label, swapped ? h('span', { class: 'k-chip mid' }, t('wsx.parts.swapped', lang)) : null]);
+      refs.partBtns.set(key, btn);
+      nav.appendChild(btn);
+    };
+    add('', t('wsx.parts.whole', lang), false);
+    state.info.parts.forEach((p) => add(p.stem, t('wsx.parts.n', lang, { n: p.n }), p.swapped));
+    return nav;
+  }
+
+  function paintSwitcher() {
+    const cur = currentPart();
+    for (const [key, btn] of refs.partBtns || []) setPressed(btn, key === cur);
   }
 
   function breadcrumb(current) {
@@ -484,10 +283,40 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- header -----
-  function titleSides() {
+  function titleSides(side = state.athleteSide) {
     // The selected athlete first; otherwise lower then upper (the canvas reads "Lower · Upper").
-    const a = state.athleteSide || 'lower';
+    const a = side || 'lower';
     return [a, a === 'lower' ? 'upper' : 'lower'];
+  }
+
+  /** Names and athlete side of a record (athlete ids resolved through the store). */
+  function sidesOf(record) {
+    const st = S();
+    const athletes = obj(st.athletes);
+    const athleteId = obj(st.scope).athlete || st.athlete || '';
+    return {
+      names: { upper: nameFor(record, 'upper', athletes), lower: nameFor(record, 'lower', athletes) },
+      athleteSide: athleteId ? SIDES.find((sd) => obj(obj(record)[sd]).athlete_id === athleteId) || null : null,
+      athleteId,
+      athletes,
+    };
+  }
+
+  /**
+   * What the header shows: a split match's header always reads the primary's record (names in the primary's
+   * frame); a single video's is its own.
+   */
+  function headCtx() {
+    if (state.split && state.head) return { ...state.head, insights: state.headInsights || state.insights };
+    return { record: state.record, names: state.names, athleteSide: state.athleteSide, insights: state.insights };
+  }
+
+  function crumbText() {
+    if (state.dbl) return doublesTitleText();
+    const hd = headCtx();
+    const nm = (side) => hd.names[side] || t('ws.side.' + side, lang);
+    const [a, b] = titleSides(hd.athleteSide);
+    return t('ws.title', lang, { a: nm(a), b: nm(b) });
   }
 
   /** Doubles header: teams title, team-oriented result and sets, the doubles chip and the unvalidated badge. */
@@ -522,20 +351,110 @@ export function mount(container, ctx = {}) {
         meta,
         h('div', { class: 'kw-foot-muted', role: 'note' }, t('dbl.strokes_withheld', lang)),
       ]),
-      h('div', { class: 'ov-actions' }, [
-        h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
-        h('a', { href: formatHash('results', { stem }, { mode: 'match' }), class: 'ov-btn' }, t('ws.results_link', lang)),
-      ]),
+      headActions(),
     ]);
+  }
+
+  /**
+   * Back; for a shown video (not the Whole match, not a part without outputs): Posture report when /api/videos says
+   * it has a posture run, and the "..." menu.
+   */
+  function headActions() {
+    const s = state.stem;
+    const shown = state.view !== 'whole' && !!state.model;
+    return h('div', { class: 'ov-actions' }, [
+      h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
+      shown && state.video && state.video.has_posture
+        ? h('a', { href: formatHash('results', { stem: s }, { mode: 'posture' }), class: 'ov-btn' }, t('wsx.posture', lang))
+        : null,
+      shown ? menuButton() : null,
+    ]);
+  }
+
+  // ----- header "..." menu (the look and keys of the Matches row menu) -----
+  function closeMenu(focusBack = true) {
+    if (!menu) return;
+    const { node, btn, onDoc } = menu;
+    menu = null;
+    if (node.parentNode) node.parentNode.removeChild(node);
+    if (typeof document.removeEventListener === 'function') document.removeEventListener('pointerdown', onDoc, true);
+    btn.setAttribute('aria-expanded', 'false');
+    if (focusBack) focusNode(btn);
+  }
+
+  function menuItems() {
+    const s = state.stem;
+    return [{
+      key: 'wsx.menu.delete', danger: true,
+      run: () => openDeleteDialog({
+        stem: s, lang, scope: 'match',
+        // The match's analysis is gone: its details page has nothing left to show.
+        onClose: ({ deleted } = {}) => {
+          if (deleted && !state.destroyed && ctx.router && typeof ctx.router.navigate === 'function') ctx.router.navigate('#/matches');
+        },
+      }),
+    }];
+  }
+
+  function openMenu(btn, wrap) {
+    if (menu) { closeMenu(); return; }
+    const node = h('div', { class: 'ws-menu', role: 'menu', 'aria-label': t('wsx.menu', lang) });
+    const buttons = menuItems().map((it) => h('button', {
+      type: 'button', role: 'menuitem', class: 'mv-menu-i' + (it.danger ? ' danger' : ''), 'data-item': it.key,
+      // Focus goes back to the "..." button first, so the dialog returns focus there when it closes.
+      onclick: () => { closeMenu(); it.run(); },
+    }, t(it.key, lang)));
+    buttons.forEach((b) => node.appendChild(b));
+    node.addEventListener('keydown', (e) => {
+      const i = buttons.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); closeMenu(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); focusNode(buttons[(i + 1) % buttons.length]); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); focusNode(buttons[(i - 1 + buttons.length) % buttons.length]); }
+      else if (e.key === 'Tab') closeMenu();
+    });
+    const onDoc = (e) => { if (menu && !node.contains(e.target) && !btn.contains(e.target)) closeMenu(false); };
+    if (typeof document.addEventListener === 'function') document.addEventListener('pointerdown', onDoc, true);
+    wrap.appendChild(node);
+    btn.setAttribute('aria-expanded', 'true');
+    menu = { node, btn, onDoc };
+    focusNode(buttons[0]);
+  }
+
+  function menuButton() {
+    const wrap = h('span', { class: 'ws-menu-wrap' });
+    const btn = h('button', {
+      type: 'button', class: 'ov-btn ws-menu-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      'aria-label': t('wsx.menu', lang), title: t('wsx.menu', lang),
+      onclick: () => openMenu(btn, wrap),
+    }, h('span', { 'aria-hidden': 'true' }, '⋯'));
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  /** The Whole match meta: parts, pooled rallies (weakest honest label) and strokes, failed-part note. */
+  function wholeMeta(meta) {
+    const parts = state.whole.parts;
+    const ok = parts.filter((p) => p.ok);
+    const pr = poolRallyCounts(ok.map((p) => p.summary));
+    const strokes = ok.reduce((n, p) => n + p.strokes.total, 0);
+    meta.appendChild(h('span', { class: 'k-chip' }, t('wsx.parts.count', lang, { n: parts.length })));
+    meta.appendChild(h('span', null, t('ws.summary_line', lang, {
+      rallies: rallyCountText({ count: pr.count, label: pr.label, signal: null }, lang),
+      strokes: t('scope.strokes_count', lang, { n: fmtNumber(strokes) }),
+    })));
+    if (pr.label !== 'rallies') meta.appendChild(h('span', { class: 'mono ov-pill' }, t(pr.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
+    if (pr.failedParts) meta.appendChild(h('span', { class: 'kw-muted' }, t('wsx.parts.failed_note', lang, { n: pr.failedParts })));
   }
 
   function buildHead() {
     if (state.dbl) return buildDoublesHead();
     const m = state.model;
-    const [a, b] = titleSides();
-    const rec = obj(state.record);
+    const hd = headCtx();
+    const nm = (side) => hd.names[side] || t('ws.side.' + side, lang);
+    const [a, b] = titleSides(hd.athleteSide);
+    const rec = obj(hd.record);
     const res = obj(rec.result);
-    const ins = obj(state.insights);
+    const ins = obj(hd.insights);
     const dateIso = matchDate(rec, ins);
     const date = fmtDate(dateIso, lang);
     const meta = h('div', { class: 'ws-meta' });
@@ -545,229 +464,65 @@ export function mount(container, ctx = {}) {
       meta.appendChild(h('span', { class: 'mono ws-sets' }, pairs.join(' · ')));
     }
     if (SIDES.includes(res.winner)) {
-      if (state.athleteSide) {
-        const win = res.winner === state.athleteSide;
+      if (hd.athleteSide) {
+        const win = res.winner === hd.athleteSide;
         meta.appendChild(h('span', { class: 'k-chip ' + (win ? 'good' : 'bad') }, t(win ? 'ws.result.win' : 'ws.result.loss', lang)));
       } else {
-        meta.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: sideName(res.winner) })));
+        meta.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: nm(res.winner) })));
       }
     }
-    meta.appendChild(h('span', null, t('ws.summary_line', lang, {
-      rallies: rallyCountText(m.summary, lang), strokes: t('scope.strokes_count', lang, { n: fmtNumber(m.summary.strokes.total) }),
-    })));
-    if (m.summary.label !== 'rallies') {
-      meta.appendChild(h('span', { class: 'mono ov-pill' }, t(m.summary.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
+    if (state.view === 'whole') {
+      if (state.whole) wholeMeta(meta);
+    } else if (m) {
+      // A single video, or the selected part: its own rally / stroke line.
+      meta.appendChild(h('span', null, t('ws.summary_line', lang, {
+        rallies: rallyCountText(m.summary, lang), strokes: t('scope.strokes_count', lang, { n: fmtNumber(m.summary.strokes.total) }),
+      })));
+      if (m.summary.label !== 'rallies') {
+        meta.appendChild(h('span', { class: 'mono ov-pill' }, t(m.summary.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
+      }
+      if (m.summary.doubles) meta.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
     }
-    if (m.summary.doubles) meta.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
     const head = h('div', { class: 'ws-head' }, [
       h('div', { class: 'ws-head-l' }, [
         h('div', { class: 'mono ov-eyebrow' }, [t('ws.eyebrow', lang, { date }),
           matchDateApprox(rec, ins) ? approxMark(lang) : null]),
-        h('h1', { class: 'page-title serif ws-title' }, [sideName(a), h('span', { class: 'ws-vs' }, lang === 'zh' ? '对' : 'vs.'), sideName(b)]),
+        h('h1', { class: 'page-title serif ws-title' }, [nm(a), h('span', { class: 'ws-vs' }, lang === 'zh' ? '对' : 'vs.'), nm(b)]),
         meta,
         // A doubles run has no per-player score: say so instead of showing one.
-        m.summary.doubles ? h('div', { class: 'kw-foot-muted', role: 'note' }, t('reason.doubles_run', lang)) : null,
+        m && m.summary.doubles ? h('div', { class: 'kw-foot-muted', role: 'note' }, t('reason.doubles_run', lang)) : null,
       ]),
-      h('div', { class: 'ov-actions' }, [
-        h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
-        h('a', { href: formatHash('results', { stem }, { mode: 'match' }), class: 'ov-btn' }, t('ws.results_link', lang)),
-      ]),
+      headActions(),
     ]);
     return head;
   }
 
   // ----- video -----
   function buildVideo() {
-    const sec = h('section', { class: 'card hud ws-video-card', 'aria-label': t('ws.video', lang) });
-    const stage = h('div', { class: 'ws-stage' });
-    const video = h('video', { class: 'ws-video', preload: 'metadata', playsinline: true });
-    const tags = h('div', { class: 'ws-tags' });
-    const sig = h('div', { class: 'ws-tag-r' });
-    const msg = h('div', { class: 'ws-video-msg', role: 'status', hidden: true });
-    stage.appendChild(video);
-    stage.appendChild(tags);
-    stage.appendChild(sig);
-    stage.appendChild(msg);
-    const playBtn = h('button', { type: 'button', class: 'ws-play', 'aria-label': t('ws.play', lang), onclick: togglePlay }, '▶');
-    const time = h('span', { class: 'mono ws-time' }, '0:00');
-    const seek = h('input', { type: 'range', class: 'ws-seek', min: '0', max: '0', step: '0.1', value: '0', 'aria-label': t('ws.seek_aria', lang) });
-    seek.addEventListener('input', () => seekTo(Number(seek.value), false));
-    // Theater mode: the whole video card fills the browser window (it is moved under <body> so no ancestor
-    // transform can shrink a fixed box) and goes back to its place on exit. Full screen asks the browser to show
-    // the same card, so the overlay tags and controls stay available.
-    const theaterBtn = h('button', { type: 'button', class: 'ws-ibtn ws-theater', 'aria-pressed': 'false', 'aria-label': t('ws.theater', lang), title: t('ws.theater', lang), onclick: () => setTheater(!refs.theater) }, '▭');
-    const fsBtn = h('button', { type: 'button', class: 'ws-ibtn ws-fs', 'aria-pressed': 'false', 'aria-label': t('ws.fullscreen', lang), title: t('ws.fullscreen', lang), onclick: toggleFullscreen }, '⛶');
-    const place = h('span', { class: 'ws-video-slot', hidden: true });
-    const paintModeButtons = () => {
-      const fs = document.fullscreenElement === sec;
-      setAttr(theaterBtn, 'aria-pressed', refs.theater ? 'true' : 'false');
-      setAttr(fsBtn, 'aria-pressed', fs ? 'true' : 'false');
-      const tl = t(refs.theater ? 'ws.theater_exit' : 'ws.theater', lang);
-      setAttr(theaterBtn, 'aria-label', tl);
-      setAttr(theaterBtn, 'title', tl);
-      const fl = t(fs ? 'ws.fullscreen_exit' : 'ws.fullscreen', lang);
-      setAttr(fsBtn, 'aria-label', fl);
-      setAttr(fsBtn, 'title', fl);
-    };
-    function setTheater(on) {
-      on = !!on;
-      if (on === !!refs.theater || state.destroyed) return;
-      refs.theater = on;
-      if (on) {
-        if (sec.parentNode) sec.parentNode.insertBefore(place, sec);
-        document.body.appendChild(sec);
-        document.body.classList.add('ws-theater-open');
-        sec.classList.add('theater');
-      } else {
-        sec.classList.remove('theater');
-        document.body.classList.remove('ws-theater-open');
-        if (place.parentNode) place.parentNode.replaceChild(sec, place);
-      }
-      paintModeButtons();
-    }
-    function toggleFullscreen() {
-      try {
-        if (document.fullscreenElement) {
-          if (document.exitFullscreen) document.exitFullscreen();
-        } else if (sec.requestFullscreen) {
-          const r = sec.requestFullscreen();
-          if (r && typeof r.catch === 'function') r.catch(() => {});
-        }
-      } catch (e) {
-        // ignore: the browser refused full screen
-      }
-    }
-    const onFsChange = () => {
-      sec.classList.toggle('is-fs', document.fullscreenElement === sec);
-      paintModeButtons();
-    };
-    const onKey = (ev) => {
-      if (ev.key === 'Escape' && refs.theater && !document.fullscreenElement) setTheater(false);
-    };
-    const docEvents = typeof document.addEventListener === 'function' && typeof document.removeEventListener === 'function';
-    if (docEvents) {
-      document.addEventListener('fullscreenchange', onFsChange);
-      document.addEventListener('keydown', onKey);
-    }
-    refs.teardownVideoMode = () => {
-      if (docEvents) {
-        document.removeEventListener('fullscreenchange', onFsChange);
-        document.removeEventListener('keydown', onKey);
-      }
-      try {
-        if (document.fullscreenElement === sec && document.exitFullscreen) document.exitFullscreen();
-      } catch (e) {
-        // ignore
-      }
-      if (refs.theater) setTheater(false);
-      if (sec.parentNode === document.body) document.body.removeChild(sec);
-    };
-    const ctlRow = h('div', { class: 'ws-ctl' }, [
-      h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': t('ws.prev_rally', lang), onclick: () => stepUnit(-1) }, '⏮'),
-      playBtn,
-      h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': t('ws.next_rally', lang), onclick: () => stepUnit(1) }, '⏭'),
-      time,
-      seek,
-      theaterBtn,
-      fsBtn,
-    ]);
-    sec.appendChild(stage);
-    sec.appendChild(ctlRow);
-    Object.assign(refs, { video, tags, sig, msg, playBtn, time, seek, ctlRow, stage });
-
     // detect_<stem>.mp4 is where app.py leaves the browser-compatible transcode (it replaces the raw file);
     // detect_<stem>_h264.mp4 is tried second for runs where the replace step did not happen.
     // A doubles run plays detect_<stem>_players.mp4 first, only when players.json says its render is ok; if that
     // file cannot be played the annotated video follows.
+    const s = state.stem;
     const files = state.dbl
-      ? doublesVideoFiles(stem, state.dbl.identityVideoOk ? { status: 'ok' } : null)
-      : [`detect_${stem}.mp4`, `detect_${stem}_h264.mp4`];
-    const candidates = files.map((f) => endpoints.output(stem, f));
-    let idx = 0;
-    let gotStatus = false;
-    refs.playersVideo = !!(state.dbl && state.dbl.identityVideoOk);
-    const fail = (key) => {
-      if (state.destroyed || idx >= candidates.length) return;
-      idx += 1;
-      refs.playersVideo = false;
-      if (idx < candidates.length) {
-        video.src = candidates[idx];
-        if (state.dbl) paintVideoTags();
-        return;
-      }
-      video.removeAttribute('src');
-      video.hidden = true;
-      msg.hidden = false;
-      setText(msg, t(key, lang));
-      for (const b of ctlRow.querySelectorAll('button,input')) b.disabled = true;
-    };
-    // MediaError codes: 2 network, 3 decode, 4 source not supported (a 404 also lands here). A file that
-    // reached loadedmetadata exists, so a later failure is a playback problem, not a missing video.
-    video.addEventListener('error', () => {
-      const code = video.error && video.error.code;
-      fail(code === 2 ? 'ws.video_network' : gotStatus || code === 3 ? 'ws.video_unplayable' : 'ws.video_missing');
+      ? doublesVideoFiles(s, state.dbl.identityVideoOk ? { status: 'ok' } : null)
+      : [`detect_${s}.mp4`, `detect_${s}_h264.mp4`];
+    const player = createPlayer({
+      files: files.map((f) => endpoints.output(s, f)),
+      lang,
+      labels: { prev: t('ws.prev_rally', lang), next: t('ws.next_rally', lang) },
+      onPrev: () => stepUnit(-1),
+      onNext: () => stepUnit(1),
+      // The players video was dropped: repaint the overlay tags without its "players video" tag.
+      onSourceFallback: () => { if (state.dbl) paintVideoTags(); },
+      playersVideo: !!(state.dbl && state.dbl.identityVideoOk),
     });
-    video.addEventListener('loadedmetadata', () => {
-      gotStatus = true;
-      // An undecodable MPEG-4 Part 2 track loads with the right duration but no picture.
-      if (!video.videoWidth && !video.videoHeight) {
-        fail('ws.video_unplayable');
-        return;
-      }
-      setAttr(seek, 'max', isNum(video.duration) ? video.duration.toFixed(1) : '0');
-      if (refs.pendingSeek !== undefined) {
-        const s = refs.pendingSeek;
-        refs.pendingSeek = undefined;
-        seekTo(s, false);
-      }
-      paintTime();
-    });
-    video.addEventListener('timeupdate', paintTime);
-    video.addEventListener('play', paintPlay);
-    video.addEventListener('pause', paintPlay);
-    video.src = candidates[0];
-    return sec;
-  }
-
-  function paintTime() {
-    const v = refs.video;
-    if (!v) return;
-    const cur = isNum(v.currentTime) ? v.currentTime : 0;
-    setText(refs.time, `${clockText(cur)} / ${clockText(isNum(v.duration) ? v.duration : null)}`);
-    if (document.activeElement !== refs.seek) refs.seek.value = String(cur.toFixed(1));
-  }
-
-  function paintPlay() {
-    const v = refs.video;
-    const playing = v && !v.paused;
-    setText(refs.playBtn, playing ? '❚❚' : '▶');
-    setAttr(refs.playBtn, 'aria-label', t(playing ? 'ws.pause' : 'ws.play', lang));
-  }
-
-  function togglePlay() {
-    const v = refs.video;
-    if (!v || v.hidden) return;
-    try {
-      if (v.paused) {
-        const p = v.play();
-        if (p && typeof p.catch === 'function') p.catch(() => {});
-      } else v.pause();
-    } catch (e) {
-      // ignore: playback is best effort
-    }
+    Object.assign(refs, { player, video: player.video, tags: player.tagsEl, sig: player.sigEl });
+    return player.el;
   }
 
   function seekTo(sec, fromSelection = true) {
-    const v = refs.video;
-    if (!v || !isNum(sec)) return;
-    const target = Math.max(0, sec - (fromSelection ? 0.4 : 0));
-    try {
-      if (v.readyState >= 1) v.currentTime = target;
-      else refs.pendingSeek = target;
-    } catch (e) {
-      refs.pendingSeek = target;
-    }
-    paintTime();
+    if (refs.player) refs.player.seekTo(sec, fromSelection);
   }
 
   function paintVideoTags() {
@@ -777,7 +532,7 @@ export function mount(container, ctx = {}) {
     const st = currentStroke();
     if (u) refs.tags.appendChild(h('span', { class: 'mono ws-tag' }, unitTitle(u).toUpperCase()));
     if (state.dbl) {
-      if (refs.playersVideo) refs.tags.appendChild(h('span', { class: 'mono ws-tag' }, t('dbl.ws.players_video', lang).toUpperCase()));
+      if (refs.player && refs.player.playersVideo) refs.tags.appendChild(h('span', { class: 'mono ws-tag' }, t('dbl.ws.players_video', lang).toUpperCase()));
       const hit = currentHit();
       if (hit) {
         const inUnit = unitHits();
@@ -1197,6 +952,11 @@ export function mount(container, ctx = {}) {
         ? t('dbl.ws.named_line', lang, { named: fmtNumber(wh.named), total: fmtNumber(wh.total), pct: wh.namedShare === null ? '—' : `${fmtNumber(wh.namedShare * 100, 0)}%` })
         : t('dbl.ws.no_hits', lang)),
     ]));
+    // The identity render (players labelled on the video), only when players.json says it was made.
+    const iv = obj(obj(state.playersFile).identity_video);
+    if (iv.status === 'ok' && typeof iv.file === 'string' && iv.file) {
+      sec.appendChild(h('a', { class: 'ws-ident-link', href: endpoints.output(state.stem, iv.file), target: '_blank', rel: 'noopener' }, t('wsx.identity_video', lang)));
+    }
     if (!d.players.length) {
       sec.appendChild(h('div', { class: 'kw-note' }, t('dbl.no_players', lang)));
       return sec;
@@ -1276,6 +1036,17 @@ export function mount(container, ctx = {}) {
       ]));
     });
     if (rep.metrics.length) sec.appendChild(metrics);
+    const weak = weaknessLines(rep.raw);
+    if (weak.length) {
+      sec.appendChild(h('div', { class: 'k-label' }, t('wsx.weak_title', lang)));
+      sec.appendChild(h('ul', { class: 'ws-weak' }, weak.map((w) => {
+        const label = metricLabel(w.metric, lang);
+        const m = w.measured === null ? '—' : num1(w.measured);
+        return h('li', null, w.ideal
+          ? t('wsx.weak_line', lang, { metric: label, m, lo: num1(w.ideal[0]), hi: num1(w.ideal[1]) })
+          : label);
+      })));
+    }
     return sec;
   }
 
@@ -1317,35 +1088,275 @@ export function mount(container, ctx = {}) {
     return sec;
   }
 
+  // ----- movement card -----
+  /** Doubles heatmaps from players.json: team coverage maps and per-player maps (entries without a file skipped). */
+  function doublesHeatmaps() {
+    const pf = obj(state.playersFile);
+    const label = (id) => {
+      const p = state.dbl ? state.dbl.players.find((x) => x.id === id) : null;
+      return p ? p.label : id;
+    };
+    return {
+      teams: (Array.isArray(pf.teams) ? pf.teams : []).filter((tm) => tm && typeof tm.coverage_heatmap === 'string' && tm.coverage_heatmap)
+        .map((tm) => ({ id: tm.id, file: tm.coverage_heatmap })),
+      players: (Array.isArray(pf.players) ? pf.players : []).filter((p) => p && typeof p.heatmap === 'string' && p.heatmap)
+        .map((p) => ({ id: p.id, label: label(p.id), file: p.heatmap })),
+    };
+  }
+
+  function buildMovement() {
+    return movementCard({ lang, items: [{ stem: state.stem, caption: null }], doubles: state.dbl ? doublesHeatmaps() : null });
+  }
+
+  // ----- strokes tab: distribution by group (+ the TrackNet provenance note) -----
+  /**
+   * One video's distribution by default; the Whole match passes the pooled one. `strokes` is every detected stroke
+   * (the header's count): the groups hold the classified ones only, so the rest shows as uncertain. `hasStrokes`
+   * tells a stale strokes file (labels out of date) from no strokes at all; `tracknet` adds the provenance note.
+   */
+  function distributionCard({
+    d = strokeDistribution(state.strokesDoc),
+    strokes = state.model ? state.model.summary.strokes.total : 0,
+    hasStrokes = Array.isArray(obj(state.strokesDoc).strokes) && state.strokesDoc.strokes.length > 0,
+    tracknet = trackNetNote(state.strokesDoc),
+  } = {}) {
+    const u = Math.max(0, strokes - d.total);
+    const all = d.total + u;
+    const sec = h('section', { class: 'card hud ws-dist', 'aria-label': t('wsx.dist.title', lang) });
+    sec.appendChild(h('div', { class: 'ws-sec-head' }, [
+      h('h2', { class: 'card-title' }, t('wsx.dist.title', lang)),
+      d.total ? h('span', { class: 'card-sub' }, t('wsx.dist.total', lang, { n: fmtNumber(d.total), u: fmtNumber(u) })) : null,
+    ]));
+    if (!d.total) {
+      sec.appendChild(h('div', { class: 'kw-note' }, t(d.stale && hasStrokes ? 'ws.stroke_stale' : 'ws.empty.title', lang)));
+    } else {
+      // The classified groups, then a muted uncertain segment: the bar adds up to the header's stroke count.
+      const segs = [...d.groups, ...(u ? [{ id: 'uncertain', count: u }] : [])];
+      const text = segs.map((g) => `${techLabel(g.id, lang)} ${g.count}`).join(', ');
+      sec.appendChild(h('div', { class: 'ws-dist-bar', role: 'img', 'aria-label': text }, segs.map((g) => h('span', {
+        class: `ws-dist-seg tc-${g.id}`, style: { flex: `${g.count} 1 0` }, title: `${techLabel(g.id, lang)} · ${g.count}`,
+      }))));
+      sec.appendChild(h('ul', { class: 'ws-dist-legend' }, segs.map((g) => h('li', g.id === 'uncertain' ? { class: 'kw-muted' } : null, [
+        h('span', { class: `ws-dot tc-${g.id}`, 'aria-hidden': 'true' }),
+        techLabel(g.id, lang),
+        h('span', { class: 'mono kw-muted' }, `${g.count} · ${Math.round((g.count / all) * 100)}%`),
+      ]))));
+    }
+    if (tracknet) sec.appendChild(h('div', { class: 'kw-foot-muted' }, t('wsx.tracknet', lang)));
+    return sec;
+  }
+
+  // ----- tabs -----
+  const tabId = (id) => 'ws-tab-' + id;
+
+  function buildTabs() {
+    refs.tabBtns = new Map();
+    const bar = h('div', { class: 'ws-tabs', role: 'tablist', 'aria-label': t('wsx.tabs_aria', lang) });
+    TABS.forEach((id, k) => {
+      const btn = h('button', {
+        type: 'button', role: 'tab', class: 'ws-tab', id: tabId(id), 'aria-controls': 'ws-tabpanel', 'aria-selected': 'false', tabindex: '-1',
+        onclick: () => selectTab(id, true),
+        onkeydown: (e) => {
+          const n = TABS.length;
+          const to = e.key === 'ArrowRight' ? (k + 1) % n : e.key === 'ArrowLeft' ? (k - 1 + n) % n
+            : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+          if (to < 0) return;
+          e.preventDefault();
+          selectTab(TABS[to], true);
+          focusNode(refs.tabBtns.get(TABS[to]));
+        },
+      }, t('wsx.tab.' + id, lang));
+      refs.tabBtns.set(id, btn);
+      bar.appendChild(btn);
+    });
+    refs.tabPanel = h('div', { class: 'ws-tabpanel', role: 'tabpanel', id: 'ws-tabpanel', tabindex: '0' });
+    return h('div', { class: 'ws-tabwrap' }, [bar, refs.tabPanel]);
+  }
+
+  /** The open tab's body: built on first open and kept, so switching back keeps its state. */
+  function tabBody(id) {
+    if (panels[id]) return panels[id].el;
+    const s = state.stem;
+    let p;
+    if (state.view === 'whole') {
+      p = { el: wholeTabBody(id) };
+    } else if (id === 'technique') {
+      p = { el: techniquePanel({ lang, summary: techniqueSummary(state.tech, { doubles: !!state.dbl || state.model.summary.doubles }) }) };
+    } else if (id === 'clips') {
+      const sm = state.model.summary;
+      p = clipsPanel({ stem: s, lang, rallyOk: sm.hasFile && !sm.failed && sm.count > 0 });
+    } else if (id === 'plan') {
+      p = planPanel({ stem: s, lang });
+    } else {
+      // Strokes: the distribution card (singles only) above the stroke list (doubles: the hits table).
+      p = { el: h('div', { class: 'ws-strokes-tab' }, [state.dbl ? null : distributionCard(), refs.listSec]) };
+    }
+    panels[id] = p;
+    return p.el;
+  }
+
+  function renderTab() {
+    for (const [id, btn] of refs.tabBtns || []) {
+      const on = id === state.tab;
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      btn.setAttribute('tabindex', on ? '0' : '-1');
+      btn.classList.toggle('on', on);
+    }
+    const panel = refs.tabPanel;
+    if (!panel) return;
+    panel.setAttribute('aria-labelledby', tabId(state.tab));
+    const body = tabBody(state.tab);
+    if (panel.firstChild !== body) {
+      panel.textContent = '';
+      panel.appendChild(body);
+    }
+  }
+
+  /** Open a tab in place. From the page (`fromUser`) the hash follows via router.replace; the default tab is left out. */
+  function selectTab(id, fromUser) {
+    const tab = TABS.includes(id) ? id : 'strokes';
+    if (fromUser) {
+      const q = { ...state.query };
+      if (tab === 'strokes') delete q.tab; else q.tab = tab;
+      state.query = q;
+    }
+    if (tab !== state.tab) {
+      state.tab = tab;
+      // No tab bar while a view loads (teardown clears it): the next render opens state.tab.
+      if (refs.tabPanel) renderTab();
+    }
+    if (fromUser && ctx.router && typeof ctx.router.replace === 'function') ctx.router.replace(formatHash('matches', { stem }, state.query));
+  }
+
+  function destroyPanels() {
+    for (const p of Object.values(panels)) if (p && typeof p.destroy === 'function') p.destroy();
+    panels = {};
+  }
+
   // ----- render -----
+  /** Start a view: release the previous one, (re)build the frame, refresh breadcrumb, header and switcher. */
+  function beginView() {
+    teardown();
+    if (!refs.framed) frame();
+    root.classList.remove('settled');
+    swapNode('crumb', breadcrumb(crumbText()));
+    const head = buildHead();
+    swapNode('head', head);
+    paintSwitcher();
+    refs.body.textContent = '';
+    setText(refs.live, '');
+    return head;
+  }
+
+  function startReveal() {
+    clock.start();
+    // Entrance animations play once; anything built after this (a new strip, more rows) appears at once.
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(settle, SETTLE_MS);
+  }
+
+  /** One video (a single match, or the selected part of a split match). */
   function renderAll() {
     if (state.destroyed) return;
-    root.textContent = '';
-    root.classList.remove('settled');
-    root.appendChild(breadcrumb(state.dbl ? doublesTitleText() : t('ws.title', lang, { a: sideName(titleSides()[0]), b: sideName(titleSides()[1]) })));
-    const head = buildHead();
-    root.appendChild(head);
+    const head = beginView();
     const video = buildVideo();
     const timeline = buildTimeline();
-    const list = buildList();
+    refs.listSec = buildList();
+    const move = buildMovement();
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
-    // One persistent polite live region: a short line per selection, not the whole inspector.
-    refs.live = h('div', { class: 'ws-sr', role: 'status', 'aria-live': 'polite' });
-    const main = h('div', { class: 'ws-main' }, [video, timeline, list]);
-    const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [refs.inspHost, refs.sumHost]);
-    root.appendChild(h('div', { class: 'ws-grid' }, [main, side]));
-    root.appendChild(refs.live);
-    sections = [head, video, timeline, refs.inspHost, list, refs.sumHost];
+    const main = h('div', { class: 'ws-main' }, [video, timeline]);
+    const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [move, refs.inspHost, refs.sumHost]);
+    refs.body.appendChild(h('div', { class: 'ws-top' }, [main, side]));
+    const tabs = buildTabs();
+    refs.body.appendChild(tabs);
+    sections = [head, video, timeline, move, refs.inspHost, refs.sumHost, tabs];
+    renderTab();
     paintLane();
     renderStrip();
     renderFilters();
     renderRows();
     renderSide(false);
-    clock.start();
-    // Entrance animations play once; anything built after this (a new strip, more rows) appears at once.
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(settle, SETTLE_MS);
+    startReveal();
+  }
+
+  // ----- Whole match view (split matches) -----
+  function partCard(p) {
+    const v = obj(p.video);
+    const poster = typeof v.thumb === 'string' && v.thumb
+      ? h('img', { class: 'ws-part-poster', src: v.thumb, alt: '', loading: 'lazy' })
+      : h('span', { class: 'mv-thumb ws-part-poster', 'aria-hidden': 'true' });
+    const line = (text, cls) => h('span', { class: 'ws-part-line' + (cls ? ' ' + cls : '') }, text);
+    const title = t('wsx.parts.n', lang, { n: p.n });
+    return h('button', { type: 'button', class: 'ws-part-card', 'data-part': p.stem, onclick: () => goPart(p.stem) }, [
+      poster,
+      h('span', { class: 'ws-part-title' }, [
+        h('strong', null, title),
+        isNum(v.duration_sec) ? h('span', { class: 'mono kw-muted' }, fmtDuration(v.duration_sec)) : null,
+        p.swapped ? h('span', { class: 'k-chip mid' }, t('wsx.parts.swapped', lang)) : null,
+      ]),
+      p.ok
+        ? [
+          line(rallyCountText(p.summary, lang)),
+          line(t('scope.strokes_count', lang, { n: fmtNumber(p.strokes.total) })),
+          line([t('wsx.parts.tech', lang), ' ', h('span', { class: 'mono' }, p.techIndex === null ? '—' : num1(p.techIndex))]),
+        ]
+        : line(t('wsx.parts.not_analysed', lang), 'kw-muted'),
+    ]);
+  }
+
+  /** The per-part strokes table under the pooled distribution. */
+  function partsTable() {
+    const rows = state.whole.parts.map((p) => h('tr', null, [
+      h('td', null, t('wsx.parts.n', lang, { n: p.n })),
+      h('td', { class: 'mono kw-num' }, p.ok ? fmtNumber(p.strokes.total) : '—'),
+      h('td', { class: 'mono kw-num' }, p.ok ? fmtNumber(p.strokes.uncertain) : '—'),
+    ]));
+    return h('section', { class: 'card hud ws-list' }, h('table', { class: 'table ws-table' }, [
+      h('thead', null, h('tr', null, [
+        h('th', { scope: 'col' }, t('wsx.parts.col.part', lang)),
+        h('th', { scope: 'col', class: 'kw-num' }, t('ws.summary.strokes', lang)),
+        h('th', { scope: 'col', class: 'kw-num' }, t('wsx.parts.col.uncertain', lang)),
+      ])),
+      h('tbody', null, rows),
+    ]));
+  }
+
+  /** Whole match tab bodies: pooled strokes and technique; clips and plans point at the parts. */
+  function wholeTabBody(id) {
+    const ok = state.whole.parts.filter((p) => p.ok);
+    if (id === 'technique') {
+      return techniquePanel({ lang, summary: poolTechnique(ok.map((p) => p.techSummary)), note: t('wsx.parts.pooled', lang) });
+    }
+    if (id === 'clips' || id === 'plan') {
+      return h('div', { class: 'ws-part-pick' }, [
+        h('p', { class: 'kw-note' }, t('wsx.parts.per_video', lang)),
+        h('div', { class: 'ws-part-links' }, state.whole.parts.map((p) => h('button', {
+          type: 'button', class: 'ov-btn small', onclick: () => goPart(p.stem, id),
+        }, t('wsx.parts.n', lang, { n: p.n })))),
+      ]);
+    }
+    const d = poolDistribution(ok.map((p) => p.dist));
+    return h('div', { class: 'ws-strokes-tab' }, [
+      distributionCard({
+        d, strokes: ok.reduce((n, p) => n + p.strokes.total, 0), hasStrokes: ok.some((p) => p.strokes.total > 0), tracknet: ok.some((p) => p.tracknet),
+      }),
+      partsTable(),
+    ]);
+  }
+
+  function renderWhole() {
+    if (state.destroyed) return;
+    const head = beginView();
+    const parts = state.whole.parts;
+    const cards = h('div', { class: 'ws-part-cards' }, parts.map(partCard));
+    // Heatmap + scatter per analysed part, captioned "Part N" (images are never merged across parts).
+    const move = movementCard({ lang, items: parts.filter((p) => p.ok).map((p) => ({ stem: p.stem, caption: t('wsx.parts.n', lang, { n: p.n }) })) });
+    const tabs = buildTabs();
+    [cards, move, tabs].forEach((n) => refs.body.appendChild(n));
+    sections = [head, cards, move, tabs];
+    renderTab();
+    startReveal();
   }
 
   function settle() {
@@ -1424,60 +1435,83 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- data -----
-  async function load() {
+  const isAborted = (r) => !!(r && r.error && r.error.kind === 'aborted');
+
+  /** Abort whatever is loading and start a new request group; returns its controller (compare to `ctl` later). */
+  function newRequest() {
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
-    ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    const o = { ...LONG, ...(ctl ? { signal: ctl.signal } : {}) };
-    renderStatus('loading');
-    const out = (f) => soft(getJSON(endpoints.output(stem, f), o));
+    ctl = typeof AbortController === 'function' ? new AbortController() : {};
+    return ctl;
+  }
+  const reqOpts = (c) => ({ ...LONG, ...(typeof c.abort === 'function' ? { signal: c.signal } : {}) });
+  const stale = (mine) => state.destroyed || mine !== ctl;
+
+  /** A stem's /api/matches record, fetched once per visit. */
+  async function recordOf(s, o) {
+    if (!recs[s]) {
+      const r = await soft(api.match(s, o));
+      if (isAborted(r)) return r;
+      recs[s] = r;
+    }
+    return recs[s];
+  }
+
+  /**
+   * Fetch one stem's run files (rally_segments, strokes, metadata, technique, insights, match record; for a doubles
+   * run also players.json and hits.json). Never throws: {status: 'ok' | 'notfound' | 'error' | 'aborted', error,
+   * ...the soft() results}. The single video and a split match's part both load through it.
+   */
+  async function fetchStem(s, o) {
+    const out = (f) => soft(getJSON(endpoints.output(s, f), o));
     const [rally, strokes, meta, tech, ins, rec] = await Promise.all([
       out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
-      soft(getJSON('/api/technique/' + encodeURIComponent(stem), o)),
-      soft(api.videoInsights(stem, o)),
-      soft(api.match(stem, o)),
+      soft(getJSON('/api/technique/' + encodeURIComponent(s), o)),
+      soft(api.videoInsights(s, o)),
+      recordOf(s, o),
     ]);
-    if (state.destroyed) return;
-    const all = [rally, strokes, meta, tech, ins, rec];
-    if (all.some((r) => r.error && r.error.kind === 'aborted')) return;
+    if ([rally, strokes, meta, tech, ins, rec].some(isAborted)) return { status: 'aborted' };
     const fileish = [rally, strokes, meta, ins];
-    if (fileish.every((r) => !r.ok && r.status === 404)) {
-      renderStatus('notfound');
-      return;
-    }
-    if (fileish.every((r) => !r.ok)) {
-      renderStatus('error', (fileish.find((r) => r.status !== 404) || fileish[0]).error);
-      return;
-    }
-    state.record = rec.ok ? obj(rec.data) : {};
-    state.insights = ins.ok ? obj(ins.data) : null;
-    const s = S();
-    const athletes = obj(s.athletes);
-    state.names = { upper: nameFor(state.record, 'upper', athletes), lower: nameFor(state.record, 'lower', athletes) };
-    const athleteId = obj(s.scope).athlete || s.athlete || '';
-    state.athleteSide = athleteId ? SIDES.find((sd) => obj(state.record[sd]).athlete_id === athleteId) || null : null;
-    const fps = obj(obj(meta.data).video).fps;
+    if (fileish.every((r) => !r.ok && r.status === 404)) return { status: 'notfound' };
+    if (fileish.every((r) => !r.ok)) return { status: 'error', error: (fileish.find((r) => r.status !== 404) || fileish[0]).error };
     // A doubles run (by the run's own metadata or sidecar, not by the record) also reads players.json and hits.json.
-    state.dbl = null;
-    if (obj(meta.data).match_format === 'doubles' || obj(state.insights).match_format === 'doubles') {
-      const mine = ctl;
-      const [pl, hi] = await Promise.all([soft(api.players(stem, o)), soft(api.hits(stem, o))]);
-      if (state.destroyed || mine !== ctl || [pl, hi].some((r) => r.error && r.error.kind === 'aborted')) return;
-      state.dbl = doublesWorkspaceModel({
-        // 404 = absent; an unreadable file is treated the same (status "No players data"), never as ok.
-        playersFile: pl.ok ? pl.data : null,
-        hits: hi.ok ? hi.data : null,
-        insights: state.insights,
-        fps: resolveFps(fps, rallyInput(rally), state.insights),
-        record: state.record,
-        athletes,
-        athleteId,
-        lang,
-      });
+    let pl = null;
+    let hi = null;
+    if (obj(meta.data).match_format === 'doubles' || obj(ins.data).match_format === 'doubles') {
+      [pl, hi] = await Promise.all([soft(api.players(s, o)), soft(api.hits(s, o))]);
+      if ([pl, hi].some(isAborted)) return { status: 'aborted' };
     }
+    return { status: 'ok', rally, strokes, meta, tech, ins, rec, pl, hi };
+  }
+
+  /** Put one stem's fetched data (fetchStem 'ok') into state: models, selection; the tab bodies start over. */
+  function applyStem(s, d) {
+    state.stem = s;
+    state.video = (state.videos || []).find((v) => v && v.name === s) || null;
+    // A part's record is the resolved one (its sides already swapped), so the body names each side right.
+    state.record = d.rec.ok ? obj(d.rec.data) : {};
+    state.insights = d.ins.ok ? obj(d.ins.data) : null;
+    state.strokesDoc = d.strokes.ok ? d.strokes.data : null;
+    state.tech = d.tech.ok ? d.tech.data : null;
+    // 404 = absent; an unreadable file is treated the same (status "No players data"), never as ok.
+    state.playersFile = d.pl && d.pl.ok && d.pl.data && typeof d.pl.data === 'object' && !Array.isArray(d.pl.data) ? d.pl.data : null;
+    const sides = sidesOf(state.record);
+    state.names = sides.names;
+    state.athleteSide = sides.athleteSide;
+    const fps = obj(obj(d.meta.data).video).fps;
+    state.dbl = d.pl || d.hi ? doublesWorkspaceModel({
+      playersFile: state.playersFile,
+      hits: d.hi && d.hi.ok ? d.hi.data : null,
+      insights: state.insights,
+      fps: resolveFps(fps, rallyInput(d.rally), state.insights),
+      record: state.record,
+      athletes: sides.athletes,
+      athleteId: sides.athleteId,
+      lang,
+    }) : null;
     state.model = buildWorkspaceModel({
-      rallies: rallyInput(rally),
-      strokes: strokes.ok ? strokes.data : null,
-      techReports: tech.ok ? tech.data : null,
+      rallies: rallyInput(d.rally),
+      strokes: state.strokesDoc,
+      techReports: state.tech,
       fps,
       insights: state.insights,
       athleteSide: state.athleteSide,
@@ -1486,34 +1520,179 @@ export function mount(container, ctx = {}) {
     state.unit = m.rallies.length ? m.rallies[0].id : 'all';
     const first = unitStrokes()[0];
     state.sel = first ? first.i : null;
+    state.filter = 'all';
+    state.stripLimit = STROKE_PAGE;
+    state.listLimit = STROKE_PAGE;
     state.hitStripLimit = STROKE_PAGE;
     state.hitListLimit = STROKE_PAGE;
     const firstHit = unitHits()[0];
     state.hitSel = firstHit ? firstHit.i : null;
+  }
+
+  /** Nothing of a video is shown (a part loading or missing, the Whole match). */
+  function clearVideoState(s) {
+    Object.assign(state, { stem: s, video: null, model: null, dbl: null, strokesDoc: null, tech: null, playersFile: null, insights: null });
+  }
+
+  /**
+   * Load and show one video: the single match (whole-page state cards) or the selected part of a split match (state
+   * cards inside the body, header and switcher kept).
+   */
+  async function loadPart(s) {
+    const mine = newRequest();
+    clearVideoState(s);
+    if (state.split) renderBodyStatus('loading');
+    else renderStatus('loading');
+    const res = await fetchStem(s, reqOpts(mine));
+    if (stale(mine) || res.status === 'aborted') return;
+    if (res.status !== 'ok') {
+      if (state.split) renderBodyStatus(res.status, res.error);
+      else renderStatus(res.status, res.error);
+      return;
+    }
+    applyStem(s, res);
+    if (state.split && s === state.info.primary) state.headInsights = state.insights;
     renderAll();
+  }
+
+  /**
+   * The lighter per-part load of the Whole match: rally_segments, strokes, metadata, technique and insights. A part
+   * whose files all fail (not analysed yet, or unreadable) comes back with ok false and is left out of the pools.
+   * Returns null when aborted.
+   */
+  async function loadPartSummary(p, o, athleteSide) {
+    const out = (f) => soft(getJSON(endpoints.output(p.stem, f), o));
+    const [rally, strokes, meta, tech, ins] = await Promise.all([
+      out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
+      soft(getJSON('/api/technique/' + encodeURIComponent(p.stem), o)),
+      soft(api.videoInsights(p.stem, o)),
+    ]);
+    if ([rally, strokes, meta, tech, ins].some(isAborted)) return null;
+    const video = (state.videos || []).find((v) => v && v.name === p.stem) || null;
+    const ok = [rally, strokes, meta, ins].some((r) => r.ok);
+    if (!ok) return { ...p, video, ok: false };
+    const insights = ins.ok ? obj(ins.data) : null;
+    const doc = strokes.ok ? strokes.data : null;
+    const m = buildWorkspaceModel({ rallies: rallyInput(rally), strokes: doc, fps: obj(obj(meta.data).video).fps, insights });
+    // The athlete's side in this part: the primary's, flipped when the part's sides are swapped.
+    const side = athleteSide ? (p.swapped ? (athleteSide === 'lower' ? 'upper' : 'lower') : athleteSide) : null;
+    return {
+      ...p,
+      video,
+      ok: true,
+      insights,
+      summary: m.summary,
+      strokes: { total: m.summary.strokes.total, uncertain: m.summary.strokes.uncertain },
+      dist: strokeDistribution(doc),
+      tracknet: trackNetNote(doc),
+      techSummary: techniqueSummary(tech.ok ? tech.data : null, { doubles: m.summary.doubles }),
+      techIndex: partTechIndex(insights, side),
+    };
+  }
+
+  /** The Whole match: every part's summary in parallel (once per visit), then the cards, movement and pools. */
+  async function loadWhole() {
+    const mine = newRequest();
+    clearVideoState(state.info.primary);
+    if (!state.whole) {
+      if (refs.framed) renderBodyStatus('loading');
+      else renderStatus('loading');
+      const o = reqOpts(mine);
+      const side = state.head ? state.head.athleteSide : null;
+      const parts = await Promise.all(state.info.parts.map((p) => loadPartSummary(p, o, side)));
+      if (stale(mine) || parts.some((p) => p === null)) return;
+      state.whole = { parts };
+      if (parts[0].ok) state.headInsights = parts[0].insights;
+    }
+    renderWhole();
+  }
+
+  /**
+   * Resolve the view from the query (spec section 5): a redirect goes through router.replace (the router then
+   * remounts, or calls setQuery for the same stem); otherwise load the single video, a part or the Whole match.
+   */
+  function showView() {
+    const r = resolvePartQuery(state.info, stem, state.query);
+    if (r.redirect && ctx.router && typeof ctx.router.replace === 'function') {
+      state.waiting = true;
+      newRequest();
+      ctx.router.replace(r.redirect);
+      return;
+    }
+    state.waiting = false;
+    state.view = r.view;
+    state.partStem = r.view === 'whole' ? null : r.partStem;
+    state.tab = resolveTab(state.query);
+    if (r.view === 'whole') loadWhole();
+    else loadPart(r.partStem || stem);
+    // Both loaders render the switcher's new state synchronously (a loading card or the cached Whole match).
+    if (state.focusSwitcher) {
+      state.focusSwitcher = false;
+      focusNode(refs.partBtns && refs.partBtns.get(currentPart()));
+    }
+  }
+
+  /** Read the match record (and a part's primary's), the video list, then show the view the query asks for. */
+  async function load() {
+    const mine = newRequest();
+    const o = reqOpts(mine);
+    state.info = null;
+    state.whole = null;
+    // A (re)load reads every record again (Retry after a failed read must not reuse it).
+    Object.keys(recs).forEach((k) => { delete recs[k]; });
+    renderStatus('loading');
+    // The video list is soft: a failure only hides the Posture report link and the part posters.
+    const [rec, vids] = await Promise.all([recordOf(stem, o), soft(api.videos(o))]);
+    if (stale(mine) || isAborted(rec) || isAborted(vids)) return;
+    state.videos = vids.ok && Array.isArray(vids.data) ? vids.data : null;
+    // A part's record names its primary (part_of): the parts list and the header come from the primary's record.
+    const partOf = rec.ok ? obj(rec.data).part_of : null;
+    let primary = stem;
+    let prec = rec;
+    if (typeof partOf === 'string' && partOf && partOf !== stem) {
+      primary = partOf;
+      prec = await recordOf(partOf, o);
+      if (stale(mine) || isAborted(prec)) return;
+    }
+    const precord = prec.ok ? obj(prec.data) : {};
+    state.info = matchParts(precord, primary);
+    state.split = state.info.split;
+    if (state.split) {
+      const sides = sidesOf(precord);
+      state.head = { record: precord, names: sides.names, athleteSide: sides.athleteSide };
+    }
+    showView();
   }
 
   load();
 
+  /**
+   * Same route, new query (main.js): a `part` change (or a pending redirect) re-resolves the view in place; a tab
+   * change opens that tab; the router is not called again. While the record still loads, load() reads the query.
+   */
+  function setQuery(query) {
+    if (state.destroyed) return;
+    const prev = state.query;
+    state.query = { ...obj(query) };
+    if (!state.info) {
+      state.tab = resolveTab(state.query);
+      return;
+    }
+    if (state.waiting || state.query.part !== prev.part) {
+      showView();
+      return;
+    }
+    selectTab(resolveTab(state.query), false);
+  }
+
   function destroy() {
     if (state.destroyed) return;
     state.destroyed = true;
-    clock.cancel();
+    teardown();
     clearTimeout(settleTimer);
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
-    if (refs.teardownVideoMode) refs.teardownVideoMode();
-    const v = refs.video;
-    if (v) {
-      try {
-        v.pause();
-        v.removeAttribute('src');
-        v.load(); // releases the media connection
-      } catch (e) {
-        // ignore
-      }
-    }
     if (root.parentNode) root.parentNode.removeChild(root);
   }
 
-  return { destroy };
+  return { destroy, setQuery };
 }
