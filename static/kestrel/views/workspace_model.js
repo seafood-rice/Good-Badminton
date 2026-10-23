@@ -1,10 +1,13 @@
 // Pure logic of the match workspace (#/matches/<stem>): no DOM, no network, so it imports and tests under plain
 // node. buildWorkspaceModel() joins the rally, stroke and technique files into one model; the other helpers are
-// the text and data helpers the DOM layer in workspace.js (and the match details page) share. Honesty rules: there
-// is no point outcome, so nothing is marked won or lost; swing segments are "segments (estimated)", degraded ones
-// "windows"; uncertain strokes are muted and labelled so; opponent strokes are shown but never scored.
+// the text and data helpers the DOM layer in workspace.js (and the match details page) share, plus the helpers
+// for the details page: stroke distribution, technique summary, split-match parts, pooling and the plan.
+// Honesty rules: there is no point outcome, so nothing is marked won or lost; swing segments are "segments
+// (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so; opponent strokes are
+// shown but never scored.
 import { t, TECHNIQUE_IDS, STROKE_TYPE_IDS, STROKE_GROUP } from '../core/i18n.js';
 import { fmtDuration, fmtNumber, isApproxDate } from '../core/format.js';
+import { formatHash } from '../core/router.js';
 
 export const SIDES = ['upper', 'lower'];
 // Technique reports written before the unified classifier name a profile, not a stroke type.
@@ -358,4 +361,143 @@ export function nameFor(record, side, athletes) {
     if (a && typeof a.name === 'string' && a.name) return a.name;
   }
   return typeof entry.name === 'string' && entry.name ? entry.name : null;
+}
+
+// ---------- match details page helpers ----------
+
+export const GROUP_ORDER = Object.freeze(['serve', 'clear', 'lift', 'smash', 'drop', 'drive', 'net']);
+export const TABS = Object.freeze(['strokes', 'technique', 'clips', 'plan']);
+
+export function strokeDistribution(doc) {
+  const d = obj(doc);
+  if (d.schema !== 2) return { groups: [], total: 0, stale: true };
+  const g = obj(d.groups);
+  const groups = GROUP_ORDER.filter((id) => isNum(g[id]) && g[id] > 0).map((id) => ({ id, count: g[id] }));
+  return { groups, total: groups.reduce((s, x) => s + x.count, 0), stale: false };
+}
+
+export function trackNetNote(doc) {
+  return obj(doc).shuttle_source === 'tracknet';
+}
+
+export function techniqueSummary(payload, opts = {}) {
+  const empty = { count: 0, scored: 0, byType: [], weaknesses: [] };
+  if (obj(opts).doubles) return { state: 'doubles', ...empty };
+  const p = obj(payload);
+  const s = obj(p.summary);
+  if (!isNum(s.stroke_count) || s.stroke_count <= 0) return { state: 'empty', ...empty };
+  const reps = Array.isArray(p.strokes) ? p.strokes : [];
+  if (reps.some((r) => !r || typeof r !== 'object' || !Object.prototype.hasOwnProperty.call(r, 'scored'))) return { state: 'stale', ...empty };
+  const byType = Object.entries(obj(s.by_type))
+    .filter(([, v]) => v && typeof v === 'object' && isNum(v.count))
+    .map(([id, v]) => ({ id, count: v.count, avg: isNum(v.avg_score) ? v.avg_score : null }))
+    .sort((a, b) => b.count - a.count || (a.id < b.id ? -1 : 1));
+  const weaknesses = (Array.isArray(s.recurring_weaknesses) ? s.recurring_weaknesses : [])
+    .filter((w) => w && typeof w.metric === 'string' && isNum(w.count))
+    .slice(0, 3).map((w) => ({ metric: w.metric, count: w.count }));
+  return { state: 'ok', count: s.stroke_count, scored: isNum(s.scored_count) ? s.scored_count : 0, byType, weaknesses };
+}
+
+export function weaknessLines(report) {
+  const list = Array.isArray(obj(report).weaknesses) ? report.weaknesses : [];
+  return list.filter((w) => w && typeof w === 'object' && typeof w.metric === 'string').map((w) => ({
+    metric: w.metric,
+    measured: isNum(w.measured) ? w.measured : null,
+    ideal: Array.isArray(w.ideal_range) && w.ideal_range.length === 2 && w.ideal_range.every(isNum) ? [w.ideal_range[0], w.ideal_range[1]] : null,
+    direction: typeof w.direction === 'string' ? w.direction : null,
+    severity: typeof w.severity === 'string' ? w.severity : null,
+  }));
+}
+
+export function matchParts(record, stem) {
+  const list = Array.isArray(obj(record).parts) ? record.parts.filter((p) => p && typeof p.stem === 'string' && p.stem) : [];
+  if (!list.length) return { split: false, primary: stem, parts: [] };
+  return { split: true, primary: stem,
+    parts: [{ stem, n: 1, swapped: false }, ...list.map((p, i) => ({ stem: p.stem, n: i + 2, swapped: p.sides_swapped === true }))] };
+}
+
+function without(query, key) {
+  const out = { ...obj(query) };
+  delete out[key];
+  return out;
+}
+
+export function resolvePartQuery(info, stem, query) {
+  const q = obj(query);
+  const i = obj(info);
+  if (!i.split) {
+    return { redirect: q.part !== undefined ? formatHash('matches', { stem }, without(q, 'part')) : null, view: 'single', partStem: stem };
+  }
+  if (stem !== i.primary) return { redirect: formatHash('matches', { stem: i.primary }, { ...q, part: stem }), view: 'part', partStem: stem };
+  if (q.part === undefined) return { redirect: null, view: 'whole', partStem: null };
+  if (i.parts.some((p) => p.stem === q.part)) return { redirect: null, view: 'part', partStem: q.part };
+  return { redirect: formatHash('matches', { stem: i.primary }, without(q, 'part')), view: 'whole', partStem: null };
+}
+
+export function resolveTab(query) {
+  const tab = obj(query).tab;
+  return TABS.includes(tab) ? tab : 'strokes';
+}
+
+export function poolDistribution(dists) {
+  const list = (Array.isArray(dists) ? dists : []).filter((d) => d && !d.stale);
+  if (!list.length) return { groups: [], total: 0, stale: true };
+  const sum = {};
+  for (const d of list) for (const g of d.groups) sum[g.id] = (sum[g.id] || 0) + g.count;
+  const groups = GROUP_ORDER.filter((id) => sum[id] > 0).map((id) => ({ id, count: sum[id] }));
+  return { groups, total: groups.reduce((s, x) => s + x.count, 0), stale: false };
+}
+
+export function poolTechnique(summaries) {
+  const all = (Array.isArray(summaries) ? summaries : []).filter((s) => s && typeof s === 'object');
+  const ok = all.filter((s) => s.state === 'ok');
+  if (!ok.length) return { state: all.length ? all[0].state || 'empty' : 'empty', count: 0, scored: 0, byType: [], weaknesses: [] };
+  const types = new Map();
+  const weak = new Map();
+  for (const s of ok) {
+    for (const b of s.byType) {
+      const e = types.get(b.id) || { id: b.id, count: 0, wsum: 0, wn: 0 };
+      e.count += b.count;
+      if (b.avg !== null) { e.wsum += b.avg * b.count; e.wn += b.count; }
+      types.set(b.id, e);
+    }
+    for (const w of s.weaknesses) weak.set(w.metric, (weak.get(w.metric) || 0) + w.count);
+  }
+  const byType = [...types.values()]
+    .map((e) => ({ id: e.id, count: e.count, avg: e.wn ? Math.round((e.wsum / e.wn) * 10) / 10 : null }))
+    .sort((a, b) => b.count - a.count || (a.id < b.id ? -1 : 1));
+  const weaknesses = [...weak.entries()].map(([metric, count]) => ({ metric, count }))
+    .sort((a, b) => b.count - a.count || (a.metric < b.metric ? -1 : 1)).slice(0, 3);
+  return { state: 'ok', count: ok.reduce((n, s) => n + s.count, 0), scored: ok.reduce((n, s) => n + (s.scored || 0), 0), byType, weaknesses };
+}
+
+export function poolRallyCounts(summaries) {
+  const list = (Array.isArray(summaries) ? summaries : []).filter((s) => s && typeof s === 'object');
+  const good = list.filter((s) => !s.failed);
+  const labels = new Set(good.map((s) => s.label));
+  return {
+    count: good.reduce((n, s) => n + (isNum(s.count) ? s.count : 0), 0),
+    label: labels.has('windows') ? 'windows' : labels.has('segments') ? 'segments' : 'rallies',
+    failedParts: list.length - good.length,
+  };
+}
+
+export function partTechIndex(insights, side) {
+  const bySide = obj(obj(obj(obj(insights).technique).value).by_side);
+  const idx = (s) => { const v = obj(bySide[s]).index; return isNum(v) ? v : null; };
+  if (SIDES.includes(side)) return idx(side);
+  const found = SIDES.map(idx).filter((v) => v !== null);
+  return found.length === 1 ? found[0] : null;
+}
+
+export function planSessions(plan, loc) {
+  const weeks = Array.isArray(obj(plan).weeks) ? plan.weeks : [];
+  const out = [];
+  for (const wk of weeks) {
+    if (!wk || typeof wk !== 'object') continue;
+    for (const s of Array.isArray(wk.sessions) ? wk.sessions : []) {
+      if (s && typeof s === 'object' && s.location === loc) out.push({ week: wk.week, phase: wk.phase, session: s });
+    }
+  }
+  return out;
 }
