@@ -1,13 +1,15 @@
 // Match details page (#/matches/<stem>, spec 2026-10-24 sections 4 and 6), layout A: on top the annotated video
 // with the rally timeline and stroke strip, beside it the movement card, the stroke inspector (doubles: the players
 // panel) and the rally summary; below, the Strokes | Technique | Clips | Training plan tabs. The header carries
-// Back, the Posture report link (when the video has a posture run) and a "..." menu (Delete analysis results). The
-// pure logic (buildWorkspaceModel and the text helpers) lives in workspace_model.js and is re-exported here; mount()
-// is the DOM layer over it. Honesty rules: there is no point outcome, so nothing is marked won or lost; swing
-// segments are "segments (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so;
-// opponent strokes are shown but never scored.
+// Back, the Posture report link (when the video has a posture run) and a "..." menu (Delete analysis results). A
+// split match (spec section 5) is always shown under its primary's stem with a part switcher (Whole match | Part N):
+// `?part=<stem>` shows that part as the page above, no `part` shows the Whole match view (part cards, movement per
+// part, pooled strokes and technique). The pure logic (buildWorkspaceModel and the text helpers) lives in
+// workspace_model.js and is re-exported here; mount() is the DOM layer over it. Honesty rules: there is no point
+// outcome, so nothing is marked won or lost; swing segments are "segments (estimated)", degraded ones "windows";
+// uncertain strokes are muted and labelled so; opponent strokes are shown but never scored.
 import { t, TECHNIQUE_IDS } from '../core/i18n.js';
-import { fmtDate, fmtNumber } from '../core/format.js';
+import { fmtDate, fmtNumber, fmtDuration } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
 import { formatHash } from '../core/router.js';
 import { api, getJSON, endpoints, errorText } from '../core/api.js';
@@ -25,6 +27,7 @@ import {
   listScore, rallyInput, rallyCountText, capItems, readReduced, resolveFps, soft, nameFor, unitKey, signalNote,
   techLabel, strokeName, techCode, metricLabel, clockText, num1, isNum, obj, SIDES,
   TABS, resolveTab, strokeDistribution, trackNetNote, techniqueSummary, weaknessLines,
+  matchParts, resolvePartQuery, poolDistribution, poolTechnique, poolRallyCounts, partTechIndex,
 } from './workspace_model.js';
 
 export {
@@ -39,7 +42,8 @@ const SETTLE_MS = 2600;
 
 /**
  * Mount the match details page for ctx.params.stem. Returns {destroy(), setQuery(query)}: setQuery follows a new
- * query of the same route in place (the tab) without remounting or reloading the video.
+ * query of the same route in place: a tab change without reloading the video, a `part` change (split matches) by
+ * loading that part or the Whole match under the same header and switcher.
  */
 export function mount(container, ctx = {}) {
   const noop = { destroy() {}, setQuery() {} };
@@ -54,8 +58,20 @@ export function mount(container, ctx = {}) {
     // The route's query (kept so a tab change rewrites the hash with the rest of it) and the open tab.
     query: { ...obj(ctx.query) },
     tab: resolveTab(ctx.query),
-    // The stem whose data is shown (the route's stem for a single video; Task 7 loads a part's stem here).
+    // The stem whose data is shown (the route's stem for a single video, the selected part's for a split match).
     stem,
+    // Split matches: `info` = matchParts() of the primary's record (null until the record is read), `view` =
+    // 'single' | 'whole' | 'part', `partStem` the selected part, `head` = the primary's {record, names,
+    // athleteSide} the header always shows, `headInsights` the primary's sidecar (date fallback), `whole` the
+    // per-part summaries of the Whole match view (kept for the visit), `waiting` = a redirect is pending.
+    info: null,
+    split: false,
+    view: 'single',
+    partStem: null,
+    head: null,
+    headInsights: null,
+    whole: null,
+    waiting: false,
     // That stem's /api/videos row (has_posture, thumb, ...) or null; `videos` is the whole list (null: failed).
     videos: null,
     video: null,
@@ -82,6 +98,8 @@ export function mount(container, ctx = {}) {
   // Tab bodies, built on first open and kept (the clips and plan panels hold their own state and requests).
   let panels = {};
   let menu = null;
+  // The /api/matches soft() results read so far, by stem (a stem's record is fetched once per visit).
+  const recs = {};
   let ctl = null;
   let sections = [];
   let settleTimer = null;
@@ -134,24 +152,117 @@ export function mount(container, ctx = {}) {
     return (state.dbl && state.dbl.title.text) || stem;
   }
 
-  // ----- loading / error / not found -----
-  function renderStatus(kind, err) {
-    root.textContent = '';
+  // ----- teardown, loading / error / not found -----
+  /**
+   * Release what one rendered view holds before another replaces it: the open menu (and its document listener),
+   * the kept tab panels (their requests), the player (its media connection and document listeners) and the reveal.
+   */
+  function teardown() {
+    closeMenu(false);
+    destroyPanels();
+    if (refs.player) refs.player.destroy();
+    Object.assign(refs, { player: null, video: null, tags: null, sig: null, tabPanel: null, tabBtns: null });
+    clock.cancel();
+    sections = [];
+  }
+
+  /** A loading / not found / error card. `retry` reloads (default: the whole page). */
+  function statusCard(kind, err, { title = 'ws.not_found.title', s = stem, retry = () => load() } = {}) {
     const card = h('div', { class: 'card ov-state', role: kind === 'loading' ? 'status' : 'alert', 'aria-busy': kind === 'loading' ? 'true' : null });
     if (kind === 'loading') {
       card.appendChild(h('div', { class: 'k-label' }, t('state.loading', lang)));
       card.appendChild(h('div', { class: 'ov-skel' }));
     } else if (kind === 'notfound') {
-      card.appendChild(h('div', { class: 'ov-empty-title' }, t('ws.not_found.title', lang)));
-      card.appendChild(h('div', { class: 'ov-state-body' }, t('ws.not_found.body', lang, { stem })));
+      card.appendChild(h('div', { class: 'ov-empty-title' }, t(title, lang)));
+      card.appendChild(h('div', { class: 'ov-state-body' }, t('ws.not_found.body', lang, { stem: s })));
       card.appendChild(h('a', { href: '#/matches', class: 'ov-btn small' }, t('nav.matches', lang)));
     } else {
       card.appendChild(h('div', { class: 'k-label' }, t('error.load.title', lang)));
       card.appendChild(h('div', { class: 'ov-state-body' }, errorText(err, lang)));
-      card.appendChild(h('button', { type: 'button', class: 'ov-btn small', onclick: () => load() }, t('btn.retry', lang)));
+      card.appendChild(h('button', { type: 'button', class: 'ov-btn small', onclick: retry }, t('btn.retry', lang)));
     }
+    return card;
+  }
+
+  /** The whole page as one state card (before there is a header to show). */
+  function renderStatus(kind, err) {
+    teardown();
+    refs.framed = false;
+    root.textContent = '';
     root.appendChild(breadcrumb(stem));
-    root.appendChild(card);
+    root.appendChild(statusCard(kind, err));
+  }
+
+  /**
+   * Split matches: a state card in the page body under the kept header and switcher (a part loading, a part with
+   * no outputs, a part that failed to load).
+   */
+  function renderBodyStatus(kind, err) {
+    teardown();
+    if (!refs.framed) frame();
+    swapNode('crumb', breadcrumb(crumbText()));
+    swapNode('head', buildHead());
+    paintSwitcher();
+    const s = state.partStem || stem;
+    refs.body.textContent = '';
+    refs.body.appendChild(statusCard(kind, err, { title: 'wsx.parts.not_analysed', s, retry: () => showView() }));
+  }
+
+  // ----- page frame: breadcrumb, header, switcher (split matches), body, live region -----
+  /** Build the frame once; the views swap the breadcrumb and header nodes and refill the body. */
+  function frame() {
+    root.textContent = '';
+    refs.crumb = h('nav', { class: 'ws-crumbs' });
+    refs.head = h('div', { class: 'ws-head' });
+    refs.switcher = state.split ? buildSwitcher() : null;
+    refs.body = h('div', { class: 'ws-body' });
+    // One persistent polite live region: a short line per selection, not the whole inspector.
+    refs.live = h('div', { class: 'ws-sr', role: 'status', 'aria-live': 'polite' });
+    [refs.crumb, refs.head, refs.switcher, refs.body, refs.live].forEach((n) => { if (n) root.appendChild(n); });
+    refs.framed = true;
+  }
+
+  function swapNode(key, node) {
+    const old = refs[key];
+    if (old && old.parentNode === root) root.replaceChild(node, old);
+    refs[key] = node;
+  }
+
+  // ----- split matches: the part switcher -----
+  /** The selected part ('' = Whole match). */
+  const currentPart = () => (state.view === 'whole' ? '' : state.partStem || '');
+
+  /** Open a part ('' = Whole match) through the router (a history entry); the page follows via setQuery. */
+  function goPart(partStem, tab) {
+    const q = { ...state.query };
+    delete q.part;
+    if (tab !== undefined) delete q.tab;
+    if (partStem) q.part = partStem;
+    if (tab !== undefined && tab !== 'strokes') q.tab = tab;
+    if (partStem === currentPart() && (tab === undefined || tab === state.tab)) return;
+    const hash = formatHash('matches', { stem: state.info.primary }, q);
+    if (ctx.router && typeof ctx.router.navigate === 'function') ctx.router.navigate(hash);
+    else setQuery(q);
+  }
+
+  function buildSwitcher() {
+    refs.partBtns = new Map();
+    const nav = h('nav', { class: 'ws-parts', 'aria-label': t('wsx.parts.aria', lang) });
+    const add = (key, label, swapped) => {
+      const btn = h('button', {
+        type: 'button', class: 'ws-part-btn', 'aria-pressed': 'false', 'data-part': key, onclick: () => goPart(key),
+      }, [label, swapped ? h('span', { class: 'k-chip mid' }, t('wsx.parts.swapped', lang)) : null]);
+      refs.partBtns.set(key, btn);
+      nav.appendChild(btn);
+    };
+    add('', t('wsx.parts.whole', lang), false);
+    state.info.parts.forEach((p) => add(p.stem, t('wsx.parts.n', lang, { n: p.n }), p.swapped));
+    return nav;
+  }
+
+  function paintSwitcher() {
+    const cur = currentPart();
+    for (const [key, btn] of refs.partBtns || []) setPressed(btn, key === cur);
   }
 
   function breadcrumb(current) {
@@ -168,10 +279,40 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- header -----
-  function titleSides() {
+  function titleSides(side = state.athleteSide) {
     // The selected athlete first; otherwise lower then upper (the canvas reads "Lower · Upper").
-    const a = state.athleteSide || 'lower';
+    const a = side || 'lower';
     return [a, a === 'lower' ? 'upper' : 'lower'];
+  }
+
+  /** Names and athlete side of a record (athlete ids resolved through the store). */
+  function sidesOf(record) {
+    const st = S();
+    const athletes = obj(st.athletes);
+    const athleteId = obj(st.scope).athlete || st.athlete || '';
+    return {
+      names: { upper: nameFor(record, 'upper', athletes), lower: nameFor(record, 'lower', athletes) },
+      athleteSide: athleteId ? SIDES.find((sd) => obj(obj(record)[sd]).athlete_id === athleteId) || null : null,
+      athleteId,
+      athletes,
+    };
+  }
+
+  /**
+   * What the header shows: a split match's header always reads the primary's record (names in the primary's
+   * frame); a single video's is its own.
+   */
+  function headCtx() {
+    if (state.split && state.head) return { ...state.head, insights: state.headInsights || state.insights };
+    return { record: state.record, names: state.names, athleteSide: state.athleteSide, insights: state.insights };
+  }
+
+  function crumbText() {
+    if (state.dbl) return doublesTitleText();
+    const hd = headCtx();
+    const nm = (side) => hd.names[side] || t('ws.side.' + side, lang);
+    const [a, b] = titleSides(hd.athleteSide);
+    return t('ws.title', lang, { a: nm(a), b: nm(b) });
   }
 
   /** Doubles header: teams title, team-oriented result and sets, the doubles chip and the unvalidated badge. */
@@ -210,15 +351,19 @@ export function mount(container, ctx = {}) {
     ]);
   }
 
-  /** Back; Posture report when /api/videos says the shown video has a posture run; the "..." menu. */
+  /**
+   * Back; for a shown video (not the Whole match, not a part without outputs): Posture report when /api/videos says
+   * it has a posture run, and the "..." menu.
+   */
   function headActions() {
     const s = state.stem;
+    const shown = state.view !== 'whole' && !!state.model;
     return h('div', { class: 'ov-actions' }, [
       h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
-      state.video && state.video.has_posture
+      shown && state.video && state.video.has_posture
         ? h('a', { href: formatHash('results', { stem: s }, { mode: 'posture' }), class: 'ov-btn' }, t('wsx.posture', lang))
         : null,
-      menuButton(),
+      shown ? menuButton() : null,
     ]);
   }
 
@@ -282,13 +427,30 @@ export function mount(container, ctx = {}) {
     return wrap;
   }
 
+  /** The Whole match meta: parts, pooled rallies (weakest honest label) and strokes, failed-part note. */
+  function wholeMeta(meta) {
+    const parts = state.whole.parts;
+    const ok = parts.filter((p) => p.ok);
+    const pr = poolRallyCounts(ok.map((p) => p.summary));
+    const strokes = ok.reduce((n, p) => n + p.strokes.total, 0);
+    meta.appendChild(h('span', { class: 'k-chip' }, t('wsx.parts.count', lang, { n: parts.length })));
+    meta.appendChild(h('span', null, t('ws.summary_line', lang, {
+      rallies: rallyCountText({ count: pr.count, label: pr.label, signal: null }, lang),
+      strokes: t('scope.strokes_count', lang, { n: fmtNumber(strokes) }),
+    })));
+    if (pr.label !== 'rallies') meta.appendChild(h('span', { class: 'mono ov-pill' }, t(pr.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
+    if (pr.failedParts) meta.appendChild(h('span', { class: 'kw-muted' }, t('wsx.parts.failed_note', lang, { n: pr.failedParts })));
+  }
+
   function buildHead() {
     if (state.dbl) return buildDoublesHead();
     const m = state.model;
-    const [a, b] = titleSides();
-    const rec = obj(state.record);
+    const hd = headCtx();
+    const nm = (side) => hd.names[side] || t('ws.side.' + side, lang);
+    const [a, b] = titleSides(hd.athleteSide);
+    const rec = obj(hd.record);
     const res = obj(rec.result);
-    const ins = obj(state.insights);
+    const ins = obj(hd.insights);
     const dateIso = matchDate(rec, ins);
     const date = fmtDate(dateIso, lang);
     const meta = h('div', { class: 'ws-meta' });
@@ -298,28 +460,33 @@ export function mount(container, ctx = {}) {
       meta.appendChild(h('span', { class: 'mono ws-sets' }, pairs.join(' · ')));
     }
     if (SIDES.includes(res.winner)) {
-      if (state.athleteSide) {
-        const win = res.winner === state.athleteSide;
+      if (hd.athleteSide) {
+        const win = res.winner === hd.athleteSide;
         meta.appendChild(h('span', { class: 'k-chip ' + (win ? 'good' : 'bad') }, t(win ? 'ws.result.win' : 'ws.result.loss', lang)));
       } else {
-        meta.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: sideName(res.winner) })));
+        meta.appendChild(h('span', { class: 'k-chip' }, t('result.side_won', lang, { name: nm(res.winner) })));
       }
     }
-    meta.appendChild(h('span', null, t('ws.summary_line', lang, {
-      rallies: rallyCountText(m.summary, lang), strokes: t('scope.strokes_count', lang, { n: fmtNumber(m.summary.strokes.total) }),
-    })));
-    if (m.summary.label !== 'rallies') {
-      meta.appendChild(h('span', { class: 'mono ov-pill' }, t(m.summary.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
+    if (state.view === 'whole') {
+      if (state.whole) wholeMeta(meta);
+    } else if (m) {
+      // A single video, or the selected part: its own rally / stroke line.
+      meta.appendChild(h('span', null, t('ws.summary_line', lang, {
+        rallies: rallyCountText(m.summary, lang), strokes: t('scope.strokes_count', lang, { n: fmtNumber(m.summary.strokes.total) }),
+      })));
+      if (m.summary.label !== 'rallies') {
+        meta.appendChild(h('span', { class: 'mono ov-pill' }, t(m.summary.label === 'windows' ? 'tag.windows' : 'tag.swing_est', lang)));
+      }
+      if (m.summary.doubles) meta.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
     }
-    if (m.summary.doubles) meta.appendChild(h('span', { class: 'k-chip' }, t('doubles.chip', lang)));
     const head = h('div', { class: 'ws-head' }, [
       h('div', { class: 'ws-head-l' }, [
         h('div', { class: 'mono ov-eyebrow' }, [t('ws.eyebrow', lang, { date }),
           matchDateApprox(rec, ins) ? approxMark(lang) : null]),
-        h('h1', { class: 'page-title serif ws-title' }, [sideName(a), h('span', { class: 'ws-vs' }, lang === 'zh' ? '对' : 'vs.'), sideName(b)]),
+        h('h1', { class: 'page-title serif ws-title' }, [nm(a), h('span', { class: 'ws-vs' }, lang === 'zh' ? '对' : 'vs.'), nm(b)]),
         meta,
         // A doubles run has no per-player score: say so instead of showing one.
-        m.summary.doubles ? h('div', { class: 'kw-foot-muted', role: 'note' }, t('reason.doubles_run', lang)) : null,
+        m && m.summary.doubles ? h('div', { class: 'kw-foot-muted', role: 'note' }, t('reason.doubles_run', lang)) : null,
       ]),
       headActions(),
     ]);
@@ -938,15 +1105,21 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- strokes tab: distribution by group (+ the TrackNet provenance note) -----
-  function distributionCard() {
-    const d = strokeDistribution(state.strokesDoc);
+  /**
+   * One video's distribution by default; the Whole match passes the pooled one. `hasStrokes` tells a stale strokes
+   * file (labels out of date) from no strokes at all; `tracknet` adds the provenance note.
+   */
+  function distributionCard({
+    d = strokeDistribution(state.strokesDoc),
+    hasStrokes = Array.isArray(obj(state.strokesDoc).strokes) && state.strokesDoc.strokes.length > 0,
+    tracknet = trackNetNote(state.strokesDoc),
+  } = {}) {
     const sec = h('section', { class: 'card hud ws-dist', 'aria-label': t('wsx.dist.title', lang) });
     sec.appendChild(h('div', { class: 'ws-sec-head' }, [
       h('h2', { class: 'card-title' }, t('wsx.dist.title', lang)),
       d.total ? h('span', { class: 'card-sub' }, t('wsx.dist.total', lang, { n: fmtNumber(d.total) })) : null,
     ]));
     if (!d.total) {
-      const hasStrokes = Array.isArray(obj(state.strokesDoc).strokes) && state.strokesDoc.strokes.length > 0;
       sec.appendChild(h('div', { class: 'kw-note' }, t(d.stale && hasStrokes ? 'ws.stroke_stale' : 'ws.empty.title', lang)));
     } else {
       const text = d.groups.map((g) => `${techLabel(g.id, lang)} ${g.count}`).join(', ');
@@ -959,7 +1132,7 @@ export function mount(container, ctx = {}) {
         h('span', { class: 'mono kw-muted' }, `${g.count} · ${Math.round((g.count / d.total) * 100)}%`),
       ]))));
     }
-    if (trackNetNote(state.strokesDoc)) sec.appendChild(h('div', { class: 'kw-foot-muted' }, t('wsx.tracknet', lang)));
+    if (tracknet) sec.appendChild(h('div', { class: 'kw-foot-muted' }, t('wsx.tracknet', lang)));
     return sec;
   }
 
@@ -995,7 +1168,9 @@ export function mount(container, ctx = {}) {
     if (panels[id]) return panels[id].el;
     const s = state.stem;
     let p;
-    if (id === 'technique') {
+    if (state.view === 'whole') {
+      p = { el: wholeTabBody(id) };
+    } else if (id === 'technique') {
       p = { el: techniquePanel({ lang, summary: techniqueSummary(state.tech, { doubles: !!state.dbl || state.model.summary.doubles }) }) };
     } else if (id === 'clips') {
       const sm = state.model.summary;
@@ -1037,7 +1212,8 @@ export function mount(container, ctx = {}) {
     }
     if (tab !== state.tab) {
       state.tab = tab;
-      if (state.model) renderTab();
+      // No tab bar while a view loads (teardown clears it): the next render opens state.tab.
+      if (refs.tabPanel) renderTab();
     }
     if (fromUser && ctx.router && typeof ctx.router.replace === 'function') ctx.router.replace(formatHash('matches', { stem }, state.query));
   }
@@ -1048,30 +1224,42 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- render -----
+  /** Start a view: release the previous one, (re)build the frame, refresh breadcrumb, header and switcher. */
+  function beginView() {
+    teardown();
+    if (!refs.framed) frame();
+    root.classList.remove('settled');
+    swapNode('crumb', breadcrumb(crumbText()));
+    const head = buildHead();
+    swapNode('head', head);
+    paintSwitcher();
+    refs.body.textContent = '';
+    setText(refs.live, '');
+    return head;
+  }
+
+  function startReveal() {
+    clock.start();
+    // Entrance animations play once; anything built after this (a new strip, more rows) appears at once.
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(settle, SETTLE_MS);
+  }
+
+  /** One video (a single match, or the selected part of a split match). */
   function renderAll() {
     if (state.destroyed) return;
-    closeMenu(false);
-    destroyPanels();
-    if (refs.player) refs.player.destroy();
-    root.textContent = '';
-    root.classList.remove('settled');
-    root.appendChild(breadcrumb(state.dbl ? doublesTitleText() : t('ws.title', lang, { a: sideName(titleSides()[0]), b: sideName(titleSides()[1]) })));
-    const head = buildHead();
-    root.appendChild(head);
+    const head = beginView();
     const video = buildVideo();
     const timeline = buildTimeline();
     refs.listSec = buildList();
     const move = buildMovement();
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
-    // One persistent polite live region: a short line per selection, not the whole inspector.
-    refs.live = h('div', { class: 'ws-sr', role: 'status', 'aria-live': 'polite' });
     const main = h('div', { class: 'ws-main' }, [video, timeline]);
     const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [move, refs.inspHost, refs.sumHost]);
-    root.appendChild(h('div', { class: 'ws-top' }, [main, side]));
+    refs.body.appendChild(h('div', { class: 'ws-top' }, [main, side]));
     const tabs = buildTabs();
-    root.appendChild(tabs);
-    root.appendChild(refs.live);
+    refs.body.appendChild(tabs);
     sections = [head, video, timeline, move, refs.inspHost, refs.sumHost, tabs];
     renderTab();
     paintLane();
@@ -1079,10 +1267,84 @@ export function mount(container, ctx = {}) {
     renderFilters();
     renderRows();
     renderSide(false);
-    clock.start();
-    // Entrance animations play once; anything built after this (a new strip, more rows) appears at once.
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(settle, SETTLE_MS);
+    startReveal();
+  }
+
+  // ----- Whole match view (split matches) -----
+  function partCard(p) {
+    const v = obj(p.video);
+    const poster = typeof v.thumb === 'string' && v.thumb
+      ? h('img', { class: 'ws-part-poster', src: v.thumb, alt: '', loading: 'lazy' })
+      : h('span', { class: 'mv-thumb ws-part-poster', 'aria-hidden': 'true' });
+    const line = (text, cls) => h('span', { class: 'ws-part-line' + (cls ? ' ' + cls : '') }, text);
+    const title = t('wsx.parts.n', lang, { n: p.n });
+    return h('button', { type: 'button', class: 'ws-part-card', 'data-part': p.stem, onclick: () => goPart(p.stem) }, [
+      poster,
+      h('span', { class: 'ws-part-title' }, [
+        h('strong', null, title),
+        isNum(v.duration_sec) ? h('span', { class: 'mono kw-muted' }, fmtDuration(v.duration_sec)) : null,
+        p.swapped ? h('span', { class: 'k-chip mid' }, t('wsx.parts.swapped', lang)) : null,
+      ]),
+      p.ok
+        ? [
+          line(rallyCountText(p.summary, lang)),
+          line(t('scope.strokes_count', lang, { n: fmtNumber(p.strokes.total) })),
+          line([t('wsx.parts.tech', lang), ' ', h('span', { class: 'mono' }, p.techIndex === null ? '—' : num1(p.techIndex))]),
+        ]
+        : line(t('wsx.parts.not_analysed', lang), 'kw-muted'),
+    ]);
+  }
+
+  /** The per-part strokes table under the pooled distribution. */
+  function partsTable() {
+    const rows = state.whole.parts.map((p) => h('tr', null, [
+      h('td', null, t('wsx.parts.n', lang, { n: p.n })),
+      h('td', { class: 'mono kw-num' }, p.ok ? fmtNumber(p.strokes.total) : '—'),
+      h('td', { class: 'mono kw-num' }, p.ok ? fmtNumber(p.strokes.uncertain) : '—'),
+    ]));
+    return h('section', { class: 'card hud ws-list' }, h('table', { class: 'table ws-table' }, [
+      h('thead', null, h('tr', null, [
+        h('th', { scope: 'col' }, t('wsx.parts.col.part', lang)),
+        h('th', { scope: 'col', class: 'kw-num' }, t('ws.summary.strokes', lang)),
+        h('th', { scope: 'col', class: 'kw-num' }, t('wsx.parts.col.uncertain', lang)),
+      ])),
+      h('tbody', null, rows),
+    ]));
+  }
+
+  /** Whole match tab bodies: pooled strokes and technique; clips and plans point at the parts. */
+  function wholeTabBody(id) {
+    const ok = state.whole.parts.filter((p) => p.ok);
+    if (id === 'technique') {
+      return techniquePanel({ lang, summary: poolTechnique(ok.map((p) => p.techSummary)), note: t('wsx.parts.pooled', lang) });
+    }
+    if (id === 'clips' || id === 'plan') {
+      return h('div', { class: 'ws-part-pick' }, [
+        h('p', { class: 'kw-note' }, t('wsx.parts.per_video', lang)),
+        h('div', { class: 'ws-part-links' }, state.whole.parts.map((p) => h('button', {
+          type: 'button', class: 'ov-btn small', onclick: () => goPart(p.stem, id),
+        }, t('wsx.parts.n', lang, { n: p.n })))),
+      ]);
+    }
+    const d = poolDistribution(ok.map((p) => p.dist));
+    return h('div', { class: 'ws-strokes-tab' }, [
+      distributionCard({ d, hasStrokes: ok.some((p) => p.strokes.total > 0), tracknet: ok.some((p) => p.tracknet) }),
+      partsTable(),
+    ]);
+  }
+
+  function renderWhole() {
+    if (state.destroyed) return;
+    const head = beginView();
+    const parts = state.whole.parts;
+    const cards = h('div', { class: 'ws-part-cards' }, parts.map(partCard));
+    // Heatmap + scatter per analysed part, captioned "Part N" (images are never merged across parts).
+    const move = movementCard({ lang, items: parts.filter((p) => p.ok).map((p) => ({ stem: p.stem, caption: t('wsx.parts.n', lang, { n: p.n }) })) });
+    const tabs = buildTabs();
+    [cards, move, tabs].forEach((n) => refs.body.appendChild(n));
+    sections = [head, cards, move, tabs];
+    renderTab();
+    startReveal();
   }
 
   function settle() {
@@ -1163,10 +1425,29 @@ export function mount(container, ctx = {}) {
   // ----- data -----
   const isAborted = (r) => !!(r && r.error && r.error.kind === 'aborted');
 
+  /** Abort whatever is loading and start a new request group; returns its controller (compare to `ctl` later). */
+  function newRequest() {
+    if (ctl && typeof ctl.abort === 'function') ctl.abort();
+    ctl = typeof AbortController === 'function' ? new AbortController() : {};
+    return ctl;
+  }
+  const reqOpts = (c) => ({ ...LONG, ...(typeof c.abort === 'function' ? { signal: c.signal } : {}) });
+  const stale = (mine) => state.destroyed || mine !== ctl;
+
+  /** A stem's /api/matches record, fetched once per visit. */
+  async function recordOf(s, o) {
+    if (!recs[s]) {
+      const r = await soft(api.match(s, o));
+      if (isAborted(r)) return r;
+      recs[s] = r;
+    }
+    return recs[s];
+  }
+
   /**
    * Fetch one stem's run files (rally_segments, strokes, metadata, technique, insights, match record; for a doubles
    * run also players.json and hits.json). Never throws: {status: 'ok' | 'notfound' | 'error' | 'aborted', error,
-   * ...the soft() results}. Used for the page's own stem and (Task 7) for a linked part's stem.
+   * ...the soft() results}. The single video and a split match's part both load through it.
    */
   async function fetchStem(s, o) {
     const out = (f) => soft(getJSON(endpoints.output(s, f), o));
@@ -1174,7 +1455,7 @@ export function mount(container, ctx = {}) {
       out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
       soft(getJSON('/api/technique/' + encodeURIComponent(s), o)),
       soft(api.videoInsights(s, o)),
-      soft(api.match(s, o)),
+      recordOf(s, o),
     ]);
     if ([rally, strokes, meta, tech, ins, rec].some(isAborted)) return { status: 'aborted' };
     const fileish = [rally, strokes, meta, ins];
@@ -1194,17 +1475,16 @@ export function mount(container, ctx = {}) {
   function applyStem(s, d) {
     state.stem = s;
     state.video = (state.videos || []).find((v) => v && v.name === s) || null;
+    // A part's record is the resolved one (its sides already swapped), so the body names each side right.
     state.record = d.rec.ok ? obj(d.rec.data) : {};
     state.insights = d.ins.ok ? obj(d.ins.data) : null;
     state.strokesDoc = d.strokes.ok ? d.strokes.data : null;
     state.tech = d.tech.ok ? d.tech.data : null;
     // 404 = absent; an unreadable file is treated the same (status "No players data"), never as ok.
     state.playersFile = d.pl && d.pl.ok && d.pl.data && typeof d.pl.data === 'object' && !Array.isArray(d.pl.data) ? d.pl.data : null;
-    const st = S();
-    const athletes = obj(st.athletes);
-    state.names = { upper: nameFor(state.record, 'upper', athletes), lower: nameFor(state.record, 'lower', athletes) };
-    const athleteId = obj(st.scope).athlete || st.athlete || '';
-    state.athleteSide = athleteId ? SIDES.find((sd) => obj(state.record[sd]).athlete_id === athleteId) || null : null;
+    const sides = sidesOf(state.record);
+    state.names = sides.names;
+    state.athleteSide = sides.athleteSide;
     const fps = obj(obj(d.meta.data).video).fps;
     state.dbl = d.pl || d.hi ? doublesWorkspaceModel({
       playersFile: state.playersFile,
@@ -1212,8 +1492,8 @@ export function mount(container, ctx = {}) {
       insights: state.insights,
       fps: resolveFps(fps, rallyInput(d.rally), state.insights),
       record: state.record,
-      athletes,
-      athleteId,
+      athletes: sides.athletes,
+      athleteId: sides.athleteId,
       lang,
     }) : null;
     state.model = buildWorkspaceModel({
@@ -1237,46 +1517,163 @@ export function mount(container, ctx = {}) {
     state.hitSel = firstHit ? firstHit.i : null;
   }
 
-  async function load() {
-    if (ctl && typeof ctl.abort === 'function') ctl.abort();
-    ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    const mine = ctl;
-    const o = { ...LONG, ...(ctl ? { signal: ctl.signal } : {}) };
-    renderStatus('loading');
-    // The video list is soft: a failure only hides the Posture report link.
-    const [res, vids] = await Promise.all([fetchStem(stem, o), soft(api.videos(o))]);
-    if (state.destroyed || mine !== ctl || res.status === 'aborted') return;
-    if (res.status === 'notfound') {
-      renderStatus('notfound');
+  /** Nothing of a video is shown (a part loading or missing, the Whole match). */
+  function clearVideoState(s) {
+    Object.assign(state, { stem: s, video: null, model: null, dbl: null, strokesDoc: null, tech: null, playersFile: null, insights: null });
+  }
+
+  /**
+   * Load and show one video: the single match (whole-page state cards) or the selected part of a split match (state
+   * cards inside the body, header and switcher kept).
+   */
+  async function loadPart(s) {
+    const mine = newRequest();
+    clearVideoState(s);
+    if (state.split) renderBodyStatus('loading');
+    else renderStatus('loading');
+    const res = await fetchStem(s, reqOpts(mine));
+    if (stale(mine) || res.status === 'aborted') return;
+    if (res.status !== 'ok') {
+      if (state.split) renderBodyStatus(res.status, res.error);
+      else renderStatus(res.status, res.error);
       return;
     }
-    if (res.status === 'error') {
-      renderStatus('error', res.error);
-      return;
-    }
-    state.videos = vids.ok && Array.isArray(vids.data) ? vids.data : null;
-    applyStem(stem, res);
+    applyStem(s, res);
+    if (state.split && s === state.info.primary) state.headInsights = state.insights;
     renderAll();
+  }
+
+  /**
+   * The lighter per-part load of the Whole match: rally_segments, strokes, metadata, technique and insights. A part
+   * whose files all fail (not analysed yet, or unreadable) comes back with ok false and is left out of the pools.
+   * Returns null when aborted.
+   */
+  async function loadPartSummary(p, o, athleteSide) {
+    const out = (f) => soft(getJSON(endpoints.output(p.stem, f), o));
+    const [rally, strokes, meta, tech, ins] = await Promise.all([
+      out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
+      soft(getJSON('/api/technique/' + encodeURIComponent(p.stem), o)),
+      soft(api.videoInsights(p.stem, o)),
+    ]);
+    if ([rally, strokes, meta, tech, ins].some(isAborted)) return null;
+    const video = (state.videos || []).find((v) => v && v.name === p.stem) || null;
+    const ok = [rally, strokes, meta, ins].some((r) => r.ok);
+    if (!ok) return { ...p, video, ok: false };
+    const insights = ins.ok ? obj(ins.data) : null;
+    const doc = strokes.ok ? strokes.data : null;
+    const m = buildWorkspaceModel({ rallies: rallyInput(rally), strokes: doc, fps: obj(obj(meta.data).video).fps, insights });
+    // The athlete's side in this part: the primary's, flipped when the part's sides are swapped.
+    const side = athleteSide ? (p.swapped ? (athleteSide === 'lower' ? 'upper' : 'lower') : athleteSide) : null;
+    return {
+      ...p,
+      video,
+      ok: true,
+      insights,
+      summary: m.summary,
+      strokes: { total: m.summary.strokes.total, uncertain: m.summary.strokes.uncertain },
+      dist: strokeDistribution(doc),
+      tracknet: trackNetNote(doc),
+      techSummary: techniqueSummary(tech.ok ? tech.data : null, { doubles: m.summary.doubles }),
+      techIndex: partTechIndex(insights, side),
+    };
+  }
+
+  /** The Whole match: every part's summary in parallel (once per visit), then the cards, movement and pools. */
+  async function loadWhole() {
+    const mine = newRequest();
+    clearVideoState(state.info.primary);
+    if (!state.whole) {
+      if (refs.framed) renderBodyStatus('loading');
+      else renderStatus('loading');
+      const o = reqOpts(mine);
+      const side = state.head ? state.head.athleteSide : null;
+      const parts = await Promise.all(state.info.parts.map((p) => loadPartSummary(p, o, side)));
+      if (stale(mine) || parts.some((p) => p === null)) return;
+      state.whole = { parts };
+      if (parts[0].ok) state.headInsights = parts[0].insights;
+    }
+    renderWhole();
+  }
+
+  /**
+   * Resolve the view from the query (spec section 5): a redirect goes through router.replace (the router then
+   * remounts, or calls setQuery for the same stem); otherwise load the single video, a part or the Whole match.
+   */
+  function showView() {
+    const r = resolvePartQuery(state.info, stem, state.query);
+    if (r.redirect && ctx.router && typeof ctx.router.replace === 'function') {
+      state.waiting = true;
+      newRequest();
+      ctx.router.replace(r.redirect);
+      return;
+    }
+    state.waiting = false;
+    state.view = r.view;
+    state.partStem = r.view === 'whole' ? null : r.partStem;
+    state.tab = resolveTab(state.query);
+    if (r.view === 'whole') loadWhole();
+    else loadPart(r.partStem || stem);
+  }
+
+  /** Read the match record (and a part's primary's), the video list, then show the view the query asks for. */
+  async function load() {
+    const mine = newRequest();
+    const o = reqOpts(mine);
+    state.info = null;
+    state.whole = null;
+    // A (re)load reads every record again (Retry after a failed read must not reuse it).
+    Object.keys(recs).forEach((k) => { delete recs[k]; });
+    renderStatus('loading');
+    // The video list is soft: a failure only hides the Posture report link and the part posters.
+    const [rec, vids] = await Promise.all([recordOf(stem, o), soft(api.videos(o))]);
+    if (stale(mine) || isAborted(rec) || isAborted(vids)) return;
+    state.videos = vids.ok && Array.isArray(vids.data) ? vids.data : null;
+    // A part's record names its primary (part_of): the parts list and the header come from the primary's record.
+    const partOf = rec.ok ? obj(rec.data).part_of : null;
+    let primary = stem;
+    let prec = rec;
+    if (typeof partOf === 'string' && partOf && partOf !== stem) {
+      primary = partOf;
+      prec = await recordOf(partOf, o);
+      if (stale(mine) || isAborted(prec)) return;
+    }
+    const precord = prec.ok ? obj(prec.data) : {};
+    state.info = matchParts(precord, primary);
+    state.split = state.info.split;
+    if (state.split) {
+      const sides = sidesOf(precord);
+      state.head = { record: precord, names: sides.names, athleteSide: sides.athleteSide };
+    }
+    showView();
   }
 
   load();
 
-  /** Same route, new query (main.js): follow the tab in place; the router is not called again. */
+  /**
+   * Same route, new query (main.js): a `part` change (or a pending redirect) re-resolves the view in place; a tab
+   * change opens that tab; the router is not called again. While the record still loads, load() reads the query.
+   */
   function setQuery(query) {
     if (state.destroyed) return;
+    const prev = state.query;
     state.query = { ...obj(query) };
+    if (!state.info) {
+      state.tab = resolveTab(state.query);
+      return;
+    }
+    if (state.waiting || state.query.part !== prev.part) {
+      showView();
+      return;
+    }
     selectTab(resolveTab(state.query), false);
   }
 
   function destroy() {
     if (state.destroyed) return;
     state.destroyed = true;
-    clock.cancel();
+    teardown();
     clearTimeout(settleTimer);
-    closeMenu(false);
-    destroyPanels();
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
-    if (refs.player) refs.player.destroy();
     if (root.parentNode) root.parentNode.removeChild(root);
   }
 

@@ -687,6 +687,25 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .ws-dist-legend li{display:inline-flex;align-items:center;gap:6px;}
 .ws-ident-link{align-self:flex-start;color:var(--accentInk);font-weight:600;font-size:13.5px;text-decoration:none;}
 .ws-ident-link:hover{text-decoration:underline;}
+/* match details: page body and the split-match part switcher / Whole match cards */
+.ws-body{display:flex;flex-direction:column;gap:24px;min-width:0;}
+.ws-parts{display:flex;flex-wrap:wrap;gap:6px;}
+.ws-part-btn{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink2);font-size:13px;font-weight:600;cursor:pointer;}
+.ws-part-btn:hover{border-color:var(--lineHi);}
+.ws-part-btn:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.ws-part-btn.on{border-color:var(--ink);background:var(--ink);color:var(--surface);}
+.ws-part-btn .k-chip{height:20px;font-size:11px;}
+.ws-part-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;}
+.ws-part-card{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;gap:6px;min-width:0;padding:0 0 14px;overflow:hidden;
+  border:1px solid var(--line);border-radius:var(--r-card);background:var(--surface);color:var(--ink);font-size:13px;}
+.ws-part-card:hover{border-color:var(--lineHi);}
+.ws-part-card:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.ws-part-poster{display:block;width:100%;height:auto;aspect-ratio:16/9;object-fit:cover;background:var(--surface2);border:0;border-bottom:1px solid var(--line);border-radius:0;margin-bottom:4px;}
+.ws-part-title{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:0 14px;font-size:14px;}
+.ws-part-line{display:block;padding:0 14px;color:var(--ink2);}
+.ws-part-pick{display:flex;flex-direction:column;gap:10px;}
+.ws-part-pick .kw-note{margin:0;}
+.ws-part-links{display:flex;flex-wrap:wrap;gap:8px;}
 @media (max-width:719px){
   .mv-search{flex-basis:100%;}
   .mv-grid{grid-template-columns:1fr;}

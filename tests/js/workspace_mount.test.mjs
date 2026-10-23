@@ -215,3 +215,33 @@ test('doubles: technique withheld, identity video link, team and player heatmaps
     assert.equal(everything(container).some((e) => e.tagName === 'A' && e.textContent === 'Posture report'), false);
   }, { routes: doubles(), stem: 'd' });
 });
+
+test('a confirmed Delete analysis results navigates to the Matches list', async () => {
+  await withPage(async ({ container, doc, calls }) => {
+    const deleted = [];
+    api.deletePreview = async () => ({ ok: true, groups: [{ key: 'match', files: 2, size_mb: 1 }], total_files: 2, total_size_mb: 1 });
+    api.deleteVideo = async (stem, scope) => { deleted.push([stem, scope]); return { ok: true }; };
+    container.querySelector('.ws-menu-btn').click();
+    container.querySelector('.ws-menu [role="menuitem"]').click();
+    await tick(1);
+    const go = doc.body.querySelector('.mv-del-go');
+    assert.equal(go.disabled, false);
+    go.click();
+    await tick(5);
+    assert.deepEqual(deleted, [['s', 'match']]);
+    assert.deepEqual(calls.navigate, ['#/matches']);
+  });
+});
+
+test('setQuery with the tab already open is a no-op (same panel node, no router call)', async () => {
+  await withPage(async ({ container, inst, calls }) => {
+    const panelEl = container.querySelector('[role="tabpanel"]');
+    const body = panelEl.firstChild;
+    inst.setQuery({});
+    inst.setQuery({ tab: 'strokes' });
+    assert.equal(panelEl.firstChild, body);
+    assert.equal(container.querySelector('[role="tabpanel"]'), panelEl);
+    assert.equal(calls.replace.length, 0);
+    assert.equal(calls.navigate.length, 0);
+  });
+});
