@@ -338,7 +338,7 @@
 .ws-vs{font-family:var(--font-ui);font-size:15px;letter-spacing:.04em;color:var(--ink3);margin:0 8px;}
 .ws-meta{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:8px;font-size:14px;color:var(--ink2);}
 .ws-sets{font-weight:500;color:var(--ink);}
-.ws-grid{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}
+.ws-top{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}
 .ws-main{flex:8 1 560px;min-width:0;display:flex;flex-direction:column;gap:16px;}
 .ws-side{flex:4 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px;}
 .ws-slot{display:flex;flex-direction:column;min-width:0;}
@@ -664,6 +664,29 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .ws-plan-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:3px;}
 .ws-plan-link{align-self:flex-start;color:var(--accentInk);font-weight:600;text-decoration:none;}
 .ws-plan-link:hover{text-decoration:underline;}
+/* match details: header "..." menu (the Matches row menu's look, anchored under its button) */
+.ws-menu-wrap{position:relative;display:inline-flex;}
+.ws-menu-btn{min-width:40px;justify-content:center;font-size:16px;line-height:1;}
+.ws-menu-btn[aria-expanded="true"]{border-color:var(--cyan);color:var(--cyanInk);}
+.ws-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:45;min-width:210px;display:flex;flex-direction:column;padding:6px;
+  background:var(--surface);border:1px solid var(--lineHi);border-radius:12px;box-shadow:0 18px 48px var(--shadow);animation:kUp .25s var(--ease) both;text-align:left;}
+/* match details: tabs under the top band */
+.ws-tabwrap{display:flex;flex-direction:column;min-width:0;}
+.ws-tabs{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--line);}
+.ws-tab{all:unset;box-sizing:border-box;cursor:pointer;padding:10px 14px;font-size:14px;font-weight:600;color:var(--ink2);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;}
+.ws-tab:hover{color:var(--ink);}
+.ws-tab:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px;border-radius:6px;}
+.ws-tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);}
+.ws-tabpanel{margin-top:12px;min-width:0;}
+.ws-tabpanel:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;border-radius:6px;}
+.ws-strokes-tab{display:flex;flex-direction:column;gap:16px;min-width:0;}
+/* match details: stroke distribution (segments sized by count, the stroke strip's group colours) */
+.ws-dist-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--surface2);}
+.ws-dist-seg{min-width:3px;background:var(--tc,var(--ink3));}
+.ws-dist-legend{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--ink);}
+.ws-dist-legend li{display:inline-flex;align-items:center;gap:6px;}
+.ws-ident-link{align-self:flex-start;color:var(--accentInk);font-weight:600;font-size:13.5px;text-decoration:none;}
+.ws-ident-link:hover{text-decoration:underline;}
 @media (max-width:719px){
   .mv-search{flex-basis:100%;}
   .mv-grid{grid-template-columns:1fr;}

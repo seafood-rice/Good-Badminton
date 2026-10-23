@@ -849,7 +849,7 @@ export function mount(container, ctx = {}) {
     go(state.ctx, anchor, openTarget(r));
   }
 
-  // ----- the "..." menu (Edit tags, Classic results, Posture report, Delete video) -----
+  // ----- the "..." menu (Edit tags, Posture report, Delete video) -----
   let menu = null;
 
   function closeMenu(focusBack = true) {
@@ -889,7 +889,6 @@ export function mount(container, ctx = {}) {
     const v = obj(r.video);
     const stem = r.stem;
     const items = [{ key: 'lib.menu.tags', run: () => openTagEditor({ video: v, lang, knownTags: knownUserTags(), onClose: ({ changed }) => afterTool(stem, changed) }) }];
-    if (v.has_match) items.push({ key: 'lib.menu.classic', run: () => go(state.ctx, null, formatHash('results', { stem }, { mode: 'match' })) });
     if (v.has_posture) items.push({ key: 'lib.menu.posture', run: () => go(state.ctx, null, formatHash('results', { stem }, { mode: 'posture' })) });
     items.push({
       key: 'lib.menu.delete', danger: true,

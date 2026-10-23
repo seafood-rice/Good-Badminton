@@ -1,8 +1,11 @@
-// Match workspace (#/matches/<stem>, spec 6.5): the annotated video, a single-lane rally timeline, the stroke
-// strip and list, the stroke inspector and the rally summary. The pure logic (buildWorkspaceModel and the text
-// helpers) lives in workspace_model.js and is re-exported here; mount() is the DOM layer over it. Honesty rules:
-// there is no point outcome, so nothing is marked won or lost; swing segments are "segments (estimated)",
-// degraded ones "windows"; uncertain strokes are muted and labelled so; opponent strokes are shown but never scored.
+// Match details page (#/matches/<stem>, spec 2026-10-24 sections 4 and 6), layout A: on top the annotated video
+// with the rally timeline and stroke strip, beside it the movement card, the stroke inspector (doubles: the players
+// panel) and the rally summary; below, the Strokes | Technique | Clips | Training plan tabs. The header carries
+// Back, the Posture report link (when the video has a posture run) and a "..." menu (Delete analysis results). The
+// pure logic (buildWorkspaceModel and the text helpers) lives in workspace_model.js and is re-exported here; mount()
+// is the DOM layer over it. Honesty rules: there is no point outcome, so nothing is marked won or lost; swing
+// segments are "segments (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so;
+// opponent strokes are shown but never scored.
 import { t, TECHNIQUE_IDS } from '../core/i18n.js';
 import { fmtDate, fmtNumber } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
@@ -11,11 +14,17 @@ import { api, getJSON, endpoints, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets/frame.js';
 import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
 import { createPlayer } from '../widgets/player.js';
+import { movementCard } from '../widgets/movement.js';
+import { techniquePanel } from '../widgets/technique.js';
+import { clipsPanel } from '../widgets/clips.js';
+import { planPanel } from '../widgets/plan.js';
+import { openDeleteDialog } from '../widgets/videotools.js';
 import { doublesWorkspaceModel, doublesVideoFiles, hitsInWindow } from './doubles_model.js';
 import {
   RALLY_PAD_SEC, JOIN_FRAMES, STROKE_PAGE, summariseRallyPayload, buildWorkspaceModel, matchDate, matchDateApprox,
   listScore, rallyInput, rallyCountText, capItems, readReduced, resolveFps, soft, nameFor, unitKey, signalNote,
   techLabel, strokeName, techCode, metricLabel, clockText, num1, isNum, obj, SIDES,
+  TABS, resolveTab, strokeDistribution, trackNetNote, techniqueSummary, weaknessLines,
 } from './workspace_model.js';
 
 export {
@@ -28,9 +37,12 @@ const SETTLE_MS = 2600;
 
 // ---------- DOM ----------
 
-/** Mount the workspace for ctx.params.stem. Returns {destroy()}. */
+/**
+ * Mount the match details page for ctx.params.stem. Returns {destroy(), setQuery(query)}: setQuery follows a new
+ * query of the same route in place (the tab) without remounting or reloading the video.
+ */
 export function mount(container, ctx = {}) {
-  const noop = { destroy() {} };
+  const noop = { destroy() {}, setQuery() {} };
   if (!container || !hasDOM()) return noop;
   const stem = String(obj(ctx.params).stem || '');
   const lang = ctx.lang === 'en' ? 'en' : 'zh';
@@ -39,6 +51,17 @@ export function mount(container, ctx = {}) {
 
   const state = {
     destroyed: false,
+    // The route's query (kept so a tab change rewrites the hash with the rest of it) and the open tab.
+    query: { ...obj(ctx.query) },
+    tab: resolveTab(ctx.query),
+    // The stem whose data is shown (the route's stem for a single video; Task 7 loads a part's stem here).
+    stem,
+    // That stem's /api/videos row (has_posture, thumb, ...) or null; `videos` is the whole list (null: failed).
+    videos: null,
+    video: null,
+    strokesDoc: null,
+    tech: null,
+    playersFile: null,
     model: null,
     record: {},
     athleteSide: null,
@@ -56,6 +79,9 @@ export function mount(container, ctx = {}) {
     hitListLimit: STROKE_PAGE,
   };
   const refs = {};
+  // Tab bodies, built on first open and kept (the clips and plan panels hold their own state and requests).
+  let panels = {};
+  let menu = null;
   let ctl = null;
   let sections = [];
   let settleTimer = null;
@@ -180,11 +206,80 @@ export function mount(container, ctx = {}) {
         meta,
         h('div', { class: 'kw-foot-muted', role: 'note' }, t('dbl.strokes_withheld', lang)),
       ]),
-      h('div', { class: 'ov-actions' }, [
-        h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
-        h('a', { href: formatHash('results', { stem }, { mode: 'match' }), class: 'ov-btn' }, t('ws.results_link', lang)),
-      ]),
+      headActions(),
     ]);
+  }
+
+  /** Back; Posture report when /api/videos says the shown video has a posture run; the "..." menu. */
+  function headActions() {
+    const s = state.stem;
+    return h('div', { class: 'ov-actions' }, [
+      h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
+      state.video && state.video.has_posture
+        ? h('a', { href: formatHash('results', { stem: s }, { mode: 'posture' }), class: 'ov-btn' }, t('wsx.posture', lang))
+        : null,
+      menuButton(),
+    ]);
+  }
+
+  // ----- header "..." menu (the look and keys of the Matches row menu) -----
+  function closeMenu(focusBack = true) {
+    if (!menu) return;
+    const { node, btn, onDoc } = menu;
+    menu = null;
+    if (node.parentNode) node.parentNode.removeChild(node);
+    if (typeof document.removeEventListener === 'function') document.removeEventListener('pointerdown', onDoc, true);
+    btn.setAttribute('aria-expanded', 'false');
+    if (focusBack) focusNode(btn);
+  }
+
+  function menuItems() {
+    const s = state.stem;
+    return [{
+      key: 'wsx.menu.delete', danger: true,
+      run: () => openDeleteDialog({
+        stem: s, lang, scope: 'match',
+        // The match's analysis is gone: its details page has nothing left to show.
+        onClose: ({ deleted } = {}) => {
+          if (deleted && !state.destroyed && ctx.router && typeof ctx.router.navigate === 'function') ctx.router.navigate('#/matches');
+        },
+      }),
+    }];
+  }
+
+  function openMenu(btn, wrap) {
+    if (menu) { closeMenu(); return; }
+    const node = h('div', { class: 'ws-menu', role: 'menu', 'aria-label': t('wsx.menu', lang) });
+    const buttons = menuItems().map((it) => h('button', {
+      type: 'button', role: 'menuitem', class: 'mv-menu-i' + (it.danger ? ' danger' : ''), 'data-item': it.key,
+      // Focus goes back to the "..." button first, so the dialog returns focus there when it closes.
+      onclick: () => { closeMenu(); it.run(); },
+    }, t(it.key, lang)));
+    buttons.forEach((b) => node.appendChild(b));
+    node.addEventListener('keydown', (e) => {
+      const i = buttons.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); if (typeof e.stopPropagation === 'function') e.stopPropagation(); closeMenu(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); focusNode(buttons[(i + 1) % buttons.length]); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); focusNode(buttons[(i - 1 + buttons.length) % buttons.length]); }
+      else if (e.key === 'Tab') closeMenu();
+    });
+    const onDoc = (e) => { if (menu && !node.contains(e.target) && !btn.contains(e.target)) closeMenu(false); };
+    if (typeof document.addEventListener === 'function') document.addEventListener('pointerdown', onDoc, true);
+    wrap.appendChild(node);
+    btn.setAttribute('aria-expanded', 'true');
+    menu = { node, btn, onDoc };
+    focusNode(buttons[0]);
+  }
+
+  function menuButton() {
+    const wrap = h('span', { class: 'ws-menu-wrap' });
+    const btn = h('button', {
+      type: 'button', class: 'ov-btn ws-menu-btn', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+      'aria-label': t('wsx.menu', lang), title: t('wsx.menu', lang),
+      onclick: () => openMenu(btn, wrap),
+    }, h('span', { 'aria-hidden': 'true' }, '⋯'));
+    wrap.appendChild(btn);
+    return wrap;
   }
 
   function buildHead() {
@@ -226,10 +321,7 @@ export function mount(container, ctx = {}) {
         // A doubles run has no per-player score: say so instead of showing one.
         m.summary.doubles ? h('div', { class: 'kw-foot-muted', role: 'note' }, t('reason.doubles_run', lang)) : null,
       ]),
-      h('div', { class: 'ov-actions' }, [
-        h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
-        h('a', { href: formatHash('results', { stem }, { mode: 'match' }), class: 'ov-btn' }, t('ws.results_link', lang)),
-      ]),
+      headActions(),
     ]);
     return head;
   }
@@ -240,11 +332,12 @@ export function mount(container, ctx = {}) {
     // detect_<stem>_h264.mp4 is tried second for runs where the replace step did not happen.
     // A doubles run plays detect_<stem>_players.mp4 first, only when players.json says its render is ok; if that
     // file cannot be played the annotated video follows.
+    const s = state.stem;
     const files = state.dbl
-      ? doublesVideoFiles(stem, state.dbl.identityVideoOk ? { status: 'ok' } : null)
-      : [`detect_${stem}.mp4`, `detect_${stem}_h264.mp4`];
+      ? doublesVideoFiles(s, state.dbl.identityVideoOk ? { status: 'ok' } : null)
+      : [`detect_${s}.mp4`, `detect_${s}_h264.mp4`];
     const player = createPlayer({
-      files: files.map((f) => endpoints.output(stem, f)),
+      files: files.map((f) => endpoints.output(s, f)),
       lang,
       labels: { prev: t('ws.prev_rally', lang), next: t('ws.next_rally', lang) },
       onPrev: () => stepUnit(-1),
@@ -688,6 +781,11 @@ export function mount(container, ctx = {}) {
         ? t('dbl.ws.named_line', lang, { named: fmtNumber(wh.named), total: fmtNumber(wh.total), pct: wh.namedShare === null ? '—' : `${fmtNumber(wh.namedShare * 100, 0)}%` })
         : t('dbl.ws.no_hits', lang)),
     ]));
+    // The identity render (players labelled on the video), only when players.json says it was made.
+    const iv = obj(obj(state.playersFile).identity_video);
+    if (iv.status === 'ok' && typeof iv.file === 'string' && iv.file) {
+      sec.appendChild(h('a', { class: 'ws-ident-link', href: endpoints.output(state.stem, iv.file), target: '_blank', rel: 'noopener' }, t('wsx.identity_video', lang)));
+    }
     if (!d.players.length) {
       sec.appendChild(h('div', { class: 'kw-note' }, t('dbl.no_players', lang)));
       return sec;
@@ -767,6 +865,17 @@ export function mount(container, ctx = {}) {
       ]));
     });
     if (rep.metrics.length) sec.appendChild(metrics);
+    const weak = weaknessLines(rep.raw);
+    if (weak.length) {
+      sec.appendChild(h('div', { class: 'k-label' }, t('wsx.weak_title', lang)));
+      sec.appendChild(h('ul', { class: 'ws-weak' }, weak.map((w) => {
+        const label = metricLabel(w.metric, lang);
+        const m = w.measured === null ? '—' : num1(w.measured);
+        return h('li', null, w.ideal
+          ? t('wsx.weak_line', lang, { metric: label, m, lo: num1(w.ideal[0]), hi: num1(w.ideal[1]) })
+          : label);
+      })));
+    }
     return sec;
   }
 
@@ -808,9 +917,142 @@ export function mount(container, ctx = {}) {
     return sec;
   }
 
+  // ----- movement card -----
+  /** Doubles heatmaps from players.json: team coverage maps and per-player maps (entries without a file skipped). */
+  function doublesHeatmaps() {
+    const pf = obj(state.playersFile);
+    const label = (id) => {
+      const p = state.dbl ? state.dbl.players.find((x) => x.id === id) : null;
+      return p ? p.label : id;
+    };
+    return {
+      teams: (Array.isArray(pf.teams) ? pf.teams : []).filter((tm) => tm && typeof tm.coverage_heatmap === 'string' && tm.coverage_heatmap)
+        .map((tm) => ({ id: tm.id, file: tm.coverage_heatmap })),
+      players: (Array.isArray(pf.players) ? pf.players : []).filter((p) => p && typeof p.heatmap === 'string' && p.heatmap)
+        .map((p) => ({ id: p.id, label: label(p.id), file: p.heatmap })),
+    };
+  }
+
+  function buildMovement() {
+    return movementCard({ lang, items: [{ stem: state.stem, caption: null }], doubles: state.dbl ? doublesHeatmaps() : null });
+  }
+
+  // ----- strokes tab: distribution by group (+ the TrackNet provenance note) -----
+  function distributionCard() {
+    const d = strokeDistribution(state.strokesDoc);
+    const sec = h('section', { class: 'card hud ws-dist', 'aria-label': t('wsx.dist.title', lang) });
+    sec.appendChild(h('div', { class: 'ws-sec-head' }, [
+      h('h2', { class: 'card-title' }, t('wsx.dist.title', lang)),
+      d.total ? h('span', { class: 'card-sub' }, t('wsx.dist.total', lang, { n: fmtNumber(d.total) })) : null,
+    ]));
+    if (!d.total) {
+      const hasStrokes = Array.isArray(obj(state.strokesDoc).strokes) && state.strokesDoc.strokes.length > 0;
+      sec.appendChild(h('div', { class: 'kw-note' }, t(d.stale && hasStrokes ? 'ws.stroke_stale' : 'ws.empty.title', lang)));
+    } else {
+      const text = d.groups.map((g) => `${techLabel(g.id, lang)} ${g.count}`).join(', ');
+      sec.appendChild(h('div', { class: 'ws-dist-bar', role: 'img', 'aria-label': text }, d.groups.map((g) => h('span', {
+        class: `ws-dist-seg tc-${g.id}`, style: { flex: `${g.count} 1 0` }, title: `${techLabel(g.id, lang)} · ${g.count}`,
+      }))));
+      sec.appendChild(h('ul', { class: 'ws-dist-legend' }, d.groups.map((g) => h('li', null, [
+        h('span', { class: `ws-dot tc-${g.id}`, 'aria-hidden': 'true' }),
+        techLabel(g.id, lang),
+        h('span', { class: 'mono kw-muted' }, `${g.count} · ${Math.round((g.count / d.total) * 100)}%`),
+      ]))));
+    }
+    if (trackNetNote(state.strokesDoc)) sec.appendChild(h('div', { class: 'kw-foot-muted' }, t('wsx.tracknet', lang)));
+    return sec;
+  }
+
+  // ----- tabs -----
+  const tabId = (id) => 'ws-tab-' + id;
+
+  function buildTabs() {
+    refs.tabBtns = new Map();
+    const bar = h('div', { class: 'ws-tabs', role: 'tablist', 'aria-label': t('wsx.tabs_aria', lang) });
+    TABS.forEach((id, k) => {
+      const btn = h('button', {
+        type: 'button', role: 'tab', class: 'ws-tab', id: tabId(id), 'aria-controls': 'ws-tabpanel', 'aria-selected': 'false', tabindex: '-1',
+        onclick: () => selectTab(id, true),
+        onkeydown: (e) => {
+          const n = TABS.length;
+          const to = e.key === 'ArrowRight' ? (k + 1) % n : e.key === 'ArrowLeft' ? (k - 1 + n) % n
+            : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+          if (to < 0) return;
+          e.preventDefault();
+          selectTab(TABS[to], true);
+          focusNode(refs.tabBtns.get(TABS[to]));
+        },
+      }, t('wsx.tab.' + id, lang));
+      refs.tabBtns.set(id, btn);
+      bar.appendChild(btn);
+    });
+    refs.tabPanel = h('div', { class: 'ws-tabpanel', role: 'tabpanel', id: 'ws-tabpanel', tabindex: '0' });
+    return h('div', { class: 'ws-tabwrap' }, [bar, refs.tabPanel]);
+  }
+
+  /** The open tab's body: built on first open and kept, so switching back keeps its state. */
+  function tabBody(id) {
+    if (panels[id]) return panels[id].el;
+    const s = state.stem;
+    let p;
+    if (id === 'technique') {
+      p = { el: techniquePanel({ lang, summary: techniqueSummary(state.tech, { doubles: !!state.dbl || state.model.summary.doubles }) }) };
+    } else if (id === 'clips') {
+      const sm = state.model.summary;
+      p = clipsPanel({ stem: s, lang, rallyOk: sm.hasFile && !sm.failed && sm.count > 0 });
+    } else if (id === 'plan') {
+      p = planPanel({ stem: s, lang });
+    } else {
+      // Strokes: the distribution card (singles only) above the stroke list (doubles: the hits table).
+      p = { el: h('div', { class: 'ws-strokes-tab' }, [state.dbl ? null : distributionCard(), refs.listSec]) };
+    }
+    panels[id] = p;
+    return p.el;
+  }
+
+  function renderTab() {
+    for (const [id, btn] of refs.tabBtns || []) {
+      const on = id === state.tab;
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      btn.setAttribute('tabindex', on ? '0' : '-1');
+      btn.classList.toggle('on', on);
+    }
+    const panel = refs.tabPanel;
+    if (!panel) return;
+    panel.setAttribute('aria-labelledby', tabId(state.tab));
+    const body = tabBody(state.tab);
+    if (panel.firstChild !== body) {
+      panel.textContent = '';
+      panel.appendChild(body);
+    }
+  }
+
+  /** Open a tab in place. From the page (`fromUser`) the hash follows via router.replace; the default tab is left out. */
+  function selectTab(id, fromUser) {
+    const tab = TABS.includes(id) ? id : 'strokes';
+    if (fromUser) {
+      const q = { ...state.query };
+      if (tab === 'strokes') delete q.tab; else q.tab = tab;
+      state.query = q;
+    }
+    if (tab !== state.tab) {
+      state.tab = tab;
+      if (state.model) renderTab();
+    }
+    if (fromUser && ctx.router && typeof ctx.router.replace === 'function') ctx.router.replace(formatHash('matches', { stem }, state.query));
+  }
+
+  function destroyPanels() {
+    for (const p of Object.values(panels)) if (p && typeof p.destroy === 'function') p.destroy();
+    panels = {};
+  }
+
   // ----- render -----
   function renderAll() {
     if (state.destroyed) return;
+    closeMenu(false);
+    destroyPanels();
+    if (refs.player) refs.player.destroy();
     root.textContent = '';
     root.classList.remove('settled');
     root.appendChild(breadcrumb(state.dbl ? doublesTitleText() : t('ws.title', lang, { a: sideName(titleSides()[0]), b: sideName(titleSides()[1]) })));
@@ -818,16 +1060,20 @@ export function mount(container, ctx = {}) {
     root.appendChild(head);
     const video = buildVideo();
     const timeline = buildTimeline();
-    const list = buildList();
+    refs.listSec = buildList();
+    const move = buildMovement();
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
     // One persistent polite live region: a short line per selection, not the whole inspector.
     refs.live = h('div', { class: 'ws-sr', role: 'status', 'aria-live': 'polite' });
-    const main = h('div', { class: 'ws-main' }, [video, timeline, list]);
-    const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [refs.inspHost, refs.sumHost]);
-    root.appendChild(h('div', { class: 'ws-grid' }, [main, side]));
+    const main = h('div', { class: 'ws-main' }, [video, timeline]);
+    const side = h('aside', { class: 'ws-side', 'aria-label': t('ws.inspector', lang) }, [move, refs.inspHost, refs.sumHost]);
+    root.appendChild(h('div', { class: 'ws-top' }, [main, side]));
+    const tabs = buildTabs();
+    root.appendChild(tabs);
     root.appendChild(refs.live);
-    sections = [head, video, timeline, refs.inspHost, list, refs.sumHost];
+    sections = [head, video, timeline, move, refs.inspHost, refs.sumHost, tabs];
+    renderTab();
     paintLane();
     renderStrip();
     renderFilters();
@@ -915,60 +1161,65 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- data -----
-  async function load() {
-    if (ctl && typeof ctl.abort === 'function') ctl.abort();
-    ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    const o = { ...LONG, ...(ctl ? { signal: ctl.signal } : {}) };
-    renderStatus('loading');
-    const out = (f) => soft(getJSON(endpoints.output(stem, f), o));
+  const isAborted = (r) => !!(r && r.error && r.error.kind === 'aborted');
+
+  /**
+   * Fetch one stem's run files (rally_segments, strokes, metadata, technique, insights, match record; for a doubles
+   * run also players.json and hits.json). Never throws: {status: 'ok' | 'notfound' | 'error' | 'aborted', error,
+   * ...the soft() results}. Used for the page's own stem and (Task 7) for a linked part's stem.
+   */
+  async function fetchStem(s, o) {
+    const out = (f) => soft(getJSON(endpoints.output(s, f), o));
     const [rally, strokes, meta, tech, ins, rec] = await Promise.all([
       out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
-      soft(getJSON('/api/technique/' + encodeURIComponent(stem), o)),
-      soft(api.videoInsights(stem, o)),
-      soft(api.match(stem, o)),
+      soft(getJSON('/api/technique/' + encodeURIComponent(s), o)),
+      soft(api.videoInsights(s, o)),
+      soft(api.match(s, o)),
     ]);
-    if (state.destroyed) return;
-    const all = [rally, strokes, meta, tech, ins, rec];
-    if (all.some((r) => r.error && r.error.kind === 'aborted')) return;
+    if ([rally, strokes, meta, tech, ins, rec].some(isAborted)) return { status: 'aborted' };
     const fileish = [rally, strokes, meta, ins];
-    if (fileish.every((r) => !r.ok && r.status === 404)) {
-      renderStatus('notfound');
-      return;
-    }
-    if (fileish.every((r) => !r.ok)) {
-      renderStatus('error', (fileish.find((r) => r.status !== 404) || fileish[0]).error);
-      return;
-    }
-    state.record = rec.ok ? obj(rec.data) : {};
-    state.insights = ins.ok ? obj(ins.data) : null;
-    const s = S();
-    const athletes = obj(s.athletes);
-    state.names = { upper: nameFor(state.record, 'upper', athletes), lower: nameFor(state.record, 'lower', athletes) };
-    const athleteId = obj(s.scope).athlete || s.athlete || '';
-    state.athleteSide = athleteId ? SIDES.find((sd) => obj(state.record[sd]).athlete_id === athleteId) || null : null;
-    const fps = obj(obj(meta.data).video).fps;
+    if (fileish.every((r) => !r.ok && r.status === 404)) return { status: 'notfound' };
+    if (fileish.every((r) => !r.ok)) return { status: 'error', error: (fileish.find((r) => r.status !== 404) || fileish[0]).error };
     // A doubles run (by the run's own metadata or sidecar, not by the record) also reads players.json and hits.json.
-    state.dbl = null;
-    if (obj(meta.data).match_format === 'doubles' || obj(state.insights).match_format === 'doubles') {
-      const mine = ctl;
-      const [pl, hi] = await Promise.all([soft(api.players(stem, o)), soft(api.hits(stem, o))]);
-      if (state.destroyed || mine !== ctl || [pl, hi].some((r) => r.error && r.error.kind === 'aborted')) return;
-      state.dbl = doublesWorkspaceModel({
-        // 404 = absent; an unreadable file is treated the same (status "No players data"), never as ok.
-        playersFile: pl.ok ? pl.data : null,
-        hits: hi.ok ? hi.data : null,
-        insights: state.insights,
-        fps: resolveFps(fps, rallyInput(rally), state.insights),
-        record: state.record,
-        athletes,
-        athleteId,
-        lang,
-      });
+    let pl = null;
+    let hi = null;
+    if (obj(meta.data).match_format === 'doubles' || obj(ins.data).match_format === 'doubles') {
+      [pl, hi] = await Promise.all([soft(api.players(s, o)), soft(api.hits(s, o))]);
+      if ([pl, hi].some(isAborted)) return { status: 'aborted' };
     }
+    return { status: 'ok', rally, strokes, meta, tech, ins, rec, pl, hi };
+  }
+
+  /** Put one stem's fetched data (fetchStem 'ok') into state: models, selection; the tab bodies start over. */
+  function applyStem(s, d) {
+    state.stem = s;
+    state.video = (state.videos || []).find((v) => v && v.name === s) || null;
+    state.record = d.rec.ok ? obj(d.rec.data) : {};
+    state.insights = d.ins.ok ? obj(d.ins.data) : null;
+    state.strokesDoc = d.strokes.ok ? d.strokes.data : null;
+    state.tech = d.tech.ok ? d.tech.data : null;
+    // 404 = absent; an unreadable file is treated the same (status "No players data"), never as ok.
+    state.playersFile = d.pl && d.pl.ok && d.pl.data && typeof d.pl.data === 'object' && !Array.isArray(d.pl.data) ? d.pl.data : null;
+    const st = S();
+    const athletes = obj(st.athletes);
+    state.names = { upper: nameFor(state.record, 'upper', athletes), lower: nameFor(state.record, 'lower', athletes) };
+    const athleteId = obj(st.scope).athlete || st.athlete || '';
+    state.athleteSide = athleteId ? SIDES.find((sd) => obj(state.record[sd]).athlete_id === athleteId) || null : null;
+    const fps = obj(obj(d.meta.data).video).fps;
+    state.dbl = d.pl || d.hi ? doublesWorkspaceModel({
+      playersFile: state.playersFile,
+      hits: d.hi && d.hi.ok ? d.hi.data : null,
+      insights: state.insights,
+      fps: resolveFps(fps, rallyInput(d.rally), state.insights),
+      record: state.record,
+      athletes,
+      athleteId,
+      lang,
+    }) : null;
     state.model = buildWorkspaceModel({
-      rallies: rallyInput(rally),
-      strokes: strokes.ok ? strokes.data : null,
-      techReports: tech.ok ? tech.data : null,
+      rallies: rallyInput(d.rally),
+      strokes: state.strokesDoc,
+      techReports: state.tech,
       fps,
       insights: state.insights,
       athleteSide: state.athleteSide,
@@ -977,24 +1228,57 @@ export function mount(container, ctx = {}) {
     state.unit = m.rallies.length ? m.rallies[0].id : 'all';
     const first = unitStrokes()[0];
     state.sel = first ? first.i : null;
+    state.filter = 'all';
+    state.stripLimit = STROKE_PAGE;
+    state.listLimit = STROKE_PAGE;
     state.hitStripLimit = STROKE_PAGE;
     state.hitListLimit = STROKE_PAGE;
     const firstHit = unitHits()[0];
     state.hitSel = firstHit ? firstHit.i : null;
+  }
+
+  async function load() {
+    if (ctl && typeof ctl.abort === 'function') ctl.abort();
+    ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const mine = ctl;
+    const o = { ...LONG, ...(ctl ? { signal: ctl.signal } : {}) };
+    renderStatus('loading');
+    // The video list is soft: a failure only hides the Posture report link.
+    const [res, vids] = await Promise.all([fetchStem(stem, o), soft(api.videos(o))]);
+    if (state.destroyed || mine !== ctl || res.status === 'aborted') return;
+    if (res.status === 'notfound') {
+      renderStatus('notfound');
+      return;
+    }
+    if (res.status === 'error') {
+      renderStatus('error', res.error);
+      return;
+    }
+    state.videos = vids.ok && Array.isArray(vids.data) ? vids.data : null;
+    applyStem(stem, res);
     renderAll();
   }
 
   load();
+
+  /** Same route, new query (main.js): follow the tab in place; the router is not called again. */
+  function setQuery(query) {
+    if (state.destroyed) return;
+    state.query = { ...obj(query) };
+    selectTab(resolveTab(state.query), false);
+  }
 
   function destroy() {
     if (state.destroyed) return;
     state.destroyed = true;
     clock.cancel();
     clearTimeout(settleTimer);
+    closeMenu(false);
+    destroyPanels();
     if (ctl && typeof ctl.abort === 'function') ctl.abort();
     if (refs.player) refs.player.destroy();
     if (root.parentNode) root.parentNode.removeChild(root);
   }
 
-  return { destroy };
+  return { destroy, setQuery };
 }

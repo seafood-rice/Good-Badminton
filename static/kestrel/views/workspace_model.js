@@ -114,6 +114,8 @@ function reportModel(rep) {
     overall: isNum(rep.overall_score) ? rep.overall_score : null,
     contactFrame: rep.contact_frame,
     metrics,
+    // The strokes.jsonl report as read: the inspector's weakness lines come from it (weaknessLines).
+    raw: rep,
   };
 }
 
