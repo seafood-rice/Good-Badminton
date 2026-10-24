@@ -16,7 +16,7 @@ import { api, getJSON, endpoints, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets/frame.js';
 import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
 import { createPlayer } from '../widgets/player.js';
-import { movementCard } from '../widgets/movement.js';
+import { movementCard, safeFile } from '../widgets/movement.js';
 import { techniquePanel } from '../widgets/technique.js';
 import { clipsPanel } from '../widgets/clips.js';
 import { planPanel } from '../widgets/plan.js';
@@ -956,7 +956,8 @@ export function mount(container, ctx = {}) {
     ]));
     // The identity render (players labelled on the video), only when players.json says it was made.
     const iv = obj(obj(state.playersFile).identity_video);
-    if (iv.status === 'ok' && typeof iv.file === 'string' && iv.file) {
+    // Its name must stay inside the run's output folder (same check as the heatmap names); a bad one gets no link.
+    if (iv.status === 'ok' && safeFile(iv.file)) {
       sec.appendChild(h('a', { class: 'ws-ident-link', href: endpoints.output(state.stem, iv.file), target: '_blank', rel: 'noopener' }, t('wsx.identity_video', lang)));
     } else if (iv.status !== 'ok' && typeof iv.reason === 'string' && iv.reason) {
       // Not made (skipped, failed): the run's own reason, as text.

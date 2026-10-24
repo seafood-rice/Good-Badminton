@@ -11,8 +11,8 @@ const SCATTER = 'position_visualizations/scatter_plots/match_scatter.png';
 
 const str = (v) => (typeof v === 'string' ? v : '');
 const list = (v) => (Array.isArray(v) ? v : []);
-// A players.json file name stays inside the run's output folder: no "..", no backslash, not absolute.
-const safeFile = (v) => { const f = str(v); return f && !f.includes('..') && !f.includes('\\') && !f.startsWith('/') ? f : ''; };
+/** A players.json file name that stays inside the run's output folder (no "..", no backslash, not absolute), else ''. */
+export const safeFile =(v) => { const f = str(v); return f && !f.includes('..') && !f.includes('\\') && !f.startsWith('/') ? f : ''; };
 
 /**
  * One image figure: a button that enlarges it; a load error swaps the image for a "not available" note and the

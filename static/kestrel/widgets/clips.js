@@ -12,8 +12,8 @@ const PADDING_SEC = 1.5;
 
 const defaultApi = { post: (url, body) => sendJSON('POST', url, body, { timeout: CLIP_TIMEOUT_MS }) };
 
-/** A clip URL the page may link: a same-origin path or an http(s) URL (never javascript:, data:, ...). */
-const linkable = (url) => typeof url === 'string' && /^(\/|https?:\/\/)/i.test(url);
+/** A clip URL the page may link: a same-origin path (not protocol-relative) or an http(s) URL (never javascript:, data:, ...). */
+const linkable = (url) => typeof url === 'string' && /^(\/(?!\/)|https?:\/\/)/i.test(url);
 
 /** What went wrong, as text: the server's own message when the error carries one, else the bilingual generic one. */
 function failureText(lang, detail) {

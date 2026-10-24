@@ -293,6 +293,16 @@ test('doubles: an identity video that was not made says why (the reason as text)
   }, { routes: doubles(), stem: 'd' });
 });
 
+test('doubles: an identity video file name that leaves the output folder gets no link', async () => {
+  for (const file of ['../detect_d_players.mp4', 'sub\\detect_d_players.mp4', '/detect_d_players.mp4']) {
+    const routes = doubles();
+    routes[out('d', 'players.json')].identity_video = { status: 'ok', file };
+    await withPage(async ({ container }) => {
+      assert.equal(container.querySelector('.dbl-players .ws-ident-link'), null, file);
+    }, { routes, stem: 'd' });
+  }
+});
+
 test('the side column is labelled as the match details side panel', async () => {
   await withPage(async ({ container }) => {
     const side = container.querySelector('aside.ws-side');

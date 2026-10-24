@@ -147,6 +147,7 @@ test('player: destroy while in theater puts the card back and clears the body cl
     p.destroy();
     assert.equal(document.body.classList.contains('ws-theater-open'), false);
     assert.notEqual(p.el.parentNode, document.body, 'not left under body');
+    assert.equal(p.el.parentNode, host, 'back in its place');
     assert.equal(document.body.childNodes.includes(p.el), false);
   } finally { removeEnv(); }
 });
