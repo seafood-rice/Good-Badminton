@@ -125,6 +125,7 @@ docker compose exec app python -c "import torch, onnxruntime as ort; print(torch
 
 - 可选的训练模型（球拍检测、AI 评分、击球类型分类器、TrackNet、击球检测）放进 `./weights` 即可被自动识别，无需重新构建。
 - 更换端口：`GB_PORT=8080 docker compose up -d`。
+- 复用已有的数据目录：在 `.env` 中设置 `GB_STATE_DIR=/path/to/dir`，`videos/ outputs/ data/ weights/` 将从该目录挂载（默认为仓库目录）。
 - GPU 镜像使用 CUDA 12.1 PyTorch 与 `onnxruntime-gpu==1.20.2`（1.20.1 没有 Python 3.12 轮子，其余与上文 GPU 加速方案一致）；CPU 镜像使用 `requirements.txt` 中的 CPU 版本。`requirements.txt` 本身不变。
 - 容器以 root 运行，避免 Windows / Docker Desktop 下绑定挂载的权限问题；Linux 主机上 `outputs/` 内的文件归 root 所有。
 - 服务默认监听所有网卡且没有身份验证，请只在可信网络中暴露 5050 端口。

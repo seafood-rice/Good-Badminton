@@ -1,6 +1,8 @@
 # Default: NVIDIA GPU. Needs the NVIDIA Container Toolkit on the Docker host.
 # No GPU? Add the CPU override:
 #   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+# GB_STATE_DIR (default: this folder) is where videos/, outputs/, data/ and weights/ live.
+# Set it in .env to reuse an existing checkout's folders. GB_PORT changes the host port.
 services:
   app:
     # No build: section on purpose. The image is built from main only, never from this
@@ -10,10 +12,10 @@ services:
     ports:
       - "${GB_PORT:-5050}:5050"
     volumes:
-      - ./videos:/app/videos
-      - ./outputs:/app/outputs
-      - ./data:/app/data
-      - ./weights:/app/weights
+      - ${GB_STATE_DIR:-.}/videos:/app/videos
+      - ${GB_STATE_DIR:-.}/outputs:/app/outputs
+      - ${GB_STATE_DIR:-.}/data:/app/data
+      - ${GB_STATE_DIR:-.}/weights:/app/weights
       - model-cache:/root/.cache   # RTMPose / ultralytics auto-downloads
     deploy:
       resources:
@@ -31,7 +33,7 @@ services:
     user: root
     working_dir: /weights
     volumes:
-      - ./weights:/weights
+      - ${GB_STATE_DIR:-.}/weights:/weights
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |

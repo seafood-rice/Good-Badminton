@@ -38,3 +38,6 @@ videos/
 server*.log
 *.err.log
 *.pt
+
+# Local docker compose settings
+.env
