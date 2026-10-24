@@ -38,6 +38,8 @@ export function createPlayer(opts = {}) {
   let theater = false;
   let pendingSeek;
   let playersVideo = !!opts.playersVideo;
+  // Every source failed: the controls are disabled and the keyboard shortcut is off too.
+  let dead = false;
 
   const sec = h('section', { class: 'card hud ws-video-card', 'aria-label': t('ws.video', lang) });
   const stage = h('div', { class: 'ws-stage' });
@@ -150,7 +152,7 @@ export function createPlayer(opts = {}) {
   paintVolume();
   video.addEventListener('volumechange', paintVolume);
   sec.addEventListener('keydown', (ev) => {
-    if (ev.key !== 'm' && ev.key !== 'M') return;
+    if (dead || (ev.key !== 'm' && ev.key !== 'M')) return;
     // Ctrl / Alt / Meta + M belong to the browser and the OS, not to the mute toggle.
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const tg = ev.target || {};
@@ -184,6 +186,7 @@ export function createPlayer(opts = {}) {
       if (onSourceFallback) onSourceFallback(idx);
       return;
     }
+    dead = true;
     video.removeAttribute('src');
     video.hidden = true;
     msg.hidden = false;

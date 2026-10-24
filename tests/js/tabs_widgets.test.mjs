@@ -164,3 +164,26 @@ test('plan panel: week heading, meta line, not-found and failure states, regener
     assert.ok(text(failing.el).includes(t('wsx.plan.nothing', 'en')));
   } finally { removeEnv(); }
 });
+
+test('clips panel: only same-origin paths and http(s) URLs become links; nothing else left reads as no clips', async () => {
+  installEnv();
+  try {
+    const clips = [
+      { name: 'a', url: 'javascript:alert(1)' }, { name: 'b', url: 'data:text/html,x' }, { name: 'c', url: 'rally_3.mp4' },
+      { name: 'p', url: '//x/clip.mp4' },
+      { name: 'd', url: '/api/output/s/clips/rally_4.mp4' }, { name: 'e', url: 'https://cdn.example/rally_5.mp4' },
+      { name: 'f', url: 'http://host/rally_6.mp4' }, { name: 'g', url: 'HTTPS://x' },
+    ];
+    const p = clipsPanel({ stem: 's', lang: 'en', rallyOk: true, api: { post: async () => ({ ok: true, clips }) } });
+    buttonWithText(p.el, t('wsx.clips.generate', 'en')).dispatch('click');
+    await tick();
+    const hrefs = p.el.querySelectorAll('.ws-clip').map((a) => a.getAttribute('href'));
+    assert.deepEqual(hrefs, ['/api/output/s/clips/rally_4.mp4', 'https://cdn.example/rally_5.mp4', 'http://host/rally_6.mp4', 'HTTPS://x']);
+    assert.equal(p.el.querySelector('.mv-err').textContent, '');
+    const bad = clipsPanel({ stem: 's', lang: 'en', rallyOk: true, api: { post: async () => ({ ok: true, clips: clips.slice(0, 4) }) } });
+    buttonWithText(bad.el, t('wsx.clips.generate', 'en')).dispatch('click');
+    await tick();
+    assert.equal(bad.el.querySelectorAll('.ws-clip').length, 0);
+    assert.equal(bad.el.querySelector('.mv-err').textContent, t('wsx.clips.none', 'en'));
+  } finally { removeEnv(); }
+});

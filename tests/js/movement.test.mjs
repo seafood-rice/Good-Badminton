@@ -45,3 +45,37 @@ test('movement: a figure opens the enlarge dialog; Escape closes it and focus re
     await tick();
   } finally { closeTool(); removeEnv(); }
 });
+
+test('movement: a figure whose image failed no longer opens the enlarge dialog', async () => {
+  installEnv();
+  try {
+    const card = movementCard({ lang: 'en', items: [{ stem: 's', caption: null }] });
+    env.doc.body.appendChild(card);
+    const fig = everything(card).find((e) => e.tagName === 'BUTTON' && e.classList.contains('ws-move-fig'));
+    fig.querySelector('img').dispatch('error');
+    assert.equal(fig.disabled, true);
+    assert.ok(fig.classList.contains('missing'), 'no zoom cursor (.ws-move-fig.missing)');
+    assert.equal(fig.hasAttribute('aria-label'), false, 'no "enlarge" name for a figure that cannot enlarge');
+    fig.dispatch('click');
+    assert.equal(isOpen(), false);
+    await tick();
+  } finally { closeTool(); removeEnv(); }
+});
+
+test('movement: doubles heatmap names with "..", a backslash or a leading "/" are skipped', () => {
+  installEnv();
+  try {
+    const card = movementCard({ lang: 'en', items: [{ stem: 'd', caption: null }], doubles: {
+      teams: [{ id: 1, file: '../secret.png' }, { id: 2, file: 'team2.png' }],
+      players: [
+        { id: 'P1', label: 'A', file: 'sub\\p1.png' }, { id: 'P2', label: 'B', file: '/etc/p2.png' },
+        { id: 'P3', label: 'C', file: 'a/../p3.png' }, { id: 'P4', label: 'D', file: 'heatmaps/p4.png' },
+      ],
+    } });
+    const srcs = everything(card).filter((e) => e.tagName === 'IMG').map((e) => e.getAttribute('src'));
+    assert.equal(srcs.length, 4, 'heatmap + scatter + team2 + P4');
+    assert.ok(srcs.some((s) => s.endsWith('/d/team2.png')));
+    assert.ok(srcs.some((s) => s.endsWith('/d/heatmaps/p4.png')));
+    assert.equal(srcs.some((s) => /secret|p1\.png|p2\.png|p3\.png/.test(s)), false);
+  } finally { removeEnv(); }
+});
