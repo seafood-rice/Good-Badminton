@@ -422,6 +422,7 @@ Expect `True` and `CUDAExecutionProvider` in the output.
 
 - Optional trained models (racket detector, AI form score, stroke classifier, TrackNet, hit detector) are picked up automatically when placed in `./weights`; no rebuild needed.
 - Change the port: `GB_PORT=8080 docker compose up -d`.
+- Reuse existing folders: set `GB_STATE_DIR=/path/to/dir` in a `.env` file and `videos/ outputs/ data/ weights/` are mounted from there (default: the repo folder).
 - The GPU image uses CUDA 12.1 PyTorch and `onnxruntime-gpu==1.20.2` (1.20.1 has no Python 3.12 wheel; otherwise the same recipe as the GPU section above); the CPU image uses the CPU pins from `requirements.txt`, which is left unchanged.
 - The container runs as root to avoid bind-mount permission problems on Windows and Docker Desktop; on Linux hosts, files created in `outputs/` are owned by root.
 - The server listens on all interfaces and has no authentication. Only expose port 5050 on a trusted network.
