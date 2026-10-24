@@ -117,3 +117,59 @@ test('player: M does nothing once every source has failed', () => {
     p.destroy();
   } finally { removeEnv(); }
 });
+
+test('player: a failed source falls back to the next file once, and the players video flag clears', () => {
+  installEnv();
+  try {
+    const seen = [];
+    const p = createPlayer({ files: ['/a.mp4', '/b.mp4'], lang: 'en', prefs: memPrefs(), playersVideo: true, onSourceFallback: (i) => seen.push(i) });
+    assert.equal(p.video.src, '/a.mp4');
+    assert.equal(p.playersVideo, true);
+    p.video.error = { code: 4 };
+    p.video.dispatch('error');
+    assert.equal(p.video.src, '/b.mp4');
+    assert.deepEqual(seen, [1]);
+    assert.equal(p.playersVideo, false);
+    p.destroy();
+  } finally { removeEnv(); }
+});
+
+test('player: destroy while in theater puts the card back and clears the body class', () => {
+  installEnv();
+  try {
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const p = createPlayer({ files: ['/a.mp4'], lang: 'en', prefs: memPrefs() });
+    host.appendChild(p.el);
+    everything(p.el).find((e) => e.classList && e.classList.contains('ws-theater')).dispatch('click');
+    assert.equal(p.el.parentNode, document.body);
+    assert.ok(document.body.classList.contains('ws-theater-open'));
+    p.destroy();
+    assert.equal(document.body.classList.contains('ws-theater-open'), false);
+    assert.notEqual(p.el.parentNode, document.body, 'not left under body');
+    assert.equal(document.body.childNodes.includes(p.el), false);
+  } finally { removeEnv(); }
+});
+
+test('player: Escape on the document leaves theater', () => {
+  const { doc } = installEnv();
+  try {
+    const keydown = [];
+    doc.addEventListener = (type, fn) => { if (type === 'keydown') keydown.push(fn); };
+    doc.removeEventListener = (type, fn) => { const i = keydown.indexOf(fn); if (i >= 0) keydown.splice(i, 1); };
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const p = createPlayer({ files: ['/a.mp4'], lang: 'en', prefs: memPrefs() });
+    host.appendChild(p.el);
+    const th = everything(p.el).find((e) => e.classList && e.classList.contains('ws-theater'));
+    th.dispatch('click');
+    assert.equal(th.getAttribute('aria-pressed'), 'true');
+    assert.equal(keydown.length, 1);
+    keydown[0]({ key: 'Escape', target: doc.body });
+    assert.equal(th.getAttribute('aria-pressed'), 'false');
+    assert.equal(p.el.parentNode, host);
+    assert.equal(document.body.classList.contains('ws-theater-open'), false);
+    p.destroy();
+    assert.equal(keydown.length, 0, 'released on destroy');
+  } finally { removeEnv(); }
+});

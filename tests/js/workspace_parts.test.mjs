@@ -6,7 +6,7 @@ import { installEnv, removeEnv, tick, everything } from './fake_dom.mjs';
 import { mount } from '../../static/kestrel/views/workspace.js';
 import { api } from '../../static/kestrel/core/api.js';
 import { t } from '../../static/kestrel/core/i18n.js';
-import { formatHash } from '../../static/kestrel/core/router.js';
+import { formatHash, parseHash } from '../../static/kestrel/core/router.js';
 import { closeTool } from '../../static/kestrel/widgets/videotools.js';
 
 const out = (stem, f) => '/api/output/' + stem + '/' + f;
@@ -267,4 +267,94 @@ test('a part press whose navigate never lands does not move focus on a later par
     await settle();
     assert.equal(doc.activeElement, null, 'the stale press is not honoured later either');
   });
+});
+
+test('whole match: a degraded part makes the pooled header read windows (the windows pill, no rally count)', async () => {
+  const table = routes();
+  table[out('p2', 'rally_segments.json')] = { ...table[out('p2', 'rally_segments.json')], detection: { signal: 'courtview', degraded: true } };
+  await withPage(async ({ container }) => {
+    const head = container.querySelector('.ws-head');
+    assert.match(head.textContent, new RegExp(t('ws.count.windows', 'en', { n: 4 })));
+    const pill = head.querySelector('.ov-pill');
+    assert.ok(pill, 'windows pill');
+    assert.equal(pill.textContent, t('tag.windows', 'en'));
+    assert.doesNotMatch(head.textContent, /\d+ rallies/);
+  }, { table });
+});
+
+test('whole match: a part whose rally file is unreadable is noted in the header and left out of the pooled count', async () => {
+  await withPage(async ({ container }) => {
+    const head = container.querySelector('.ws-head');
+    assert.match(head.textContent, new RegExp(t('wsx.parts.failed_note', 'en', { n: 1 }).replace(/[()]/g, '\\$&')));
+    assert.match(head.textContent, /(^|\D)2 rallies/, 'Part 1 only');
+    assert.doesNotMatch(head.textContent, /(^|\D)4 rallies/);
+  }, { fail: { [out('p2', 'rally_segments.json')]: 500 } });
+});
+
+test('a fast part switch: a slow Part 2 that ignores the abort never replaces Part 1', async () => {
+  let holding = false;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const hold = (url) => (holding && url.includes('p2') ? gate : null);
+  await withPage(async ({ container, inst }) => {
+    holding = true;
+    inst.setQuery({ part: 'p2' });
+    await tick();
+    inst.setQuery({ part: 'p1' });
+    await settle();
+    assert.equal(container.querySelector('video').src, '/api/output/p1/detect_p1.mp4');
+    release();
+    await settle();
+    assert.equal(container.querySelectorAll('video').length, 1);
+    assert.equal(container.querySelector('video').src, '/api/output/p1/detect_p1.mp4');
+    assert.equal(partBtn(container, 'Part 1').getAttribute('aria-pressed'), 'true');
+    assert.equal(partBtn(container, 'Part 2').getAttribute('aria-pressed'), 'false');
+  }, { hold });
+});
+
+test('the player releases its document listeners: one keydown and one fullscreenchange while a part shows, none otherwise', async () => {
+  const live = { keydown: [], fullscreenchange: [] };
+  const before = ({ doc }) => {
+    doc.addEventListener = (type, fn) => { if (live[type]) live[type].push(fn); };
+    doc.removeEventListener = (type, fn) => {
+      const i = live[type] ? live[type].indexOf(fn) : -1;
+      if (i >= 0) live[type].splice(i, 1);
+    };
+  };
+  const count = () => `${live.keydown.length}/${live.fullscreenchange.length}`;
+  await withPage(async ({ inst }) => {
+    assert.equal(count(), '0/0', 'Whole match: no player');
+    inst.setQuery({ part: 'p1' });
+    await settle();
+    assert.equal(count(), '1/1');
+    inst.setQuery({ part: 'p2' });
+    await settle();
+    assert.equal(count(), '1/1', 'the previous part player let go of its listeners');
+    inst.setQuery({});
+    await settle();
+    assert.equal(count(), '0/0', 'back on the Whole match');
+    inst.setQuery({ part: 'p1' });
+    await settle();
+    assert.equal(count(), '1/1');
+    inst.destroy();
+    assert.equal(count(), '0/0', 'after destroy');
+  }, { before });
+});
+
+test('a router that dispatches on replace: an unknown part redirects once, then the Whole match renders', async () => {
+  const router = (calls, getInst) => ({
+    navigate: (h) => calls.navigate.push(h),
+    replace: (h) => {
+      calls.replace.push(h);
+      const r = parseHash(h);
+      // Same stem: the router calls the mounted page's setQuery synchronously (main.js does the same).
+      if (r.name === 'matches' && r.params.stem === 'p1') getInst().setQuery(r.query);
+    },
+  });
+  await withPage(async ({ container, calls }) => {
+    assert.deepEqual(calls.replace, ['#/matches/p1']);
+    assert.equal(container.querySelectorAll('.ws-part-card').length, 3);
+    assert.equal(partBtn(container, 'Whole match').getAttribute('aria-pressed'), 'true');
+    assert.equal(container.querySelector('video'), null);
+  }, { query: { part: 'zz' }, router });
 });
