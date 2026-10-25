@@ -1,4 +1,5 @@
 """Concurrent analysis jobs in app.py: the cap, the queue, the duplicate guard, cancel."""
+import os
 import threading
 
 import pytest
@@ -39,22 +40,45 @@ def env(tmp_path, monkeypatch):
     (tmp_path / 'out').mkdir()
     monkeypatch.setattr(webapp, 'TEMPLATES', tmp_path / 'tpl')
     (tmp_path / 'tpl').mkdir()
-    monkeypatch.setattr(webapp, '_job_slots', JobSlots(1, on_queue_change=webapp._queue_changed))
+    slots = JobSlots(1, on_queue_change=webapp._queue_changed)
+    monkeypatch.setattr(webapp, '_job_slots', slots)
     real_sleep = webapp.time.sleep
     monkeypatch.setattr(webapp.time, 'sleep', lambda s: real_sleep(0.01))
     procs = {}
+    trackers = []
 
     def fake_popen(cmd, *args, **kwargs):
         video = cmd[cmd.index('--video-path') + 1]
         proc = _Proc()
-        procs[video.replace('\\', '/').rsplit('/', 1)[-1]] = proc
+        procs[os.path.basename(video)] = proc
         return proc
 
+    real_thread = threading.Thread
+
+    def thread(*args, **kwargs):
+        t = real_thread(*args, **kwargs)
+        trackers.append(t)
+        return t
+
     monkeypatch.setattr(webapp.subprocess, 'Popen', fake_popen)
+    monkeypatch.setattr(webapp.threading, 'Thread', thread)
     webapp.app.config['TESTING'] = True
     yield webapp.app.test_client(), procs
-    for proc in procs.values():
-        proc.finish()
+    # Drain before monkeypatch undoes anything: no queued job may start against
+    # the real Popen, and no tracker may outlive this test.
+    for job_id in list(slots.snapshot()['queued']):
+        slots.cancel(job_id)
+    for _ in range(500):
+        for proc in list(procs.values()):
+            proc.finish()
+        snap = slots.snapshot()
+        if not snap['running'] and not snap['queued']:
+            break
+        real_sleep(0.01)
+    for t in trackers:
+        t.join(5)
+    assert not any(t.is_alive() for t in trackers)
+    assert slots.snapshot()['running'] == []
 
 
 def _wait_status(job_id, statuses):
@@ -90,10 +114,12 @@ def test_queue_positions_move_up(env):
     client, procs = env
     for name in ('a.mp4', 'b.mp4', 'c.mp4'):
         client.post('/api/analyze', json={'video': name})
-    assert webapp.jobs['c']['queue_position'] == 2
+    assert client.get('/api/status/c').get_json()['queue_position'] == 2
     procs['a.mp4'].finish()
     _wait_status('b', ('running',))
-    assert webapp.jobs['c']['queue_position'] == 1
+    status = env[0].get('/api/status/c').get_json()
+    assert status['queue_position'] == 1
+    assert 'queued, #1 in line' in status['message']
 
 
 def test_same_video_twice_is_rejected_while_in_flight(env):
@@ -123,7 +149,9 @@ def test_match_and_posture_share_the_cap(env, monkeypatch):
     client.post('/api/analyze', json={'video': 'a.mp4'})
     r = client.post('/api/posture/analyze', json={'video': 'b.mp4', 'stroke_type': 'smash'})
     assert r.get_json()['queued'] is True
-    assert client.get('/api/posture-analyze-status/posture_b').get_json()['status'] == 'pending'
+    status = client.get('/api/posture-analyze-status/posture_b').get_json()
+    assert status['status'] == 'pending'
+    assert status['queue_position'] == 1
     procs['a.mp4'].finish()
     _wait_status('posture_b', ('running',))
     assert 'b.mp4' in procs
@@ -174,3 +202,64 @@ def test_popen_failure_marks_the_job_failed_and_frees_the_slot(env, monkeypatch)
     assert r.status_code == 200
     assert webapp.jobs['a']['status'] == 'error'
     assert webapp._job_slots.snapshot()['running'] == []
+
+
+def test_cancel_leaves_no_stale_queue_message(env):
+    client, _ = env
+    for name in ('a.mp4', 'b.mp4', 'c.mp4'):
+        client.post('/api/analyze', json={'video': name})
+    client.post('/api/jobs/b/cancel')
+    webapp._queue_changed(['b', 'c'])  # a late notification naming the cancelled job
+    b = client.get('/api/status/b').get_json()
+    assert b['status'] == 'cancelled'
+    assert b['message'] == '' and b['queue_position'] is None
+
+
+def test_thread_start_failure_kills_the_process_and_frees_the_slot(env, monkeypatch):
+    client, procs = env
+    killed = []
+
+    class _NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(webapp.threading, 'Thread', _NoThread)
+    monkeypatch.setattr(_Proc, 'kill', lambda self: killed.append(self), raising=False)
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    assert webapp.jobs['a']['status'] == 'error'
+    assert killed == [procs['a.mp4']]
+    assert webapp._job_slots.snapshot()['running'] == []
+
+
+def test_a_late_tracker_failure_leaves_the_rerun_alone(env, monkeypatch):
+    client, procs = env
+    gate = threading.Event()
+    calls = []
+
+    def slow_summary(sd):
+        calls.append(sd)
+        gate.wait(5)
+        raise RuntimeError('summary broke')
+
+    monkeypatch.setattr(webapp, '_rally_summary', slow_summary)
+    monkeypatch.setattr(webapp, '_reencode_to_h264', lambda *a, **k: None)
+    monkeypatch.setattr(webapp, '_reencode_players_video', lambda *a, **k: None)
+    monkeypatch.setattr(webapp, '_job_slots', JobSlots(2, on_queue_change=webapp._queue_changed))
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    first = webapp.jobs['a']
+    procs['a.mp4'].finish(0)
+    _wait_status('a', ('completed',))  # tracker now blocked in _rally_summary
+    assert client.post('/api/analyze', json={'video': 'a.mp4'}).status_code == 200
+    rerun = webapp.jobs['a']
+    assert rerun is not first and rerun['status'] == 'running'
+    gate.set()
+    for _ in range(200):
+        if webapp._job_slots.snapshot()['running'] == ['a']:
+            break
+        threading.Event().wait(0.01)
+    assert rerun['status'] == 'running'
+    assert webapp._job_slots.snapshot()['running'] == ['a']  # the re-run kept its slot
+    procs['a.mp4'].finish()

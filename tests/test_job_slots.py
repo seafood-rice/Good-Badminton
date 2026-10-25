@@ -5,12 +5,26 @@ from badminton_analysis.web import job_slots
 from badminton_analysis.web.job_slots import JobSlots, default_max_jobs, resolve_max_jobs
 
 
+class _Log(list):
+    """Records starts; ``releases[name]`` frees that start's slot."""
+
+    def __init__(self):
+        super().__init__()
+        self.releases = {}
+
+    def starter(self, name):
+        def start(release):
+            self.append(name)
+            self.releases[name] = release
+        return start
+
+
 def _starter(log, name):
-    return lambda: log.append(name)
+    return log.starter(name)
 
 
 def test_starts_up_to_the_cap_then_queues_in_order():
-    log = []
+    log = _Log()
     slots = JobSlots(2)
     assert slots.submit('a', _starter(log, 'a')) is True
     assert slots.submit('b', _starter(log, 'b')) is True
@@ -20,27 +34,27 @@ def test_starts_up_to_the_cap_then_queues_in_order():
     assert slots.position('c') == 1 and slots.position('d') == 2
     assert slots.position('a') is None
 
-    slots.release('a')
+    log.releases['a']()
     assert log == ['a', 'b', 'c']
     assert slots.snapshot() == {'max_jobs': 2, 'running': ['b', 'c'], 'queued': ['d']}
-    slots.release('b')
-    slots.release('c')
+    log.releases['b']()
+    log.releases['c']()
     assert log == ['a', 'b', 'c', 'd']
     assert slots.snapshot()['queued'] == []
 
 
 def test_a_new_job_never_jumps_the_queue():
-    log = []
+    log = _Log()
     slots = JobSlots(1)
     slots.submit('a', _starter(log, 'a'))
     slots.submit('b', _starter(log, 'b'))
-    slots.release('a')  # b takes the slot
+    log.releases['a']()  # b takes the slot
     assert slots.submit('c', _starter(log, 'c')) is False
     assert log == ['a', 'b']
 
 
 def test_cancel_drops_only_a_queued_job():
-    log = []
+    log = _Log()
     slots = JobSlots(1)
     slots.submit('a', _starter(log, 'a'))
     slots.submit('b', _starter(log, 'b'))
@@ -48,15 +62,15 @@ def test_cancel_drops_only_a_queued_job():
     assert slots.cancel('a') is False  # running, not queued
     assert slots.cancel('b') is True
     assert slots.cancel('b') is False
-    slots.release('a')
+    log.releases['a']()
     assert log == ['a', 'c']
 
 
 def test_a_start_that_raises_frees_its_slot():
-    log = []
+    log = _Log()
     slots = JobSlots(1)
 
-    def boom():
+    def boom(release):
         raise OSError('no such file')
 
     slots.submit('bad', boom)
@@ -66,24 +80,25 @@ def test_a_start_that_raises_frees_its_slot():
 
 
 def test_a_failing_queued_start_hands_the_slot_on():
-    log = []
+    log = _Log()
     slots = JobSlots(1)
     slots.submit('a', _starter(log, 'a'))
-    slots.submit('bad', lambda: (_ for _ in ()).throw(RuntimeError('x')))
+    slots.submit('bad', lambda release: (_ for _ in ()).throw(RuntimeError('x')))
     slots.submit('c', _starter(log, 'c'))
-    slots.release('a')
+    log.releases['a']()
     assert log == ['a', 'c']
     assert slots.snapshot() == {'max_jobs': 1, 'running': ['c'], 'queued': []}
 
 
 def test_queue_change_hook_sees_the_order():
     seen = []
+    log = _Log()
     slots = JobSlots(1, on_queue_change=lambda order: seen.append(list(order)))
-    slots.submit('a', lambda: None)
-    slots.submit('b', lambda: None)
-    slots.submit('c', lambda: None)
+    slots.submit('a', log.starter('a'))
+    slots.submit('b', log.starter('b'))
+    slots.submit('c', log.starter('c'))
     assert seen[-1] == ['b', 'c']
-    slots.release('a')
+    log.releases['a']()
     assert seen[-1] == ['c']
     slots.cancel('c')
     assert seen[-1] == []
@@ -94,7 +109,7 @@ def test_never_more_than_the_cap_under_concurrent_submits():
     lock = threading.Lock()
     live = {'now': 0, 'peak': 0}
 
-    def start():
+    def start(release):
         with lock:
             live['now'] += 1
             live['peak'] = max(live['peak'], live['now'])
@@ -109,6 +124,47 @@ def test_never_more_than_the_cap_under_concurrent_submits():
         t.join()
     assert live['peak'] == 3
     assert len(slots.snapshot()['queued']) == 37
+
+
+def test_a_rerun_of_the_same_id_never_exceeds_the_cap():
+    # QA repro: the first run's tracker releases after the re-run has started.
+    log = _Log()
+    slots = JobSlots(2)
+    slots.submit('a', log.starter('a'))
+    first_a = log.releases['a']
+    slots.submit('a', log.starter('a'))  # re-run, own slot
+    first_a()
+    assert slots.submit('b', log.starter('b')) is True
+    assert slots.submit('c', log.starter('c')) is False
+    assert slots.snapshot() == {'max_jobs': 2, 'running': ['a', 'b'], 'queued': ['c']}
+
+
+def test_release_twice_frees_one_slot():
+    log = _Log()
+    slots = JobSlots(2)
+    slots.submit('a', log.starter('a'))
+    slots.submit('b', log.starter('b'))
+    slots.submit('c', log.starter('c'))
+    slots.submit('d', log.starter('d'))
+    log.releases['a']()
+    log.releases['a']()
+    assert log == ['a', 'b', 'c']
+    assert slots.snapshot()['queued'] == ['d']
+
+
+def test_many_failing_queued_starts_do_not_recurse():
+    log = _Log()
+    slots = JobSlots(1)
+    slots.submit('a', log.starter('a'))
+
+    def boom(release):
+        raise RuntimeError('x')
+
+    for i in range(3000):
+        slots.submit(f'bad{i}', boom)
+    slots.submit('z', log.starter('z'))
+    log.releases['a']()
+    assert log == ['a', 'z']
 
 
 def test_default_sizing_for_the_4090_host():

@@ -49,8 +49,10 @@ insights_routes.register(app, videos=lambda: VIDEOS, outputs=lambda: OUTPUTS,
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
-# Guards check-then-register of a job id: two clicks on the same video must not
-# both pass the busy check and start two runs writing the same output folder.
+# Guards check-then-register of a job id (two clicks on the same video must not
+# both pass the busy check and start two runs writing the same output folder),
+# and every move of a job out of 'pending', so a queue-message update can never
+# land on a job that has just started or been cancelled.
 _JOBS_LOCK = threading.Lock()
 _ACTIVE_JOB_STATUSES = ('pending', 'running', 'reencoding')
 _JOB_BUSY = {'error': '该视频已在分析或排队中 / this video is already being analysed or queued'}
@@ -58,11 +60,11 @@ _JOB_BUSY = {'error': '该视频已在分析或排队中 / this video is already
 
 def _queue_changed(order):
     """Keep each queued job's message on its current place in line."""
-    for index, job_id in enumerate(order):
-        job = jobs.get(job_id)
-        if job is not None and job.get('status') == 'pending':
-            job['queue_position'] = index + 1
-            job['message'] = f'排队中，第 {index + 1} 位 / queued, #{index + 1} in line'
+    with _JOBS_LOCK:
+        for index, job_id in enumerate(order):
+            job = jobs.get(job_id)
+            if job is not None and job.get('status') == 'pending':
+                job['message'] = f'排队中，第 {index + 1} 位 / queued, #{index + 1} in line'
 
 
 # At most this many analyses (match or posture) run at once; the rest queue.
@@ -82,27 +84,47 @@ def _register_job(job_id, job):
 
 
 def _fail_job(job, message):
-    job['status'] = 'error'
-    job['stage'] = 'error'
-    job['message'] = message
-    job.pop('queue_position', None)
+    with _JOBS_LOCK:
+        job['status'] = 'error'
+        job['stage'] = 'error'
+        job['message'] = message
 
 
-def _start_tracker(job_id, track, proc, log_fh):
-    """Run ``track(proc, log_fh)`` on a thread; its slot is freed however it ends."""
+def _mark_running(job, message):
+    with _JOBS_LOCK:
+        job['status'] = 'running'
+        job['message'] = message
+        job['updated'] = time.time()
+
+
+def _start_tracker(job_id, job, track, proc, log_fh, release):
+    """Run ``track(proc, log_fh)`` on a thread; *release* frees its slot however it ends."""
     def run():
         try:
             track(proc, log_fh)
         except Exception as exc:
             print(f'job {job_id} tracker failed ({type(exc).__name__})')
-            job = jobs.get(job_id)
-            if job is not None and job.get('status') in _ACTIVE_JOB_STATUSES:
+            if job.get('status') in _ACTIVE_JOB_STATUSES:
                 _fail_job(job, '分析失败 / analysis failed')
         finally:
-            _job_slots.release(job_id)
+            release()
 
-    jobs[job_id].pop('queue_position', None)
-    threading.Thread(target=run, daemon=True).start()
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        # Nothing would ever watch the process or free its slot: stop it now.
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if log_fh is not None:
+            log_fh.close()
+        _fail_job(job, '分析无法启动 / analysis could not start')
+        raise
+
+
+def _queue_position(job_id, job):
+    return _job_slots.position(job_id) if job.get('status') == 'pending' else None
 def _find_venv_python():
     candidates = [
         PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe',  # Windows
@@ -894,6 +916,12 @@ def api_manual_annotate():
     })
 
 
+def _template_arg(video_path):
+    """The video's auto court template when one exists, else the demo template."""
+    auto = TEMPLATES / f'_auto_{video_path.stem}.png'
+    return str(auto) if auto.exists() else str(TEMPLATES / 'demo.png')
+
+
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
     """启动视频分析（后台子进程）"""
@@ -916,9 +944,7 @@ def api_analyze():
 
     # 检查球场标注
     has_annotations = (save_dir / 'court_annotations.txt').exists()
-    has_template = (TEMPLATES / f'_auto_{video_path.stem}.png').exists()
-
-    template_arg = str(TEMPLATES / f'_auto_{video_path.stem}.png') if has_template else str(TEMPLATES / 'demo.png')
+    template_arg = _template_arg(video_path)
 
     env = os.environ.copy()
     env['PATH'] = f"{PROJECT_ROOT / '.local' / 'bin'}:{env.get('PATH', '')}"
@@ -973,23 +999,27 @@ def api_analyze():
     if not _register_job(job_id, job):
         return jsonify(_JOB_BUSY), 409
 
-    def start():
+    def start(release):
         # Runs when a slot is free: now, or later on the thread that freed it.
+        # The auto template may have appeared while the job waited in the queue.
+        cmd[cmd.index('--template-path') + 1] = _template_arg(video_path)
         log_path = os.path.join(str(save_dir), 'analyze.log')
+        log_fh = None
         try:
             _reset_progress_file(save_dir)
             log_fh = open(log_path, 'w', encoding='utf-8')
             proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT,
                                     text=True, cwd=str(PROJECT_ROOT), env=env)
         except Exception:
+            # An open handle keeps analyze.log locked on Windows (delete, re-run).
+            if log_fh is not None:
+                log_fh.close()
             _fail_job(job, '分析无法启动 / analysis could not start')
             raise
         job['proc'] = proc
-        job['status'] = 'running'
-        job['message'] = '准备启动...'
-        job['updated'] = time.time()
         job['log_path'] = log_path
-        _start_tracker(job_id, track_progress, proc, log_fh)
+        _mark_running(job, '准备启动...')
+        _start_tracker(job_id, job, track_progress, proc, log_fh, release)
 
     # 进度跟踪（在子进程启动后的线程中运行）
     def track_progress(proc, log_fh):
@@ -1093,7 +1123,7 @@ def api_status(job_id):
         'result': job.get('result'),
         'stage': job.get('stage'),
         'updated': job.get('updated'),
-        'queue_position': job.get('queue_position'),
+        'queue_position': _queue_position(job_id, job),
     })
 
 
@@ -1111,11 +1141,11 @@ def api_job_cancel(job_id):
         return jsonify({'error': '未知的任务 / unknown job'}), 404
     if not _job_slots.cancel(job_id):
         return jsonify({'error': '任务不在队列中 / job is not queued'}), 409
-    job['status'] = 'cancelled'
-    job['stage'] = 'cancelled'
-    job['message'] = ''
-    job['updated'] = time.time()
-    job.pop('queue_position', None)
+    with _JOBS_LOCK:
+        job['status'] = 'cancelled'
+        job['stage'] = 'cancelled'
+        job['message'] = ''
+        job['updated'] = time.time()
     return jsonify({'ok': True})
 
 
@@ -1558,7 +1588,7 @@ def api_posture_analyze():
     if not _register_job(job_id, job):
         return jsonify(_JOB_BUSY), 409
 
-    def start():
+    def start(release):
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, cwd=str(PROJECT_ROOT), env=os.environ.copy())
@@ -1566,10 +1596,8 @@ def api_posture_analyze():
             _fail_job(job, '姿态分析无法启动 / posture analysis could not start')
             raise
         job['proc'] = proc
-        job['status'] = 'running'
-        job['message'] = '姿态分析中...'
-        job['updated'] = time.time()
-        _start_tracker(job_id, track, proc, None)
+        _mark_running(job, '姿态分析中...')
+        _start_tracker(job_id, job, track, proc, None, release)
 
     def track(proc, _log_fh):
         job['stage'] = 'loading'
@@ -1617,7 +1645,8 @@ def api_posture_analyze_status(job_id):
         return jsonify({'status': 'not_found'}), 404
     return jsonify({'status': job.get('status'), 'progress': job.get('progress', 0),
                     'message': job.get('message', ''), 'result': job.get('result'),
-                    'stage': job.get('stage')})
+                    'stage': job.get('stage'), 'updated': job.get('updated'),
+                    'queue_position': _queue_position(job_id, job)})
 
 
 _REPORT_LANGS = ("en", "zh-Hant", "zh-Hans")

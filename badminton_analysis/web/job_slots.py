@@ -13,6 +13,7 @@ ffmpeg) of the first; a third would only queue on the GPU.
 
 ``GB_MAX_JOBS`` (an integer >= 1) overrides the computed default.
 """
+import itertools
 import os
 import shutil
 import subprocess
@@ -99,41 +100,40 @@ def resolve_max_jobs(environ=None, probe=None):
 class JobSlots:
     """At most ``max_jobs`` jobs hold a slot; the rest wait in FIFO order.
 
-    ``submit(job_id, start)`` runs ``start()`` now if a slot is free, else queues
-    it. A started job must call ``release(job_id)`` exactly once when it ends
-    (success or failure); that hands its slot to the next queued job. ``start``
-    runs on the caller's thread (the request thread, or the thread that
-    released the slot) and must not block for long: it launches a subprocess
-    and a tracking thread and returns. If ``start`` raises, its slot is freed.
+    ``submit(job_id, start)`` calls ``start(release)`` now if a slot is free,
+    else queues it. ``release`` frees exactly the slot that call took (calling
+    it again is a no-op), so a late tracker of an earlier run of the same job id
+    can never free a re-run's slot. ``start`` runs on the caller's thread (the
+    request thread, or the thread that released a slot) and must not block for
+    long: it launches a subprocess and a tracking thread and returns. If
+    ``start`` raises, its slot is freed and the next queued job starts.
     """
 
     def __init__(self, max_jobs, on_queue_change=None):
         self.max_jobs = max(1, int(max_jobs))
         self._lock = threading.Lock()
-        self._running = set()
+        self._running = {}  # token -> job_id
         self._queue = deque()  # (job_id, start)
-        # Called (outside the lock) with [job_id, ...] in queue order after every change.
+        self._tokens = itertools.count()
+        # Called with [job_id, ...] in queue order after every change, serialised
+        # by its own lock and always with the order at the time of the call.
         self._on_queue_change = on_queue_change
+        self._hook_lock = threading.Lock()
 
     def submit(self, job_id, start):
         """``True`` when started now, ``False`` when queued."""
         with self._lock:
             if len(self._running) < self.max_jobs and not self._queue:
-                self._running.add(job_id)
-                now = True
+                token = self._take(job_id)
             else:
                 self._queue.append((job_id, start))
-                now = False
-        if now:
-            self._start(job_id, start)
-        else:
+                token = None
+        if token is None:
             self._notify()
-        return now
-
-    def release(self, job_id):
-        with self._lock:
-            self._running.discard(job_id)
-        self._drain()
+            return False
+        if not self._start(token, job_id, start):
+            self._drain()
+        return True
 
     def cancel(self, job_id):
         """Drop a queued (not yet started) job. ``True`` when it was queued."""
@@ -155,33 +155,53 @@ class JobSlots:
 
     def snapshot(self):
         with self._lock:
-            return {'max_jobs': self.max_jobs, 'running': sorted(self._running),
+            return {'max_jobs': self.max_jobs, 'running': sorted(self._running.values()),
                     'queued': [job_id for job_id, _ in self._queue]}
 
-    def _start(self, job_id, start):
+    def _take(self, job_id):
+        token = next(self._tokens)
+        self._running[token] = job_id
+        return token
+
+    def _free(self, token):
+        with self._lock:
+            return self._running.pop(token, None) is not None
+
+    def _release_for(self, token):
+        def release():
+            if self._free(token):
+                self._drain()
+        return release
+
+    def _start(self, token, job_id, start):
+        """``True`` when ``start`` returned; on an exception its slot is freed (no drain)."""
         try:
-            start()
+            start(self._release_for(token))
+            return True
         except Exception as exc:
             print(f'job {job_id} failed to start ({type(exc).__name__})')
-            self.release(job_id)
+            self._free(token)
+            return False
 
     def _drain(self):
+        # A loop, not recursion: a failed start just frees its slot and the loop goes on.
         while True:
             with self._lock:
                 if len(self._running) >= self.max_jobs or not self._queue:
                     break
                 job_id, start = self._queue.popleft()
-                self._running.add(job_id)
+                token = self._take(job_id)
             self._notify()
-            self._start(job_id, start)
+            self._start(token, job_id, start)
         self._notify()
 
     def _notify(self):
         if self._on_queue_change is None:
             return
-        with self._lock:
-            order = [job_id for job_id, _ in self._queue]
-        try:
-            self._on_queue_change(order)
-        except Exception as exc:
-            print(f'queue change hook failed ({type(exc).__name__})')
+        with self._hook_lock:
+            with self._lock:
+                order = [job_id for job_id, _ in self._queue]
+            try:
+                self._on_queue_change(order)
+            except Exception as exc:
+                print(f'queue change hook failed ({type(exc).__name__})')
