@@ -45,6 +45,11 @@ var Kestrel = (function () {
     }).join('<div class="step-line"></div>') + '</div>';
   }
   function goStep(step) { wiz.step = step; renderWizard(); }
+  // Back to step one; a started job keeps running and stays on the Pipeline view. The mode choice is kept.
+  function resetWizard() {
+    if (wiz.pollIv) { clearInterval(wiz.pollIv); wiz.pollIv = null; }
+    wiz.step = 'mode'; wiz.video = null; wiz.jobId = null;
+  }
   function renderWizard() {
     var main = mainEl();
     main.innerHTML =
@@ -302,7 +307,9 @@ var Kestrel = (function () {
         '<div class="prog-pct mono" id="prog-pct">0%</div></div>' +
       '<ul class="stage-list" id="stage-list"></ul>' +
       '<div id="wiz-heartbeat" class="wiz-heartbeat"></div>' +
-      '<div class="wiz-actions" id="prog-actions"></div>';
+      '<div class="wiz-actions" id="prog-actions">' +
+        '<button class="btn-ghost" id="prog-another">' + (zh?'再开始一个分析':'Start another analysis') + '</button></div>';
+    document.getElementById('prog-another').onclick = function () { resetWizard(); renderWizard(); };
     pollJob();
   }
   function renderStages(curStage) {
@@ -1294,7 +1301,8 @@ var Kestrel = (function () {
     // 'dashboard' (back to the list): the shell navigates to Matches, so there is nothing to draw here.
   }
   function mountAt(el, screen) { mountEl = el; state.screen = screen; render(); }
-  function mountNew(el) { mountAt(el, 'new'); }
+  // Arriving at #/new always offers a new analysis; one left on its progress step would reopen that job.
+  function mountNew(el) { if (wiz.step === 'progress') { resetWizard(); } mountAt(el, 'new'); }
   function mountResults(el, stem, mode, modes) {
     var known = state.resultsVideo === stem ? state.resultsModes : null;
     state.resultsVideo = stem;
