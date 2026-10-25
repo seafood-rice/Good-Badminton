@@ -3,6 +3,8 @@
 #   docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 # GB_STATE_DIR (default: this folder) is where videos/, outputs/, data/ and weights/ live.
 # Set it in .env to reuse an existing checkout's folders. GB_PORT changes the host port.
+# GB_MAX_JOBS caps how many analyses run at once (unset: sized from the host's CPU, RAM
+# and GPU count, 2 on one GPU); further jobs wait in a queue.
 services:
   app:
     # No build: section on purpose. The image is built from main only, never from this
@@ -17,6 +19,8 @@ services:
       - ${GB_STATE_DIR:-.}/data:/app/data
       - ${GB_STATE_DIR:-.}/weights:/app/weights
       - model-cache:/root/.cache   # RTMPose / ultralytics auto-downloads
+    environment:
+      - GB_MAX_JOBS=${GB_MAX_JOBS:-}
     deploy:
       resources:
         reservations:

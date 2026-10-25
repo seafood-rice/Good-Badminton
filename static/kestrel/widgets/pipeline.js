@@ -60,6 +60,7 @@ export function jobsModel(jobs, lang) {
     if (status === 'pending') { state = t('job.state.queued', lang); tone = 'queued'; }
     else if (status === 'completed') { state = t('job.state.done', lang); tone = 'good'; }
     else if (status === 'error') { state = t('job.state.error', lang); tone = 'bad'; }
+    else if (status === 'cancelled') { state = t('job.state.cancelled', lang); tone = 'queued'; }
     else if (status === 'detached') { state = t('job.state.detached', lang); tone = 'accent'; }
     else { state = t('job.state.running', lang, { pct }); tone = 'accent'; }
     const st = jobStage(j);

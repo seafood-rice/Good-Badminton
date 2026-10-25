@@ -279,7 +279,7 @@ var Kestrel = (function () {
     fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       .then(function (r) { return r.json(); })
       .then(function (d) { if (d.ok) { wiz.jobId = d.job_id; goStep('progress'); }
-        else { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(state.lang==='zh' ? (d.error || '启动失败') : 'Failed to start analysis'); } })
+        else { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(d.error || (state.lang==='zh' ? '启动失败' : 'Failed to start analysis')); } })
       .catch(function () { btn.disabled = false; btn.textContent = state.lang==='zh'?'开始分析':'Start Analysis'; alert(state.lang==='zh' ? '网络错误，请重试' : 'Network error — please try again'); });
   }
   var STAGE_LABELS = {
@@ -337,7 +337,11 @@ var Kestrel = (function () {
             ? (state.lang === 'zh'
                 ? '分析进行中… ' + (d.message || '') + (age !== null ? '（' + age + '秒前更新）' : '')
                 : 'Analysis in progress… ' + (d.message || '') + (age !== null ? ' (updated ' + age + 's ago)' : ''))
-            : '';
+            : d.status === 'pending'
+              ? (state.lang === 'zh'
+                  ? '排队中，等待空闲分析位' + (d.queue_position ? '（第 ' + d.queue_position + ' 位）' : '') + '…'
+                  : 'Queued, waiting for a free analysis slot' + (d.queue_position ? ' (#' + d.queue_position + ' in line)' : '') + '…')
+              : '';
         }
         if (d.status === 'completed') {
           clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; }
@@ -351,10 +355,10 @@ var Kestrel = (function () {
             openResults(stem, m, [m]);
           };
           document.getElementById('prog-lib').onclick = function () { wiz.step = 'mode'; wiz.video = null; wiz.jobId = null; setScreen('dashboard'); };
-        } else if (d.status === 'error') {
+        } else if (d.status === 'error' || d.status === 'cancelled') {
           clearInterval(iv); if (wiz.pollIv === iv) { wiz.pollIv = null; } renderStages('error');
           document.getElementById('prog-actions').innerHTML =
-            '<div class="prog-err">' + (d.message || (zh?'分析失败':'Analysis failed')) + '</div>' +
+            '<div class="prog-err">' + (d.status === 'cancelled' ? (zh?'已取消':'Cancelled') : (d.message || (zh?'分析失败':'Analysis failed'))) + '</div>' +
             '<button class="btn-ghost" id="prog-retry">' + (zh?'返回设置':'Back to Config') + '</button>';
           document.getElementById('prog-retry').onclick = function () { goStep('config'); };
         }

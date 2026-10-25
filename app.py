@@ -10,7 +10,7 @@ from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
 from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
-from badminton_analysis.web import athletes_routes, insights_routes
+from badminton_analysis.web import athletes_routes, insights_routes, job_slots
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -49,6 +49,82 @@ insights_routes.register(app, videos=lambda: VIDEOS, outputs=lambda: OUTPUTS,
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
+# Guards check-then-register of a job id (two clicks on the same video must not
+# both pass the busy check and start two runs writing the same output folder),
+# and every move of a job out of 'pending', so a queue-message update can never
+# land on a job that has just started or been cancelled.
+_JOBS_LOCK = threading.Lock()
+_ACTIVE_JOB_STATUSES = ('pending', 'running', 'reencoding')
+_JOB_BUSY = {'error': '该视频已在分析或排队中 / this video is already being analysed or queued'}
+
+
+def _queue_changed(order):
+    """Keep each queued job's message on its current place in line."""
+    with _JOBS_LOCK:
+        for index, job_id in enumerate(order):
+            job = jobs.get(job_id)
+            if job is not None and job.get('status') == 'pending':
+                job['message'] = f'排队中，第 {index + 1} 位 / queued, #{index + 1} in line'
+
+
+# At most this many analyses (match or posture) run at once; the rest queue.
+_MAX_JOBS, _MAX_JOBS_SOURCE = job_slots.resolve_max_jobs()
+_job_slots = job_slots.JobSlots(_MAX_JOBS, on_queue_change=_queue_changed)
+print(f'Analysis jobs: up to {_MAX_JOBS} at once ({_MAX_JOBS_SOURCE})')
+
+
+def _register_job(job_id, job):
+    """Store *job* under *job_id* unless a job with that id is still in flight."""
+    with _JOBS_LOCK:
+        current = jobs.get(job_id)
+        if current is not None and current.get('status') in _ACTIVE_JOB_STATUSES:
+            return False
+        jobs[job_id] = job
+        return True
+
+
+def _fail_job(job, message):
+    with _JOBS_LOCK:
+        job['status'] = 'error'
+        job['stage'] = 'error'
+        job['message'] = message
+
+
+def _mark_running(job, message):
+    with _JOBS_LOCK:
+        job['status'] = 'running'
+        job['message'] = message
+        job['updated'] = time.time()
+
+
+def _start_tracker(job_id, job, track, proc, log_fh, release):
+    """Run ``track(proc, log_fh)`` on a thread; *release* frees its slot however it ends."""
+    def run():
+        try:
+            track(proc, log_fh)
+        except Exception as exc:
+            print(f'job {job_id} tracker failed ({type(exc).__name__})')
+            if job.get('status') in _ACTIVE_JOB_STATUSES:
+                _fail_job(job, '分析失败 / analysis failed')
+        finally:
+            release()
+
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        # Nothing would ever watch the process or free its slot: stop it now.
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if log_fh is not None:
+            log_fh.close()
+        _fail_job(job, '分析无法启动 / analysis could not start')
+        raise
+
+
+def _queue_position(job_id, job):
+    return _job_slots.position(job_id) if job.get('status') == 'pending' else None
 def _find_venv_python():
     candidates = [
         PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe',  # Windows
@@ -840,6 +916,12 @@ def api_manual_annotate():
     })
 
 
+def _template_arg(video_path):
+    """The video's auto court template when one exists, else the demo template."""
+    auto = TEMPLATES / f'_auto_{video_path.stem}.png'
+    return str(auto) if auto.exists() else str(TEMPLATES / 'demo.png')
+
+
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
     """启动视频分析（后台子进程）"""
@@ -859,13 +941,10 @@ def api_analyze():
 
     save_dir = OUTPUTS / video_path.stem
     save_dir.mkdir(exist_ok=True)
-    _reset_progress_file(save_dir)
 
     # 检查球场标注
     has_annotations = (save_dir / 'court_annotations.txt').exists()
-    has_template = (TEMPLATES / f'_auto_{video_path.stem}.png').exists()
-
-    template_arg = str(TEMPLATES / f'_auto_{video_path.stem}.png') if has_template else str(TEMPLATES / 'demo.png')
+    template_arg = _template_arg(video_path)
 
     env = os.environ.copy()
     env['PATH'] = f"{PROJECT_ROOT / '.local' / 'bin'}:{env.get('PATH', '')}"
@@ -908,29 +987,42 @@ def api_analyze():
         cmd += ['--hit-model', hit_weights]
 
     job_id = video_path.stem
-    jobs[job_id] = {
+    job = {
         'status': 'pending',
         'progress': 0,
         'message': '准备启动...',
         'video_name': video_name,
         'save_dir': str(save_dir),
         'stage': 'analyzing',
+        'updated': time.time(),
     }
+    if not _register_job(job_id, job):
+        return jsonify(_JOB_BUSY), 409
 
-    log_path = os.path.join(str(save_dir), 'analyze.log')
-    log_fh = open(log_path, 'w', encoding='utf-8')
-    proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT,
-                            text=True, cwd=str(PROJECT_ROOT), env=env)
-    jobs[job_id]['proc'] = proc
-    jobs[job_id]['status'] = 'running'
-    jobs[job_id]['log_path'] = log_path
+    def start(release):
+        # Runs when a slot is free: now, or later on the thread that freed it.
+        # The auto template may have appeared while the job waited in the queue.
+        cmd[cmd.index('--template-path') + 1] = _template_arg(video_path)
+        log_path = os.path.join(str(save_dir), 'analyze.log')
+        log_fh = None
+        try:
+            _reset_progress_file(save_dir)
+            log_fh = open(log_path, 'w', encoding='utf-8')
+            proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT,
+                                    text=True, cwd=str(PROJECT_ROOT), env=env)
+        except Exception:
+            # An open handle keeps analyze.log locked on Windows (delete, re-run).
+            if log_fh is not None:
+                log_fh.close()
+            _fail_job(job, '分析无法启动 / analysis could not start')
+            raise
+        job['proc'] = proc
+        job['log_path'] = log_path
+        _mark_running(job, '准备启动...')
+        _start_tracker(job_id, job, track_progress, proc, log_fh, release)
 
-    # 启动进度跟踪线程
-    import threading
-
-    def track_progress():
-        job = jobs[job_id]
-
+    # 进度跟踪（在子进程启动后的线程中运行）
+    def track_progress(proc, log_fh):
         while job['status'] == 'running' and proc.poll() is None:
             prog = _read_progress_file(job['save_dir'])
             if prog is not None:
@@ -1013,8 +1105,9 @@ def api_analyze():
             tail = _log_tail(job.get('log_path', ''), n=40)
             job['message'] = f'分析失败 (exit={proc.returncode})\n{tail}'
 
-    threading.Thread(target=track_progress, daemon=True).start()
-    return jsonify({'ok': True, 'job_id': job_id})
+    queued = not _job_slots.submit(job_id, start)
+    return jsonify({'ok': True, 'job_id': job_id, 'queued': queued,
+                    'position': _job_slots.position(job_id)})
 
 
 @app.route('/api/status/<job_id>')
@@ -1030,7 +1123,30 @@ def api_status(job_id):
         'result': job.get('result'),
         'stage': job.get('stage'),
         'updated': job.get('updated'),
+        'queue_position': _queue_position(job_id, job),
     })
+
+
+@app.route('/api/jobs/slots')
+def api_job_slots():
+    """How many analyses run at once, and which are running or queued."""
+    return jsonify(_job_slots.snapshot())
+
+
+@app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
+def api_job_cancel(job_id):
+    """Drop a queued job before it starts. A running job cannot be cancelled here."""
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({'error': '未知的任务 / unknown job'}), 404
+    if not _job_slots.cancel(job_id):
+        return jsonify({'error': '任务不在队列中 / job is not queued'}), 409
+    with _JOBS_LOCK:
+        job['status'] = 'cancelled'
+        job['stage'] = 'cancelled'
+        job['message'] = ''
+        job['updated'] = time.time()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/clip', methods=['POST'])
@@ -1466,16 +1582,24 @@ def api_posture_analyze():
             cmd += ['--lift-device', lift_device]
 
     job_id = 'posture_' + video_path.stem
-    jobs[job_id] = {'status': 'running', 'progress': 0, 'message': '姿态分析中...',
-                    'video_name': video_path.stem, 'save_dir': str(save_dir)}
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, cwd=str(PROJECT_ROOT), env=os.environ.copy())
-    jobs[job_id]['proc'] = proc
+    job = {'status': 'pending', 'progress': 0, 'message': '准备启动...',
+           'video_name': video_path.stem, 'save_dir': str(save_dir),
+           'updated': time.time()}
+    if not _register_job(job_id, job):
+        return jsonify(_JOB_BUSY), 409
 
-    import threading
+    def start(release):
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, cwd=str(PROJECT_ROOT), env=os.environ.copy())
+        except Exception:
+            _fail_job(job, '姿态分析无法启动 / posture analysis could not start')
+            raise
+        job['proc'] = proc
+        _mark_running(job, '姿态分析中...')
+        _start_tracker(job_id, job, track, proc, None, release)
 
-    def track():
-        job = jobs[job_id]
+    def track(proc, _log_fh):
         job['stage'] = 'loading'
         for line in proc.stdout:
             parsed = _parse_progress_line(line)
@@ -1509,8 +1633,9 @@ def api_posture_analyze():
             job['stage'] = 'error'
             job['message'] = '姿态分析失败 (exit=' + str(proc.returncode) + ')'
 
-    threading.Thread(target=track, daemon=True).start()
-    return jsonify({'ok': True, 'job_id': job_id})
+    queued = not _job_slots.submit(job_id, start)
+    return jsonify({'ok': True, 'job_id': job_id, 'queued': queued,
+                    'position': _job_slots.position(job_id)})
 
 
 @app.route('/api/posture-analyze-status/<job_id>')
@@ -1520,7 +1645,8 @@ def api_posture_analyze_status(job_id):
         return jsonify({'status': 'not_found'}), 404
     return jsonify({'status': job.get('status'), 'progress': job.get('progress', 0),
                     'message': job.get('message', ''), 'result': job.get('result'),
-                    'stage': job.get('stage')})
+                    'stage': job.get('stage'), 'updated': job.get('updated'),
+                    'queue_position': _queue_position(job_id, job)})
 
 
 _REPORT_LANGS = ("en", "zh-Hant", "zh-Hans")

@@ -23,7 +23,7 @@ function stemOf(video) {
 function toneOf(status) {
   if (status === 'completed') return 'good';
   if (status === 'error') return 'bad';
-  if (status === 'pending') return 'queued';
+  if (status === 'pending' || status === 'cancelled') return 'queued';
   return 'accent';
 }
 
@@ -88,6 +88,7 @@ function stateText(row, lang) {
   if (row.status === 'pending') return t('job.state.queued', lang);
   if (row.status === 'completed') return t('job.state.done', lang);
   if (row.status === 'error') return t('job.state.error', lang);
+  if (row.status === 'cancelled') return t('job.state.cancelled', lang);
   if (row.status === 'detached') return t('job.state.detached', lang);
   return t('job.state.running', lang, { pct: row.progress });
 }
@@ -144,7 +145,7 @@ export function mount(container, ctx = {}) {
   const noop = { destroy() {} };
   if (!container || !hasDOM()) return noop;
   const lang = ctx.lang === 'en' ? 'en' : 'zh';
-  const state = { groups: null, error: null, destroyed: false };
+  const state = { groups: null, error: null, destroyed: false, maxJobs: null, cancelError: null };
   const root = h('div', { class: 'page pv', 'data-view': 'pipeline' });
   container.appendChild(root);
   const bars = new Map(); // job id -> {bar, pctEl, stateEl, row}
@@ -156,6 +157,7 @@ export function mount(container, ctx = {}) {
         h('div', { class: 'mono ov-eyebrow' }, [h('span', { class: 'ov-sync-dot', 'aria-hidden': 'true' }), t('pv.eyebrow', lang)]),
         h('h1', { class: 'page-title serif' }, t('nav.pipeline', lang)),
         g ? h('div', { class: 'ov-summary' }, t('pv.sub', lang, { running: g.running, queued: g.queued, sec: (g.anyActive ? FAST_MS : SLOW_MS) / 1000 })) : null,
+        isNum(state.maxJobs) ? h('div', { class: 'ov-summary kw-muted' }, t('pv.slots', lang, { n: state.maxJobs })) : null,
       ]),
       h('div', { class: 'ov-actions' }, [h('a', { href: '#/new', class: 'ov-btn primary' }, t('btn.new_analysis', lang))]),
     ]);
@@ -184,6 +186,7 @@ export function mount(container, ctx = {}) {
       msgEl,
       h('div', { class: 'pv-foot' }, [
         updEl,
+        r.status === 'pending' ? h('button', { type: 'button', class: 'ov-btn small', onclick: (e) => cancel(r.id, e.currentTarget) }, t('pv.cancel', lang)) : null,
         r.resultsHash ? h('a', { href: r.resultsHash, class: 'kw-link', 'data-xf': '' }, t('pv.open_results', lang)) : null,
       ]),
     ]);
@@ -191,6 +194,18 @@ export function mount(container, ctx = {}) {
     paintText(refs, r);
     bars.set(r.id, refs);
     return li;
+  }
+
+  async function cancel(id, btn) {
+    if (btn) btn.disabled = true;
+    state.cancelError = null;
+    try {
+      await api.cancelJob(id, { timeout: 10000 });
+    } catch (e) {
+      // 409: it started in the meantime. Either way the next poll shows the real state.
+      state.cancelError = Date.now();
+    }
+    poll();
   }
 
   function paintText(refs, r) {
@@ -220,6 +235,9 @@ export function mount(container, ctx = {}) {
         h('span', null, `${errorText(state.error, lang)} ${t('pv.load_error', lang)}`),
         h('button', { type: 'button', class: 'ov-btn small', onclick: () => poll() }, t('btn.retry', lang)),
       ]));
+    }
+    if (state.cancelError) {
+      root.appendChild(h('div', { class: 'ov-alert', role: 'alert' }, h('span', null, t('pv.cancel_failed', lang))));
     }
     if (!g) {
       if (!state.error) root.appendChild(h('div', { class: 'card ov-state', role: 'status', 'aria-busy': 'true' }, h('div', { class: 'k-label' }, t('state.loading', lang))));
@@ -260,7 +278,9 @@ export function mount(container, ctx = {}) {
     onData: (data) => {
       const next = groupJobs(data);
       const wasActive = !!(state.groups && state.groups.anyActive);
-      if (!patch(next)) {
+      // A failed cancel shows its alert for a few seconds (re-rendering each poll), then clears.
+      if (state.cancelError && Date.now() - state.cancelError > 5000) state.cancelError = null;
+      if (state.cancelError || !patch(next)) {
         state.groups = next;
         state.error = null;
         render();
@@ -283,6 +303,12 @@ export function mount(container, ctx = {}) {
 
   render();
   poll();
+  // The concurrency cap is fixed for the server's lifetime: one read is enough.
+  api.jobSlots({ timeout: 10000 }).then((s) => {
+    if (state.destroyed || !s || !isNum(s.max_jobs)) return;
+    state.maxJobs = s.max_jobs;
+    render();
+  }).catch(() => {});
 
   return {
     destroy() {

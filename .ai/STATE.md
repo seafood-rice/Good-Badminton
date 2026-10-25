@@ -47,6 +47,10 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 
 ## Decisions that still matter
 
+- Analyses (match + posture) share a concurrency cap: `GB_MAX_JOBS`, else sized from the host
+  (`badminton_analysis/web/job_slots.py`: 2 on the RTX 4090 box); extra jobs queue FIFO, the same
+  video twice is a 409, queued jobs can be cancelled from the Pipeline view.
+
 - B11 owner decisions: spec `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md`
   section 12a, as built in section 15. Rally counts are only claimed when the signal supports
   them; with no usable signal, emit degraded coarse windows and withhold stroke labels.
