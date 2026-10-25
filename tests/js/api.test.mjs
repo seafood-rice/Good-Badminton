@@ -67,6 +67,8 @@ test('endpoint helpers encode stems and skip empty query values', () => {
   assert.equal(endpoints.videoInsights('Dji 0004 D'), '/api/insights/video/Dji%200004%20D');
   assert.equal(endpoints.match('a b'), '/api/matches/a%20b');
   assert.equal(endpoints.jobs(), '/api/jobs');
+  assert.equal(endpoints.jobSlots(), '/api/jobs/slots');
+  assert.equal(endpoints.cancelJob('posture_a b'), '/api/jobs/posture_a%20b/cancel');
   assert.equal(endpoints.athletes(), '/api/athletes');
   assert.equal(endpoints.athlete('a_1'), '/api/athletes/a_1');
   assert.equal(endpoints.squads(), '/api/squads');

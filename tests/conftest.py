@@ -25,3 +25,20 @@ def _keep_the_real_tag_store_off_the_suite(tmp_path, monkeypatch):
         # The same for data/athletes.json: a scope="all" delete forgets the
         # video's match record there.
         monkeypatch.setattr(webapp, "ATHLETES_PATH", tmp_path / "athletes.json")
+
+
+@pytest.fixture(autouse=True)
+def _fresh_job_queue(monkeypatch):
+    """Each test gets an empty job table and an uncapped scheduler.
+
+    Many tests post /api/analyze for the same "clip.mp4" with fake processes
+    that never finish (or with threading.Thread stubbed out, so a slot is
+    never released). Shared across tests, that would 409 the next start or
+    leave it queued forever. Tests of the cap itself install their own.
+    """
+    webapp = sys.modules.get("app")
+    if webapp is not None:
+        from badminton_analysis.web.job_slots import JobSlots
+        monkeypatch.setattr(webapp, "jobs", {})
+        monkeypatch.setattr(webapp, "_job_slots",
+                            JobSlots(10_000, on_queue_change=webapp._queue_changed))

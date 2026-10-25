@@ -311,6 +311,19 @@ test('groupJobs: active jobs first, finished after, newest-first order kept with
   assert.equal(groupJobs({ jobs: [{ id: 'x', status: 'running' }] }).active.length, 1);
 });
 
+test('groupJobs: a cancelled queued job is finished, not active, and has no results link', () => {
+  const g = groupJobs([
+    { id: 'a', video: 'a', kind: 'match', status: 'running', progress: 10 },
+    { id: 'b', video: 'b', kind: 'match', status: 'pending', progress: 0, message: '排队中，第 1 位 / queued, #1 in line' },
+    { id: 'c', video: 'c', kind: 'match', status: 'cancelled', progress: 0 },
+  ]);
+  assert.deepEqual(g.active.map((j) => j.id), ['a', 'b']);
+  assert.deepEqual(g.finished.map((j) => j.id), ['c']);
+  assert.equal(g.queued, 1);
+  assert.equal(g.finished[0].tone, 'queued');
+  assert.equal(g.finished[0].resultsHash, null);
+});
+
 // ---------- Task 11 review fixes ----------
 
 test('workspace: the 0.5 s pad gives a stroke 0.3 s after a rally end that rally; 0.7 s after it none', () => {

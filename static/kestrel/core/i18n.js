@@ -288,6 +288,7 @@ export const STRINGS = {
     'job.state.done': '已完成',
     'job.state.error': '失败',
     'job.state.detached': '在后台运行',
+    'job.state.cancelled': '已取消',
     'job.progress_aria': '{stage} 进度',
     'job.kind.match': '比赛分析',
     'job.kind.posture': '姿态分析',
@@ -299,6 +300,7 @@ export const STRINGS = {
     'stage.loading': '加载模型',
     'stage.done': '已完成',
     'stage.error': '失败',
+    'stage.cancelled': '已取消',
     'pipeline.more': '另有 {n} 项',
 
     // peek
@@ -767,6 +769,9 @@ export const STRINGS = {
     'pv.updated': '{time} 前更新',
     'pv.open_results': '查看结果',
     'pv.load_error': '无法获取任务列表，将自动重试。',
+    'pv.slots': '最多同时运行 {n} 个分析，其余排队等待',
+    'pv.cancel': '取消排队',
+    'pv.cancel_failed': '无法取消：这个任务可能已经开始运行。',
 
     // technique metrics (stroke inspector, Task 11)
     'metric.elbow_extension': '肘部伸展',
@@ -1186,6 +1191,7 @@ export const STRINGS = {
     'job.state.done': 'Done',
     'job.state.error': 'Failed',
     'job.state.detached': 'Running in the background',
+    'job.state.cancelled': 'Cancelled',
     'job.progress_aria': '{stage} progress',
     'job.kind.match': 'Match analysis',
     'job.kind.posture': 'Posture analysis',
@@ -1197,6 +1203,7 @@ export const STRINGS = {
     'stage.loading': 'Loading models',
     'stage.done': 'Done',
     'stage.error': 'Failed',
+    'stage.cancelled': 'Cancelled',
     'pipeline.more': '+{n} more',
 
     // peek
@@ -1665,6 +1672,9 @@ export const STRINGS = {
     'pv.updated': 'Updated {time} ago',
     'pv.open_results': 'Open results',
     'pv.load_error': 'Could not fetch the job list; retrying automatically.',
+    'pv.slots': 'Up to {n} analyses run at once; the rest wait in line',
+    'pv.cancel': 'Cancel',
+    'pv.cancel_failed': 'Could not cancel: the job may have started already.',
 
     // technique metrics (stroke inspector, Task 11)
     'metric.elbow_extension': 'Elbow extension',
