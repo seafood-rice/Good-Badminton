@@ -43,7 +43,6 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 |---|---|---|---|
 | learned-hit-detection | `claude/learned-hit-detection` | `badminton_analysis/stroke/`, `system.py`, `stroke_recog/recognizer.py`, `shuttle_track/tracknet.py`, `third_party/tracknet/`, `static/kestrel/legacy/kestrel-legacy.js`, `main.py`, `app.py`, `scripts/*hit*`, `scripts/shuttleset_labels.py`, `tests/test_hit_*` | First model on owner's Axelsen labels: recall 0.80, precision 0.67 (bar 0.60 / 0.70), hitter 0.88. Dead-time rebuild runs detached (`data/hit_dataset_gaps/build.log`; `stop_build.ps1` / `resume_build.ps1` there). Next: when it shows BUILD DONE, retrain on `data/hit_dataset` + `data/hit_dataset_gaps` (val Sindhu), re-score the 4 Axelsen stretches. Spec/plan: `docs/superpowers/*/2026-10-04-learned-hit-detection*`. `app.py` now serves `kestrel.html` at `/` and binds `0.0.0.0` (merged). Note: claude/stroke-timeline-mismatch-2bfb29 deletes stroke_recog/; rebase before touching it. |
 | split-match-linking | `claude/match-split-side-change-58a409` | `badminton_analysis/library/athletes.py`, `insights/aggregate.py`, `web/athletes_routes.py`, `app.py` (`_forget_match_record`), `static/kestrel/views/matches.js`, `static/kestrel/core/i18n.js` | Spec `docs/superpowers/specs/2026-10-21-split-match-linking-design.md`. Built: link a video as part N of a match (manual, sides-swapped flag); one expandable Matches row. Verified 2026-10-21: full pytest 2047 passed / 2 skipped, `node --test tests/js/*.test.mjs` 280 passed, live UI + API check on seeded data. Next: owner review/merge of the PR; then delete this row. Follow-ups: explicit `{part_of: null}` unlink (stale-tab safety), `has_record` flag on overview rows (UI guesses today). |
-| match-strategy-report | `claude/match-strategy-analysis-report-77af27` | `badminton_analysis/strategy/`, `badminton_analysis/web/strategy_routes.py`, `main_strategy.py`, `app.py` (queue report job), `static/kestrel/views/workspace.js`, `static/kestrel/views/strategy_model.js`, `static/kestrel/core/i18n.js`, `docker-compose*.yml`, `tests/test_strategy_*`, `tests/test_app_strategy.py` | Spec `docs/superpowers/specs/2026-10-27-match-strategy-report-design.md` written, awaiting owner review. LLM strategy report (coach-first + scouting, singles/doubles, en+zh) via local Ollama `qwen3.8:27b`, queued after each match job. Next: owner reviews spec, then implementation plan. Nothing built or tested yet. |
 | docker-migration-compose | `claude/docker-migration-compose-a48190` | `Dockerfile`, `.dockerignore`, `docker-compose*.yml`, `README.md`, `README_EN.md` | Image + compose (GPU default, CPU override) and README Docker sections done. Verified on RTX 4090 host: both images build; GPU image sees CUDA (torch + onnxruntime CUDA session); stack healthy; `pytest` in GPU image 1936 passed, 3 skipped (`test_ai_overlap.py` excluded, needs `git`). Not run: `fetch-weights` download, a real analysis on a video with weights. Delete this row when merged. |
 
 ## Decisions that still matter
@@ -65,7 +64,15 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 - Hit detector: no weights present means output identical to before; weight-mode tracking is the
   inference default, nonoverlap is for dataset builds.
 
+- Strategy report (spec `docs/superpowers/specs/2026-10-27-match-strategy-report-design.md`): every completed
+  match queues `strategy_<stem>` in the shared job slots; local Ollama `qwen3.8:27b` writes en+zh from a facts
+  pack; every claim cites fact ids and every number must be held by a cited fact, else retry then plain-text
+  fallback. Config `GB_STRATEGY_*` env > `data/settings.json` `strategy` > defaults (`GB_STRATEGY_REPORT=off`).
+
 ## Blockers and loose ends
+- Strategy report: doubles not yet tried against the live model (no doubles run in `outputs/`). A live singles run
+  took 832 s for en+zh (cold model load, full test suite running beside it); a first run timed out at 300 s, so the
+  default timeout is 600 s per language.
 
 - Rally outcomes (spec `docs/superpowers/specs/2026-10-27-rally-outcome-labelling-design.md`, merged #36):
   `outputs/<stem>/rally_outcomes.json` is the contract the LLM report reads. Auto labeller precision not yet
