@@ -128,9 +128,9 @@ Per entry (`rallies`, in time order):
 - `winner_side`: `upper` | `lower` | null (unknown). `outcome`: as in 5.1, or null.
 - `ending`: `in` | `out` | `net` | null; only the automatic landing evidence sets it (also on owner entries,
   as extra information).
-- `ending_stroke`: the last `strokes.json` stroke whose frame lies in the entry's window (rally pad 0.5 s) and
-  whose `stroke` is not `unknown`; null for doubles (strokes withheld), when `strokes.json` is absent or
-  stale, or when there is no such stroke.
+- `ending_stroke`: the last `strokes.json` stroke whose frame lies in the entry's window (rally pad 0.5 s);
+  null when that stroke's type is `unknown` (an earlier stroke is never substituted), for doubles (strokes
+  withheld), when `strokes.json` is absent or stale, or when the window has no stroke.
 - `confidence`: 1.0 for an owner label; the rule's value for auto (5.3); null when unknown.
 - `source`: `owner` | `auto` | null. `reviewed`: the owner gave any verdict (an `unsure` entry is
   reviewed, and keeps the automatic result if there is one).
@@ -143,6 +143,8 @@ Summary:
 - `entries` = len(`rallies`); `labelled` = entries with a `winner_side`; `coverage` = labelled / entries
   (null when there are no entries); `points_won` counts `winner_side`.
 - `reconciliation` (5.4).
+
+Top level `notes`: reader notes (an unreadable label file, malformed run files), for diagnosis only.
 
 ### 5.3 Automatic labeller (rule cascade)
 
@@ -205,6 +207,8 @@ Against the match record (`data/athletes.json`, via `library.athletes`): the pri
 - `unavailable("no_outcomes")` when the file is missing, unreadable or not schema 1;
 - `partial(value, "outcomes_incomplete")` while coverage < 1 or reconciliation is not `consistent`;
 - `ok(value)` otherwise. `value` is the summary plus `rallies`. `loaders.Run` gains `rally_outcomes`.
+- The per-video insights sidecar (`insights.json`, `/api/insights/video/<stem>`) carries it as `outcomes`
+  (insights version 8; `rally_outcomes.json` is a sidecar input, so a rebuild invalidates the cache).
 
 ## 6. Code layout
 

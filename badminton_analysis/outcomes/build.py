@@ -128,6 +128,17 @@ def _auto(segments, hits, landing):
     return out
 
 
+def segment_evidence(out_dir):
+    """``(segments, {segment_id: {"decision", "ending", "evidence"}})`` for every segment of a run.
+
+    The automatic labeller's view without any owner label; used by the accuracy script.
+    """
+    out_dir = Path(out_dir)
+    run = load_run(out_dir)
+    segments = _segments(run)
+    return segments, _auto(segments, _learned_hits(run), _Landing(run, out_dir))
+
+
 def _ending_stroke(run, start_sec, end_sec):
     """The last stroke in the window, when it has a type; None for doubles or unknown."""
     if run.match_format == "doubles" or not run.strokes or not run.fps:
