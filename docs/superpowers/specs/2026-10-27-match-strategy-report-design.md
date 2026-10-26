@@ -202,8 +202,11 @@ footnote-style list of `id = value unit` pairs.
 - **One call per language**, with all LLM sections in one JSON object. The `response_format` uses
   `json_schema`, which Ollama's OpenAI-compatible API supports.
 - **Temperature 0.3.**
-- **Thinking off:** Qwen's thinking is disabled with `/no_think` in the system prompt plus
-  `"think": false` in the request (Ollama ignores unknown fields on servers that lack it).
+- **Thinking off:** Qwen's thinking is disabled with `"reasoning_effort": "none"` in the request.
+  - A probe of local Ollama (2026-10-27) confirmed this: a short answer took 3.9 s with no reasoning
+    returned. `"think": false` is ignored on `/v1`.
+  - The first call after a model load took 118 s. Model loading counts against the timeout, so the default
+    stays 300 s.
   - A `<think>...</think>` prefix in the content is stripped before parsing, in case thinking was not turned
     off.
 - **Before the first call**, `GET /v1/models` checks that the model is listed (`model_missing` if not).
