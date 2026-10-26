@@ -130,6 +130,18 @@ docker compose exec app python -c "import torch, onnxruntime as ort; print(torch
 - 容器以 root 运行，避免 Windows / Docker Desktop 下绑定挂载的权限问题；Linux 主机上 `outputs/` 内的文件归 root 所有。
 - 服务默认监听所有网卡且没有身份验证，请只在可信网络中暴露 5050 端口。
 
+### 比赛策略报告（Docker 与 Ollama）
+
+每场比赛分析完成后会排队生成一份策略报告，需要一个兼容 OpenAI 接口的大模型服务；默认使用 Docker 主机上的 [Ollama](https://ollama.com)，compose 文件通过 `host.docker.internal` 访问它。请先在主机上拉取模型：`ollama pull qwen3.8:27b`。
+
+| 变量 | Docker 默认值 | 作用 |
+|---|---|---|
+| `GB_STRATEGY_LLM_URL` | `http://host.docker.internal:11434/v1` | 大模型服务地址 |
+| `GB_STRATEGY_LLM_MODEL` | `qwen3.8:27b` | Ollama 提供的模型名 |
+| `GB_STRATEGY_REPORT` | `on` | 设为 `off` 可关闭报告及自动排队 |
+
+其他设置（`GB_STRATEGY_LLM_KEY`、`GB_STRATEGY_LLM_TIMEOUT`、`GB_STRATEGY_LANGS`）以及 `data/settings.json` 中可选的 `strategy` 对象见设计文档。报告出问题（Ollama 未启动、模型未安装）不会改变比赛任务的状态；「策略」标签页会显示原因和备用文字。
+
 ## 🌐 Web 界面使用指南
 
 ### 自动模式
@@ -179,6 +191,7 @@ docker compose exec app python -c "import torch, onnxruntime as ort; print(torch
 - **中英文** — 可视化文字可切换
 - **击球技术分析** — 检测击球类型，分析关键关节角度，生成生物力学评分和改进建议
 - **智能训练计划** — 针对检测到的薄弱环节生成进阶训练计划，包括球场和居家训练
+- **比赛策略报告** — 比赛分析完成后，本地大模型根据实测数据撰写教练与对手分析报告（单打和双打，中英文）。每条结论都引用数据并经过数字核对，显示在比赛详情的「策略」标签页。见 [Docker 部署](#比赛策略报告docker-与-ollama)。
 
 > 📄 球拍检测和 AI 动作评分背后的模型训练数据、指标和授权说明，参见[模型卡](docs/model-cards.md)。
 

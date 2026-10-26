@@ -91,7 +91,7 @@ const tabs = (c) => c.querySelectorAll('[role="tab"]');
 const tabByText = (c, text) => tabs(c).find((b) => b.textContent === text);
 const panel = (c) => c.querySelector('[role="tabpanel"]');
 
-test('layout A: player and movement on top, four tabs, a Posture report link and no link to the classic results', async () => {
+test('layout A: player and movement on top, five tabs, a Posture report link and no link to the classic results', async () => {
   await withPage(async ({ container }) => {
     const top = container.querySelector('.ws-top');
     assert.ok(top, '.ws-top');
@@ -99,8 +99,8 @@ test('layout A: player and movement on top, four tabs, a Posture report link and
     assert.ok(card && card.querySelector('.ws-mute'), 'video card with the mute button');
     assert.ok(top.querySelector('.ws-move'), 'movement card in the top band');
     assert.equal(container.querySelector('.ws-grid'), null);
-    assert.equal(tabs(container).length, 4);
-    assert.deepEqual(tabs(container).map((b) => b.textContent), ['Strokes', 'Technique', 'Clips', 'Training plan']);
+    assert.equal(tabs(container).length, 5);
+    assert.deepEqual(tabs(container).map((b) => b.textContent), ['Strokes', 'Technique', 'Clips', 'Training plan', 'Strategy']);
     assert.equal(tabs(container)[0].getAttribute('aria-selected'), 'true');
     assert.equal(everything(container).some((e) => e.textContent === 'Open the full results'), false);
     const posture = container.querySelector('a[href="#/results/s?mode=posture"]');
@@ -146,9 +146,9 @@ test('tabs switch in place: router.replace for a click, none for setQuery; the v
     assert.ok(panel(container).querySelector('.ws-list'));
     // arrow keys move between tabs
     tabByText(container, 'Strokes').dispatch('keydown', { key: 'ArrowLeft' });
-    assert.equal(tabByText(container, 'Training plan').getAttribute('aria-selected'), 'true');
-    assert.equal(globalThis.document.activeElement, tabByText(container, 'Training plan'));
-    assert.ok(panel(container).querySelector('.ws-plan'));
+    assert.equal(tabByText(container, 'Strategy').getAttribute('aria-selected'), 'true');
+    assert.equal(globalThis.document.activeElement, tabByText(container, 'Strategy'));
+    assert.ok(panel(container).querySelector('.ws-strat'));
     assert.equal(container.querySelector('video'), video);
   });
 });

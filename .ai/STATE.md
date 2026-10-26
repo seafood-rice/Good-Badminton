@@ -64,7 +64,15 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 - Hit detector: no weights present means output identical to before; weight-mode tracking is the
   inference default, nonoverlap is for dataset builds.
 
+- Strategy report (spec `docs/superpowers/specs/2026-10-27-match-strategy-report-design.md`): every completed
+  match queues `strategy_<stem>` in the shared job slots; local Ollama `qwen3.8:27b` writes en+zh from a facts
+  pack; every claim cites fact ids and every number must be held by a cited fact, else retry then plain-text
+  fallback. Config `GB_STRATEGY_*` env > `data/settings.json` `strategy` > defaults (`GB_STRATEGY_REPORT=off`).
+
 ## Blockers and loose ends
+- Strategy report: doubles not yet tried against the live model (no doubles run in `outputs/`). A live singles run
+  took 832 s for en+zh (cold model load, full test suite running beside it); a first run timed out at 300 s, so the
+  default timeout is 600 s per language.
 
 - Rally outcomes (spec `docs/superpowers/specs/2026-10-27-rally-outcome-labelling-design.md`, merged #36):
   `outputs/<stem>/rally_outcomes.json` is the contract the LLM report reads. Auto labeller precision not yet

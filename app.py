@@ -11,7 +11,9 @@ from badminton_analysis.library import tags as libtags
 from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
 from badminton_analysis.web import (athletes_routes, insights_routes, job_slots, proc_control,
-                                    rally_labels_routes)
+                                    rally_labels_routes, strategy_routes)
+from badminton_analysis.strategy import config as strategy_config
+from badminton_analysis.strategy import report as strategy_report
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -56,6 +58,12 @@ rally_labels_routes.register(app, labels_dir=lambda: RALLY_LABELS_DIR,
                              lock=lambda: _RALLY_LABELS_LOCK,
                              safe_stem=lambda name: _safe_stem(name),
                              job_active=lambda stem: _match_job_active(stem))
+strategy_routes.register(app, outputs=lambda: OUTPUTS, athletes_path=lambda: ATHLETES_PATH,
+                         athletes_lock=lambda: _ATHLETES_LOCK, jobs=lambda: jobs,
+                         queue=lambda stem, focus=None: queue_strategy_job(stem, focus),
+                         safe_stem=lambda name: _safe_stem(name),
+                         settings_path=lambda: _strategy_settings_path(),
+                         position=lambda job_id, job: _queue_position(job_id, job))
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -174,6 +182,116 @@ def _find_venv_python():
     return sys.executable
 
 _venv_python = _find_venv_python()
+
+
+def _strategy_settings_path():
+    """``data/settings.json``, the sibling of the athletes store (optional file)."""
+    return Path(ATHLETES_PATH).parent / 'settings.json'
+
+
+_STRATEGY_FAILURES = {
+    'llm_unreachable': '无法连接 LLM 服务 / LLM endpoint unreachable',
+    'timeout': 'LLM 超时 / LLM timed out',
+}
+
+
+def _strategy_failure_message(save_dir):
+    """The job message for a failed report run, from the reason code it wrote."""
+    doc = strategy_report.read_report(save_dir) or {}
+    reason = doc.get('reason') if isinstance(doc.get('reason'), dict) else {}
+    code = reason.get('code')
+    if code == 'model_missing':
+        params = reason.get('params') if isinstance(reason.get('params'), dict) else {}
+        return f"模型未安装 / model not installed: {params.get('model') or doc.get('model') or ''}".rstrip()
+    return _STRATEGY_FAILURES.get(code, '策略报告失败 / strategy report failed')
+
+
+def queue_strategy_job(stem, focus=None):
+    """Queue the strategy report for ``stem``: ``(ok, job_id, queued)``.
+
+    ``ok`` is False when a report job for the stem is already active or its match
+    analysis is (the files would be half written). The match job is never touched.
+    """
+    job_id = 'strategy_' + stem
+    save_dir = OUTPUTS / stem
+    job = {'status': 'pending', 'progress': 0,
+           'message': '等待生成策略报告 / waiting to write the strategy report',
+           'video_name': stem, 'save_dir': str(save_dir), 'stage': 'strategy',
+           'kind': 'strategy', 'updated': time.time()}
+    with _JOBS_LOCK:  # one check-and-register, so a match run cannot start in between
+        current = jobs.get(job_id)
+        if ((jobs.get(stem) or {}).get('status') in _ACTIVE_JOB_STATUSES
+                or (current or {}).get('status') in _ACTIVE_JOB_STATUSES):
+            return False, job_id, False
+        jobs[job_id] = job
+    cmd = [_venv_python, 'main_strategy.py', str(save_dir), '--athletes', str(ATHLETES_PATH),
+           '--settings', str(_strategy_settings_path())]
+    if focus:
+        cmd += ['--focus', focus]
+
+    def start(release):
+        with _JOBS_LOCK:
+            match_active = (jobs.get(stem) or {}).get('status') in _ACTIVE_JOB_STATUSES
+            if match_active:  # re-analysis began while this report waited: files are changing
+                job['status'] = job['stage'] = 'cancelled'
+                job['message'] = '分析进行中，策略报告已取消 / analysis running, strategy report cancelled'
+                job['updated'] = time.time()
+        if match_active:
+            release()
+            return
+        log_fh = None
+        try:
+            log_fh = open(os.path.join(str(save_dir), 'strategy.log'), 'w', encoding='utf-8')
+            proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, text=True,
+                                    cwd=str(PROJECT_ROOT), env=os.environ.copy())
+        except Exception:
+            if log_fh is not None:
+                log_fh.close()
+            _fail_job(job, '策略报告无法启动 / strategy report could not start')
+            raise
+        job['proc'] = proc
+        _mark_running(job, '正在生成策略报告... / writing the strategy report...')
+        _start_tracker(job_id, job, track, proc, log_fh, release)
+
+    def track(proc, log_fh):
+        proc.wait()
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+        with _JOBS_LOCK:
+            if proc.returncode == 0:
+                job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                job['message'] = '策略报告已生成 / strategy report ready'
+            else:
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = _strategy_failure_message(save_dir)
+            job['updated'] = time.time()
+            rerun = job.get('rerun')
+        if rerun:  # the match was re-analysed while this report ran: write a fresh one
+            queue_strategy_job(stem)
+
+    queued = not _job_slots.submit(job_id, start)
+    return True, job_id, queued
+
+
+def _after_match_completed(stem):
+    """Queue the strategy report after a match analysis succeeded. Never raises."""
+    try:
+        if strategy_config.load_config(_strategy_settings_path()).enabled:
+            job_id = 'strategy_' + stem
+            current = jobs.get(job_id) or {}
+            if current.get('status') == 'pending' and _job_slots.cancel(job_id):
+                with _JOBS_LOCK:
+                    current['status'] = current['stage'] = 'cancelled'
+                    current['message'] = ''
+                    current['updated'] = time.time()
+            elif current.get('status') in ('pending', 'running'):
+                current['rerun'] = True          # its tracker queues a fresh one at the end
+                return
+            queue_strategy_job(stem)
+    except Exception as exc:
+        print(f'strategy report not queued for {stem} ({type(exc).__name__})')
 
 
 def _parse_progress_line(line):
@@ -1145,6 +1263,7 @@ def api_analyze():
                 # says so rather than showing a black player.
                 'video_warning': video_warning,
             }
+            _after_match_completed(vs)
         else:
             job['status'] = 'error'
             job['stage'] = 'error'
@@ -1206,6 +1325,8 @@ def api_job_pause(job_id):
     job = jobs.get(job_id)
     if not job:
         return jsonify({'error': '未知的任务 / unknown job'}), 404
+    if job_id.startswith('strategy_'):  # Ollama would keep generating with no slot held
+        return jsonify({'error': '策略报告不能暂停 / a strategy report cannot be paused'}), 409
     with _JOBS_LOCK:
         proc = job.get('proc')
         if job.get('status') != 'running' or proc is None or proc.poll() is not None:
@@ -1603,7 +1724,7 @@ def api_delete(video_name):
             out_dir = OUTPUTS / stem
             if out_dir.is_dir() and not list(out_dir.iterdir()):
                 shutil.rmtree(str(out_dir))
-            for stale_id in (stem, 'posture_' + stem):
+            for stale_id in (stem, 'posture_' + stem, 'strategy_' + stem):
                 job = jobs.get(stale_id)
                 if job and job.get('status') not in _ACTIVE_JOB_STATUSES:
                     jobs.pop(stale_id, None)

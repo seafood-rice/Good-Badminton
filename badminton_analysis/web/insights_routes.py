@@ -86,6 +86,12 @@ def _safe_message(text, status):
     return _PATH_TOKEN.sub('<path>', first)[:_MESSAGE_MAX]
 
 
+def _report_message(text):
+    """A strategy report job's message: static bilingual reasons only (no log tail), first line."""
+    first = str(text or '').split('\n', 1)[0]
+    return _PATH_TOKEN.sub('<path>', first)[:_MESSAGE_MAX]
+
+
 def _int_pct(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)) \
             or not math.isfinite(value):
@@ -219,6 +225,8 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
         return (doc if isinstance(doc, dict) else None), mtime
 
     def _kind(job_id, stage):
+        if str(job_id).startswith('strategy_'):
+            return 'strategy'
         if str(job_id).startswith('posture_') or 'posture' in str(stage or '').lower():
             return 'posture'
         return 'match'
@@ -227,6 +235,7 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
         video = _video_stem(job.get('video_name') or job_id)
         status = job.get('status')
         stage = job.get('stage')
+        kind = _kind(job_id, stage)
         updated = _epoch(job.get('updated'))
         sort_ts = updated
         if sort_ts is None and job.get('save_dir'):
@@ -238,12 +247,13 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             # No timestamp: a live job is current, a finished one is old.
             sort_ts = now if status in ACTIVE_STATUSES else 0.0
         return (sort_ts, order, {
-            'id': str(job_id), 'video': video, 'kind': _kind(job_id, stage),
+            'id': str(job_id), 'video': video, 'kind': kind,
             'status': status if isinstance(status, str) else None,
             'stage': stage if isinstance(stage, str) else None,
             'progress': _int_pct(job.get('progress', 0)),
-            'message': _safe_message(job.get('message'),
-                                     status if isinstance(status, str) else None),
+            'message': (_report_message(job.get('message')) if kind == 'strategy' else
+                        _safe_message(job.get('message'),
+                                      status if isinstance(status, str) else None)),
             'updated': updated,
         })
 
@@ -294,7 +304,8 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
                 _log_failure('one job row', exc)
         base = len(snapshot)
         for offset, path in enumerate(entries):
-            if path.name in known or 'posture_' + path.name in known:
+            if (path.name in known or 'posture_' + path.name in known
+                    or 'strategy_' + path.name in known):
                 continue
             try:
                 if not path.is_dir():
