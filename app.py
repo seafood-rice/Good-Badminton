@@ -10,7 +10,8 @@ from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
 from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
-from badminton_analysis.web import athletes_routes, insights_routes, job_slots, proc_control
+from badminton_analysis.web import (athletes_routes, insights_routes, job_slots, proc_control,
+                                    rally_labels_routes)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -28,6 +29,10 @@ _TAGS_LOCK = threading.Lock()
 # outputs/, gitignored), and one lock over every read-modify-write.
 ATHLETES_PATH = PROJECT_ROOT / 'data' / 'athletes.json'
 _ATHLETES_LOCK = threading.Lock()
+# Owner rally labels (data/rally_labels/<stem>.json): outside outputs/ so a
+# re-analysis keeps them; every read-modify-write holds _RALLY_LABELS_LOCK.
+RALLY_LABELS_DIR = PROJECT_ROOT / 'data' / 'rally_labels'
+_RALLY_LABELS_LOCK = threading.Lock()
 TEMPLATES = PROJECT_ROOT / 'templates'
 WEIGHTS = PROJECT_ROOT / 'weights'
 
@@ -46,6 +51,11 @@ insights_routes.register(app, videos=lambda: VIDEOS, outputs=lambda: OUTPUTS,
                          athletes_lock=lambda: _ATHLETES_LOCK,
                          jobs=lambda: jobs,
                          safe_stem=lambda name: _safe_stem(name))
+rally_labels_routes.register(app, labels_dir=lambda: RALLY_LABELS_DIR,
+                             athletes_path=lambda: ATHLETES_PATH, outputs=lambda: OUTPUTS,
+                             lock=lambda: _RALLY_LABELS_LOCK,
+                             safe_stem=lambda name: _safe_stem(name),
+                             job_active=lambda stem: _running_job_for(stem) is not None)
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -1523,6 +1533,15 @@ def api_delete_preview(video_name):
                     'total_files': total_files, 'total_size_mb': round(total_size, 1)})
 
 
+def _forget_rally_labels(stem):
+    """Remove the owner's rally labels of a deleted video; never fatal (like the tag cleanup)."""
+    with _RALLY_LABELS_LOCK:
+        try:
+            (RALLY_LABELS_DIR / f'{stem}.json').unlink(missing_ok=True)
+        except OSError as exc:
+            print(f'Rally label cleanup skipped for {stem}: {exc}')
+
+
 def _forget_match_record(stem):
     """Drop ``stem``'s match record from the athlete store after its video is deleted.
 
@@ -1600,6 +1619,7 @@ def api_delete(video_name):
                         except OSError as exc:
                             print(f'Tag cleanup skipped for {stem}: {exc}')
             _forget_match_record(stem)
+            _forget_rally_labels(stem)
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})

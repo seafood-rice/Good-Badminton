@@ -25,6 +25,8 @@ def _keep_the_real_tag_store_off_the_suite(tmp_path, monkeypatch):
         # The same for data/athletes.json: a scope="all" delete forgets the
         # video's match record there.
         monkeypatch.setattr(webapp, "ATHLETES_PATH", tmp_path / "athletes.json")
+        # And data/rally_labels/: a scope="all" delete removes the video's labels.
+        monkeypatch.setattr(webapp, "RALLY_LABELS_DIR", tmp_path / "rally_labels")
 
 
 @pytest.fixture(autouse=True)
