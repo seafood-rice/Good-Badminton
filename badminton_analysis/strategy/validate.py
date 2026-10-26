@@ -131,6 +131,11 @@ def _claim(item, label, fmap, errors, extra_text=()):
     if unknown:
         errors.append(f"{label}: unknown evidence id {', '.join(unknown)}")
         return
+    # Prose fields hold coaching text; a fact id there belongs in `evidence` instead.
+    as_ids = [n for n, t in zip(names, texts) if t.strip() in fmap]
+    if as_ids:
+        errors.append(f"{label}: {', '.join(as_ids)} must be coaching text, not a fact id")
+        return
     cited = [fmap[e] for e in evidence]
     text = unicodedata.normalize("NFKC", " ".join(texts))
     tokens = _tokens(text, evidence)

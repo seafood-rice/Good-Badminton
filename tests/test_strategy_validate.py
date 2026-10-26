@@ -165,6 +165,16 @@ def test_game_plan_numbers_and_training_focus():
     assert "game_plan" in check(doc)
 
 
+def test_fact_id_in_a_prose_field_is_rejected():
+    # Seen live (qwen3.8:27b, zh): the cue held the evidence id instead of a cue.
+    doc = good_doc()
+    doc["game_plan"]["items"][0] = {"do": "增加进攻比例。", "why": "进攻少。",
+                                    "cue": "you.mix.attack_share", "evidence": ["you.mix.attack_share"]}
+    errors = check(doc)
+    assert any("cue must be coaching text" in e for e in errors["game_plan"])
+    assert "summary" in check(with_summary("you.pulled.n", "you.pulled.n"))
+
+
 def test_malformed_documents_never_raise():
     for doc in (None, [], "x", {"summary": "x"}, {"summary": None, "your_game": []}):
         errors = check(doc)
