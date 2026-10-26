@@ -113,6 +113,8 @@ export const endpoints = {
   jobs: () => '/api/jobs',
   jobSlots: () => '/api/jobs/slots',
   cancelJob: (id) => '/api/jobs/' + enc(id) + '/cancel',
+  pauseJob: (id) => '/api/jobs/' + enc(id) + '/pause',
+  resumeJob: (id) => '/api/jobs/' + enc(id) + '/resume',
   athletes: () => '/api/athletes',
   athlete: (id) => '/api/athletes/' + enc(id),
   squads: () => '/api/squads',
@@ -144,6 +146,10 @@ export const api = {
   // {max_jobs, running:[id], queued:[id]}. cancelJob drops a queued job only; a 409 means it already started.
   jobSlots: (opts) => getJSON(endpoints.jobSlots(), opts),
   cancelJob: (id, opts) => sendJSON('POST', endpoints.cancelJob(id), undefined, opts),
+  // pauseJob freezes a running analysis and frees its slot; resumeJob continues it now or ahead of the queue
+  // ({queued, position}). Both answer 409 when the job is not in the right state, with a bilingual error.
+  pauseJob: (id, opts) => sendJSON('POST', endpoints.pauseJob(id), undefined, opts),
+  resumeJob: (id, opts) => sendJSON('POST', endpoints.resumeJob(id), undefined, opts),
   athletes: (opts) => getJSON(endpoints.athletes(), opts),
   createAthlete: (data, opts) => sendJSON('POST', endpoints.athletes(), data, opts),
   updateAthlete: (id, data, opts) => sendJSON('PUT', endpoints.athlete(id), data, opts),

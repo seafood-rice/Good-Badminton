@@ -10,7 +10,7 @@ from badminton_analysis.training.plan_generator import generate_plan
 from badminton_analysis.library import tags as libtags
 from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
-from badminton_analysis.web import athletes_routes, insights_routes, job_slots
+from badminton_analysis.web import athletes_routes, insights_routes, job_slots, proc_control
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VIDEOS = PROJECT_ROOT / 'videos'
@@ -54,7 +54,9 @@ jobs = {}
 # and every move of a job out of 'pending', so a queue-message update can never
 # land on a job that has just started or been cancelled.
 _JOBS_LOCK = threading.Lock()
-_ACTIVE_JOB_STATUSES = ('pending', 'running', 'reencoding')
+# 'paused': frozen in place, holding no slot. 'resuming': paused and waiting for a slot.
+_PAUSED_JOB_STATUSES = ('paused', 'resuming')
+_ACTIVE_JOB_STATUSES = ('pending', 'running', 'reencoding') + _PAUSED_JOB_STATUSES
 _JOB_BUSY = {'error': '该视频已在分析或排队中 / this video is already being analysed or queued'}
 
 
@@ -63,8 +65,13 @@ def _queue_changed(order):
     with _JOBS_LOCK:
         for index, job_id in enumerate(order):
             job = jobs.get(job_id)
-            if job is not None and job.get('status') == 'pending':
+            if job is None:
+                continue
+            if job.get('status') == 'pending':
                 job['message'] = f'排队中，第 {index + 1} 位 / queued, #{index + 1} in line'
+            elif job.get('status') == 'resuming':
+                job['message'] = (f'等待空闲分析位以继续，第 {index + 1} 位 / '
+                                  f'waiting for a free slot to resume, #{index + 1} in line')
 
 
 # At most this many analyses (match or posture) run at once; the rest queue.
@@ -98,7 +105,13 @@ def _mark_running(job, message):
 
 
 def _start_tracker(job_id, job, track, proc, log_fh, release):
-    """Run ``track(proc, log_fh)`` on a thread; *release* frees its slot however it ends."""
+    """Run ``track(proc, log_fh)`` on a thread; the job's slot is freed however it ends.
+
+    The slot is the one in ``job['release']``: a pause frees it early and a resume
+    stores the slot it was given, so the tracker frees whichever the job holds last.
+    """
+    job['release'] = release
+
     def run():
         try:
             track(proc, log_fh)
@@ -107,7 +120,21 @@ def _start_tracker(job_id, job, track, proc, log_fh, release):
             if job.get('status') in _ACTIVE_JOB_STATUSES:
                 _fail_job(job, '分析失败 / analysis failed')
         finally:
-            release()
+            # Under the lock, so a resume start either sees the job ended or hands
+            # its new slot over before this reads it (no slot is ever leaked).
+            with _JOBS_LOCK:
+                job['ended'] = True
+                last_release = job.get('release', release)
+                queued_resume = job.pop('resume_start', None)
+                # A frozen job killed from outside: never leave it looking paused.
+                if job.get('status') in _PAUSED_JOB_STATUSES:
+                    job['status'] = 'error'
+                    job['stage'] = 'error'
+                    job['message'] = '分析在暂停时中止 / analysis ended while paused'
+            if queued_resume is not None:
+                # A frozen job killed from outside while waiting to resume.
+                _job_slots.cancel(job_id, start=queued_resume)
+            last_release()
 
     try:
         threading.Thread(target=run, daemon=True).start()
@@ -124,7 +151,7 @@ def _start_tracker(job_id, job, track, proc, log_fh, release):
 
 
 def _queue_position(job_id, job):
-    return _job_slots.position(job_id) if job.get('status') == 'pending' else None
+    return _job_slots.position(job_id) if job.get('status') in ('pending', 'resuming') else None
 def _find_venv_python():
     candidates = [
         PROJECT_ROOT / '.venv' / 'Scripts' / 'python.exe',  # Windows
@@ -238,9 +265,8 @@ def _paths_stats(paths):
 
 def _running_job_for(stem):
     """Id of any non-terminal analysis job working on this video, else None."""
-    active = ('pending', 'running', 'reencoding')
     for job_id, job in list(jobs.items()):
-        if job.get('status') not in active:
+        if job.get('status') not in _ACTIVE_JOB_STATUSES:
             continue
         jv = str(job.get('video_name') or '')
         if (job_id == stem or job_id == 'posture_' + stem
@@ -1023,8 +1049,9 @@ def api_analyze():
 
     # 进度跟踪（在子进程启动后的线程中运行）
     def track_progress(proc, log_fh):
-        while job['status'] == 'running' and proc.poll() is None:
-            prog = _read_progress_file(job['save_dir'])
+        while job['status'] in ('running',) + _PAUSED_JOB_STATUSES and proc.poll() is None:
+            # A paused job keeps its "paused" message; its progress file does not move anyway.
+            prog = _read_progress_file(job['save_dir']) if job['status'] == 'running' else None
             if prog is not None:
                 job['progress'] = int(prog.get('pct', job.get('progress', 0)))
                 job['stage'] = prog.get('stage', job.get('stage'))
@@ -1139,7 +1166,8 @@ def api_job_cancel(job_id):
     job = jobs.get(job_id)
     if not job:
         return jsonify({'error': '未知的任务 / unknown job'}), 404
-    if not _job_slots.cancel(job_id):
+    # A paused job waiting to resume is queued too, but cancelling it would orphan its process.
+    if job.get('status') != 'pending' or not _job_slots.cancel(job_id):
         return jsonify({'error': '任务不在队列中 / job is not queued'}), 409
     with _JOBS_LOCK:
         job['status'] = 'cancelled'
@@ -1147,6 +1175,89 @@ def api_job_cancel(job_id):
         job['message'] = ''
         job['updated'] = time.time()
     return jsonify({'ok': True})
+
+
+@app.route('/api/jobs/<job_id>/pause', methods=['POST'])
+def api_job_pause(job_id):
+    """Freeze a running analysis in place and hand its slot to the next queued job.
+
+    The frozen process keeps its RAM and GPU memory, so no more jobs may be paused
+    at once than run at once.
+    """
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({'error': '未知的任务 / unknown job'}), 404
+    with _JOBS_LOCK:
+        proc = job.get('proc')
+        if job.get('status') != 'running' or proc is None or proc.poll() is not None:
+            return jsonify({'error': '只有正在分析的任务可以暂停 / only a running analysis can be paused'}), 409
+        paused = sum(1 for j in list(jobs.values()) if j.get('status') in _PAUSED_JOB_STATUSES)
+        if paused >= _job_slots.max_jobs:
+            limit = _job_slots.max_jobs
+            return jsonify({'error': f'最多同时暂停 {limit} 个任务，请先继续一个 / '
+                                     f'at most {limit} jobs can be paused at once; resume one first'}), 409
+        try:
+            proc_control.suspend_tree(proc.pid)
+        except Exception as exc:
+            print(f'job {job_id} could not be paused ({type(exc).__name__})')
+            return jsonify({'error': '无法暂停：任务可能刚刚结束 / could not pause: the job may have just ended'}), 409
+        job['status'] = 'paused'
+        job['message'] = '已暂停 / paused'
+        job['updated'] = time.time()
+        release = job.get('release')
+    # Outside the lock: freeing the slot may start a queued job, which takes the lock.
+    if release is not None:
+        release()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/jobs/<job_id>/resume', methods=['POST'])
+def api_job_resume(job_id):
+    """Continue a paused analysis now, or as soon as a slot frees (ahead of new jobs)."""
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({'error': '未知的任务 / unknown job'}), 404
+    proc = job.get('proc')
+
+    def start(release):
+        with _JOBS_LOCK:
+            job.pop('resume_start', None)
+            # The process ended while it waited (killed from outside): its tracker
+            # sets the final status, so the slot just goes to the next job.
+            if job.get('ended') or job.get('status') != 'resuming' or proc.poll() is not None:
+                raise RuntimeError('job is no longer waiting to resume')
+            try:
+                proc_control.resume_tree(proc.pid)
+            except Exception:
+                # Still frozen: back to paused, so Resume can be tried again.
+                job['status'] = 'paused'
+                job['message'] = '无法继续，请重试 / could not resume; try again'
+                job['updated'] = time.time()
+                raise
+            job['release'] = release
+            job['status'] = 'running'
+            job['message'] = '继续分析... / resuming...'
+            job['updated'] = time.time()
+
+    with _JOBS_LOCK:
+        if job.get('status') != 'paused' or proc is None:
+            return jsonify({'error': '任务未暂停 / job is not paused'}), 409
+        if job.get('ended') or proc.poll() is not None:
+            return jsonify({'error': '任务已结束 / the job has already ended'}), 409
+        job['status'] = 'resuming'
+        job['message'] = '等待空闲分析位以继续 / waiting for a free slot to resume'
+        job['updated'] = time.time()
+        job['resume_start'] = start
+    queued = not _job_slots.submit(job_id, start, front=True)
+    with _JOBS_LOCK:
+        ended = job.get('ended')
+        thaw_failed = not queued and job.get('status') == 'paused'
+    if ended:
+        # The tracker ended between the checks above and submit: drop the entry it could not see.
+        _job_slots.cancel(job_id, start=start)
+    if thaw_failed:
+        return jsonify({'error': '无法继续，请重试 / could not resume; try again'}), 409
+    return jsonify({'ok': True, 'queued': queued, 'position': _job_slots.position(job_id)})
 
 
 @app.route('/api/clip', methods=['POST'])
@@ -1466,7 +1577,7 @@ def api_delete(video_name):
                 shutil.rmtree(str(out_dir))
             for stale_id in (stem, 'posture_' + stem):
                 job = jobs.get(stale_id)
-                if job and job.get('status') not in ('pending', 'running', 'reencoding'):
+                if job and job.get('status') not in _ACTIVE_JOB_STATUSES:
                     jobs.pop(stale_id, None)
             # Tags belong to the video, so they go only when the video does.
             # Never fatal: the files are already deleted by this point, and

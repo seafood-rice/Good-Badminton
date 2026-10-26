@@ -826,3 +826,21 @@ test('a technique report without `scored` (pre-change, rule classifier) is never
     { contact_frame: 31, player_side: 'lower', stroke_type: 'clear', group: 'clear', scored: true, overall_score: 55 }] }, fps: 30 });
   assert.equal(both.strokes[0].report.overall, 55);
 });
+
+test('groupJobs / jobsModel: a paused job stays active; waiting to resume counts as queued', () => {
+  const jobs = [
+    { id: 'a', video: 'a', kind: 'match', status: 'paused', progress: 40, message: '已暂停 / paused' },
+    { id: 'b', video: 'b', kind: 'match', status: 'resuming', progress: 20 },
+    { id: 'c', video: 'c', kind: 'match', status: 'running', progress: 5 },
+  ];
+  const g = groupJobs(jobs);
+  assert.deepEqual(g.active.map((j) => j.id), ['a', 'b', 'c']);
+  assert.equal(g.running, 1);
+  assert.equal(g.queued, 1);
+  assert.equal(g.active[0].tone, 'queued');
+  assert.equal(g.active[0].progress, 40);
+  const m = jobsModel(jobs, 'en');
+  assert.deepEqual(m.rows.map((r) => r.state), ['Paused', 'Waiting to resume', 'Running 5%']);
+  assert.equal(t('job.state.paused', 'zh'), '已暂停');
+  assert.equal(t('pv.resume', 'en'), 'Resume');
+});

@@ -5,11 +5,15 @@ import { local } from '../core/motion.js';
 import * as frame from './frame.js';
 import { h, setStyle, setText } from './frame.js';
 
-/** Job statuses that count as in flight (app.py: pending, running, reencoding; detached runs found on disk). */
-export const ACTIVE_STATUSES = Object.freeze(['pending', 'running', 'reencoding', 'detached']);
-/** The working subset of ACTIVE_STATUSES; the rest (QUEUED_STATUSES) are waiting to start. */
+/**
+ * Job statuses that count as in flight (app.py: pending, running, reencoding, paused, resuming; detached runs
+ * found on disk). A paused job is frozen in place; resuming means paused and waiting for a free slot.
+ */
+export const ACTIVE_STATUSES = Object.freeze(['pending', 'running', 'reencoding', 'paused', 'resuming', 'detached']);
+/** The working subset of ACTIVE_STATUSES; QUEUED_STATUSES wait for a slot; a plain paused job is neither. */
 export const RUNNING_STATUSES = Object.freeze(['running', 'reencoding', 'detached']);
-export const QUEUED_STATUSES = Object.freeze(['pending']);
+export const QUEUED_STATUSES = Object.freeze(['pending', 'resuming']);
+export const PAUSED_STATUSES = Object.freeze(['paused', 'resuming']);
 const RUNNING = RUNNING_STATUSES;
 const MAX_ROWS = 4;
 
@@ -61,6 +65,8 @@ export function jobsModel(jobs, lang) {
     else if (status === 'completed') { state = t('job.state.done', lang); tone = 'good'; }
     else if (status === 'error') { state = t('job.state.error', lang); tone = 'bad'; }
     else if (status === 'cancelled') { state = t('job.state.cancelled', lang); tone = 'queued'; }
+    else if (status === 'paused') { state = t('job.state.paused', lang); tone = 'queued'; }
+    else if (status === 'resuming') { state = t('job.state.resuming', lang); tone = 'queued'; }
     else if (status === 'detached') { state = t('job.state.detached', lang); tone = 'accent'; }
     else { state = t('job.state.running', lang, { pct }); tone = 'accent'; }
     const st = jobStage(j);
