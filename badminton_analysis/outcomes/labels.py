@@ -1,0 +1,142 @@
+"""The owner's rally labels, ``data/rally_labels/<stem>.json`` (spec 5.1).
+
+Labels are keyed by time, not by segment id, so a re-analysis that re-segments
+the video re-attaches each label to whichever segment now holds its end time
+(``attach``). The file lives outside ``outputs/`` so a re-analysis or a
+``match`` delete keeps it. This module takes no lock: the caller holds one.
+"""
+import json
+import math
+import os
+import tempfile
+import time
+from pathlib import Path
+
+SCHEMA = 1
+SIDES = ("upper", "lower")
+VERDICTS = ("upper", "lower", "not_point", "unsure")
+OUTCOMES = ("winner", "forced_error", "unforced_error")
+MAX_LABELS = 2000
+ATTACH_TOLERANCE_SEC = 1.0
+
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_SEC = 0.05
+
+
+def empty():
+    return {"schema": SCHEMA, "revision": 0, "labels": []}
+
+
+def _time(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _label(raw):
+    """One normalised label, or None when it is not a valid label."""
+    if not isinstance(raw, dict):
+        return None
+    end = _time(raw.get("end_sec"))
+    verdict = raw.get("verdict")
+    if end is None or verdict not in VERDICTS:
+        return None
+    start = raw.get("start_sec")
+    if start is not None:
+        start = _time(start)
+        if start is None or start > end:
+            return None
+    outcome = raw.get("outcome")
+    if outcome is not None and outcome not in OUTCOMES:
+        return None
+    if verdict not in SIDES:
+        outcome = None
+    added = raw.get("added", False)
+    if not isinstance(added, bool):
+        return None
+    return {"start_sec": None if added else start, "end_sec": end, "verdict": verdict,
+            "outcome": outcome, "added": added}
+
+
+def validate_labels(raw):
+    """The normalised label list, or None when ``raw`` is not a valid list of labels."""
+    if not isinstance(raw, list) or len(raw) > MAX_LABELS:
+        return None
+    labels = [_label(item) for item in raw]
+    return None if any(label is None for label in labels) else labels
+
+
+def labels_path(labels_dir, stem):
+    return Path(labels_dir) / f"{stem}.json"
+
+
+def load(path):
+    """The label document; ``empty()`` when absent, None when unreadable or invalid."""
+    path = Path(path)
+    if not path.is_file():
+        return empty()
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError, RecursionError, MemoryError):
+        return None
+    if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
+        return None
+    revision = doc.get("revision")
+    labels = validate_labels(doc.get("labels"))
+    if type(revision) is not int or revision < 0 or labels is None:
+        return None
+    return {"schema": SCHEMA, "revision": revision, "labels": labels}
+
+
+def save(path, doc):
+    """Write ``doc`` atomically (temp file in the same directory + os.replace)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".rally-labels-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=1)
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:   # Windows indexers briefly hold new files open
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_REPLACE_BACKOFF_SEC)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def attach(labels, segments):
+    """``(by_segment, added)``: each segment label on the segment holding its end time.
+
+    ``segments`` is ``[{"id", "start_sec", "end_sec"}]``. A label attaches to the
+    segment whose ``[start - 1, end + 1]`` contains its ``end_sec``, nearest end
+    first. A later label replaces an earlier one on the same segment; the replaced
+    one survives as an added point only when it names a winner. A label that fits
+    no segment, and every added point, is returned in ``added``.
+    """
+    by_segment, added = {}, []
+    for label in labels:
+        if label.get("added"):
+            added.append(label)
+            continue
+        end = label["end_sec"]
+        best = None
+        for seg in segments:
+            if seg["start_sec"] - ATTACH_TOLERANCE_SEC <= end <= seg["end_sec"] + ATTACH_TOLERANCE_SEC:
+                if best is None or abs(seg["end_sec"] - end) < abs(best["end_sec"] - end):
+                    best = seg
+        if best is None:
+            if label["verdict"] in SIDES:
+                added.append(label)
+            continue
+        previous = by_segment.get(best["id"])
+        if previous is not None and previous["verdict"] in SIDES:
+            added.append(previous)
+        by_segment[best["id"]] = label
+    return by_segment, added
