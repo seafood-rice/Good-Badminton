@@ -27,6 +27,7 @@ class Run:
     tech_reports: list = None    # [dict] from strokes.jsonl
     tech_summary: dict = None
     rallies_payload: dict = None
+    rally_outcomes: dict = None  # rally_outcomes.json, raw (insights/outcomes.py validates it)
     notes: list = field(default_factory=list)
     hits_meta: dict = None       # hits.json without the hit list (source, coverage, fps...)
     strokes_meta: dict = None    # strokes.json without the stroke list
@@ -308,6 +309,7 @@ def load_run(out_dir):
     run.tech_reports = _load_reports(d, notes)
     run.tech_summary = _json_object(d, "technique_summary.json", notes)
     run.rallies_payload = _json_object(d, "rally_segments.json", notes)
+    run.rally_outcomes = _json_object(d, "rally_outcomes.json", notes)
     if run.match_format == "doubles":
         # Only doubles runs have (current) doubles files; tracklets.jsonl also carries
         # keypoints and appearance, so it is not parsed when nothing would use it.

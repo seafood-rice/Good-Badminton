@@ -15,18 +15,20 @@ from . import envelope
 from .dates import video_date
 from .doubles import doubles_insight
 from .loaders import load_run, number
+from .outcomes import rally_outcomes_insight
 from .movement import movement_insight, pull_insight, recovery_insight
 from .rally import rally_insight
 from .strokes import strokes_insight
 from .technique import technique_insight
 
-INSIGHTS_VERSION = 7
+INSIGHTS_VERSION = 8
 SCHEMA_VERSION = 1
 SIDECAR_NAME = "insights.json"
 INPUT_FILES = ("metadata.json", "detections.jsonl", "hits.json", "strokes.json",
                "strokes.jsonl", "technique_summary.json", "rally_segments.json",
-               "players.json", "tracklets.jsonl")
-INSIGHT_KEYS = ("rally", "strokes", "technique", "movement", "recovery", "pull", "doubles")
+               "players.json", "tracklets.jsonl", "rally_outcomes.json")
+INSIGHT_KEYS = ("rally", "strokes", "technique", "movement", "recovery", "pull", "doubles",
+                "outcomes")
 # Per-player insights: a doubles run only has one representative per side, not a player.
 PLAYER_KEYS = ("strokes", "technique", "movement", "recovery", "pull")
 QUALITY_KEYS = ("shuttle_coverage_in_play", "hit_source", "shuttle_source",
@@ -156,6 +158,8 @@ def _build(stem, out_dir, video_path, inputs):
     doc["match_format"] = run.match_format
     rally = _guarded("rally", rally_insight, run)
     doc["rally"] = rally
+    # Rally outcomes are per side (doubles: per team), so doubles runs keep them too.
+    doc["outcomes"] = _guarded("outcomes", rally_outcomes_insight, run)
     if run.match_format == "doubles":
         # The legacy tracker keeps one representative per side of a 4-player match: its
         # movement, recovery, pull and hits are not a player's, and stroke types and
