@@ -128,6 +128,7 @@ export const endpoints = {
   deleteVideo: (stem) => '/api/delete/' + enc(stem),
   stats: () => '/api/stats',
   status: (jobId) => '/api/status/' + enc(jobId),
+  rallyLabels: (stem) => '/api/rally-labels/' + enc(stem),
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
 };
 
@@ -178,4 +179,10 @@ export const api = {
   // Doubles run files (spec 2026-10-20 section 2): a 404 means the file is absent (callers treat it as none).
   players: (stem, opts) => getJSON(endpoints.output(stem, 'players.json'), opts),
   hits: (stem, opts) => getJSON(endpoints.output(stem, 'hits.json'), opts),
+  // Rally outcome labelling (spec 2026-10-27 section 7). rallyLabels -> {schema, revision, labels}; saveRallyLabels sends
+  // {revision, labels} and answers {revision, outcomes_rebuilt, rebuild_skipped?}, a 409 meaning the revision is stale
+  // (err.status === 409: reload the labels). rallyOutcomes is the built file (a 404 means none yet).
+  rallyLabels: (stem, opts) => getJSON(endpoints.rallyLabels(stem), opts),
+  saveRallyLabels: (stem, doc, opts) => sendJSON('PUT', endpoints.rallyLabels(stem), { revision: doc.revision, labels: doc.labels }, opts),
+  rallyOutcomes: (stem, opts) => getJSON(endpoints.output(stem, 'rally_outcomes.json'), opts),
 };

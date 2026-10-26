@@ -2,7 +2,7 @@
 // node. buildWorkspaceModel() joins the rally, stroke and technique files into one model; the other helpers are
 // the text and data helpers the DOM layer in workspace.js (and the match details page) share, plus the helpers
 // for the details page: stroke distribution, technique summary, split-match parts, pooling and the plan.
-// Honesty rules: there is no point outcome, so nothing is marked won or lost; swing segments are "segments
+// Honesty rules: a point is marked won only from rally_outcomes.json (outcomes_model.js); swing segments are "segments
 // (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so; opponent strokes are
 // shown but never scored.
 import { t, TECHNIQUE_IDS, STROKE_TYPE_IDS, STROKE_GROUP } from '../core/i18n.js';

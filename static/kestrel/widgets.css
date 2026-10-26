@@ -434,6 +434,24 @@ body.ws-theater-open{overflow:hidden;}
 .ws-dl dd{margin:0;text-align:right;}
 .ws-sum-note{font-size:12.5px;color:var(--ink3);border-top:1px solid var(--line);padding-top:12px;}
 
+/* rally outcome labelling: Point block, add-point button, timeline tint, tally line */
+.ws-pt{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px;}
+.ws-pt-row{display:flex;flex-wrap:wrap;gap:6px;}
+.ws-pt-btn{height:auto;min-height:28px;padding:4px 12px;text-align:left;}
+.ws-pt-btn.auto{border-style:dashed;color:var(--ink3);opacity:.8;}
+.ws-pt-autotag{height:20px;font-size:11px;}
+.ws-pt-notice{font-size:12.5px;color:var(--mid);}
+.ws-pt-add{height:28px;padding:0 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink2);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.ws-pt-add:hover{border-color:var(--lineHi);}
+.ws-rb[data-state="near"]{background:color-mix(in srgb,var(--accent) 28%,var(--surface));color:var(--accentInk);}
+.ws-rb[data-state="far"]{background:color-mix(in srgb,var(--blue) 28%,var(--surface));color:var(--blue);}
+.ws-rb[data-state="unknown"]{background:var(--surface2);color:var(--ink3);}
+.ws-rb[data-state="rejected"]{background:var(--surface);color:var(--ink3);box-shadow:inset 0 0 0 1px var(--line);text-decoration:line-through;opacity:.6;}
+.ws-rb[data-source="auto"]{opacity:.75;box-shadow:inset 0 0 0 1px var(--lineHi);}
+.ws-rb.on[data-state]{box-shadow:0 0 0 2px var(--ink);}
+.ws-tally{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;font-size:12.5px;color:var(--ink2);}
+.ws-pt-whole{display:flex;flex-direction:column;gap:8px;}
+
 /* players */
 .pl-forms{flex-direction:row;flex-wrap:wrap;gap:16px 32px;}
 .pl-add{display:flex;flex-direction:column;gap:8px;flex:1 1 300px;min-width:0;}

@@ -60,8 +60,9 @@ function doubles(stem = 'd') {
   };
 }
 
-async function withPage(fn, { routes = singles(), stem = 's', query = {} } = {}) {
+async function withPage(fn, { routes = singles(), stem = 's', query = {}, before } = {}) {
   const { doc } = installEnv();
+  if (before) before({ doc });
   const savedApi = { ...api };
   const calls = { replace: [], navigate: [], fetched: [] };
   globalThis.fetch = async (url) => {
@@ -310,4 +311,163 @@ test('the side column is labelled as the match details side panel', async () => 
     assert.equal(t('wsx.side_aria', 'en'), 'Match details side panel');
     assert.equal(t('wsx.side_aria', 'zh'), '比赛详情侧栏');
   });
+});
+
+// ---------- rally outcome labelling (spec 2026-10-27 section 7) ----------
+
+const outcomesDoc = (rallies, status = 'incomplete') => ({
+  schema: 1, rallies, summary: { entries: rallies.length, reconciliation: { status } },
+});
+
+function labelled(stem = 's') {
+  const routes = singles(stem);
+  routes['/api/rally-labels/' + stem] = { schema: 1, revision: 4, labels: [] };
+  routes[out(stem, 'rally_outcomes.json')] = outcomesDoc([
+    { id: 1, segment_id: 2, winner_side: 'upper', outcome: null, source: 'auto', confidence: 0.8, reviewed: false },
+  ]);
+  return routes;
+}
+
+const saveStub = (saved, impl) => {
+  api.saveRallyLabels = async (stem, doc) => {
+    saved.push({ stem, doc });
+    return impl ? impl(doc) : { revision: doc.revision + 1, outcomes_rebuilt: [stem] };
+  };
+};
+const settleSave = async () => { for (let i = 0; i < 8; i++) await tick(); };
+const pt = (c) => c.querySelector('.ws-pt');
+const verdictBtn = (c, v) => c.querySelector('[data-verdict="' + v + '"]');
+
+test('the Point block renders for the selected rally with the record names, the key hint and the tally', async () => {
+  await withPage(async ({ container }) => {
+    const block = pt(container);
+    assert.ok(block, 'Point block');
+    assert.equal(verdictBtn(container, 'lower').textContent, 'Chung won');
+    assert.equal(verdictBtn(container, 'upper').textContent, 'Lee won');
+    assert.equal(verdictBtn(container, 'not_point').textContent, 'Not a point end');
+    assert.equal(verdictBtn(container, 'unsure').textContent, 'Unsure');
+    assert.equal(block.querySelector('[data-outcome]'), null, 'no outcome chips before a winner is picked');
+    assert.match(block.textContent, /Keys: N near/);
+    assert.ok(container.querySelector('.ws-pt-add'), 'Add point end here button');
+    assert.match(container.querySelector('.ws-tally').textContent, /Near 0 – Far 1 · 1 of 1 labelled/);
+    assert.equal(container.querySelector('.ws-rc').getAttribute('data-status'), 'incomplete');
+  }, { routes: labelled() });
+});
+
+test('no labels and no outcomes file: the page still renders, the block offers the buttons, no badge', async () => {
+  await withPage(async ({ container }) => {
+    assert.ok(verdictBtn(container, 'lower'));
+    assert.equal(container.querySelector('.ws-rc'), null);
+    assert.equal(container.querySelector('.ws-tally').textContent, t('ws.pt.tally_none', 'en'));
+  });
+});
+
+test('clicking Near won saves verdict lower with the current revision, advances and shows the auto result greyed', async () => {
+  const saved = [];
+  await withPage(async ({ container }) => {
+    saveStub(saved);
+    verdictBtn(container, 'lower').click();
+    await settleSave();
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].stem, 's');
+    assert.equal(saved[0].doc.revision, 4);
+    assert.deepEqual(saved[0].doc.labels, [{ start_sec: 0, end_sec: 5, verdict: 'lower', outcome: null, added: false }]);
+    // advanced to segment 2, which only has the automatic result (far = upper): greyed, tagged auto
+    assert.match(container.querySelector('.ws-sum').textContent, /2 of 2/);
+    assert.ok(container.querySelector('.ws-pt-autotag'), 'auto tag');
+    assert.ok(verdictBtn(container, 'upper').classList.contains('auto'));
+    assert.equal(verdictBtn(container, 'upper').classList.contains('on'), false);
+    const lane = container.querySelectorAll('.ws-rb');
+    assert.equal(lane[0].getAttribute('data-state'), 'near');
+    assert.equal(lane[1].getAttribute('data-state'), 'far');
+    assert.equal(lane[1].getAttribute('data-source'), 'auto');
+    // a click on the greyed auto button confirms it, building on the revision the server answered (5)
+    verdictBtn(container, 'upper').click();
+    await settleSave();
+    assert.equal(saved[1].doc.revision, 5);
+    assert.equal(saved[1].doc.labels.length, 2);
+    assert.equal(saved[1].doc.labels[1].verdict, 'upper');
+  }, { routes: labelled() });
+});
+
+test('an outcome chip saves the same winner with the outcome and stays on the segment', async () => {
+  const saved = [];
+  await withPage(async ({ container }) => {
+    saveStub(saved);
+    verdictBtn(container, 'upper').click();
+    await settleSave();
+    container.querySelectorAll('.ws-rb')[0].click(); // back on segment 1, a winner is picked: the chips show
+    await tick();
+    const chip = container.querySelector('[data-outcome="forced_error"]');
+    assert.ok(chip);
+    chip.click();
+    await settleSave();
+    const last = saved[saved.length - 1].doc.labels;
+    assert.equal(last.length, 1, 'the segment label is replaced, not duplicated');
+    assert.equal(last[0].verdict, 'upper');
+    assert.equal(last[0].outcome, 'forced_error');
+    assert.match(container.querySelector('.ws-sum').textContent, /1 of 2/);
+    assert.equal(container.querySelector('[data-outcome="forced_error"]').classList.contains('on'), true);
+  }, { routes: labelled() });
+});
+
+test('a 409 reloads the labels, says so and keeps the place; the next save uses the reloaded revision', async () => {
+  const saved = [];
+  const routes = labelled();
+  await withPage(async ({ container, calls }) => {
+    saveStub(saved, () => { throw Object.assign(new Error('stale'), { status: 409 }); });
+    routes['/api/rally-labels/s'] = { schema: 1, revision: 9, labels: [] };
+    verdictBtn(container, 'lower').click();
+    await settleSave();
+    assert.equal(calls.fetched.filter((u) => u === '/api/rally-labels/s').length, 2, 'initial load plus the reload');
+    assert.equal(pt(container).querySelector('.ws-pt-notice').textContent, t('ws.pt.conflict', 'en'));
+    assert.match(container.querySelector('.ws-sum').textContent, /1 of 2/, 'still on the same segment');
+    saveStub(saved);
+    verdictBtn(container, 'lower').click();
+    await settleSave();
+    assert.equal(saved[saved.length - 1].doc.revision, 9);
+  }, { routes });
+});
+
+test('keys: F saves a far win; other keys, and keys typed into an input, are left alone', async () => {
+  const saved = [];
+  let keydown = null;
+  const before = ({ doc }) => { doc.addEventListener = (type, fn) => { if (type === 'keydown') keydown = fn; }; };
+  await withPage(async ({ container }) => {
+    saveStub(saved);
+    assert.ok(keydown, 'a keydown listener while a video shows');
+    const press = (key, target, extra = {}) => {
+      let prevented = false;
+      keydown({ key, target: target || container, preventDefault: () => { prevented = true; }, ...extra });
+      return prevented;
+    };
+    assert.equal(press('f', { tagName: 'INPUT' }), false, 'typing in an input is left alone');
+    assert.equal(press('f', null, { ctrlKey: true }), false, 'Ctrl+F is the browser\'s');
+    assert.equal(press('q'), false);
+    assert.equal(press('F'), true);
+    await settleSave();
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].doc.labels[0].verdict, 'upper');
+  }, { routes: labelled(), before });
+});
+
+test('Add point end here prompts for the winner at the video time and saves an added point', async () => {
+  const saved = [];
+  await withPage(async ({ container }) => {
+    saveStub(saved);
+    container.querySelector('video').currentTime = 52.4;
+    container.querySelector('.ws-pt-add').click();
+    assert.match(container.querySelector('.ws-pt-addbox').textContent, /Point ending at/);
+    container.querySelector('[data-add="lower"]').click();
+    await settleSave();
+    assert.deepEqual(saved[0].doc.labels, [{ start_sec: null, end_sec: 52.4, verdict: 'lower', outcome: null, added: true }]);
+    assert.equal(container.querySelector('.ws-pt-addbox'), null, 'the prompt closes after the save');
+  }, { routes: labelled() });
+});
+
+test('doubles: the same controls read near team / far team', async () => {
+  await withPage(async ({ container }) => {
+    assert.equal(verdictBtn(container, 'lower').textContent, 'Near team won');
+    assert.equal(verdictBtn(container, 'upper').textContent, 'Far team won');
+  }, { routes: doubles(), stem: 'd' });
 });
