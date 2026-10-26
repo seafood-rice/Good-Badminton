@@ -1,0 +1,69 @@
+"""Freezing and thawing a real subprocess tree (badminton_analysis/web/proc_control.py)."""
+import subprocess
+import sys
+import time
+
+import psutil
+import pytest
+
+from badminton_analysis.web import proc_control
+
+# A parent that starts a child; both count up in files, so the test can see whether each is running.
+_CHILD = "import sys, time\nn = 0\nwhile True:\n    n += 1\n    open(sys.argv[1], 'w').write(str(n))\n    time.sleep(0.02)\n"
+
+
+def _count(path):
+    try:
+        return int(path.read_text() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _grows(path, wait=0.5):
+    before = _count(path)
+    time.sleep(wait)
+    return _count(path) > before
+
+
+@pytest.fixture
+def tree(tmp_path):
+    child_py = tmp_path / 'child.py'
+    child_py.write_text(_CHILD)
+    parent_out, child_out = tmp_path / 'parent.txt', tmp_path / 'child.txt'
+    parent_src = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, {str(child_py)!r}, {str(child_out)!r}])\n"
+        + _CHILD.split('\n', 1)[1].replace('sys.argv[1]', repr(str(parent_out)))
+    )
+    proc = subprocess.Popen([sys.executable, '-c', parent_src])
+    for _ in range(200):
+        if _count(parent_out) and _count(child_out):
+            break
+        time.sleep(0.05)
+    yield proc, parent_out, child_out
+    for p in [psutil.Process(proc.pid)] + psutil.Process(proc.pid).children(recursive=True):
+        try:
+            p.resume()
+            p.kill()
+        except psutil.Error:
+            pass
+    proc.wait(10)
+
+
+def test_suspend_freezes_parent_and_child_and_resume_continues(tree):
+    proc, parent_out, child_out = tree
+    assert _grows(parent_out) and _grows(child_out)
+    proc_control.suspend_tree(proc.pid)
+    time.sleep(0.2)  # let any write in flight land
+    assert not _grows(parent_out) and not _grows(child_out)
+    proc_control.resume_tree(proc.pid)
+    assert _grows(parent_out) and _grows(child_out)
+
+
+def test_an_exited_process_raises():
+    proc = subprocess.Popen([sys.executable, '-c', 'pass'])
+    proc.wait(10)
+    with pytest.raises(psutil.NoSuchProcess):
+        proc_control.suspend_tree(proc.pid)
+    with pytest.raises(psutil.NoSuchProcess):
+        proc_control.resume_tree(proc.pid)

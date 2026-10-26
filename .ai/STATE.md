@@ -50,6 +50,10 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 - Analyses (match + posture) share a concurrency cap: `GB_MAX_JOBS`, else sized from the host
   (`badminton_analysis/web/job_slots.py`: 2 on the RTX 4090 box); extra jobs queue FIFO, the same
   video twice is a 409, queued jobs can be cancelled from the Pipeline view.
+- A running analysis can be paused from the Pipeline view: its process tree is frozen in place
+  (`web/proc_control.py`, psutil) and its slot goes to the next job; resume continues from the same
+  frame, ahead of the queue. A frozen job keeps its RAM/VRAM, so at most `max_jobs` can be paused;
+  a container restart kills paused jobs like running ones.
 
 - B11 owner decisions: spec `docs/superpowers/specs/2026-07-30-rally-play-detection-b11-design.md`
   section 12a, as built in section 15. Rally counts are only claimed when the signal supports

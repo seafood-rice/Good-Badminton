@@ -120,13 +120,16 @@ class JobSlots:
         self._on_queue_change = on_queue_change
         self._hook_lock = threading.Lock()
 
-    def submit(self, job_id, start):
-        """``True`` when started now, ``False`` when queued."""
+    def submit(self, job_id, start, front=False):
+        """``True`` when started now, ``False`` when queued (at the head when *front*)."""
         with self._lock:
             if len(self._running) < self.max_jobs and not self._queue:
                 token = self._take(job_id)
             else:
-                self._queue.append((job_id, start))
+                if front:
+                    self._queue.appendleft((job_id, start))
+                else:
+                    self._queue.append((job_id, start))
                 token = None
         if token is None:
             self._notify()
@@ -135,11 +138,16 @@ class JobSlots:
             self._drain()
         return True
 
-    def cancel(self, job_id):
-        """Drop a queued (not yet started) job. ``True`` when it was queued."""
+    def cancel(self, job_id, start=None):
+        """Drop a queued (not yet started) job. ``True`` when it was queued.
+
+        With *start*, only the entry submitted with that callable goes, so a stale
+        entry can be dropped without touching a newer submit of the same id.
+        """
         with self._lock:
             before = len(self._queue)
-            self._queue = deque(item for item in self._queue if item[0] != job_id)
+            self._queue = deque(item for item in self._queue
+                                if not (item[0] == job_id and (start is None or item[1] is start)))
             removed = len(self._queue) != before
         if removed:
             self._notify()

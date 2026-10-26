@@ -32,7 +32,7 @@ _FAILED = {'error': '服务器内部错误 / internal server error'}
 RUN_MARKERS = ('detections.jsonl', 'strokes.json', 'strokes.jsonl',
                'technique_summary.json', 'rally_segments.json')
 VIDEO_EXTS = ('.mp4', '.mov', '.avi', '.mkv', '.webm')
-ACTIVE_STATUSES = ('pending', 'running', 'reencoding')
+ACTIVE_STATUSES = ('pending', 'running', 'reencoding', 'paused', 'resuming')
 DETACHED_WINDOW_SEC = 600.0
 FUTURE_SKEW_SEC = 60.0
 _MESSAGE_MAX = 200

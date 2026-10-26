@@ -6,7 +6,7 @@ import { ago } from '../core/format.js';
 import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, setStyle, setText } from '../widgets/frame.js';
-import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES, jobStage } from '../widgets/pipeline.js';
+import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES, PAUSED_STATUSES, jobStage } from '../widgets/pipeline.js';
 
 export const FAST_MS = 2000;
 export const SLOW_MS = 15000;
@@ -23,7 +23,7 @@ function stemOf(video) {
 function toneOf(status) {
   if (status === 'completed') return 'good';
   if (status === 'error') return 'bad';
-  if (status === 'pending' || status === 'cancelled') return 'queued';
+  if (status === 'pending' || status === 'cancelled' || PAUSED_STATUSES.includes(status)) return 'queued';
   return 'accent';
 }
 
@@ -89,6 +89,8 @@ function stateText(row, lang) {
   if (row.status === 'completed') return t('job.state.done', lang);
   if (row.status === 'error') return t('job.state.error', lang);
   if (row.status === 'cancelled') return t('job.state.cancelled', lang);
+  if (row.status === 'paused') return t('job.state.paused', lang);
+  if (row.status === 'resuming') return t('job.state.resuming', lang);
   if (row.status === 'detached') return t('job.state.detached', lang);
   return t('job.state.running', lang, { pct: row.progress });
 }
@@ -145,7 +147,8 @@ export function mount(container, ctx = {}) {
   const noop = { destroy() {} };
   if (!container || !hasDOM()) return noop;
   const lang = ctx.lang === 'en' ? 'en' : 'zh';
-  const state = { groups: null, error: null, destroyed: false, maxJobs: null, cancelError: null };
+  // actionError: {at, text} after a failed cancel, pause or resume, shown for a few seconds.
+  const state = { groups: null, error: null, destroyed: false, maxJobs: null, actionError: null };
   const root = h('div', { class: 'page pv', 'data-view': 'pipeline' });
   container.appendChild(root);
   const bars = new Map(); // job id -> {bar, pctEl, stateEl, row}
@@ -183,10 +186,13 @@ export function mount(container, ctx = {}) {
         'aria-label': t('job.progress_aria', lang, { stage: title }),
       }, bar),
       r.status === 'detached' ? h('div', { class: 'kw-foot-muted' }, t('pv.detached_note', lang)) : null,
+      r.status === 'paused' ? h('div', { class: 'kw-foot-muted' }, t('pv.pause_note', lang)) : null,
       msgEl,
       h('div', { class: 'pv-foot' }, [
         updEl,
-        r.status === 'pending' ? h('button', { type: 'button', class: 'ov-btn small', onclick: (e) => cancel(r.id, e.currentTarget) }, t('pv.cancel', lang)) : null,
+        r.status === 'pending' ? h('button', { type: 'button', class: 'ov-btn small', onclick: (e) => act('cancel', r.id, e.currentTarget) }, t('pv.cancel', lang)) : null,
+        r.status === 'running' ? h('button', { type: 'button', class: 'ov-btn small', onclick: (e) => act('pause', r.id, e.currentTarget) }, t('pv.pause', lang)) : null,
+        r.status === 'paused' ? h('button', { type: 'button', class: 'ov-btn small primary', onclick: (e) => act('resume', r.id, e.currentTarget) }, t('pv.resume', lang)) : null,
         r.resultsHash ? h('a', { href: r.resultsHash, class: 'kw-link', 'data-xf': '' }, t('pv.open_results', lang)) : null,
       ]),
     ]);
@@ -196,14 +202,16 @@ export function mount(container, ctx = {}) {
     return li;
   }
 
-  async function cancel(id, btn) {
+  const ACTIONS = { cancel: 'cancelJob', pause: 'pauseJob', resume: 'resumeJob' };
+  async function act(kind, id, btn) {
     if (btn) btn.disabled = true;
-    state.cancelError = null;
+    state.actionError = null;
     try {
-      await api.cancelJob(id, { timeout: 10000 });
+      await api[ACTIONS[kind]](id, { timeout: 10000 });
     } catch (e) {
-      // 409: it started in the meantime. Either way the next poll shows the real state.
-      state.cancelError = Date.now();
+      // Usually a 409: the job moved on in the meantime. Either way the next poll shows the real state.
+      // errorText carries the server's bilingual reason ("only a running analysis can be paused").
+      state.actionError = { at: Date.now(), text: kind === 'cancel' ? t('pv.cancel_failed', lang) : errorText(e, lang) };
     }
     poll();
   }
@@ -236,8 +244,8 @@ export function mount(container, ctx = {}) {
         h('button', { type: 'button', class: 'ov-btn small', onclick: () => poll() }, t('btn.retry', lang)),
       ]));
     }
-    if (state.cancelError) {
-      root.appendChild(h('div', { class: 'ov-alert', role: 'alert' }, h('span', null, t('pv.cancel_failed', lang))));
+    if (state.actionError) {
+      root.appendChild(h('div', { class: 'ov-alert', role: 'alert' }, h('span', null, state.actionError.text)));
     }
     if (!g) {
       if (!state.error) root.appendChild(h('div', { class: 'card ov-state', role: 'status', 'aria-busy': 'true' }, h('div', { class: 'k-label' }, t('state.loading', lang))));
@@ -278,9 +286,9 @@ export function mount(container, ctx = {}) {
     onData: (data) => {
       const next = groupJobs(data);
       const wasActive = !!(state.groups && state.groups.anyActive);
-      // A failed cancel shows its alert for a few seconds (re-rendering each poll), then clears.
-      if (state.cancelError && Date.now() - state.cancelError > 5000) state.cancelError = null;
-      if (state.cancelError || !patch(next)) {
+      // A failed action shows its alert for a few seconds (re-rendering each poll), then clears.
+      if (state.actionError && Date.now() - state.actionError.at > 5000) state.actionError = null;
+      if (state.actionError || !patch(next)) {
         state.groups = next;
         state.error = null;
         render();

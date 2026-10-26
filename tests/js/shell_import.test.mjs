@@ -58,7 +58,11 @@ test('rail: job counts use the backend statuses shared with the pipeline widget'
   assert.equal(activeCount([{ status: 'completed' }, { status: 'error' }]), 0);
   assert.equal(runningCount(undefined), 0);
   assert.equal(runningCount({ jobs: [{ status: 'running' }] }), 1);
-  assert.deepEqual([...ACTIVE_STATUSES].sort(), [...RUNNING_STATUSES, ...QUEUED_STATUSES].sort());
+  // A paused job is in flight but neither working nor waiting for a slot (resuming is queued).
+  assert.deepEqual([...ACTIVE_STATUSES].sort(), [...RUNNING_STATUSES, ...QUEUED_STATUSES, 'paused'].sort());
+  assert.equal(activeCount([{ status: 'paused' }]), 1, 'a paused job keeps the badge');
+  assert.equal(runningCount([{ status: 'paused' }]) + queuedCount([{ status: 'paused' }]), 0);
+  assert.equal(queuedCount([{ status: 'resuming' }]), 1);
 });
 
 test('transition: reduced motion and missing rect navigate instantly, no DOM needed', async () => {

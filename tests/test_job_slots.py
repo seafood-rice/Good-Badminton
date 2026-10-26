@@ -194,3 +194,27 @@ def test_probes_do_not_raise():
     ram = job_slots._ram_gb()
     assert ram is None or ram > 0
     assert job_slots._gpu_count() >= 0
+
+
+def test_a_front_submit_waits_ahead_of_the_queue():
+    log = _Log()
+    slots = JobSlots(1)
+    slots.submit('a', log.starter('a'))
+    slots.submit('b', log.starter('b'))
+    assert slots.submit('resume', log.starter('resume'), front=True) is False
+    assert slots.snapshot()['queued'] == ['resume', 'b']
+    log.releases['a']()
+    assert log == ['a', 'resume']
+
+
+def test_cancel_with_a_start_drops_only_that_entry():
+    log = _Log()
+    slots = JobSlots(1)
+    slots.submit('a', log.starter('a'))
+    stale = log.starter('x-old')
+    slots.submit('x', stale)
+    slots.submit('x', log.starter('x-new'))
+    assert slots.cancel('x', start=stale) is True
+    assert slots.cancel('x', start=stale) is False
+    log.releases['a']()
+    assert log == ['a', 'x-new']

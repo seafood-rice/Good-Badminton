@@ -344,6 +344,8 @@ var Kestrel = (function () {
             ? (state.lang === 'zh'
                 ? '分析进行中… ' + (d.message || '') + (age !== null ? '（' + age + '秒前更新）' : '')
                 : 'Analysis in progress… ' + (d.message || '') + (age !== null ? ' (updated ' + age + 's ago)' : ''))
+            : (d.status === 'paused' || d.status === 'resuming')
+              ? (state.lang === 'zh' ? '已暂停，可在分析队列页面继续。' : 'Paused. Resume it from the Pipeline page.')
             : d.status === 'pending'
               ? (state.lang === 'zh'
                   ? '排队中，等待空闲分析位' + (d.queue_position ? '（第 ' + d.queue_position + ' 位）' : '') + '…'

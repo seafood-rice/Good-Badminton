@@ -263,3 +263,224 @@ def test_a_late_tracker_failure_leaves_the_rerun_alone(env, monkeypatch):
     assert rerun['status'] == 'running'
     assert webapp._job_slots.snapshot()['running'] == ['a']  # the re-run kept its slot
     procs['a.mp4'].finish()
+
+
+@pytest.fixture
+def frozen(monkeypatch):
+    """Record suspend/resume calls instead of signalling a real process."""
+    calls = []
+    monkeypatch.setattr(webapp.proc_control, 'suspend_tree', lambda pid: calls.append(('suspend', pid)))
+    monkeypatch.setattr(webapp.proc_control, 'resume_tree', lambda pid: calls.append(('resume', pid)))
+    monkeypatch.setattr(_Proc, 'pid', 4242, raising=False)
+    return calls
+
+
+def test_pause_frees_the_slot_and_resume_waits_at_the_front(env, frozen):
+    client, procs = env
+    for name in ('a.mp4', 'b.mp4', 'c.mp4'):
+        client.post('/api/analyze', json={'video': name})
+    assert client.post('/api/jobs/a/pause').status_code == 200
+    assert frozen == [('suspend', 4242)]
+    assert webapp.jobs['a']['status'] == 'paused'
+    _wait_status('b', ('running',))  # a's slot went to the next queued job
+    assert client.get('/api/status/a').get_json()['message'] == '已暂停 / paused'
+
+    r = client.post('/api/jobs/a/resume').get_json()
+    assert r == {'ok': True, 'queued': True, 'position': 1}  # ahead of c
+    status = client.get('/api/status/a').get_json()
+    assert status['status'] == 'resuming' and status['queue_position'] == 1
+    assert 'resume, #1 in line' in status['message']
+
+    procs['b.mp4'].finish()
+    _wait_status('a', ('running',))
+    assert frozen[-1] == ('resume', 4242)
+    assert webapp._job_slots.snapshot() == {'max_jobs': 1, 'running': ['a'], 'queued': ['c']}
+    procs['a.mp4'].finish()
+    _wait_status('c', ('running',))  # the resumed run frees its new slot when it ends
+
+
+def test_resume_with_a_free_slot_runs_at_once(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/jobs/a/pause')
+    assert client.post('/api/jobs/a/resume').get_json() == {'ok': True, 'queued': False, 'position': None}
+    assert webapp.jobs['a']['status'] == 'running'
+    assert webapp._job_slots.snapshot()['running'] == ['a']
+
+
+def test_pause_and_resume_refuse_the_wrong_states(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/analyze', json={'video': 'b.mp4'})
+    assert client.post('/api/jobs/nope/pause').status_code == 404
+    assert client.post('/api/jobs/nope/resume').status_code == 404
+    assert client.post('/api/jobs/b/pause').status_code == 409   # queued, not running
+    assert client.post('/api/jobs/a/resume').status_code == 409  # running, not paused
+    client.post('/api/jobs/a/pause')
+    assert client.post('/api/jobs/a/pause').status_code == 409   # already paused
+    _wait_status('b', ('running',))
+    client.post('/api/jobs/a/resume')                            # waits for b's slot
+    assert client.post('/api/jobs/a/cancel').status_code == 409  # a queued resume is not a queued job
+    assert client.post('/api/jobs/a/resume').status_code == 409
+    assert client.post('/api/analyze', json={'video': 'a.mp4'}).status_code == 409  # still in flight
+
+
+def test_no_more_paused_jobs_than_slots(env, frozen, monkeypatch):
+    client, procs = env
+    monkeypatch.setattr(webapp, '_job_slots', JobSlots(2, on_queue_change=webapp._queue_changed))
+    for name in ('a.mp4', 'b.mp4', 'c.mp4'):
+        client.post('/api/analyze', json={'video': name})
+    assert client.post('/api/jobs/a/pause').status_code == 200
+    _wait_status('c', ('running',))
+    assert client.post('/api/jobs/b/pause').status_code == 200
+    r = client.post('/api/jobs/c/pause')
+    assert r.status_code == 409 and 'at most 2' in r.get_json()['error']
+    for job_id in ('a', 'b'):
+        client.post(f'/api/jobs/{job_id}/resume')
+    procs['c.mp4'].finish()
+    for p in procs.values():
+        p.finish()
+
+
+def test_pause_of_a_job_that_just_ended_is_refused(env, monkeypatch):
+    client, procs = env
+
+    def gone(pid):
+        raise webapp.proc_control.psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(webapp.proc_control, 'suspend_tree', gone)
+    monkeypatch.setattr(_Proc, 'pid', 4242, raising=False)
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    assert client.post('/api/jobs/a/pause').status_code == 409
+    assert webapp.jobs['a']['status'] == 'running'
+    assert webapp._job_slots.snapshot()['running'] == ['a']
+
+
+def test_a_paused_job_that_dies_gives_its_queued_resume_slot_away(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/analyze', json={'video': 'b.mp4'})
+    client.post('/api/jobs/a/pause')
+    _wait_status('b', ('running',))
+    client.post('/api/jobs/a/resume')        # queued behind b
+    procs['a.mp4'].finish()                  # killed from outside while frozen
+    _wait_status('a', ('error',))
+    procs['b.mp4'].finish()
+    _wait_status('b', ('error', 'completed'))
+    for _ in range(200):
+        if webapp._job_slots.snapshot() == {'max_jobs': 1, 'running': [], 'queued': []}:
+            break
+        threading.Event().wait(0.01)
+    assert webapp._job_slots.snapshot() == {'max_jobs': 1, 'running': [], 'queued': []}
+    assert ('resume', 4242) not in frozen
+
+
+def test_paused_jobs_are_listed_as_paused(env, frozen):
+    client, _ = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/jobs/a/pause')
+    rows = {r['id']: r for r in client.get('/api/jobs').get_json()}
+    assert rows['a']['status'] == 'paused'
+    assert rows['a']['message'] == '已暂停 / paused'
+
+
+def test_delete_is_refused_while_the_job_is_paused_or_resuming(env, frozen):
+    client, procs = env
+    out = webapp.OUTPUTS / 'a'
+    out.mkdir(exist_ok=True)
+    (out / 'keep.txt').write_text('x')
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/analyze', json={'video': 'b.mp4'})
+    client.post('/api/jobs/a/pause')
+    assert client.post('/api/delete/a', json={'scope': 'all'}).status_code == 409
+    _wait_status('b', ('running',))
+    client.post('/api/jobs/a/resume')
+    assert webapp.jobs['a']['status'] == 'resuming'
+    assert client.post('/api/delete/a', json={'scope': 'all'}).status_code == 409
+    assert (out / 'keep.txt').exists() and 'a' in webapp.jobs
+
+
+def test_a_resume_that_fails_to_thaw_goes_back_to_paused(env, frozen, monkeypatch):
+    client, procs = env
+
+    def denied(pid):
+        raise webapp.proc_control.psutil.AccessDenied(pid)
+
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/jobs/a/pause')
+    monkeypatch.setattr(webapp.proc_control, 'resume_tree', denied)
+    r = client.post('/api/jobs/a/resume')
+    assert r.status_code == 409 and 'could not resume' in r.get_json()['error']
+    assert webapp.jobs['a']['status'] == 'paused'
+    assert 'could not resume' in webapp.jobs['a']['message']
+    assert webapp._job_slots.snapshot()['running'] == []
+    monkeypatch.setattr(webapp.proc_control, 'resume_tree', lambda pid: None)
+    assert client.post('/api/jobs/a/resume').get_json()['queued'] is False
+    assert webapp.jobs['a']['status'] == 'running'
+
+
+def test_a_dead_resuming_job_leaves_no_queue_entry(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/analyze', json={'video': 'b.mp4'})
+    client.post('/api/jobs/a/pause')
+    _wait_status('b', ('running',))
+    client.post('/api/jobs/a/resume')
+    procs['a.mp4'].finish()                    # killed from outside while frozen
+    _wait_status('a', ('error',))
+    for _ in range(200):
+        if 'a' not in webapp._job_slots.snapshot()['queued']:
+            break
+        threading.Event().wait(0.01)
+    assert webapp._job_slots.snapshot()['queued'] == []
+    # A fresh run of the same video is the only one waiting.
+    assert client.post('/api/analyze', json={'video': 'a.mp4'}).get_json()['position'] == 1
+
+
+def test_a_resume_start_after_the_tracker_ended_takes_no_slot(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/analyze', json={'video': 'b.mp4'})
+    client.post('/api/jobs/a/pause')
+    _wait_status('b', ('running',))
+    client.post('/api/jobs/a/resume')
+    job = webapp.jobs['a']
+    start = job['resume_start']
+    procs['a.mp4'].finish()
+    _wait_status('a', ('error',))
+    for _ in range(200):
+        if job.get('ended'):
+            break
+        threading.Event().wait(0.01)
+    # The late start (as if it had been popped just before the tracker's cancel) is refused.
+    freed = []
+    with pytest.raises(RuntimeError):
+        start(lambda: freed.append(1))
+    assert job['status'] == 'error'
+    assert ('resume', 4242) not in frozen
+
+
+def test_a_paused_job_killed_from_outside_ends_as_error_and_cannot_resume(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/jobs/a/pause')
+    procs['a.mp4'].finish(0)  # even a clean exit: the job never finished its work while paused
+    job = webapp.jobs['a']
+    for _ in range(300):
+        if job.get('ended'):
+            break
+        threading.Event().wait(0.01)
+    assert job['status'] in ('error', 'completed')  # the tracker's verdict, never 'paused'
+    assert client.post('/api/jobs/a/resume').status_code == 409
+    assert job['status'] != 'resuming'
+
+
+def test_resume_refuses_a_paused_job_whose_process_is_gone(env, frozen):
+    client, procs = env
+    client.post('/api/analyze', json={'video': 'a.mp4'})
+    client.post('/api/jobs/a/pause')
+    job = webapp.jobs['a']
+    job['proc'].returncode = -9  # dead, but the tracker has not noticed yet
+    r = client.post('/api/jobs/a/resume')
+    assert r.status_code == 409 and 'already ended' in r.get_json()['error']
+    assert job['status'] == 'paused'
