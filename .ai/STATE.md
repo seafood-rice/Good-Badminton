@@ -66,6 +66,12 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 
 ## Blockers and loose ends
 
+- Rally outcomes (spec `docs/superpowers/specs/2026-10-27-rally-outcome-labelling-design.md`, merged #36):
+  `outputs/<stem>/rally_outcomes.json` is the contract the LLM report reads. Auto labeller precision not yet
+  measured: the owner labels 0009 + 0010 in the match details page (Point block), then run
+  `python scripts/score_rally_outcomes.py outputs/DJI_20261024092943_0009_D outputs/DJI_20261024093729_0010_D`.
+  Auto coverage on DJI runs is ~3-7 %. Backfill older runs with `python -m badminton_analysis.outcomes.build
+  outputs/<stem>`. Next step after labels: a score-sequence decoder (HMM).
 - Stroke classifier (spec `docs/superpowers/specs/2026-10-22-unified-stroke-classifier-design.md`): owner
   accuracy bar not yet measured. Owner labels `outputs/dji-stroke-labels/LABELS.md` (0014 = test; add 1-2
   more test videos so every group has >= 20 test hits), then retrain with `--dji-labels`, relabel, and run

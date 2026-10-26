@@ -544,8 +544,17 @@ class BadmintonAnalysisSystem:
             if self.analyze_technique:
                 self._run_technique_analysis(labels)
         self._run_doubles_stage(fps, self._doubles_frames)
+        self._write_rally_outcomes()
 
         self._cleanup(cap)
+
+    def _write_rally_outcomes(self):
+        """Write rally_outcomes.json from the run files and the owner's labels; never fatal."""
+        try:
+            from .outcomes.build import build
+            build(self.save_dir)
+        except Exception as exc:
+            print(f"rally_outcomes.json could not be written: {exc!r}")
 
     def _court_view_score(self, gray_frame, template_small):
         """Shift-tolerant whole-frame NCC at COURT_VIEW_SCORE_WIDTH. Shared by

@@ -22,6 +22,7 @@ export function parseVolume(raw) {
  * @param {{get:Function,set:Function}} [opts.prefs] volume / mute storage (default: the shared prefs)
  * @param {{prev?:string,next?:string}} [opts.labels] aria labels of the previous / next buttons
  * @param {Function} [opts.onPrev] @param {Function} [opts.onNext]
+ * @param {Node} [opts.extra] one more control, placed right after the next button
  * @param {(idx:number)=>void} [opts.onSourceFallback] called after the next candidate file is tried
  * @param {boolean} [opts.playersVideo] the first file is the players video (cleared on fallback)
  */
@@ -165,6 +166,7 @@ export function createPlayer(opts = {}) {
     h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': labels.prev || t('ws.prev_rally', lang), onclick: () => { if (onPrev) onPrev(); } }, '⏮'),
     playBtn,
     h('button', { type: 'button', class: 'ws-ibtn', 'aria-label': labels.next || t('ws.next_rally', lang), onclick: () => { if (onNext) onNext(); } }, '⏭'),
+    opts.extra || null,
     time,
     seek,
     vol,

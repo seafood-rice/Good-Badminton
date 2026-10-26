@@ -38,13 +38,13 @@ def _assert_envelope(env):
 
 
 def test_version_constant():
-    assert sidecar.INSIGHTS_VERSION == 7
+    assert sidecar.INSIGHTS_VERSION == 8
 
 
 def test_document_shape_and_file_written(tmp_path):
     out = _full_run(tmp_path)
     doc = sidecar.compute_video(out.name, out)
-    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 7
+    assert doc["schema_version"] == 1 and doc["version"] == sidecar.INSIGHTS_VERSION == 8
     assert doc["stem"] == out.name
     assert doc["computed_at"].endswith("Z")
     assert doc["date"] == {"value": "2026-10-10", "source": "filename"}
@@ -100,9 +100,9 @@ def test_version_change_recomputes(tmp_path, monkeypatch):
     out = _full_run(tmp_path)
     calls = _count_calls(monkeypatch, "technique_insight")
     sidecar.compute_video(out.name, out)
-    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 8)
+    monkeypatch.setattr(sidecar, "INSIGHTS_VERSION", 9)
     doc = sidecar.compute_video(out.name, out)
-    assert len(calls) == 2 and doc["version"] == 8
+    assert len(calls) == 2 and doc["version"] == 9
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "null", '{"version": 1}', ""])
@@ -407,7 +407,7 @@ def test_version_5_cache_without_doubles_is_rebuilt(tmp_path, monkeypatch):
     calls = _count_calls(monkeypatch, "doubles_insight")
     again = sidecar.compute_video(out.name, out)
     assert len(calls) == 1
-    assert again["version"] == 7 and again["doubles"]["status"] == "ok"
+    assert again["version"] == 8 and again["doubles"]["status"] == "ok"
 
 
 def test_current_version_cache_without_a_doubles_envelope_is_rebuilt(tmp_path):

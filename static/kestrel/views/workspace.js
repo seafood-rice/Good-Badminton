@@ -5,9 +5,11 @@
 // split match (spec section 5) is always shown under its primary's stem with a part switcher (Whole match | Part N):
 // `?part=<stem>` shows that part as the page above, no `part` shows the Whole match view (part cards, movement per
 // part, pooled strokes and technique). The pure logic (buildWorkspaceModel and the text helpers) lives in
-// workspace_model.js and is re-exported here; mount() is the DOM layer over it. Honesty rules: there is no point
-// outcome, so nothing is marked won or lost; swing segments are "segments (estimated)", degraded ones "windows";
-// uncertain strokes are muted and labelled so; opponent strokes are shown but never scored.
+// workspace_model.js and is re-exported here; mount() is the DOM layer over it. Honesty rules: a point is only marked
+// won by the owner's label (Point block in the rally summary, keys N / F / X / U and 1 / 2 / 3, spec 2026-10-27; the
+// logic is in outcomes_model.js) or, greyed and tagged "auto", by the automatic labeller; swing segments are
+// "segments (estimated)", degraded ones "windows"; uncertain strokes are muted and labelled so; opponent strokes
+// are shown but never scored.
 import { t, TECHNIQUE_IDS } from '../core/i18n.js';
 import { fmtDate, fmtNumber, fmtDuration } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
@@ -21,6 +23,9 @@ import { techniquePanel } from '../widgets/technique.js';
 import { clipsPanel } from '../widgets/clips.js';
 import { planPanel } from '../widgets/plan.js';
 import { openDeleteDialog } from '../widgets/videotools.js';
+import {
+  normaliseLabels, applyVerdict, addPoint, segmentState, tally, pooledTally, reconciliationStatus, keyToAction,
+} from './outcomes_model.js';
 import { doublesWorkspaceModel, doublesVideoFiles, hitsInWindow } from './doubles_model.js';
 import {
   RALLY_PAD_SEC, JOIN_FRAMES, STROKE_PAGE, summariseRallyPayload, buildWorkspaceModel, matchDate, matchDateApprox,
@@ -96,6 +101,13 @@ export function mount(container, ctx = {}) {
     hitSel: null,
     hitStripLimit: STROKE_PAGE,
     hitListLimit: STROKE_PAGE,
+    // Rally outcome labelling: the owner's label document ({revision, labels}), the built rally_outcomes.json (null:
+    // none yet), a short notice under the Point block, a save in flight, and the "Add point end here" prompt ({time}).
+    labelsDoc: normaliseLabels(null),
+    outcomesDoc: null,
+    notice: '',
+    saving: false,
+    addPrompt: null,
   };
   const refs = {};
   // Tab bodies, built on first open and kept (the clips and plan panels hold their own state and requests).
@@ -161,6 +173,7 @@ export function mount(container, ctx = {}) {
    * the kept tab panels (their requests), the player (its media connection and document listeners) and the reveal.
    */
   function teardown() {
+    unbindLabelKeys();
     closeMenu(false);
     destroyPanels();
     if (refs.player) refs.player.destroy();
@@ -509,8 +522,12 @@ export function mount(container, ctx = {}) {
     const files = state.dbl
       ? doublesVideoFiles(s, state.dbl.identityVideoOk ? { status: 'ok' } : null)
       : [`detect_${s}.mp4`, `detect_${s}_h264.mp4`];
+    refs.addBtn = h('button', {
+      type: 'button', class: 'ws-pt-add', title: t('ws.pt.add', lang), onclick: () => openAddPrompt(),
+    }, '+ ' + t('ws.pt.add', lang));
     const player = createPlayer({
       files: files.map((f) => endpoints.output(s, f)),
+      extra: refs.addBtn,
       lang,
       labels: { prev: t('ws.prev_rally', lang), next: t('ws.next_rally', lang) },
       onPrev: () => stepUnit(-1),
@@ -620,6 +637,8 @@ export function mount(container, ctx = {}) {
       refs.allBtn,
       h('span', { class: 'card-sub' }, m.rallies.length ? `${t('ws.timeline_hint', lang)} ${t('ws.timeline_lane', lang)}` : signalNote(m.summary, lang, 0)),
     ]));
+    refs.tally = h('div', { class: 'ws-tally' });
+    sec.appendChild(refs.tally);
     refs.stripHost = h('div', { class: 'ws-strip-wrap' });
     sec.appendChild(refs.stripHost);
     refs.outsideNote = m.summary.outside
@@ -630,6 +649,16 @@ export function mount(container, ctx = {}) {
   }
 
   function paintLane() {
+    // Tint each segment by its point result (owner label first, else the automatic one, else unknown).
+    const rallies = state.model ? state.model.rallies : [];
+    const byId = new Map(rallies.map((r) => [r.id, r]));
+    for (const [id, btn] of refs.laneBtns || []) {
+      const r = byId.get(id);
+      const info = r ? segmentState(state.outcomesDoc, state.labelsDoc, r, rallies) : null;
+      btn.setAttribute('data-state', info ? info.state : 'unknown');
+      btn.setAttribute('data-source', info && info.source ? info.source : '');
+    }
+    paintTally();
     for (const [id, btn] of refs.laneBtns || []) setPressed(btn, state.unit === id);
     setPressed(refs.allBtn, state.unit === 'all');
     if (refs.outsideNote) refs.outsideNote.hidden = state.unit === 'all';
@@ -1090,7 +1119,244 @@ export function mount(container, ctx = {}) {
     sec.appendChild(dl);
     const note = signalNote(m.summary, lang, m.rallies.length);
     if (note) sec.appendChild(h('div', { class: 'ws-sum-note' }, note));
+    if (u) sec.appendChild(pointBlock(u));
+    if (state.addPrompt) sec.appendChild(addPromptBlock());
     return sec;
+  }
+
+  // ----- rally outcome labelling (spec 2026-10-27 section 7) -----
+  /** The label of a side's win: the player's name when the record has one, else near / far (doubles: the team). */
+  function winLabel(verdict) {
+    const near = verdict === 'lower';
+    if (state.dbl || state.model.summary.doubles) return t(near ? 'ws.pt.near_team' : 'ws.pt.far_team', lang);
+    const name = state.names[verdict];
+    return name ? t('ws.pt.won_name', lang, { name }) : t(near ? 'ws.pt.near' : 'ws.pt.far', lang);
+  }
+
+  const verdictOfState = (st) => (st === 'near' ? 'lower' : st === 'far' ? 'upper' : null);
+
+  /** The tally line ("Near 12 – Far 7 · 19 of 31 labelled") with the reconciliation badge of `doc`. */
+  function tallyNodes(tl, doc) {
+    const nodes = [h('span', { class: 'mono' }, tl.entries ? t('ws.pt.tally', lang, {
+      near: tl.near, far: tl.far, labelled: tl.labelled, entries: tl.entries,
+    }) : t('ws.pt.tally_none', lang))];
+    const rc = reconciliationStatus(doc);
+    if (rc) {
+      const tone = { consistent: 'good', over: 'bad', short: 'mid', incomplete: 'mid' }[rc];
+      nodes.push(h('span', { class: 'k-chip ws-rc ' + tone, 'data-status': rc }, t('ws.pt.rc.' + rc, lang)));
+    }
+    return nodes;
+  }
+
+  function paintTally() {
+    if (!refs.tally) return;
+    refs.tally.textContent = '';
+    tallyNodes(tally(state.outcomesDoc), state.outcomesDoc).forEach((n) => refs.tally.appendChild(n));
+    // The owner's added points (no segment): listed so they can be found, played and removed.
+    const added = state.labelsDoc.labels.map((l, i) => ({ l, i })).filter((x) => x.l && x.l.added)
+      .sort((a, b) => a.l.end_sec - b.l.end_sec);
+    if (!added.length) return;
+    const list = h('ul', { class: 'ws-added', 'aria-label': t('ws.pt.added_title', lang) });
+    added.forEach(({ l, i }) => {
+      const time = clockText(l.end_sec);
+      list.appendChild(h('li', { class: 'ws-added-item', 'data-added': String(i) }, [
+        h('button', { type: 'button', class: 'ws-added-time mono', onclick: () => seekTo(l.end_sec, true) },
+          t('ws.pt.added_item', lang, { time, winner: l.verdict === 'lower' || l.verdict === 'upper' ? winLabel(l.verdict) : t('ws.pt.unsure', lang) })),
+        h('button', {
+          type: 'button', class: 'ws-added-rm', 'aria-label': t('ws.pt.added_remove_aria', lang, { time }),
+          onclick: () => removeLabel(l),
+        }, t('ws.pt.added_remove', lang)),
+      ]));
+    });
+    refs.tally.appendChild(list);
+  }
+
+  /** Save the labels without `label` (an added point the owner wants gone). */
+  function removeLabel(label) {
+    const labels = state.labelsDoc.labels.filter((x) => x !== label);
+    saveLabels({ ...state.labelsDoc, labels }, false);
+  }
+
+  /** The Point block of the rally summary for the selected segment `u`. */
+  function pointBlock(u) {
+    const info = segmentState(state.outcomesDoc, state.labelsDoc, u, state.model.rallies);
+    const block = h('div', { class: 'ws-pt', role: 'group', 'aria-label': t('ws.pt.aria', lang) });
+    block.appendChild(h('div', { class: 'ws-sec-head' }, [
+      h('div', { class: 'k-label' }, t('ws.pt.title', lang)),
+      info.source === 'auto' ? h('span', { class: 'k-chip mid ws-pt-autotag' }, t('ws.pt.auto', lang)) : null,
+    ]));
+    const defs = [
+      ['lower', winLabel('lower')], ['upper', winLabel('upper')],
+      ['not_point', t('ws.pt.not_point', lang)], ['unsure', t('ws.pt.unsure', lang)],
+    ];
+    const autoVerdict = info.source === 'auto' ? verdictOfState(info.state) : null;
+    const row = h('div', { class: 'ws-pt-row' });
+    defs.forEach(([verdict, label]) => {
+      const on = info.verdict === verdict && (info.source === 'owner' || verdict === 'unsure');
+      row.appendChild(h('button', {
+        type: 'button', class: 'ws-chip ws-pt-btn' + (on ? ' on' : '') + (autoVerdict === verdict ? ' auto' : ''),
+        'data-verdict': verdict, 'aria-pressed': on ? 'true' : 'false', onclick: () => onVerdict(verdict),
+      }, label));
+    });
+    block.appendChild(row);
+    if (verdictOfState(info.state)) {
+      const orow = h('div', { class: 'ws-pt-row', role: 'group', 'aria-label': t('ws.pt.outcome_label', lang) });
+      ['winner', 'forced_error', 'unforced_error'].forEach((id) => {
+        const on = info.source === 'owner' && info.outcome === id;
+        orow.appendChild(h('button', {
+          type: 'button', class: 'ws-chip ws-pt-btn' + (on ? ' on' : ''), 'data-outcome': id,
+          'aria-pressed': on ? 'true' : 'false', onclick: () => onOutcome(id),
+        }, t('ws.pt.outcome.' + id, lang)));
+      });
+      block.appendChild(orow);
+    }
+    if (info.source === 'auto') block.appendChild(h('div', { class: 'kw-foot-muted' }, t('ws.pt.auto_note', lang)));
+    if (state.notice) block.appendChild(h('div', { class: 'ws-pt-notice', role: 'status' }, state.notice));
+    block.appendChild(h('div', { class: 'kw-foot-muted' }, t('ws.pt.keys', lang)));
+    return block;
+  }
+
+  /** The inline "who won the point ending here?" prompt of "Add point end here". */
+  function addPromptBlock() {
+    const time = state.addPrompt.time;
+    const choice = (verdict) => h('button', {
+      type: 'button', class: 'ws-chip ws-pt-btn', 'data-add': verdict, onclick: () => saveLabels(addPoint(state.labelsDoc, time, verdict), false),
+    }, winLabel(verdict));
+    const cancel = h('button', {
+      type: 'button', class: 'ws-chip ws-pt-btn', 'data-add': 'cancel', onclick: () => { state.addPrompt = null; repaintLabels(); },
+    }, t('ws.pt.add_cancel', lang));
+    return h('div', { class: 'ws-pt ws-pt-addbox', role: 'group', 'aria-label': t('ws.pt.add', lang) }, [
+      h('div', { class: 'k-label' }, t('ws.pt.add_prompt', lang, { time: clockText(time) })),
+      h('div', { class: 'ws-pt-row' }, [choice('lower'), choice('upper'), cancel]),
+    ]);
+  }
+
+  function openAddPrompt() {
+    if (!state.model || state.view === 'whole') return;
+    const v = refs.video;
+    const now = v && isNum(v.currentTime) ? v.currentTime : 0;
+    state.addPrompt = { time: Math.round(now * 100) / 100 };
+    state.notice = '';
+    renderSide(false);
+    focusNode(refs.sumHost && refs.sumHost.querySelector('[data-add]'));
+  }
+
+  /** Repaint everything the labels show: the lane tint, the tally and the summary card. */
+  function repaintLabels() {
+    if (state.destroyed || !state.model || !refs.laneBtns) return;
+    paintLane();
+    renderSide(false);
+  }
+
+  function nextUnit() {
+    const rs = state.model.rallies;
+    const pos = rs.findIndex((r) => r.id === state.unit);
+    return pos >= 0 && pos + 1 < rs.length ? rs[pos + 1] : null;
+  }
+
+  /** Re-read the built rally_outcomes.json (a save rebuilt it); a missing file leaves the page as it is. */
+  async function refreshOutcomes(s) {
+    const r = await soft(api.rallyOutcomes(s, LONG));
+    if (state.destroyed || state.stem !== s || !r.ok) return;
+    state.outcomesDoc = r.data && typeof r.data === 'object' ? r.data : null;
+    repaintLabels();
+  }
+
+  /**
+   * Save the label document with its current revision. Success: take the new revision, optionally advance to the next
+   * segment, re-read the outcomes. A 409 (stale revision) reloads the labels and says so; the place is kept.
+   */
+  async function saveLabels(doc, advance) {
+    if (state.saving || !state.model) return;
+    state.saving = true;
+    state.notice = '';
+    const s = state.stem;
+    let saved = false;
+    try {
+      const res = await api.saveRallyLabels(s, doc, LONG);
+      if (state.destroyed || state.stem !== s) return;
+      const revision = res && Number.isInteger(res.revision) ? res.revision : doc.revision + 1;
+      state.labelsDoc = { schema: 1, revision, labels: doc.labels };
+      saved = true;
+    } catch (err) {
+      if (state.destroyed || state.stem !== s) return;
+      if (err && err.status === 409) {
+        const body = obj(err.body);
+        // reason 'stale' (the body carries the newer revision) reloads; 'unreadable' means nothing can be saved:
+        // say so and do not reload. Older servers send no reason: a revision means stale.
+        const stale = body.reason ? body.reason === 'stale' : Number.isInteger(body.revision) || err.body === undefined;
+        if (stale) {
+          const r = await soft(api.rallyLabels(s, LONG));
+          if (state.destroyed || state.stem !== s) return;
+          if (r.ok) state.labelsDoc = normaliseLabels(r.data);
+          state.notice = t('ws.pt.conflict', lang);
+          refreshOutcomes(s);
+        } else {
+          state.notice = t('ws.pt.unreadable', lang);
+        }
+      } else if (!(err && err.kind === 'aborted')) {
+        state.notice = t('ws.pt.save_failed', lang, { error: errorText(err, lang) });
+      }
+    } finally {
+      state.saving = false;
+    }
+    if (!saved) {
+      repaintLabels();
+      return;
+    }
+    state.addPrompt = null;
+    const next = advance ? nextUnit() : null;
+    if (next) {
+      selectUnit(next.id, true);
+    } else {
+      repaintLabels();
+    }
+    refreshOutcomes(s);
+  }
+
+  /** A verdict for the selected segment (a button or N / F / X / U); saves and moves on to the next segment. */
+  function onVerdict(verdict) {
+    const u = currentUnit();
+    if (!u || !state.model) return;
+    saveLabels(applyVerdict(state.labelsDoc, u, verdict, null, state.model.rallies), true);
+  }
+
+  /** An outcome type for the selected segment's winner (a chip or 1 / 2 / 3); saves without moving on. */
+  function onOutcome(outcome) {
+    const u = currentUnit();
+    if (!u || !state.model) return;
+    const info = segmentState(state.outcomesDoc, state.labelsDoc, u, state.model.rallies);
+    const verdict = verdictOfState(info.state);
+    if (!verdict) return;
+    const next = info.source === 'owner' && info.outcome === outcome ? null : outcome;
+    saveLabels(applyVerdict(state.labelsDoc, u, verdict, next, state.model.rallies), false);
+  }
+
+  // Typing targets, like the player's M key: sliders, buttons and checkboxes do not swallow the label keys.
+  const typing = (tg) => !!tg && (tg.isContentEditable || ['TEXTAREA', 'SELECT'].includes(tg.tagName)
+    || (tg.tagName === 'INPUT' && !['range', 'button', 'checkbox'].includes(tg.type)));
+
+  function onLabelKey(e) {
+    if (state.destroyed || !state.model || state.view === 'whole' || e.ctrlKey || e.metaKey || e.altKey || e.repeat || typing(e.target)) return;
+    const act = keyToAction(e.key);
+    if (!act || !currentUnit()) return;
+    // Not under a dialog, the palette or a peek panel (they own the keys).
+    if (typeof document.querySelector === 'function' && document.querySelector('.modal-overlay, .pop, .palette-root, .peek-root, .info-dialog')) return;
+    e.preventDefault();
+    if (act.verdict) onVerdict(act.verdict);
+    else onOutcome(act.outcome);
+  }
+  // The label keys listen on the document only while a video's page is shown (not the Whole match, not loading).
+  let keysBound = false;
+  function bindLabelKeys() {
+    if (keysBound || typeof document.addEventListener !== 'function') return;
+    document.addEventListener('keydown', onLabelKey);
+    keysBound = true;
+  }
+  function unbindLabelKeys() {
+    if (!keysBound) return;
+    keysBound = false;
+    if (typeof document.removeEventListener === 'function') document.removeEventListener('keydown', onLabelKey);
   }
 
   // ----- movement card -----
@@ -1282,6 +1548,7 @@ export function mount(container, ctx = {}) {
     renderFilters();
     renderRows();
     renderSide(false);
+    bindLabelKeys();
     startReveal();
   }
 
@@ -1350,6 +1617,19 @@ export function mount(container, ctx = {}) {
     ]);
   }
 
+  /** Whole match: the point tally pooled over the parts (swapped parts exchange near and far) and the match reconciliation. */
+  function pooledOutcomesCard() {
+    const ok = state.whole.parts.filter((p) => p.ok && p.outcomes);
+    if (!ok.length) return null;
+    const tl = pooledTally(ok.map((p) => p.outcomes), ok.map((p) => !!p.swapped));
+    // Every part's file carries the same match reconciliation: the first part that has one speaks for the match.
+    const withRc = ok.find((p) => reconciliationStatus(p.outcomes)) || ok[0];
+    return h('section', { class: 'card hud ws-pt-whole', 'aria-label': t('ws.pt.whole_title', lang) }, [
+      h('div', { class: 'k-label' }, t('ws.pt.whole_title', lang)),
+      h('div', { class: 'ws-tally' }, tallyNodes(tl, withRc.outcomes)),
+    ]);
+  }
+
   function renderWhole() {
     if (state.destroyed) return;
     const head = beginView();
@@ -1358,8 +1638,9 @@ export function mount(container, ctx = {}) {
     // Heatmap + scatter per analysed part, captioned "Part N" (images are never merged across parts).
     const move = movementCard({ lang, items: parts.filter((p) => p.ok).map((p) => ({ stem: p.stem, caption: t('wsx.parts.n', lang, { n: p.n }) })) });
     const tabs = buildTabs();
-    [cards, move, tabs].forEach((n) => refs.body.appendChild(n));
-    sections = [head, cards, move, tabs];
+    const pooled = pooledOutcomesCard();
+    [cards, pooled, move, tabs].forEach((n) => { if (n) refs.body.appendChild(n); });
+    sections = [head, cards, pooled, move, tabs].filter(Boolean);
     renderTab();
     startReveal();
   }
@@ -1468,13 +1749,15 @@ export function mount(container, ctx = {}) {
    */
   async function fetchStem(s, o) {
     const out = (f) => soft(getJSON(endpoints.output(s, f), o));
-    const [rally, strokes, meta, tech, ins, rec] = await Promise.all([
+    const [rally, strokes, meta, tech, ins, rec, labels, outcomes] = await Promise.all([
       out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
       soft(getJSON('/api/technique/' + encodeURIComponent(s), o)),
       soft(api.videoInsights(s, o)),
       recordOf(s, o),
+      // The owner's labels and the built outcomes are soft: a missing file only means nothing is labelled yet.
+      soft(api.rallyLabels(s, o)), soft(api.rallyOutcomes(s, o)),
     ]);
-    if ([rally, strokes, meta, tech, ins, rec].some(isAborted)) return { status: 'aborted' };
+    if ([rally, strokes, meta, tech, ins, rec, labels, outcomes].some(isAborted)) return { status: 'aborted' };
     const fileish = [rally, strokes, meta, ins];
     if (fileish.every((r) => !r.ok && r.status === 404)) return { status: 'notfound' };
     if (fileish.every((r) => !r.ok)) return { status: 'error', error: (fileish.find((r) => r.status !== 404) || fileish[0]).error };
@@ -1485,7 +1768,7 @@ export function mount(container, ctx = {}) {
       [pl, hi] = await Promise.all([soft(api.players(s, o)), soft(api.hits(s, o))]);
       if ([pl, hi].some(isAborted)) return { status: 'aborted' };
     }
-    return { status: 'ok', rally, strokes, meta, tech, ins, rec, pl, hi };
+    return { status: 'ok', rally, strokes, meta, tech, ins, rec, pl, hi, labels, outcomes };
   }
 
   /** Put one stem's fetched data (fetchStem 'ok') into state: models, selection; the tab bodies start over. */
@@ -1497,6 +1780,10 @@ export function mount(container, ctx = {}) {
     state.insights = d.ins.ok ? obj(d.ins.data) : null;
     state.strokesDoc = d.strokes.ok ? d.strokes.data : null;
     state.tech = d.tech.ok ? d.tech.data : null;
+    state.labelsDoc = normaliseLabels(d.labels && d.labels.ok ? d.labels.data : null);
+    state.outcomesDoc = d.outcomes && d.outcomes.ok && d.outcomes.data && typeof d.outcomes.data === 'object' ? d.outcomes.data : null;
+    state.notice = '';
+    state.addPrompt = null;
     // 404 = absent; an unreadable file is treated the same (status "No players data"), never as ok.
     state.playersFile = d.pl && d.pl.ok && d.pl.data && typeof d.pl.data === 'object' && !Array.isArray(d.pl.data) ? d.pl.data : null;
     const sides = sidesOf(state.record);
@@ -1567,12 +1854,13 @@ export function mount(container, ctx = {}) {
    */
   async function loadPartSummary(p, o, athleteSide) {
     const out = (f) => soft(getJSON(endpoints.output(p.stem, f), o));
-    const [rally, strokes, meta, tech, ins] = await Promise.all([
+    const [rally, strokes, meta, tech, ins, outcomes] = await Promise.all([
       out('rally_segments.json'), out('strokes.json'), out('metadata.json'),
       soft(getJSON('/api/technique/' + encodeURIComponent(p.stem), o)),
       soft(api.videoInsights(p.stem, o)),
+      soft(api.rallyOutcomes(p.stem, o)),
     ]);
-    if ([rally, strokes, meta, tech, ins].some(isAborted)) return null;
+    if ([rally, strokes, meta, tech, ins, outcomes].some(isAborted)) return null;
     const video = (state.videos || []).find((v) => v && v.name === p.stem) || null;
     const fileish = [rally, strokes, meta, ins];
     if (!fileish.some((r) => r.ok)) {
@@ -1589,6 +1877,7 @@ export function mount(container, ctx = {}) {
       video,
       ok: true,
       insights,
+      outcomes: outcomes.ok && outcomes.data && typeof outcomes.data === 'object' ? outcomes.data : null,
       summary: m.summary,
       strokes: { total: m.summary.strokes.total, uncertain: m.summary.strokes.uncertain },
       dist: strokeDistribution(doc),

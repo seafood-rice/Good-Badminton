@@ -312,7 +312,8 @@ test('a fast part switch: a slow Part 2 that ignores the abort never replaces Pa
   }, { hold });
 });
 
-test('the player releases its document listeners: one keydown and one fullscreenchange while a part shows, none otherwise', async () => {
+// A shown video holds two keydown listeners (the player's Escape and the rally-label keys) and one fullscreenchange.
+test('the player releases its document listeners: two keydown and one fullscreenchange while a part shows, none otherwise', async () => {
   const live = { keydown: [], fullscreenchange: [] };
   const before = ({ doc }) => {
     doc.addEventListener = (type, fn) => { if (live[type]) live[type].push(fn); };
@@ -326,16 +327,16 @@ test('the player releases its document listeners: one keydown and one fullscreen
     assert.equal(count(), '0/0', 'Whole match: no player');
     inst.setQuery({ part: 'p1' });
     await settle();
-    assert.equal(count(), '1/1');
+    assert.equal(count(), '2/1');
     inst.setQuery({ part: 'p2' });
     await settle();
-    assert.equal(count(), '1/1', 'the previous part player let go of its listeners');
+    assert.equal(count(), '2/1', 'the previous part player let go of its listeners');
     inst.setQuery({});
     await settle();
     assert.equal(count(), '0/0', 'back on the Whole match');
     inst.setQuery({ part: 'p1' });
     await settle();
-    assert.equal(count(), '1/1');
+    assert.equal(count(), '2/1');
     inst.destroy();
     assert.equal(count(), '0/0', 'after destroy');
   }, { before });
@@ -357,4 +358,23 @@ test('a router that dispatches on replace: an unknown part redirects once, then 
     assert.equal(partBtn(container, 'Whole match').getAttribute('aria-pressed'), 'true');
     assert.equal(container.querySelector('video'), null);
   }, { query: { part: 'zz' }, router });
+});
+
+test('whole match: the pooled point tally exchanges near and far for a swapped part and shows the match reconciliation', async () => {
+  const rc = { status: 'short' };
+  const doc = (winners) => ({
+    schema: 1, rallies: winners.map((w, i) => ({ id: i + 1, segment_id: i + 1, winner_side: w })), summary: { reconciliation: rc },
+  });
+  const table = routes();
+  table[out('p1', 'rally_outcomes.json')] = doc(['lower', 'lower', 'upper']);
+  table[out('p2', 'rally_outcomes.json')] = doc(['lower', 'upper', null]); // p2 has swapped sides: its lower is p1's upper
+  await withPage(async ({ container }) => {
+    const card = container.querySelector('.ws-pt-whole');
+    assert.ok(card, 'pooled card');
+    assert.match(card.querySelector('.ws-tally').textContent, /Near 3 – Far 2 · 5 of 6 labelled/);
+    assert.equal(card.querySelector('.ws-rc').getAttribute('data-status'), 'short');
+  }, { table });
+  await withPage(async ({ container }) => {
+    assert.equal(container.querySelector('.ws-pt-whole'), null, 'no outcome files: no pooled card');
+  });
 });
