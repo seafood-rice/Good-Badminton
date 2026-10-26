@@ -119,3 +119,29 @@ def test_cli(tmp_path, capsys):
     out = _two_rally_run(tmp_path)
     assert ob.main([str(out), "--labels-dir", str(tmp_path / "l"), "--athletes", str(tmp_path / "a.json")]) == 0
     assert "2 entries, 1 labelled" in capsys.readouterr().out
+
+
+def test_build_tolerates_non_dict_static_shuttle(tmp_path):
+    out = _two_rally_run(tmp_path)
+    payload = json.loads((out / "rally_segments.json").read_text(encoding="utf-8"))
+    payload["detection"]["suppressed_static_shuttle"] = [{"point": [1, 2]}]
+    (out / "rally_segments.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert ob.build(out, tmp_path / "l", tmp_path / "a.json") is not None
+
+
+def test_no_landing_without_last_hit(tmp_path):
+    out = make_run(tmp_path / "vid", [(1, 10.0, 15.0)], landings=[(11.0, 3.0, 3.0)])
+    _segs, auto = ob.segment_evidence(out)
+    assert auto[1]["evidence"]["landing"] is None
+
+
+def test_rebuild_match_survives_a_broken_sibling(tmp_path):
+    outputs = tmp_path / "outputs"
+    make_run(outputs / "p", [(1, 1.0, 5.0)])
+    make_run(outputs / "q", [(1, 1.0, 5.0)])
+    (outputs / "q" / ob.OUTCOMES_NAME).write_text(json.dumps(
+        {"schema": 1, "rallies": [], "summary": {"points_won": "abc"}}), encoding="utf-8")
+    write(tmp_path, "athletes.json", {"schema_version": 1, "squads": {}, "athletes": {}, "matches": {
+        "p": {"upper": {"name": "A"}, "lower": {"name": "B"}, "result": {"winner": "upper", "sets": [[1, 1]]}},
+        "q": {"part_of": "p", "sides_swapped": False}}})
+    assert "p" in ob.rebuild_match(outputs, "p", tmp_path / "labels", tmp_path / "athletes.json")

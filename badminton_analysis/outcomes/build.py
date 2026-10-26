@@ -88,9 +88,11 @@ class _Landing:
         self.h = ev.court_homography(court.get("corners")) if court.get("corners") else None
         self.frame_h = number(video.get("height"))
         self.fps = run.fps
-        detection = (run.rallies_payload or {}).get("detection")
-        cells = ((detection or {}).get("suppressed_static_shuttle") or {}).get("cells") \
-            if isinstance(detection, dict) else None
+        self.match_format = run.match_format
+        payload = run.rallies_payload if isinstance(run.rallies_payload, dict) else {}
+        detection = payload.get("detection")
+        static = detection.get("suppressed_static_shuttle") if isinstance(detection, dict) else None
+        cells = static.get("cells") if isinstance(static, dict) else None
         self.static = []
         for cell in cells if isinstance(cells, list) else []:
             point = cell.get("point") if isinstance(cell, dict) else None
@@ -100,14 +102,16 @@ class _Landing:
         self.trajectory = _trajectory(out_dir) if usable else {}
 
     def verdict(self, seg, last_hit, hitter):
-        if not self.trajectory:
+        # Without a last hit there is no "after the last hit": a shuttle held before
+        # the serve would pass for a landing.
+        if not self.trajectory or last_hit is None:
             return None
-        first = int(last_hit[1]) + 1 if last_hit else int(seg["start_sec"] * self.fps)
+        first = int(last_hit[1]) + 1
         last = int((seg["end_sec"] + ev.LANDING_AFTER_END_SEC) * self.fps)
         points = ev.clean_track(self.trajectory, range(first, last + 1), self.frame_h, self.static)
         image_xy = ev.find_landing(points, self.fps, self.frame_h)
         court_xy = ev.to_court(self.h, image_xy) if image_xy else None
-        return ev.landing_verdict(court_xy, hitter) if court_xy else None
+        return ev.landing_verdict(court_xy, hitter, self.match_format) if court_xy else None
 
 
 def _auto(segments, hits, landing):
@@ -282,11 +286,11 @@ def rebuild_match(outputs_dir, stem, labels_dir=DEFAULT_LABELS_DIR, athletes_pat
     others = {s: _read_doc(outputs_dir / s / OUTCOMES_NAME) for s in stems if s not in docs}
     written = []
     for s, doc in docs.items():
-        doc["summary"]["reconciliation"] = reconcile(data, s, {**others, **docs})
         try:
+            doc["summary"]["reconciliation"] = reconcile(data, s, {**others, **docs})
             lab.write_json_atomic(outputs_dir / s / OUTCOMES_NAME, doc)
             written.append(s)
-        except OSError as exc:
+        except Exception as exc:   # never fatal, as in build()
             print(f"rally_outcomes.json not written for {s}: {exc!r}")
     return written
 

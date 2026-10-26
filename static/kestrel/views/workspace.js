@@ -1152,6 +1152,29 @@ export function mount(container, ctx = {}) {
     if (!refs.tally) return;
     refs.tally.textContent = '';
     tallyNodes(tally(state.outcomesDoc), state.outcomesDoc).forEach((n) => refs.tally.appendChild(n));
+    // The owner's added points (no segment): listed so they can be found, played and removed.
+    const added = state.labelsDoc.labels.map((l, i) => ({ l, i })).filter((x) => x.l && x.l.added)
+      .sort((a, b) => a.l.end_sec - b.l.end_sec);
+    if (!added.length) return;
+    const list = h('ul', { class: 'ws-added', 'aria-label': t('ws.pt.added_title', lang) });
+    added.forEach(({ l, i }) => {
+      const time = clockText(l.end_sec);
+      list.appendChild(h('li', { class: 'ws-added-item', 'data-added': String(i) }, [
+        h('button', { type: 'button', class: 'ws-added-time mono', onclick: () => seekTo(l.end_sec, true) },
+          t('ws.pt.added_item', lang, { time, winner: l.verdict === 'lower' || l.verdict === 'upper' ? winLabel(l.verdict) : t('ws.pt.unsure', lang) })),
+        h('button', {
+          type: 'button', class: 'ws-added-rm', 'aria-label': t('ws.pt.added_remove_aria', lang, { time }),
+          onclick: () => removeLabel(l),
+        }, t('ws.pt.added_remove', lang)),
+      ]));
+    });
+    refs.tally.appendChild(list);
+  }
+
+  /** Save the labels without `label` (an added point the owner wants gone). */
+  function removeLabel(label) {
+    const labels = state.labelsDoc.labels.filter((x) => x !== label);
+    saveLabels({ ...state.labelsDoc, labels }, false);
   }
 
   /** The Point block of the rally summary for the selected segment `u`. */
@@ -1169,7 +1192,7 @@ export function mount(container, ctx = {}) {
     const autoVerdict = info.source === 'auto' ? verdictOfState(info.state) : null;
     const row = h('div', { class: 'ws-pt-row' });
     defs.forEach(([verdict, label]) => {
-      const on = info.source === 'owner' && info.verdict === verdict;
+      const on = info.verdict === verdict && (info.source === 'owner' || verdict === 'unsure');
       row.appendChild(h('button', {
         type: 'button', class: 'ws-chip ws-pt-btn' + (on ? ' on' : '') + (autoVerdict === verdict ? ' auto' : ''),
         'data-verdict': verdict, 'aria-pressed': on ? 'true' : 'false', onclick: () => onVerdict(verdict),
@@ -1258,10 +1281,19 @@ export function mount(container, ctx = {}) {
     } catch (err) {
       if (state.destroyed || state.stem !== s) return;
       if (err && err.status === 409) {
-        const r = await soft(api.rallyLabels(s, LONG));
-        if (state.destroyed || state.stem !== s) return;
-        if (r.ok) state.labelsDoc = normaliseLabels(r.data);
-        state.notice = t('ws.pt.conflict', lang);
+        const body = obj(err.body);
+        // reason 'stale' (the body carries the newer revision) reloads; 'unreadable' means nothing can be saved:
+        // say so and do not reload. Older servers send no reason: a revision means stale.
+        const stale = body.reason ? body.reason === 'stale' : Number.isInteger(body.revision) || err.body === undefined;
+        if (stale) {
+          const r = await soft(api.rallyLabels(s, LONG));
+          if (state.destroyed || state.stem !== s) return;
+          if (r.ok) state.labelsDoc = normaliseLabels(r.data);
+          state.notice = t('ws.pt.conflict', lang);
+          refreshOutcomes(s);
+        } else {
+          state.notice = t('ws.pt.unreadable', lang);
+        }
       } else if (!(err && err.kind === 'aborted')) {
         state.notice = t('ws.pt.save_failed', lang, { error: errorText(err, lang) });
       }
@@ -1300,10 +1332,12 @@ export function mount(container, ctx = {}) {
     saveLabels(applyVerdict(state.labelsDoc, u, verdict, next, state.model.rallies), false);
   }
 
-  const typing = (tg) => !!tg && (tg.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tg.tagName));
+  // Typing targets, like the player's M key: sliders, buttons and checkboxes do not swallow the label keys.
+  const typing = (tg) => !!tg && (tg.isContentEditable || ['TEXTAREA', 'SELECT'].includes(tg.tagName)
+    || (tg.tagName === 'INPUT' && !['range', 'button', 'checkbox'].includes(tg.type)));
 
   function onLabelKey(e) {
-    if (state.destroyed || !state.model || state.view === 'whole' || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
+    if (state.destroyed || !state.model || state.view === 'whole' || e.ctrlKey || e.metaKey || e.altKey || e.repeat || typing(e.target)) return;
     const act = keyToAction(e.key);
     if (!act || !currentUnit()) return;
     // Not under a dialog, the palette or a peek panel (they own the keys).

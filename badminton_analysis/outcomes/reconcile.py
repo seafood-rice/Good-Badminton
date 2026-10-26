@@ -38,6 +38,11 @@ def _expected(record):
     return {"upper": upper, "lower": lower}, ("sides" if len(sets) == 1 else "total")
 
 
+def _count(value):
+    """A non-negative point count, or None (booleans and non-ints are not counts)."""
+    return value if type(value) is int and value >= 0 else None
+
+
 def _no_result(parts):
     return {"status": "no_result", "scope": None, "expected": None, "claimed": None,
             "parts": [p for p, _ in parts]}
@@ -59,8 +64,11 @@ def reconcile(data, stem, part_docs):
         if not isinstance(summary, dict):
             complete = False
             continue
-        won = summary.get("points_won") or {}
-        up, low = int(won.get("upper") or 0), int(won.get("lower") or 0)
+        won = summary.get("points_won")
+        up, low = (_count(won.get(s)) if isinstance(won, dict) else None for s in SIDES)
+        if up is None or low is None:   # a hand-edited or broken part file: unknown
+            complete = False
+            continue
         if swapped:
             up, low = low, up
         claimed["upper"] += up

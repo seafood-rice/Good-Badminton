@@ -53,8 +53,8 @@ def _label(raw):
     if verdict not in SIDES:
         outcome = None
     added = raw.get("added", False)
-    if not isinstance(added, bool):
-        return None
+    if not isinstance(added, bool) or (added and verdict not in SIDES):
+        return None   # an added point is a point end someone won
     return {"start_sec": None if added else start, "end_sec": end, "verdict": verdict,
             "outcome": outcome, "added": added}
 

@@ -86,9 +86,13 @@ Outside `outputs/`, like `data/library_tags.json`, so a re-analysis or a `match`
 - Labels are keyed by **time**, not segment id. A segment label stores its segment's `start_sec` / `end_sec`
   when it was made. An added point (`added: true`) stores the video time of the point end in `end_sec`.
 - `revision` increases on every save; a save based on an older revision is refused (409).
+- An added point must name a winner (`upper` / `lower`); anything else is an invalid label.
 - Re-attachment, when building: a segment label attaches to the segment whose `[start_sec - 1, end_sec + 1]`
-  contains the label's `end_sec`, nearest end first, one label per segment (the newest list position wins a
-  tie). A label that attaches to no segment, or an added point, becomes an added entry at its `end_sec`.
+  contains the label's `end_sec` (the one with the nearest end when several do). One label per segment: when
+  two attach to the same segment the later list entry wins, and the displaced one survives as an added point
+  only if it names a winner. A label that fits no segment becomes an added entry when it names a winner and
+  is dropped otherwise (a `not_point` / `unsure` with no segment says nothing). Every added point stays an
+  added entry at its `end_sec`.
 - Written atomically (temp file + replace) under one lock in `app.py`; an unreadable store is never
   overwritten by a save (the route answers 409 with a static message), matching the tags store.
 
@@ -154,14 +158,18 @@ Inputs read back from the run directory (never in-memory state): `rally_segments
 Evidence per segment:
 
 - **E1 last hitter**: the side of the last learned hit in `[start - 0.5, end + 0.5]`.
-- **E2 landing**: the cleaned shuttle track after the last hit, up to `end_sec + 2 s`:
+- **E2 landing**: the cleaned shuttle track after the last hit, up to `end_sec + 2 s`; no landing at all when the
+  segment has no learned hit (a shuttle held before the serve would pass for one):
   - drop points within 1.5 % of the frame height of a `detection.suppressed_static_shuttle.cells` point,
-    and points that jump more than 8 % of the frame height from the previous kept point;
-  - the landing is the first run of >= 0.25 s where the kept points stay within 0.6 % of the frame height;
+    and points that jump more than 8 % of the frame height from the previous kept point (after 5 such rejects
+    in a row the next point is kept: the previous kept point was the outlier);
+  - the landing is the first run of >= 0.25 s where the kept points stay within 0.6 % of the frame height and
+    cover at least half of the run's frames;
   - its mean point is projected to court metres through the court corners (valid for a landed shuttle only).
-  - Verdict: inside the court (x in [0, 6.1], y in [0, 13.4]) on side X (`upper` when y < 6.7) means X lost;
-    outside the court beyond side X's half means X won (the last hitter, from the other side, hit it out).
-    Within 0.3 m of a boundary line or of the net line: no verdict.
+  - Verdict: inside the court on side X (`upper` when y < 6.7) means X lost; outside the court beyond side X's
+    half means X won (the last hitter, from the other side, hit it out). The court is x in [0.46, 5.64] for
+    singles (the singles sidelines) and [0, 6.1] for doubles, y in [0, 13.4] for both (the back boundary in
+    play is the baseline). Within 0.3 m (inclusive) of a boundary line or of the net line: no verdict.
   - `ending`: outside -> `out`; inside on X with E1 = X -> `net`; inside on X with E1 = the other side -> `in`;
     inside without E1 -> null.
 - **E3 next server**: the first learned hit of the next segment, when there are at least 3 s between this
@@ -233,9 +241,12 @@ API (blueprint, same style as `athletes_routes.py`, static bilingual error bodie
 
 - `GET /api/rally-labels/<stem>` -> `{schema, revision, labels}` (an empty doc when none).
 - `PUT /api/rally-labels/<stem>` with `{revision, labels}`: 400 for an invalid body, 404 for an unknown video,
-  409 when `revision` is stale or the store is unreadable. Saves, then rebuilds `rally_outcomes.json` for every
-  part of the match; the rebuild is skipped while an analysis job is active on that video (the job's own final
-  build picks the labels up). Answers `{revision, outcomes_rebuilt}`.
+  409 when `revision` is stale (`reason: "stale"`, with the current `revision`) or the store is unreadable
+  (`reason: "unreadable"`). Saves, then rebuilds `rally_outcomes.json` for every part of the match; the rebuild
+  is skipped while that video's match-analysis job is queued, running or paused (the job's own final build
+  picks the labels up; a posture job does not hold it back). Answers `{revision, outcomes_rebuilt}` (plus
+  `rebuild_skipped: "job_active"`). Known gap: when that match job then fails or is cancelled, the labels reach
+  `rally_outcomes.json` only at the next save or a CLI build.
 - `rally_outcomes.json` is read through the existing output-file route.
 - Delete scope `all` removes `data/rally_labels/<stem>.json` (never fatal, like the tag cleanup); scope `match`
   removes `rally_outcomes.json` only.
@@ -246,7 +257,8 @@ Match details page (one video or one part):
   end` / `Unsure` (player names from the match record when set), then optional `Winner` / `Forced error` /
   `Unforced error`. A click saves and advances to the next segment. Keys: N, F, X, U; 1, 2, 3 for the outcome.
 - With no owner label, the auto result shows greyed with an "auto" tag; one click confirms or overrides.
-- "Add point end here" next to the previous / next rally buttons, at the player's current time.
+- "Add point end here" next to the previous / next rally buttons, at the player's current time. Added points
+  are listed under the tally (time, winner; click to seek) with a remove control.
 - Timeline segments are tinted near-won / far-won / unknown / rejected; a tally line ("Near 12 - Far 7 ·
   19 of 31 labelled") with a reconciliation badge.
 - Whole match view: the pooled tally and the match reconciliation.

@@ -54,3 +54,10 @@ def test_no_result_cases():
     assert reconcile(_data({"v": {"upper": {"name": "A"}}}), "v", {})["status"] == "no_result"
     doubles = {"format": "doubles", "players": {}, "result": {"winner": 1, "sets": [[21, 10]]}}
     assert reconcile(_data({"v": doubles}), "v", {"v": _doc(1, 1)})["status"] == "no_result"
+
+
+def test_malformed_part_summary_is_incomplete():
+    data = _data({"p": _rec([[30, 13]]), "q": {"part_of": "p", "sides_swapped": False}})
+    for won in ("abc", {"upper": "x", "lower": 1}, {"upper": [1], "lower": 1}, {"upper": True, "lower": 1}):
+        bad = {"summary": {"points_won": won, "entries": 1, "labelled": 1}}
+        assert reconcile(data, "p", {"p": _doc(20, 8), "q": bad})["status"] == "incomplete"

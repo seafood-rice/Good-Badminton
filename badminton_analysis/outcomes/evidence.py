@@ -11,11 +11,14 @@ import math
 
 NET_Y = 6.7
 COURT = (6.1, 13.4)
+SINGLES_SIDELINE_M = 0.46    # the singles sidelines are 0.46 m inside the doubles ones
 LINE_MARGIN_M = 0.3
 RALLY_PAD_SEC = 0.5
 LANDING_AFTER_END_SEC = 2.0
 STATIC_RADIUS_FRAC = 0.015   # of the frame height: a point this close to a static artefact is dropped
 JUMP_FRAC = 0.08             # a point this far from the previous kept one is dropped
+JUMP_RESET = 5               # ...unless this many in a row were: then the kept one was the outlier
+STILL_MIN_FILL = 0.5         # a still run needs points on at least half of its frames
 STILL_RADIUS_FRAC = 0.006    # a landed shuttle stays within this of the run's first point
 STILL_MIN_SEC = 0.25
 NEXT_SERVE_PAUSE_SEC = 3.0
@@ -61,6 +64,7 @@ def clean_track(trajectory, frames, frame_h, static_points=()):
     static_r = STATIC_RADIUS_FRAC * frame_h
     jump = JUMP_FRAC * frame_h
     kept = []
+    rejected = 0   # consecutive jump rejects; after JUMP_RESET of them the anchor was the outlier
     for f in frames:
         p = trajectory.get(f) if isinstance(trajectory, dict) else None
         if not isinstance(p, (list, tuple)) or len(p) != 2:
@@ -71,8 +75,10 @@ def clean_track(trajectory, frames, frame_h, static_points=()):
             continue
         if any(math.hypot(x - sx, y - sy) <= static_r for sx, sy in static_points):
             continue
-        if kept and math.hypot(x - kept[-1][1], y - kept[-1][2]) > jump:
+        if kept and math.hypot(x - kept[-1][1], y - kept[-1][2]) > jump and rejected < JUMP_RESET:
+            rejected += 1
             continue
+        rejected = 0
         kept.append((f, float(x), float(y)))
     return kept
 
@@ -89,7 +95,8 @@ def find_landing(points, fps, frame_h):
         j = i
         while j + 1 < len(points) and math.hypot(points[j + 1][1] - x0, points[j + 1][2] - y0) <= radius:
             j += 1
-        if points[j][0] - f0 >= need:
+        span = points[j][0] - f0
+        if span >= need and (j - i + 1) >= STILL_MIN_FILL * (span + 1):
             run = points[i:j + 1]
             return (sum(p[1] for p in run) / len(run), sum(p[2] for p in run) / len(run))
         i += 1
@@ -121,23 +128,32 @@ def to_court(h, xy):
     return (float(cx), float(cy)) if math.isfinite(cx) and math.isfinite(cy) else None
 
 
-def landing_verdict(court_xy, hitter):
+def sidelines(match_format):
+    """``(left_x, right_x)`` of the in-play court: singles uses the inner sidelines."""
+    if match_format == "doubles":
+        return 0.0, COURT[0]
+    return SINGLES_SIDELINE_M, COURT[0] - SINGLES_SIDELINE_M
+
+
+def landing_verdict(court_xy, hitter, match_format="singles"):
     """``{"winner", "ending", "point", "reason"}`` for a landed shuttle at ``court_xy``.
 
     Inside the court on side X: X lost (``net`` when X also hit last, ``in`` when
     the other side did, unknown ending without E1). Outside beyond side X's half:
     the other side hit it out, so X won. Within 0.3 m of a boundary or the net
-    line: no verdict.
+    line: no verdict. The back boundary is the baseline in both formats (the long
+    service line only applies to the serve, which is not judged here).
     """
     x, y = court_xy
     point = [round(x, 2), round(y, 2)]
-    near = (abs(x) < LINE_MARGIN_M or abs(x - COURT[0]) < LINE_MARGIN_M
-            or abs(y) < LINE_MARGIN_M or abs(y - COURT[1]) < LINE_MARGIN_M
-            or abs(y - NET_Y) < LINE_MARGIN_M)
+    left, right = sidelines(match_format)
+    near = (abs(x - left) <= LINE_MARGIN_M or abs(x - right) <= LINE_MARGIN_M
+            or abs(y) <= LINE_MARGIN_M or abs(y - COURT[1]) <= LINE_MARGIN_M
+            or abs(y - NET_Y) <= LINE_MARGIN_M)
     if near:
         return {"winner": None, "ending": None, "point": point, "reason": "near_line"}
     side = side_of_y(y)
-    inside = 0 <= x <= COURT[0] and 0 <= y <= COURT[1]
+    inside = left <= x <= right and 0 <= y <= COURT[1]
     if inside:
         ending = None if hitter is None else ("net" if hitter == side else "in")
         return {"winner": other(side), "ending": ending, "point": point, "reason": "inside"}

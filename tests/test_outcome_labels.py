@@ -35,6 +35,7 @@ def test_validate_rejects_bad_input():
     assert labels.validate_labels([{"end_sec": 5, "verdict": "upper", "outcome": "ace"}]) is None
     assert labels.validate_labels([{"end_sec": 5, "verdict": "upper", "added": "yes"}]) is None
     assert labels.validate_labels([{"end_sec": 1, "verdict": "upper"}] * (labels.MAX_LABELS + 1)) is None
+    assert labels.validate_labels([{"end_sec": 5, "verdict": "unsure", "added": True}]) is None
 
 
 def test_load_absent_is_empty(tmp_path):
@@ -92,3 +93,10 @@ def test_later_label_wins_on_one_segment():
     assert by_seg[1] is second and added == [first]
     by_seg, added = labels.attach([_lab(19, "unsure", start=10), second], [_seg(1, 10, 20)])
     assert by_seg[1] is second and added == []
+
+
+def test_attach_merged_segments():
+    # Two labelled points that a re-analysis merged into one 20-40 s segment.
+    up, low = _lab(25, "upper", start=20), _lab(40, "lower", start=30)
+    by_seg, added = labels.attach([up, low], [_seg(1, 20, 40)])
+    assert by_seg[1] is low and added == [up]

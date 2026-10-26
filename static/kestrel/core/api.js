@@ -80,7 +80,10 @@ async function request(method, url, body, opts = {}) {
     if (!res.ok) {
       let errBody = null;
       try { errBody = await res.json(); } catch (e) { errBody = null; }
-      throw new ApiError('http', res.status, bilingualFromBody(errBody) || httpMessages(res.status));
+      const apiErr = new ApiError('http', res.status, bilingualFromBody(errBody) || httpMessages(res.status));
+      // The parsed error body (a plain object or null), for callers that read fields such as `reason` / `revision`.
+      apiErr.body = errBody && typeof errBody === 'object' ? errBody : null;
+      throw apiErr;
     }
     try {
       return await res.json();

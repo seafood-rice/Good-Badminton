@@ -57,6 +57,7 @@ def test_put_stale_revision_409(client):
     assert _put(c, 0, [LABEL]).status_code == 200
     res = _put(c, 0, [])
     assert res.status_code == 409 and res.get_json()["revision"] == 1
+    assert res.get_json()["reason"] == "stale"
     _static_bilingual(res)
     assert c.get("/api/rally-labels/vid").get_json()["labels"][0]["verdict"] == "upper"
 
@@ -88,7 +89,7 @@ def test_put_refuses_unreadable_store(client):
     labels_dir.mkdir()
     (labels_dir / "vid.json").write_text("{broken", encoding="utf-8")
     res = _put(c, 0, [LABEL])
-    assert res.status_code == 409
+    assert res.status_code == 409 and res.get_json()["reason"] == "unreadable"
     _static_bilingual(res)
     assert (labels_dir / "vid.json").read_text(encoding="utf-8") == "{broken"
     assert c.get("/api/rally-labels/vid").status_code == 500
@@ -118,3 +119,10 @@ def test_delete_match_keeps_labels(client):
     assert res.status_code == 200, res.get_json()
     assert (labels_dir / "vid.json").is_file()
     assert not (outputs / "vid" / "rally_outcomes.json").exists()
+
+
+def test_posture_job_does_not_skip_rebuild(client, monkeypatch):
+    c, outputs, _ = client
+    monkeypatch.setattr(webapp, "jobs", {"posture_vid": {"status": "running", "video_name": "vid.mp4"}})
+    res = _put(c, 0, [LABEL])
+    assert res.get_json() == {"revision": 1, "outcomes_rebuilt": ["vid"]}

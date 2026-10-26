@@ -450,6 +450,10 @@ body.ws-theater-open{overflow:hidden;}
 .ws-rb[data-source="auto"]{opacity:.75;box-shadow:inset 0 0 0 1px var(--lineHi);}
 .ws-rb.on[data-state]{box-shadow:0 0 0 2px var(--ink);}
 .ws-tally{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;font-size:12.5px;color:var(--ink2);}
+.ws-added{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px;flex-basis:100%;}
+.ws-added-item{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:999px;padding:0 4px 0 10px;font-size:12px;}
+.ws-added-time,.ws-added-rm{border:0;background:none;color:var(--ink2);cursor:pointer;font-size:12px;padding:3px 6px;}
+.ws-added-rm{color:var(--bad);}
 .ws-pt-whole{display:flex;flex-direction:column;gap:8px;}
 
 /* players */

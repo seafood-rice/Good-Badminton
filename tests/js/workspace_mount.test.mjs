@@ -471,3 +471,74 @@ test('doubles: the same controls read near team / far team', async () => {
     assert.equal(verdictBtn(container, 'upper').textContent, 'Far team won');
   }, { routes: doubles(), stem: 'd' });
 });
+
+test('a 409 with reason unreadable (no revision) shows the unreadable notice and does not reload', async () => {
+  const saved = [];
+  await withPage(async ({ container, calls }) => {
+    saveStub(saved, () => { throw Object.assign(new Error('x'), { status: 409, body: { error: 'x', reason: 'unreadable' } }); });
+    verdictBtn(container, 'lower').click();
+    await settleSave();
+    assert.equal(pt(container).querySelector('.ws-pt-notice').textContent, t('ws.pt.unreadable', 'en'));
+    assert.equal(calls.fetched.filter((u) => u === '/api/rally-labels/s').length, 1, 'no reload');
+    // a body with a revision and no reason is a stale save: reload, and re-read the outcomes
+    saveStub(saved, () => { throw Object.assign(new Error('x'), { status: 409, body: { error: 'x', revision: 7 } }); });
+    const outcomesBefore = calls.fetched.filter((u) => u.endsWith('rally_outcomes.json')).length;
+    verdictBtn(container, 'lower').click();
+    await settleSave();
+    assert.equal(calls.fetched.filter((u) => u === '/api/rally-labels/s').length, 2);
+    assert.equal(calls.fetched.filter((u) => u.endsWith('rally_outcomes.json')).length, outcomesBefore + 1);
+    assert.equal(pt(container).querySelector('.ws-pt-notice').textContent, t('ws.pt.conflict', 'en'));
+  }, { routes: labelled() });
+});
+
+test('keys still label from a focused range slider; a repeat keydown is ignored; an unsure verdict shows pressed', async () => {
+  const saved = [];
+  let keydown = null;
+  const before = ({ doc }) => { doc.addEventListener = (type, fn) => { if (type === 'keydown') keydown = fn; }; };
+  await withPage(async ({ container }) => {
+    saveStub(saved);
+    const press = (key, extra) => { let p = false; keydown({ key, target: container, preventDefault: () => { p = true; }, ...extra }); return p; };
+    assert.equal(press('u', { target: { tagName: 'INPUT', type: 'range' }, repeat: true }), false, 'repeat ignored');
+    assert.equal(press('u', { target: { tagName: 'INPUT', type: 'text' } }), false, 'text input ignored');
+    assert.equal(press('u', { target: { tagName: 'INPUT', type: 'range' } }), true, 'range slider does not swallow keys');
+    await settleSave();
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].doc.labels[0].verdict, 'unsure');
+    container.querySelectorAll('.ws-rb')[0].click();
+    await tick();
+    // segment 1 has no auto result; segment 2 has one: unsure there still shows pressed
+    container.querySelectorAll('.ws-rb')[1].click();
+    await tick();
+    verdictBtn(container, 'unsure').click();
+    await settleSave();
+    container.querySelectorAll('.ws-rb')[1].click();
+    await tick();
+    assert.equal(verdictBtn(container, 'unsure').getAttribute('aria-pressed'), 'true');
+    assert.ok(verdictBtn(container, 'upper').classList.contains('auto'), 'the auto result is still shown');
+  }, { routes: labelled(), before });
+});
+
+test('added points are listed with their time and winner; removing one saves the labels without it', async () => {
+  const saved = [];
+  const routes = labelled();
+  routes['/api/rally-labels/s'] = {
+    schema: 1, revision: 4,
+    labels: [
+      { start_sec: null, end_sec: 52.4, verdict: 'lower', outcome: null, added: true },
+      { start_sec: 0, end_sec: 5, verdict: 'upper', outcome: null, added: false },
+    ],
+  };
+  await withPage(async ({ container }) => {
+    saveStub(saved);
+    const items = container.querySelectorAll('.ws-added-item');
+    assert.equal(items.length, 1, 'only the added point is listed');
+    assert.match(items[0].textContent, /0:52/);
+    assert.match(items[0].textContent, /Chung won/);
+    items[0].querySelector('.ws-added-rm').click();
+    await settleSave();
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].doc.revision, 4);
+    assert.deepEqual(saved[0].doc.labels.map((l) => l.added), [false]);
+    assert.equal(container.querySelectorAll('.ws-added-item').length, 0);
+  }, { routes });
+});

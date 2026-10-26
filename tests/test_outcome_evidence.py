@@ -57,9 +57,30 @@ def test_homography_maps_corners():
     ((3.0, -1.0), "lower", "upper", "out", "outside"),
     ((7.0, 10.0), "upper", "lower", "out", "outside"),
     ((3.0, 6.8), "lower", None, None, "near_line"),
-    ((0.1, 10.0), "upper", None, None, "near_line"),
+    ((0.6, 10.0), "upper", None, None, "near_line"),      # singles sideline at 0.46
     ((3.0, 13.5), "upper", None, None, "near_line"),
+    ((0.1, 10.0), "upper", "lower", "out", "outside"),    # in the doubles tramline: out in singles
 ])
 def test_landing_verdict(xy, hitter, winner, ending, reason):
     v = ev.landing_verdict(xy, hitter)
     assert (v["winner"], v["ending"], v["reason"]) == (winner, ending, reason)
+
+
+def test_landing_verdict_doubles_uses_outer_sidelines():
+    v = ev.landing_verdict((0.1, 10.0), "upper", "doubles")
+    assert v["reason"] == "near_line"
+    v = ev.landing_verdict((0.4, 10.0), "upper", "doubles")
+    assert (v["winner"], v["ending"]) == ("upper", "in")
+
+
+def test_clean_track_recovers_from_an_outlier_anchor():
+    # The first point is an outlier; after JUMP_RESET rejects the real track takes over.
+    traj = {0: [900, 900]}
+    traj.update({f: [100 + f, 100] for f in range(1, 12)})
+    pts = ev.clean_track(traj, range(0, 12), 1000)
+    assert pts[-1][0] == 11 and len(pts) >= 6
+
+
+def test_find_landing_needs_filled_run():
+    sparse = [(0, 400.0, 600.0), (20, 400.0, 600.0)]   # two detections 1/3 s apart, nothing between
+    assert ev.find_landing(sparse, 60, 1000) is None

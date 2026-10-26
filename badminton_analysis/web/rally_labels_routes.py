@@ -50,9 +50,9 @@ def register(app, *, labels_dir, athletes_path, outputs, lock, safe_stem, job_ac
         with lock():
             current = liblabels.load(path)
             if current is None:
-                return jsonify(_UNREADABLE), 409
+                return jsonify(dict(_UNREADABLE, reason='unreadable')), 409
             if revision != current['revision']:
-                return jsonify(dict(_STALE, revision=current['revision'])), 409
+                return jsonify(dict(_STALE, reason='stale', revision=current['revision'])), 409
             doc = {'schema': liblabels.SCHEMA, 'revision': current['revision'] + 1, 'labels': labels}
             try:
                 liblabels.save(path, doc)

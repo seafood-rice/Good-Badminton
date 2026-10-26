@@ -55,7 +55,7 @@ rally_labels_routes.register(app, labels_dir=lambda: RALLY_LABELS_DIR,
                              athletes_path=lambda: ATHLETES_PATH, outputs=lambda: OUTPUTS,
                              lock=lambda: _RALLY_LABELS_LOCK,
                              safe_stem=lambda name: _safe_stem(name),
-                             job_active=lambda stem: _running_job_for(stem) is not None)
+                             job_active=lambda stem: _match_job_active(stem))
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -271,6 +271,15 @@ def _paths_stats(paths):
             files += 1
             size += p.stat().st_size
     return files, round(size / 1024 / 1024, 1)
+
+
+def _match_job_active(stem):
+    """True while this video's match analysis job (id = stem) is queued, running or paused.
+
+    A posture job never writes rally_outcomes.json, so it must not hold back a rebuild.
+    """
+    job = jobs.get(stem)
+    return isinstance(job, dict) and job.get('status') in _ACTIVE_JOB_STATUSES
 
 
 def _running_job_for(stem):
