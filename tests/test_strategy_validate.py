@@ -220,6 +220,11 @@ def test_small_cjk_numerals_pass():
     assert check(with_summary("一些球，两个区域，三种选择。", "you.pulled.n")) == {}
 
 
+def test_everyday_numeral_words_pass():
+    assert check(with_summary("你的网前十分积极，万一被压后场要先回中。", "you.pulled.n")) == {}
+    assert "summary" in check(with_summary("十分之九的球在后场。", "you.pulled.n"))
+
+
 def test_rally_definition_numbers_ok():
     short = fact("match.short_rally_share", 0.3, "share")
     short["defs"] = [5]

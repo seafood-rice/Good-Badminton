@@ -29,6 +29,8 @@ _NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
 _IDENT_CHARS = set(string.ascii_letters + "_")
 _EPS = 1e-9
 _CJK_BIG = re.compile("[〇零四五六七八九十百千万亿]")
+# Everyday words built from numeral characters that state no number ("very", "in case", "cross").
+_CJK_NOT_NUMBERS = re.compile("十分|万一|十字|千万别|千万不要")
 _CN_PERCENT = re.compile("百分之")
 _CHENG = re.compile("[0-9〇零一二两三四五六七八九十百千万亿]成")
 _EN_WORDS = re.compile(
@@ -83,7 +85,7 @@ def _tokens(text, evidence=()):
 
 def _spelled_number(text):
     """True when ``text`` spells a number above 3 in words or Chinese numerals."""
-    text = unicodedata.normalize("NFKC", text)
+    text = _CJK_NOT_NUMBERS.sub("", unicodedata.normalize("NFKC", text))
     return bool(_CJK_BIG.search(text) or _CN_PERCENT.search(text) or _CHENG.search(text)
                 or _EN_WORDS.search(text))
 
