@@ -336,3 +336,41 @@ def test_cli_exit_code_on_failed(tmp_path):
 def test_cli_missing_dir_exits_1(tmp_path):
     proc = _cli(tmp_path / "nope", tmp_path / "a.json", "http://127.0.0.1:9/v1")
     assert proc.returncode == 1
+
+
+def test_markdown_escapes_model_text():
+    claim = {"text": "<script>alert(1)</script> and [x](http://e) *b* _i_ `c` \\",
+             "evidence": ["match.rallies"]}
+    doc = {"model": "m_1", "by_lang": {"en": {
+        "header": {"you": "<b>Val</b>", "opponent": "A*B"},
+        "summary": {"claims": [claim]},
+        "game_plan": {"items": [{"do": "<i>x", "why": "[w]", "cue": "_c_",
+                                 "evidence": ["match.rallies"]}],
+                      "training_focus": dict(claim)}}}}
+    md = render_markdown(doc, "en")
+    assert "<script>" not in md and "<b>" not in md and "<i>" not in md
+    assert r"\<script\>alert(1)\</script\>" in md
+    assert r"\[x\](http://e)" in md and r"\*b\*" in md and r"\_i\_" in md
+    assert r"\`c\`" in md and "\\\\" in md
+    assert r"\<b\>Val\</b\>" in md and r"A\*B" in md and r"\[w\]" in md
+    assert r"m\_1" in md
+
+
+def test_markdown_evidence_wording_follows_lang():
+    doc = {"by_lang": {"zh": {"summary": {"claims": [
+        {"text": "x", "evidence": ["match.tempo_shots_per_sec", "you.gone"]}]}}},
+        "facts": [{"id": "match.tempo_shots_per_sec", "value": 1.2, "unit": "shots_per_s"},
+                  {"id": "you.gone", "value": None, "unit": "share", "status": "unavailable"}]}
+    zh = render_markdown(doc, "zh").split("## 证据", 1)[1]
+    assert "n/a" not in zh and "shots/s" not in zh and "无数据" in zh and "拍/秒" in zh
+    en = render_markdown({"by_lang": {"en": doc["by_lang"]["zh"]}, "facts": doc["facts"]}, "en")
+    assert "n/a" in en and "shots/s" in en
+
+
+def test_markdown_renders_focus_assumed_team_caveat():
+    doc = {"by_lang": {"en": {"caveats": {"items": [{"code": "focus_assumed_team",
+                                                      "params": {}}]}},
+                       "zh": {"caveats": {"items": [{"code": "focus_assumed_team",
+                                                      "params": {}}]}}}}
+    assert "Team 1 is assumed to be your team" in render_markdown(doc, "en")
+    assert "默认将第 1 队视为你方" in render_markdown(doc, "zh")

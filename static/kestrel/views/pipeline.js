@@ -69,6 +69,18 @@ export function groupJobs(jobs) {
   return { active, finished, running, queued, anyActive: active.length > 0 };
 }
 
+/**
+ * Pure: the action buttons of a job row, in order. A strategy report cannot be paused: pausing would free
+ * its slot while Ollama keeps generating.
+ */
+export function jobActions(row) {
+  const r = obj(row);
+  if (r.status === 'pending') return ['cancel'];
+  if (r.status === 'running') return r.kind === 'strategy' ? [] : ['pause'];
+  if (r.status === 'paused') return ['resume'];
+  return [];
+}
+
 /** A server message, in the UI language when it is a "中文 / English" pair. */
 export function messageText(message, lang) {
   const s = typeof message === 'string' ? message : '';
@@ -190,9 +202,7 @@ export function mount(container, ctx = {}) {
       msgEl,
       h('div', { class: 'pv-foot' }, [
         updEl,
-        r.status === 'pending' ? h('button', { type: 'button', class: 'ov-btn small', onclick: (e) => act('cancel', r.id, e.currentTarget) }, t('pv.cancel', lang)) : null,
-        r.status === 'running' ? h('button', { type: 'button', class: 'ov-btn small', onclick: (e) => act('pause', r.id, e.currentTarget) }, t('pv.pause', lang)) : null,
-        r.status === 'paused' ? h('button', { type: 'button', class: 'ov-btn small primary', onclick: (e) => act('resume', r.id, e.currentTarget) }, t('pv.resume', lang)) : null,
+        ...jobActions(r).map((name) => h('button', { type: 'button', class: 'ov-btn small' + (name === 'resume' ? ' primary' : ''), onclick: (e) => act(name, r.id, e.currentTarget) }, t('pv.' + name, lang))),
         r.resultsHash ? h('a', { href: r.resultsHash, class: 'kw-link', 'data-xf': '' }, t('pv.open_results', lang)) : null,
       ]),
     ]);

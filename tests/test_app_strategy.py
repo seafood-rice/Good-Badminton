@@ -285,3 +285,86 @@ def test_delete_all_removes_the_report(env):
     assert res.status_code == 200
     assert not (outputs / 'clip').exists()
     assert 'strategy_clip' not in webapp.jobs
+
+
+def _hold_only_slot(monkeypatch):
+    """A one-slot scheduler whose slot is held; returns the holder's ``release``."""
+    monkeypatch.setattr(webapp, '_job_slots', JobSlots(1, on_queue_change=webapp._queue_changed))
+    held = []
+    webapp._job_slots.submit('other', held.append)
+    return held[0]
+
+
+def test_queued_report_skips_when_match_restarts(env, monkeypatch):
+    _, _, _, calls, _ = env
+    release_other = _hold_only_slot(monkeypatch)
+    assert webapp.queue_strategy_job('clip') == (True, 'strategy_clip', True)
+    webapp.jobs['clip'] = {'status': 'running', 'video_name': 'clip'}   # re-analysis started
+    release_other()
+    job = webapp.jobs['strategy_clip']
+    assert job['status'] == 'cancelled'
+    assert job['message'] == '分析进行中，策略报告已取消 / analysis running, strategy report cancelled'
+    assert calls == []
+    assert webapp._job_slots.snapshot() == {'max_jobs': 1, 'running': [], 'queued': []}
+
+
+def test_reanalysis_requeues_report(env, monkeypatch):
+    _, _, _, calls, _ = env
+    # a pending report is cancelled and replaced
+    release_other = _hold_only_slot(monkeypatch)
+    webapp.queue_strategy_job('clip')
+    old = webapp.jobs['strategy_clip']
+    webapp._after_match_completed('clip')
+    new = webapp.jobs['strategy_clip']
+    assert old['status'] == 'cancelled' and new is not old and new['status'] == 'pending'
+    assert webapp._job_slots.snapshot()['queued'] == ['strategy_clip']
+    release_other()
+    _wait('strategy_clip')
+    assert len(calls) == 1
+
+    # a running report is flagged and requeued once when it ends
+    gate = threading.Event()
+
+    class _Slow(_Proc):
+        def wait(self):
+            gate.wait(5)
+            return 0
+
+    monkeypatch.setattr(webapp.subprocess, 'Popen',
+                        lambda cmd, *a, **k: calls.append(cmd) or _Slow())
+    webapp.queue_strategy_job('clip')
+    running = webapp.jobs['strategy_clip']
+    assert running['status'] == 'running'
+    webapp._after_match_completed('clip')
+    webapp._after_match_completed('clip')
+    assert running['rerun'] is True and len(calls) == 2
+    gate.set()
+    _wait('strategy_clip')
+    assert len(calls) == 3 and webapp.jobs['strategy_clip'] is not running
+
+
+def test_strategy_report_cannot_be_paused(env, monkeypatch):
+    c, *_ = env
+    called = []
+    monkeypatch.setattr(webapp.proc_control, 'suspend_tree', lambda pid: called.append(pid))
+    webapp.jobs['strategy_clip'] = {'status': 'running', 'proc': _Proc(None), 'kind': 'strategy'}
+    res = c.post('/api/jobs/strategy_clip/pause')
+    assert res.status_code == 409
+    assert res.get_json() == {'error': '策略报告不能暂停 / a strategy report cannot be paused'}
+    assert called == [] and webapp.jobs['strategy_clip']['status'] == 'running'
+
+
+def test_get_shows_failed_job_without_report(env):
+    c, _, outputs, *_ = env
+    webapp.jobs['strategy_clip'] = {'status': 'error', 'video_name': 'clip', 'updated': 100.0}
+    got = c.get('/api/strategy/clip').get_json()
+    assert got['status'] == 'error'
+    assert got['job'] == {'id': 'strategy_clip', 'status': 'error', 'position': None}
+    # a report written after the failed job (2026-10-27 > epoch 100) supersedes it
+    _write_report(outputs / 'clip')
+    got = c.get('/api/strategy/clip').get_json()
+    assert got['job'] is None and got['status'] == 'ok'
+    # a failure later than the stored report wins over it
+    webapp.jobs['strategy_clip']['updated'] = 2e9
+    got = c.get('/api/strategy/clip').get_json()
+    assert got['status'] == 'error' and got['job']['status'] == 'error'

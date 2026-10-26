@@ -188,3 +188,68 @@ def test_schema_and_prompts():
     assert "estimated (not validated)" not in system_prompt("en", "singles")
     msg = json.loads(user_message(PACK))
     assert set(msg) == {"format", "focus", "header", "facts"}
+
+
+def _facts_pack(*facts):
+    pack = dict(PACK)
+    pack["facts"] = list(PACK["facts"]) + list(facts)
+    return pack
+
+
+def test_cjk_numerals_checked():
+    for text in ("你的进攻球占比约三成", "百分之九十", "3成"):
+        errors = check(with_summary(text, "you.mix.attack_share"), pack=PACK_SHARE)
+        assert "summary" in errors, text
+    errors = check(with_summary("百分之九十", "you.mix.attack_share"), pack=PACK_SHARE)
+    assert "write numbers as digits in summary[0]" in errors["summary"]
+
+
+PACK_SHARE = dict(PACK, facts=[f for f in PACK["facts"] if f["id"] != "you.mix.attack_share"]
+                  + [fact("you.mix.attack_share", 0.452, "share")])
+
+
+def test_number_words_checked():
+    errors = check(with_summary("You smashed ninety times.", "you.pulled.n"))
+    assert "write numbers as digits in summary[0]" in errors["summary"]
+    assert "summary" in check(with_summary("Twenty-five smashes.", "you.pulled.n"))
+    assert "summary" in check(with_summary("HUNDRED smashes.", "you.pulled.n"))
+    assert check(with_summary("The fourth rally was long.", "you.pulled.n")) == {}
+
+
+def test_small_cjk_numerals_pass():
+    assert check(with_summary("一些球，两个区域，三种选择。", "you.pulled.n")) == {}
+
+
+def test_rally_definition_numbers_ok():
+    short = fact("match.short_rally_share", 0.3, "share")
+    short["defs"] = [5]
+    pack = _facts_pack(short)
+    ok = with_summary("30% of rallies have 5 shots or fewer.", "match.short_rally_share")
+    assert check(ok, pack=pack) == {}
+    bad = with_summary("30% of rallies have 6 shots or fewer.", "match.short_rally_share")
+    assert "summary" in check(bad, pack=pack)
+
+
+def test_unavailable_with_player_id_ok():
+    ids = ("you.serve.short_share",)
+    assert check(with_summary("Not enough data on P1's hit share.", *ids)) == {}
+    assert check(with_summary("P1 的击球占比数据不足。", *ids)) == {}
+    assert "summary" in check(with_summary("Only 30 serves, not enough data.", *ids))
+
+
+def test_glued_count_not_exempt():
+    assert "summary" in check(with_summary("smash x99 happened.", "you.pulled.n"))
+    assert "summary" in check(with_summary("It was 1e5 times.", "you.pulled.n"))
+    seq = fact("you.seq2_top", {"a": 1})
+    pack = _facts_pack(seq)
+    assert check(with_summary("Your seq2 reply is key.", "you.seq2_top"), pack=pack) == {}
+    assert "summary" in check(with_summary("Your seq2 reply is key.", "you.pulled.n"), pack=pack)
+
+
+def test_percent_after_small_int_checked():
+    assert "summary" in check(with_summary("Attack 3% of the time.", "you.pulled.n"))
+
+
+def test_prompts_ask_for_digits():
+    assert "Arabic digits" in system_prompt("en", "singles")
+    assert "阿拉伯数字" in system_prompt("zh", "singles")

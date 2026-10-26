@@ -303,6 +303,7 @@ export const STRINGS = {
     'stage.done': '已完成',
     'stage.error': '失败',
     'stage.cancelled': '已取消',
+    'stage.strategy': '策略报告',
     'pipeline.more': '另有 {n} 项',
 
     // peek
@@ -662,6 +663,7 @@ export const STRINGS = {
     'strategy.caveat.degraded_rallies': '{share} 的回合只有粗略时间窗。',
     'strategy.caveat.rally_signal': '回合由 {signal} 推断。',
     'strategy.caveat.focus_assumed': '未登记运动员，默认以下半场球员为“你”。',
+    'strategy.caveat.focus_assumed_team': '默认将第 1 队视为你方',
     'strategy.caveat.missing': '缺少输入文件：{files}。',
     'strategy.regen': '重新生成',
     'strategy.generate': '生成策略报告',
@@ -1294,6 +1296,7 @@ export const STRINGS = {
     'stage.done': 'Done',
     'stage.error': 'Failed',
     'stage.cancelled': 'Cancelled',
+    'stage.strategy': 'Strategy report',
     'pipeline.more': '+{n} more',
 
     // peek
@@ -1653,6 +1656,7 @@ export const STRINGS = {
     'strategy.caveat.degraded_rallies': '{share} of rallies only have coarse time windows.',
     'strategy.caveat.rally_signal': 'Rallies were derived from {signal}.',
     'strategy.caveat.focus_assumed': 'No athlete is registered, so the lower-court player is taken as "you".',
+    'strategy.caveat.focus_assumed_team': 'Team 1 is assumed to be your team',
     'strategy.caveat.missing': 'Missing input files: {files}.',
     'strategy.regen': 'Regenerate',
     'strategy.generate': 'Generate strategy report',

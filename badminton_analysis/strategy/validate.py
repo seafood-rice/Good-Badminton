@@ -28,6 +28,13 @@ from .prompts import (CLAIM_BOUNDS, LLM_SECTIONS, PLAN_BOUNDS, YOUR_GAME_BOUNDS,
 _NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
 _IDENT_CHARS = set(string.ascii_letters + "_")
 _EPS = 1e-9
+_CJK_BIG = re.compile("[〇零四五六七八九十百千万亿]")
+_CN_PERCENT = re.compile("百分之")
+_CHENG = re.compile("[0-9〇零一二两三四五六七八九十百千万亿]成")
+_EN_WORDS = re.compile(
+    r"\b(?:four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen"
+    r"|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety"
+    r"|hundred|thousand|million)\b", re.I)
 
 
 def _leaves(value, out):
@@ -45,18 +52,40 @@ def _leaves(value, out):
             _leaves(v, out)
 
 
-def _tokens(text):
-    """The checked number tokens of ``text`` (NFKC-normalised), exemptions removed."""
+def _id_tokens(evidence):
+    """Words of the cited fact ids (``seq2_top`` -> ``seq2``, ``top``), lower-cased."""
+    return {t.lower() for e in evidence for t in re.split(r"[._]", e) if t}
+
+
+def _tokens(text, evidence=()):
+    """The checked number tokens of ``text`` (NFKC-normalised), exemptions removed.
+
+    Exempt: integers 1-3 not followed by ``成``, ``%`` or ``％``; digits that belong to a word of
+    a cited fact id (``seq2``) or to a player id ``P1``-``P4``."""
     text = unicodedata.normalize("NFKC", text)
+    id_words = _id_tokens(evidence)
     out = []
     for m in _NUMBER.finditer(text):
         tok = m.group(0)
         if m.start() > 0 and text[m.start() - 1] in _IDENT_CHARS:
-            continue                          # P4, seq2, p90 inside an id
-        if not tok.endswith("%") and "." not in tok and 1 <= int(tok) <= 3:
+            lead = m.start()
+            while lead > 0 and text[lead - 1] in _IDENT_CHARS:
+                lead -= 1
+            word = text[lead:m.end()]
+            if re.fullmatch(r"P[1-4]", word) or word.lower() in id_words:
+                continue
+        elif (not tok.endswith("%") and "." not in tok and 1 <= int(tok) <= 3
+              and text[m.end():m.end() + 1] != "成"):
             continue                          # ordinals and list counts
         out.append(tok)
     return out
+
+
+def _spelled_number(text):
+    """True when ``text`` spells a number above 3 in words or Chinese numerals."""
+    text = unicodedata.normalize("NFKC", text)
+    return bool(_CJK_BIG.search(text) or _CN_PERCENT.search(text) or _CHENG.search(text)
+                or _EN_WORDS.search(text))
 
 
 def _held(tok, facts):
@@ -67,6 +96,7 @@ def _held(tok, facts):
     for fact in facts:
         leaves = []
         _leaves(fact.get("value"), leaves)
+        _leaves(fact.get("defs"), leaves)
         share = fact.get("unit") == "share"
         for v in leaves:
             if abs(value - v) <= tol:
@@ -101,11 +131,14 @@ def _claim(item, label, fmap, errors, extra_text=()):
         return
     cited = [fmap[e] for e in evidence]
     text = unicodedata.normalize("NFKC", " ".join(texts))
-    if any(f.get("status") == "unavailable" for f in cited) and re.search(r"\d", text):
+    tokens = _tokens(text, evidence)
+    if any(f.get("status") == "unavailable" for f in cited) and tokens:
         gone = [f["id"] for f in cited if f.get("status") == "unavailable"]
         errors.append(f"{label}: cites unavailable fact {', '.join(gone)} but states a number; "
                       "say there is not enough data instead")
-    for tok in _tokens(text):
+    if _spelled_number(text):
+        errors.append(f"write numbers as digits in {label}")
+    for tok in tokens:
         if not _held(tok, cited):
             errors.append(f"number {tok} in {label} not in cited facts")
 

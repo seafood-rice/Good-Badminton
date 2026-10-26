@@ -230,23 +230,27 @@ def _match_rally_facts(ctx):
     else:
         out.append(_fact("match.rallies", int(count), "match", "count"))
 
-    def mk(fid, val, unit, ok=True):
+    def mk(fid, val, unit, ok=True, defs=None):
         if val is None or not ok:
             return _unavailable(fid, "match", "no_data", unit)
-        return _fact(fid, val, "match", unit, status, reason)
+        made = _fact(fid, val, "match", unit, status, reason)
+        if defs:
+            made["defs"] = defs                # constants that define the fact (validator)
+        return made
 
     out.append(mk("match.rally_median_sec",
                   round(statistics.median(durations), 2) if durations else None, "s"))
     out.append(mk("match.rally_p90_sec",
-                  round(_percentile(durations, 0.9), 2) if durations else None, "s"))
+                  round(_percentile(durations, 0.9), 2) if durations else None, "s",
+                  defs=[90]))
     out.append(mk("match.rally_median_shots",
                   round(statistics.median(shots), 2) if shots else None, "shots"))
     out.append(mk("match.short_rally_share",
                   _share(sum(1 for s in shots if s <= SHORT_RALLY_SHOTS) / len(shots))
-                  if shots else None, "share"))
+                  if shots else None, "share", defs=[SHORT_RALLY_SHOTS]))
     out.append(mk("match.long_rally_share",
                   _share(sum(1 for s in shots if s >= LONG_RALLY_SHOTS) / len(shots))
-                  if shots else None, "share"))
+                  if shots else None, "share", defs=[LONG_RALLY_SHOTS]))
     aligned = (isinstance(shots_raw, list) and len(shots) == len(durations)
                and sum(durations) > 0)
     out.append(mk("match.tempo_shots_per_sec",
@@ -300,8 +304,10 @@ def _result_value(record, fmt, focus):
     winner, side = result.get("winner"), focus.get("side")
     if winner not in SIDES or side not in SIDES:
         return None
+    # ``sets`` stay in the primary's frame; a swapped part reads them the other way round
+    flip = (side == "lower") != (record.get("sides_swapped") is True)
     return {"winner": "you" if winner == side else "opponent",
-            "sets": _oriented_sets(result.get("sets"), side == "lower")}
+            "sets": _oriented_sets(result.get("sets"), flip)}
 
 
 def _match_result_fact(record, fmt, focus):
@@ -948,7 +954,8 @@ def _build(out_dir, record, store, focus):
     if ctx.rally.get("status") == "partial" and isinstance(value, dict):
         caveats.append({"code": "rally_signal", "params": {"signal": value.get("signal")}})
     if fcs["assumed"]:
-        caveats.append({"code": "focus_assumed", "params": {}})
+        caveats.append({"code": "focus_assumed_team" if fmt == "doubles" else "focus_assumed",
+                        "params": {}})
     missing = _missing(ctx, fmt)
     if missing:
         caveats.append({"code": "missing", "params": {"files": missing}})

@@ -82,7 +82,7 @@ export function strategyPanel({ stem, lang, api = defaultApi, timers = defaultTi
         result ? h('span', null, result) : null,
         conf ? h('span', { class: 'k-chip ws-strat-conf', 'data-conf': conf }, t('strategy.conf.' + conf, lang)) : null,
       ]),
-      obj(doc.focus).assumed ? h('div', { class: 'mv-hint' }, t('strategy.focus_assumed', lang)) : null,
+      obj(doc.focus).assumed ? h('div', { class: 'mv-hint' }, t(obj(doc.focus).team ? 'strategy.caveat.focus_assumed_team' : 'strategy.focus_assumed', lang)) : null,
     ]);
   }
 

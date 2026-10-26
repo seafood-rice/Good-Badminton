@@ -213,22 +213,32 @@ def queue_strategy_job(stem, focus=None):
     analysis is (the files would be half written). The match job is never touched.
     """
     job_id = 'strategy_' + stem
-    match_job = jobs.get(stem)
-    if match_job and match_job.get('status') in _ACTIVE_JOB_STATUSES:
-        return False, job_id, False
     save_dir = OUTPUTS / stem
     job = {'status': 'pending', 'progress': 0,
            'message': '等待生成策略报告 / waiting to write the strategy report',
            'video_name': stem, 'save_dir': str(save_dir), 'stage': 'strategy',
            'kind': 'strategy', 'updated': time.time()}
-    if not _register_job(job_id, job):
-        return False, job_id, False
+    with _JOBS_LOCK:  # one check-and-register, so a match run cannot start in between
+        current = jobs.get(job_id)
+        if ((jobs.get(stem) or {}).get('status') in _ACTIVE_JOB_STATUSES
+                or (current or {}).get('status') in _ACTIVE_JOB_STATUSES):
+            return False, job_id, False
+        jobs[job_id] = job
     cmd = [_venv_python, 'main_strategy.py', str(save_dir), '--athletes', str(ATHLETES_PATH),
            '--settings', str(_strategy_settings_path())]
     if focus:
         cmd += ['--focus', focus]
 
     def start(release):
+        with _JOBS_LOCK:
+            match_active = (jobs.get(stem) or {}).get('status') in _ACTIVE_JOB_STATUSES
+            if match_active:  # re-analysis began while this report waited: files are changing
+                job['status'] = job['stage'] = 'cancelled'
+                job['message'] = '分析进行中，策略报告已取消 / analysis running, strategy report cancelled'
+                job['updated'] = time.time()
+        if match_active:
+            release()
+            return
         log_fh = None
         try:
             log_fh = open(os.path.join(str(save_dir), 'strategy.log'), 'w', encoding='utf-8')
@@ -257,6 +267,9 @@ def queue_strategy_job(stem, focus=None):
                 job['status'], job['stage'] = 'error', 'error'
                 job['message'] = _strategy_failure_message(save_dir)
             job['updated'] = time.time()
+            rerun = job.get('rerun')
+        if rerun:  # the match was re-analysed while this report ran: write a fresh one
+            queue_strategy_job(stem)
 
     queued = not _job_slots.submit(job_id, start)
     return True, job_id, queued
@@ -266,6 +279,16 @@ def _after_match_completed(stem):
     """Queue the strategy report after a match analysis succeeded. Never raises."""
     try:
         if strategy_config.load_config(_strategy_settings_path()).enabled:
+            job_id = 'strategy_' + stem
+            current = jobs.get(job_id) or {}
+            if current.get('status') == 'pending' and _job_slots.cancel(job_id):
+                with _JOBS_LOCK:
+                    current['status'] = current['stage'] = 'cancelled'
+                    current['message'] = ''
+                    current['updated'] = time.time()
+            elif current.get('status') in ('pending', 'running'):
+                current['rerun'] = True          # its tracker queues a fresh one at the end
+                return
             queue_strategy_job(stem)
     except Exception as exc:
         print(f'strategy report not queued for {stem} ({type(exc).__name__})')
@@ -1302,6 +1325,8 @@ def api_job_pause(job_id):
     job = jobs.get(job_id)
     if not job:
         return jsonify({'error': '未知的任务 / unknown job'}), 404
+    if job_id.startswith('strategy_'):  # Ollama would keep generating with no slot held
+        return jsonify({'error': '策略报告不能暂停 / a strategy report cannot be paused'}), 409
     with _JOBS_LOCK:
         proc = job.get('proc')
         if job.get('status') != 'running' or proc is None or proc.poll() is not None:

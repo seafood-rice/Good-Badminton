@@ -512,6 +512,8 @@ _CAVEATS = {
                      "回合窗口来自 {signal} 信号，因此不给出回合数。"),
     "focus_assumed": ("No registered athlete in this match: the lower side is assumed to be "
                       "you.", "本场比赛没有登记运动员：默认下半场为你。"),
+    "focus_assumed_team": ("No registered athlete in this match: Team 1 is assumed to be "
+                           "your team.", "本场比赛没有登记运动员：默认将第 1 队视为你方。"),
     "missing": ("Missing input files: {files}.", "缺少输入文件：{files}。"),
 }
 
@@ -534,6 +536,14 @@ def _caveat_text(item, lang):
         return str(code)
 
 
+_MD_SPECIAL = str.maketrans({c: "\\" + c for c in "\\<>[]*_`"})
+
+
+def _esc(value):
+    """Markdown-escape inserted text (model text, names): no HTML, links or emphasis."""
+    return str(value if value is not None else "").translate(_MD_SPECIAL)
+
+
 class _Footnotes:
     """Number each distinct evidence id in first-use order."""
 
@@ -553,20 +563,24 @@ def _md_claims(claims, notes):
     lines = []
     for c in claims if isinstance(claims, list) else []:
         if isinstance(c, dict):
-            lines.append(f"- {c.get('text', '')} {notes.marks(c.get('evidence'))}".rstrip())
+            lines.append(f"- {_esc(c.get('text', ''))} {notes.marks(c.get('evidence'))}".rstrip())
     return lines
+
+
+_UNIT_ZH = {"s": " s", "m": " m", "m_per_s": " m/s", "shots_per_s": " 拍/秒",
+            "per_rally": " 次/回合", "score": " 分"}
 
 
 def _evidence_line(i, fid, fact, lang):
     if not isinstance(fact, dict):
         return f"[{i}] `{fid}`"
-    value = _fmt_value(fact.get("value"), fact.get("unit"), "en")
+    value = _fmt_value(fact.get("value"), fact.get("unit"), lang)
     unit = fact.get("unit")
     if unit in _UNIT and isinstance(fact.get("value"), (int, float)):
-        value += _UNIT[unit]
+        value += (_UNIT_ZH if lang == "zh" else _UNIT)[unit]
     if fact.get("status") == "unavailable":
-        value = "n/a"
-    return f"[{i}] `{fid}` = {value}"
+        value = "无数据" if lang == "zh" else "n/a"
+    return f"[{i}] `{fid}` = {_esc(value)}"
 
 
 def render_markdown(doc, lang):
@@ -582,15 +596,16 @@ def render_markdown(doc, lang):
     out = [f"# {t['title']}"]
     header = report.get("header") if isinstance(report.get("header"), dict) else {}
     if header.get("you") or header.get("opponent"):
-        out.append(f"**{header.get('you') or '?'} {t['vs']} {header.get('opponent') or '?'}**")
+        out.append(f"**{_esc(header.get('you') or '?')} {t['vs']} "
+                   f"{_esc(header.get('opponent') or '?')}**")
     meta = []
     if header.get("date"):
-        meta.append(f"{t['date']}: {header['date']}")
+        meta.append(f"{t['date']}: {_esc(header['date'])}")
     if header.get("winner"):
         meta.append(f"{t['result']}: " + _fmt_result(
             {"winner": header["winner"], "sets": header.get("sets") or []}, lang))
     if header.get("confidence"):
-        meta.append(f"{t['confidence']}: {header['confidence']}")
+        meta.append(f"{t['confidence']}: {_esc(header['confidence'])}")
     if meta:
         out.append(" · ".join(meta))
 
@@ -617,12 +632,13 @@ def render_markdown(doc, lang):
         heading(2, "game_plan", plan)
         for i, item in enumerate(plan.get("items") or [], 1):
             if isinstance(item, dict):
-                out.append(f"{i}. **{t['do']}:** {item.get('do', '')} **{t['why']}:** "
-                           f"{item.get('why', '')} **{t['cue']}:** {item.get('cue', '')} "
+                out.append(f"{i}. **{t['do']}:** {_esc(item.get('do', ''))} **{t['why']}:** "
+                           f"{_esc(item.get('why', ''))} **{t['cue']}:** "
+                           f"{_esc(item.get('cue', ''))} "
                            f"{notes.marks(item.get('evidence'))}".rstrip())
         focus = plan.get("training_focus")
         if isinstance(focus, dict):
-            out.extend(["", f"**{t['training']}:** {focus.get('text', '')} "
+            out.extend(["", f"**{t['training']}:** {_esc(focus.get('text', ''))} "
                             f"{notes.marks(focus.get('evidence'))}".rstrip()])
     scouting = report.get("scouting")
     if isinstance(scouting, dict):
@@ -632,10 +648,11 @@ def render_markdown(doc, lang):
     items = caveats.get("items") if isinstance(caveats, dict) else None
     if items:
         heading(2, "caveats", None)
-        out.extend(f"- {_caveat_text(i, lang)}" for i in items)
+        out.extend(f"- {_esc(_caveat_text(i, lang))}" for i in items)
     heading(2, "evidence", None)
     fmap = fact_map(doc)
     out.extend(_evidence_line(i, fid, fmap.get(fid), lang) + "  "
                for i, fid in enumerate(notes.ids, 1))
-    out.extend(["", f"_{t['footer']} · {doc.get('model', '')} · {doc.get('generated_at', '')}_"])
+    out.extend(["", f"_{t['footer']} · {_esc(doc.get('model', ''))} · "
+               f"{_esc(doc.get('generated_at', ''))}_"])
     return "\n".join(out) + "\n"

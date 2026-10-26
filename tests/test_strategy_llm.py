@@ -108,7 +108,7 @@ def test_extra_messages_are_appended(stub):
 def test_config_defaults():
     c = load_config(env={})
     assert c.enabled and c.url == "http://localhost:11434/v1" and c.model == "qwen3.8:27b"
-    assert c.key == "ollama" and c.timeout == 300 and c.langs == ("en", "zh")
+    assert c.key == "ollama" and c.timeout == 600 and c.langs == ("en", "zh")
 
 
 def test_config_env_beats_settings_beats_default(tmp_path):
@@ -140,5 +140,5 @@ def test_config_langs_filtered():
 
 
 def test_config_bad_timeout_falls_back():
-    assert load_config(env={"GB_STRATEGY_LLM_TIMEOUT": "soon"}).timeout == 300
-    assert load_config(env={"GB_STRATEGY_LLM_TIMEOUT": "-5"}).timeout == 300
+    assert load_config(env={"GB_STRATEGY_LLM_TIMEOUT": "soon"}).timeout == 600
+    assert load_config(env={"GB_STRATEGY_LLM_TIMEOUT": "-5"}).timeout == 600

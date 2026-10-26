@@ -11,7 +11,7 @@ from dataclasses import dataclass
 DEFAULT_URL = "http://localhost:11434/v1"
 DEFAULT_MODEL = "qwen3.8:27b"
 DEFAULT_KEY = "ollama"
-DEFAULT_TIMEOUT = 300.0
+DEFAULT_TIMEOUT = 600.0
 LANGS = ("en", "zh")
 _OFF = ("off", "0", "false", "no")
 

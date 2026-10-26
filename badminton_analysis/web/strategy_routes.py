@@ -9,6 +9,7 @@ passes in getters resolved on every request, so a test that re-points ``OUTPUTS`
 Error bodies are static bilingual strings (``中文 / English``); nothing from an
 exception reaches a response.
 """
+import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -26,6 +27,17 @@ _BUSY = {'error': '该视频已在分析或排队中 / this video is already bei
 _FOCUS = ('upper', 'lower')
 _ANALYSIS_FILES = ('rally_segments.json', 'insights.json')
 _LANGS = ('en', 'zh')
+
+
+def _later_than_report(updated, doc):
+    """True when epoch ``updated`` is after the report's ``generated_at`` (unparsable: True)."""
+    try:
+        written = datetime.datetime.strptime(
+            doc.get('generated_at'), '%Y-%m-%dT%H:%M:%SZ').replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+        return float(updated) > written
+    except (TypeError, ValueError):
+        return True
 
 
 def register(app, *, outputs, athletes_path, athletes_lock, jobs, queue, safe_stem,
@@ -53,13 +65,17 @@ def register(app, *, outputs, athletes_path, athletes_lock, jobs, queue, safe_st
             data = libathletes.load(athletes_path())
         return libathletes.resolve_record(data, stem)
 
-    def _job_view(stem):
+    def _job_view(stem, doc):
         job_id = 'strategy_' + stem
         job = (jobs() or {}).get(job_id)
         if not isinstance(job, dict):
             return None
         status = job.get('status')
-        if status not in ('pending', 'running', 'paused', 'resuming'):
+        if status == 'error':
+            # A failed run is shown unless a report written after it supersedes it.
+            if doc is not None and not _later_than_report(job.get('updated'), doc):
+                return None
+        elif status not in ('pending', 'running', 'paused', 'resuming'):
             return None
         place = position(job_id, job) if position is not None else None
         return {'id': job_id, 'status': status, 'position': place}
@@ -73,7 +89,7 @@ def register(app, *, outputs, athletes_path, athletes_lock, jobs, queue, safe_st
             return jsonify(_UNKNOWN_VIDEO), 404
         enabled = strategy_config.load_config(settings_path()).enabled
         doc = strategy_report.read_report(out)
-        job = _job_view(stem)
+        job = _job_view(stem, doc)
         stale = False
         if doc is not None:
             stale = bool(strategy_report.is_stale(out, doc, _record(stem)))

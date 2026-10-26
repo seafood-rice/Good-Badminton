@@ -205,8 +205,9 @@ footnote-style list of `id = value unit` pairs.
 - **Thinking off:** Qwen's thinking is disabled with `"reasoning_effort": "none"` in the request.
   - A probe of local Ollama (2026-10-27) confirmed this: a short answer took 3.9 s with no reasoning
     returned. `"think": false` is ignored on `/v1`.
-  - The first call after a model load took 118 s. Model loading counts against the timeout, so the default
-    stays 300 s.
+  - The first call after a model load took 118 s. Model loading counts against the timeout. A live run
+    (cold load plus the zh generation) took about 220 s and the first live run timed out at 300 s, so the
+    default is 600 s.
   - A `<think>...</think>` prefix in the content is stripped before parsing, in case thinking was not turned
     off.
 - **Before the first call**, `GET /v1/models` checks that the model is listed (`model_missing` if not).
@@ -261,7 +262,7 @@ it is absent today, and a missing or malformed file means the defaults apply.
 | endpoint | `GB_STRATEGY_LLM_URL` | `http://localhost:11434/v1` |
 | model | `GB_STRATEGY_LLM_MODEL` | `qwen3.8:27b` |
 | API key | `GB_STRATEGY_LLM_KEY` | `ollama` (sent as a bearer token; Ollama ignores it, other OpenAI-compatible servers may need it) |
-| timeout per language | `GB_STRATEGY_LLM_TIMEOUT` | `300` s |
+| timeout per language | `GB_STRATEGY_LLM_TIMEOUT` | `600` s |
 | languages | `GB_STRATEGY_LANGS` | `en,zh` |
 
 The compose files set `GB_STRATEGY_LLM_URL=http://host.docker.internal:11434/v1` and add

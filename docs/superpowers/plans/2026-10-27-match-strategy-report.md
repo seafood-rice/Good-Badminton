@@ -24,7 +24,7 @@ doubles; en and zh), built from measured facts, with claims that are cited and n
   - endpoint `http://localhost:11434/v1`
   - model `qwen3.8:27b`
   - key `ollama`
-  - timeout `300` s per language
+  - timeout `600` s per language
   - langs `en,zh`
   - enabled `on`
 - Precedence: env vars `GB_STRATEGY_REPORT`, `GB_STRATEGY_LLM_URL`, `GB_STRATEGY_LLM_MODEL`, `GB_STRATEGY_LLM_KEY`,
@@ -96,7 +96,7 @@ doubles; en and zh), built from measured facts, with claims that are cited and n
     and an empty result becomes `("en", "zh")`).
   - `load_config(settings_path=None, env=None) -> StrategyConfig`. `env` defaults to `os.environ`. A missing,
     unreadable or non-dict settings file is ignored. `GB_STRATEGY_REPORT` is `off` when its value is one of
-    `off`, `0`, `false`, `no` (case-insensitive). A bad timeout falls back to 300.
+    `off`, `0`, `false`, `no` (case-insensitive). A bad timeout falls back to 600.
   - `class LLMError(Exception)`: `.code` in `{"llm_unreachable", "model_missing", "timeout", "bad_response",
     "http_error"}`, plus `.params: dict`.
   - `LLMClient(config)`:

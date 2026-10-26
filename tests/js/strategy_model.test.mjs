@@ -72,3 +72,22 @@ test('the Pipeline maps a strategy job to its own kind and the match details lin
   assert.equal(g.finished[0].kind, 'strategy');
   assert.equal(g.finished[0].resultsHash, '#/matches/v1');
 });
+
+test('the Pipeline never offers Pause on a strategy row, but still Cancel when queued', async () => {
+  const { jobActions } = await import('../../static/kestrel/views/pipeline.js');
+  assert.deepEqual(jobActions({ kind: 'strategy', status: 'running' }), []);
+  assert.deepEqual(jobActions({ kind: 'strategy', status: 'pending' }), ['cancel']);
+  assert.deepEqual(jobActions({ kind: 'match', status: 'running' }), ['pause']);
+  assert.deepEqual(jobActions({ kind: 'posture', status: 'running' }), ['pause']);
+  assert.deepEqual(jobActions({ kind: 'match', status: 'paused' }), ['resume']);
+  assert.deepEqual(jobActions({ kind: 'match', status: 'pending' }), ['cancel']);
+  assert.deepEqual(jobActions({ kind: 'match', status: 'completed' }), []);
+});
+
+test('stage.strategy and the doubles focus caveat exist in both languages', async () => {
+  const { STRINGS } = await import('../../static/kestrel/core/i18n.js');
+  assert.equal(STRINGS.zh['stage.strategy'], '策略报告');
+  assert.equal(STRINGS.en['stage.strategy'], 'Strategy report');
+  assert.equal(STRINGS.zh['strategy.caveat.focus_assumed_team'], '默认将第 1 队视为你方');
+  assert.equal(STRINGS.en['strategy.caveat.focus_assumed_team'], 'Team 1 is assumed to be your team');
+});

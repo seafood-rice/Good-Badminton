@@ -47,7 +47,7 @@ def test_facts_are_well_formed(tmp_path):
     ids = [f["id"] for f in pack["facts"]]
     assert len(ids) == len(set(ids))
     for fact in pack["facts"]:
-        assert set(fact) == {"id", "value", "unit", "who", "status", "reason", "validated"}
+        assert set(fact) - {"defs"} == {"id", "value", "unit", "who", "status", "reason", "validated"}
         assert fact["status"] in ("ok", "partial", "unavailable")
         if fact["status"] == "unavailable":
             assert fact["value"] is None and fact["reason"]
@@ -230,3 +230,43 @@ def test_technique_weak_needs_three_reports(tmp_path):
     f = fact_map(build_facts(out, SINGLES_RECORD, STORE))
     assert f["you.technique_weak"]["value"] == ["smash", "clear"]
     assert f["you.technique_index"]["value"] is not None
+
+
+def test_swapped_part_sets_oriented(tmp_path):
+    from badminton_analysis.library import athletes as athlete_store
+    store = {"athletes": {"a1": {"name": "Val"}}, "matches": {
+        "m1": {"upper": {"athlete_id": "a1"}, "lower": {"name": "Sally"},
+               "result": {"winner": "upper", "sets": [[21, 15]]}},
+        "m2": {"part_of": "m1", "sides_swapped": True},
+        "m3": {"part_of": "m1", "sides_swapped": False}}}
+    out = singles(tmp_path)
+    swapped = athlete_store.resolve_record(store, "m2")
+    pack = build_facts(out, swapped, store)
+    assert pack["focus"]["side"] == "lower"
+    assert pack["header"]["sets"] == [[21, 15]] and pack["header"]["winner"] == "you"
+    assert fact_map(pack)["match.result"]["value"] == {"winner": "you", "sets": [[21, 15]]}
+    plain = build_facts(out, athlete_store.resolve_record(store, "m3"), store)
+    assert plain["focus"]["side"] == "upper"
+    assert plain["header"]["sets"] == [[21, 15]] and plain["header"]["winner"] == "you"
+
+
+def test_rally_definition_defs(tmp_path):
+    rallies = [(10 * i, 10 * i + 5) for i in range(3)]
+    hits = [(10 * i + 0.5 + 0.1 * k, "lower" if k % 2 else "upper")
+            for i, n in enumerate([2, 7, 11]) for k in range(n)]
+    out = make_run(tmp_path, rallies=rallies, hits=hits, frames=0)
+    f = fact_map(build_facts(out, SINGLES_RECORD, STORE))
+    assert f["match.short_rally_share"]["defs"] == [5]
+    assert f["match.long_rally_share"]["defs"] == [10]
+    assert f["match.rally_p90_sec"]["defs"] == [90]
+
+
+def test_doubles_focus_assumed_names_the_team(tmp_path):
+    out = make_doubles_run(
+        tmp_path, frames=60,
+        tracklets=[doubles_tracklet(i, [(f, float(i), 2.0 * i) for f in range(60)])
+                   for i in (1, 2, 3, 4)],
+        hits=[doubles_hit(10, "P1")])
+    pack = build_facts(out, {"format": "doubles"}, STORE)
+    assert pack["focus"]["assumed"] is True and pack["focus"]["team"] == 1
+    assert "focus_assumed_team" in codes(pack) and "focus_assumed" not in codes(pack)

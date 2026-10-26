@@ -176,3 +176,17 @@ test('a load failure and a failed regenerate show messages', async () => {
     assert.ok(q.el.textContent.includes(t('strategy.regen_failed', 'en')));
   } finally { removeEnv(); }
 });
+
+test('a doubles run with an assumed focus names the team, not the lower side', async () => {
+  installEnv();
+  try {
+    const data = payload();
+    data.report.focus = { side: null, team: 1, assumed: true };
+    const p = strategyPanel({ stem: 's', lang: 'en', api: fakeApi(data), timers: fakeTimers() });
+    await tick();
+    const txt = p.el.textContent;
+    assert.ok(txt.includes('Team 1 is assumed to be your team'));
+    assert.equal(txt.includes('lower-court'), false);
+    p.destroy();
+  } finally { removeEnv(); }
+});
