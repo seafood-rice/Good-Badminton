@@ -687,6 +687,27 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .ws-plan-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:3px;}
 .ws-plan-link{align-self:flex-start;color:var(--accentInk);font-weight:600;text-decoration:none;}
 .ws-plan-link:hover{text-decoration:underline;}
+/* match details: Strategy tab */
+.ws-strat{display:flex;flex-direction:column;gap:12px;}
+.ws-strat-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+.ws-strat-bar:empty{display:none;}
+.ws-strat-head{display:flex;flex-direction:column;gap:6px;}
+.ws-strat-names{font-size:16px;font-weight:600;color:var(--ink);overflow-wrap:anywhere;}
+.ws-strat-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;font-size:13px;color:var(--ink2);}
+.ws-strat-banner{padding:8px 12px;border:1px solid var(--lineHi);border-radius:6px;background:var(--surface2);color:var(--ink);font-size:13px;}
+.ws-strat-sec{border:1px solid var(--line);border-radius:6px;background:var(--surface);}
+.ws-strat-sum{cursor:pointer;display:flex;align-items:center;gap:8px;padding:10px 12px;font-weight:600;color:var(--ink);font-size:13.5px;}
+.ws-strat-sum:focus-visible{outline:2px solid var(--cyan);outline-offset:2px;}
+.ws-strat-body{display:flex;flex-direction:column;gap:8px;padding:0 12px 12px;font-size:13.5px;color:var(--ink);}
+.ws-strat-claims,.ws-strat-plan{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;}
+.ws-strat-text{overflow-wrap:anywhere;}
+.ws-strat-ev{display:inline-flex;flex-wrap:wrap;gap:4px;margin-left:6px;vertical-align:baseline;}
+.ws-strat-chip{font-size:10.5px;cursor:help;}
+.ws-strat-fb{font-weight:400;font-size:10.5px;color:var(--ink2);}
+.ws-strat-plan-row{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;}
+.ws-strat-focus{display:flex;flex-direction:column;gap:4px;}
+.ws-strat-link{color:var(--accentInk);font-weight:600;text-decoration:none;}
+.ws-strat-link:hover{text-decoration:underline;}
 /* match details: header "..." menu (the Matches row menu's look, anchored under its button) */
 .ws-menu-wrap{position:relative;display:inline-flex;}
 .ws-menu-btn{min-width:40px;justify-content:center;font-size:16px;line-height:1;}

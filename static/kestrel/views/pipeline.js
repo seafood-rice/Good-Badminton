@@ -47,7 +47,7 @@ export function groupJobs(jobs) {
     let progress = isNum(j.progress) ? Math.max(0, Math.min(100, Math.round(j.progress))) : 0;
     if (status === 'completed') progress = 100;
     const stem = stemOf(j.video);
-    const kind = j.kind === 'posture' ? 'posture' : 'match';
+    const kind = j.kind === 'posture' ? 'posture' : j.kind === 'strategy' ? 'strategy' : 'match';
     const row = {
       id: String(j.id === undefined || j.id === null ? '' : j.id),
       stem,

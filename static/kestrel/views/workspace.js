@@ -1,6 +1,6 @@
 // Match details page (#/matches/<stem>, spec 2026-10-24 sections 4 and 6), layout A: on top the annotated video
 // with the rally timeline and stroke strip, beside it the movement card, the stroke inspector (doubles: the players
-// panel) and the rally summary; below, the Strokes | Technique | Clips | Training plan tabs. The header carries
+// panel) and the rally summary; below, the Strokes | Technique | Clips | Training plan | Strategy tabs. The header carries
 // Back, the Posture report link (when the video has a posture run) and a "..." menu (Delete analysis results). A
 // split match (spec section 5) is always shown under its primary's stem with a part switcher (Whole match | Part N):
 // `?part=<stem>` shows that part as the page above, no `part` shows the Whole match view (part cards, movement per
@@ -22,6 +22,7 @@ import { movementCard, safeFile } from '../widgets/movement.js';
 import { techniquePanel } from '../widgets/technique.js';
 import { clipsPanel } from '../widgets/clips.js';
 import { planPanel } from '../widgets/plan.js';
+import { strategyPanel } from '../widgets/strategy.js';
 import { openDeleteDialog } from '../widgets/videotools.js';
 import {
   normaliseLabels, applyVerdict, addPoint, segmentState, tally, pooledTally, reconciliationStatus, keyToAction,
@@ -1458,6 +1459,8 @@ export function mount(container, ctx = {}) {
       p = clipsPanel({ stem: s, lang, rallyOk: sm.hasFile && !sm.failed && sm.count > 0 });
     } else if (id === 'plan') {
       p = planPanel({ stem: s, lang });
+    } else if (id === 'strategy') {
+      p = strategyPanel({ stem: s, lang });
     } else {
       // Strokes: the distribution card (singles only) above the stroke list (doubles: the hits table).
       p = { el: h('div', { class: 'ws-strokes-tab' }, [state.dbl ? null : distributionCard(), refs.listSec]) };
@@ -1594,13 +1597,13 @@ export function mount(container, ctx = {}) {
     ]));
   }
 
-  /** Whole match tab bodies: pooled strokes and technique; clips and plans point at the parts. */
+  /** Whole match tab bodies: pooled strokes and technique; clips, plans and strategy point at the parts. */
   function wholeTabBody(id) {
     const ok = state.whole.parts.filter((p) => p.ok);
     if (id === 'technique') {
       return techniquePanel({ lang, summary: poolTechnique(ok.map((p) => p.techSummary)), note: t('wsx.parts.pooled', lang) });
     }
-    if (id === 'clips' || id === 'plan') {
+    if (id === 'clips' || id === 'plan' || id === 'strategy') {
       return h('div', { class: 'ws-part-pick' }, [
         h('p', { class: 'kw-note' }, t('wsx.parts.per_video', lang)),
         h('div', { class: 'ws-part-links' }, state.whole.parts.map((p) => h('button', {

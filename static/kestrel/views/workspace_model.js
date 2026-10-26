@@ -368,7 +368,7 @@ export function nameFor(record, side, athletes) {
 // ---------- match details page helpers ----------
 
 export const GROUP_ORDER = Object.freeze(['serve', 'clear', 'lift', 'smash', 'drop', 'drive', 'net']);
-export const TABS = Object.freeze(['strokes', 'technique', 'clips', 'plan']);
+export const TABS = Object.freeze(['strokes', 'technique', 'clips', 'plan', 'strategy']);
 
 export function strokeDistribution(doc) {
   const d = obj(doc);
