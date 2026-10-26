@@ -58,6 +58,7 @@ Video preview: `assets/demo_en.mp4`.
 - **Local execution** - Videos, models, and analysis outputs stay on your local machine.
 - **Stroke technique analysis** - Detects stroke types, analyzes key joint angles, generates biomechanical scores and improvement suggestions.
 - **Intelligent training plan** - Generates progressive multi-week training plans targeting detected weaknesses, with on-court and at-home exercises.
+- **Match strategy report** - After a match analysis finishes, a local LLM writes a coaching and scouting report (singles and doubles, English and Chinese) from the measured facts. Every claim cites its numbers and is checked against them. It appears in the Strategy tab of Match details; see [Match strategy report](#match-strategy-report-docker-and-ollama).
 
 > 📄 For training data, metrics, and licensing notes behind the racket detector and AI form-scoring models, see the [model cards](docs/model-cards.md).
 
@@ -426,6 +427,18 @@ Expect `True` and `CUDAExecutionProvider` in the output.
 - The GPU image uses CUDA 12.1 PyTorch and `onnxruntime-gpu==1.20.2` (1.20.1 has no Python 3.12 wheel; otherwise the same recipe as the GPU section above); the CPU image uses the CPU pins from `requirements.txt`, which is left unchanged.
 - The container runs as root to avoid bind-mount permission problems on Windows and Docker Desktop; on Linux hosts, files created in `outputs/` are owned by root.
 - The server listens on all interfaces and has no authentication. Only expose port 5050 on a trusted network.
+
+### Match strategy report (Docker and Ollama)
+
+Each finished match analysis queues a strategy report job. It needs an OpenAI-compatible LLM endpoint; the default is [Ollama](https://ollama.com) on the Docker host, which the compose file reaches through `host.docker.internal`. Pull the model once on the host: `ollama pull qwen3.8:27b`.
+
+| Variable | Default in Docker | Purpose |
+|---|---|---|
+| `GB_STRATEGY_LLM_URL` | `http://host.docker.internal:11434/v1` | LLM endpoint |
+| `GB_STRATEGY_LLM_MODEL` | `qwen3.8:27b` | Model name served by Ollama |
+| `GB_STRATEGY_REPORT` | `on` | Set `off` to disable the report and its auto-queue |
+
+More settings (`GB_STRATEGY_LLM_KEY`, `GB_STRATEGY_LLM_TIMEOUT`, `GB_STRATEGY_LANGS`) and an optional `strategy` object in `data/settings.json` are described in the design spec. A report problem (Ollama down, model missing) never changes the match job's status; the Strategy tab shows the reason and any fallback text.
 
 ## 📝 Usage
 

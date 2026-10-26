@@ -91,6 +91,15 @@ def test_posture_job_kind(env):
     assert kinds == {"posture_clip": "posture", "other": "posture", "plain": "match"}
 
 
+def test_strategy_job_kind_and_no_detached_twin(env):
+    c, _, outputs = env
+    _progress(outputs, "clip", updated=time.time())
+    webapp.jobs["strategy_clip"] = {"status": "running", "progress": 0, "video_name": "clip",
+                                    "stage": "strategy", "message": ""}
+    rows = c.get("/api/jobs").get_json()
+    assert [(j["id"], j["kind"]) for j in rows] == [("strategy_clip", "strategy")]
+
+
 def test_disk_run_updated_now_is_listed_as_detached(env):
     c, _, outputs = env
     _progress(outputs, "orphan", updated=time.time(), stage="analyzing", pct=55)

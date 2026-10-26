@@ -21,6 +21,11 @@ services:
       - model-cache:/root/.cache   # RTMPose / ultralytics auto-downloads
     environment:
       - GB_MAX_JOBS=${GB_MAX_JOBS:-}
+      # Strategy report: the host's Ollama (ollama pull qwen3.8:27b). GB_STRATEGY_REPORT=off disables it.
+      - GB_STRATEGY_LLM_URL=${GB_STRATEGY_LLM_URL:-http://host.docker.internal:11434/v1}
+      - GB_STRATEGY_LLM_MODEL=${GB_STRATEGY_LLM_MODEL:-qwen3.8:27b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         reservations:
