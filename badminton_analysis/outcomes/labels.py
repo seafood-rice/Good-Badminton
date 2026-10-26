@@ -91,10 +91,15 @@ def load(path):
 
 
 def save(path, doc):
-    """Write ``doc`` atomically (temp file in the same directory + os.replace)."""
+    """Write the label document atomically."""
+    write_json_atomic(path, doc)
+
+
+def write_json_atomic(path, doc):
+    """Write ``doc`` as JSON atomically (temp file in the same directory + os.replace)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".rally-labels-", suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.stem}-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(doc, f, ensure_ascii=False, indent=1)
