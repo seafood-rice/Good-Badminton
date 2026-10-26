@@ -30,6 +30,14 @@ def _keep_the_real_tag_store_off_the_suite(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_strategy_reports_by_default(monkeypatch):
+    """A fake match job that finishes would otherwise queue a strategy report job, whose
+    Popen call can land in a later test's fake (a tracker thread outlives its test).
+    Tests of the report job turn it back on themselves."""
+    monkeypatch.setenv("GB_STRATEGY_REPORT", "off")
+
+
+@pytest.fixture(autouse=True)
 def _fresh_job_queue(monkeypatch):
     """Each test gets an empty job table and an uncapped scheduler.
 
