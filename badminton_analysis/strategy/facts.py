@@ -35,6 +35,7 @@ INPUT_FILES = ("insights.json", "strokes.json", "rally_segments.json", "hits.jso
                "players.json", "tracklets.jsonl", "technique_summary.json",
                "rally_outcomes.json")
 OUTCOMES_FILE = "rally_outcomes.json"
+OUTCOMES_SCHEMA = 1
 RECORD_FIELDS = ("date", "format", "upper", "lower", "players", "result", "part_of",
                  "sides_swapped")
 SHORT_RALLY_SHOTS = 5
@@ -552,27 +553,36 @@ def _technique_facts(ctx, p, side):
 # ---------------------------------------------------------------- outcomes
 
 def _read_outcomes(out_dir):
-    """The usable ``rallies`` list of ``rally_outcomes.json``, or None."""
+    """``(rallies, summary)`` of a schema-1 ``rally_outcomes.json`` (rally outcome spec 5.2), or None.
+
+    ``summary`` is ``{}`` when the file has none; any other schema, or no usable rally, is None."""
     try:
         with open(os.path.join(out_dir, OUTCOMES_FILE), encoding="utf-8") as f:
             doc = json.load(f)
     except (OSError, ValueError, RecursionError, MemoryError):
         return None
-    rallies = doc.get("rallies") if isinstance(doc, dict) else None
-    if not isinstance(rallies, list):
+    if not isinstance(doc, dict) or doc.get("schema") != OUTCOMES_SCHEMA:
         return None
-    rallies = [r for r in rallies if isinstance(r, dict)]
-    return rallies or None
+    rallies = doc.get("rallies")
+    rallies = [r for r in rallies if isinstance(r, dict)] if isinstance(rallies, list) else []
+    summary = doc.get("summary") if isinstance(doc.get("summary"), dict) else {}
+    return (rallies, summary) if rallies else None
 
 
 def _label(value):
+    """A count key: a non-empty string, the ``type`` of a stroke object, else ``unknown``."""
+    if isinstance(value, dict):
+        value = value.get("type")
     return value if isinstance(value, str) and value else "unknown"
 
 
 def _outcome_facts(outcomes, sides):
-    """Facts for ``{"you": side, "opponent": side}``; ``outcomes`` is a non-empty list."""
-    known = [r for r in outcomes if r.get("winner_side") in SIDES]
-    coverage = len(known) / len(outcomes)
+    """Facts for ``{"you": side, "opponent": side}`` from ``_read_outcomes``'s pair."""
+    rallies, summary = outcomes
+    known = [r for r in rallies if r.get("winner_side") in SIDES]
+    coverage = number(summary.get("coverage"))
+    if coverage is None or not 0 <= coverage <= 1:
+        coverage = len(known) / len(rallies)
     status = "ok" if coverage >= 0.5 else "partial"
     reason = None if status == "ok" else "low_outcome_coverage"
     out = [_fact("match.outcome_coverage", _share(coverage), "match", "share")]
@@ -581,13 +591,22 @@ def _outcome_facts(outcomes, sides):
             continue
         won = [r for r in known if r["winner_side"] == side]
         lost = [r for r in known if r["winner_side"] != side]
+        for fid, rows, key in (("won_by", won, "ending_stroke"), ("won_ending", won, "ending"),
+                               ("lost_by", lost, "outcome"), ("lost_ending", lost, "ending")):
+            out.append(_fact(f"{p}.{fid}", dict(Counter(_label(r.get(key)) for r in rows)),
+                             p, "count", status, reason))
         out.append(_fact(f"{p}.points_won", len(won), p, "count", status, reason))
-        out.append(_fact(f"{p}.won_by", dict(Counter(_label(r.get("ending_stroke"))
-                                                    for r in won)), p, "count", status, reason))
-        out.append(_fact(f"{p}.lost_by", dict(Counter(_label(r.get("outcome"))
-                                                     for r in lost)), p, "count", status,
-                         reason))
     return out
+
+
+def _outcome_caveats(outcomes):
+    """``outcomes_unreconciled{status}`` when the points do not match the recorded result."""
+    rec = outcomes[1].get("reconciliation")
+    status = rec.get("status") if isinstance(rec, dict) else None
+    if status == "consistent":
+        return []
+    return [{"code": "outcomes_unreconciled",
+             "params": {"status": status if isinstance(status, str) else "unknown"}}]
 
 
 def _singles_side_facts(ctx, p, side):
@@ -942,6 +961,7 @@ def _build(out_dir, record, store, focus):
     else:
         try:
             facts.extend(_outcome_facts(outcomes, sides))
+            caveats.extend(_outcome_caveats(outcomes))
         except Exception:
             caveats.append({"code": "no_rally_outcomes", "params": {}})
     if fmt == "doubles":

@@ -374,3 +374,9 @@ def test_markdown_renders_focus_assumed_team_caveat():
                                                       "params": {}}]}}}}
     assert "Team 1 is assumed to be your team" in render_markdown(doc, "en")
     assert "默认将第 1 队视为你方" in render_markdown(doc, "zh")
+
+
+def test_markdown_renders_outcomes_unreconciled_caveat():
+    item = {"code": "outcomes_unreconciled", "params": {"status": "incomplete"}}
+    doc = {"by_lang": {"en": {"caveats": {"items": [item]}}}}
+    assert "reconciliation: incomplete" in render_markdown(doc, "en")

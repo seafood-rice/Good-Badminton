@@ -515,6 +515,9 @@ _CAVEATS = {
     "focus_assumed_team": ("No registered athlete in this match: Team 1 is assumed to be "
                            "your team.", "本场比赛没有登记运动员：默认将第 1 队视为你方。"),
     "missing": ("Missing input files: {files}.", "缺少输入文件：{files}。"),
+    "outcomes_unreconciled": ("Rally winners do not yet add up to the recorded score "
+                              "(reconciliation: {status}), so point counts may be incomplete.",
+                              "回合胜负尚未与记录的比分对上（核对状态：{status}），得分统计可能不完整。"),
 }
 
 

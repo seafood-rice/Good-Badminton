@@ -117,12 +117,41 @@ def test_no_rally_outcomes_caveat(tmp_path):
     assert "no_rally_outcomes" in codes(pack)
 
 
-def _outcomes(out, known, total=4):
-    rallies = [{"id": i + 1, "winner_side": "lower" if i < known else None,
-                "outcome": "winner", "ending_stroke": "smash", "confidence": 0.8}
+def _outcomes(out, known, total=4, reconciliation="consistent", schema=1):
+    """A ``rally_outcomes.json`` in the rally outcome spec's schema 1 (section 5.2)."""
+    rallies = [{"id": i + 1, "segment_id": i + 1, "start_sec": 10.0 * i, "end_sec": 10.0 * i + 5,
+                "winner_side": "lower" if i < known else None,
+                "outcome": None, "ending": "in" if i < known else None,
+                "ending_stroke": {"type": "smash", "group": "smash", "hitter": "lower",
+                                  "frame": 100 * i, "confidence": 0.9},
+                "confidence": 0.8, "source": "auto", "reviewed": False, "evidence": None}
                for i in range(total)]
-    (out / "rally_outcomes.json").write_text(json.dumps({"rallies": rallies}),
-                                             encoding="utf-8")
+    summary = {"entries": total, "labelled": known, "coverage": known / total,
+               "points_won": {"upper": 0, "lower": known},
+               "reconciliation": {"status": reconciliation, "scope": "sides"}}
+    (out / "rally_outcomes.json").write_text(
+        json.dumps({"schema": schema, "rallies": rallies, "summary": summary}), encoding="utf-8")
+
+
+def test_rally_outcomes_endings_and_unknown_outcome(tmp_path):
+    out = singles(tmp_path)
+    _outcomes(out, known=4)
+    f = fact_map(build_facts(out, SINGLES_RECORD, STORE))
+    assert f["you.won_ending"]["value"] == {"in": 4}
+    assert f["opponent.lost_by"]["value"] == {"unknown": 4}
+
+
+def test_rally_outcomes_unreconciled_caveat(tmp_path):
+    out = singles(tmp_path)
+    _outcomes(out, known=4, reconciliation="incomplete")
+    pack = build_facts(out, SINGLES_RECORD, STORE)
+    assert {"code": "outcomes_unreconciled", "params": {"status": "incomplete"}} in pack["caveats"]
+
+
+def test_rally_outcomes_other_schema_is_absent(tmp_path):
+    out = singles(tmp_path)
+    _outcomes(out, known=4, schema=2)
+    assert "no_rally_outcomes" in codes(build_facts(out, SINGLES_RECORD, STORE))
 
 
 def test_rally_outcomes_partial(tmp_path):
