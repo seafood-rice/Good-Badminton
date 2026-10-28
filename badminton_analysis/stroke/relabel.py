@@ -19,7 +19,8 @@ import sys
 
 from ..analysis.biomechanics import rescore_report
 from ..analysis.technique_writer import build_match_summary, write_stroke_reports
-from ..data.writer import write_json
+from ..data.writer import clean_value
+from ..outcomes.labels import write_json_atomic
 from . import owner_labels
 from . import stroke_classifier as sc
 from .hit_signals import load_signals
@@ -27,6 +28,11 @@ from .hit_signals import load_signals
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_WEIGHTS = os.path.join(_ROOT, "weights", "stroke-classifier.pt")
 DEFAULT_LABELS_DIR = os.path.join(_ROOT, "data", "stroke_labels")
+
+
+def write_json(path, payload):
+    """Atomic JSON write (temp file + os.replace): the relabel child can be killed at any moment."""
+    write_json_atomic(path, clean_value(payload))
 
 
 def _json(path):

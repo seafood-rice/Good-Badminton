@@ -1,17 +1,26 @@
 """Write per-stroke reports (JSONL) and the match-level summary (JSON)."""
 import json
 import os
+import tempfile
 from collections import Counter, defaultdict
 
 from ..data.writer import clean_value as _clean_value
 
 
 def write_stroke_reports(path, reports):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        for report in reports:
-            f.write(json.dumps(_clean_value(report), ensure_ascii=False, separators=(",", ":")))
-            f.write("\n")
+    """Write the JSONL atomically (temp file + os.replace): a killed writer never leaves half a file."""
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=folder, prefix=".strokes-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            for report in reports:
+                f.write(json.dumps(_clean_value(report), ensure_ascii=False, separators=(",", ":")))
+                f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def build_match_summary(reports):

@@ -147,3 +147,18 @@ def test_promote_phase_line_is_printed_before_the_swap_only_when_kept(monkeypatc
     weights2 = _setup(monkeypatch, tmp_path / 'x', cand_acc=0.1)
     assert retrain.run(tmp_path / 'l', tmp_path / 'r', weights2, tmp_path) == 0
     assert 'PHASE promote' not in capsys.readouterr().out
+
+
+def test_no_test_shots_reject_keeps_live_after_of_the_live_model(monkeypatch, tmp_path, capsys):
+    from badminton_analysis.strategy import facts
+    weights = _setup(monkeypatch, tmp_path)
+    (weights / 'stroke-classifier.json').write_text(json.dumps({'created_utc': 'v1'}), encoding='utf-8')
+    model_eval._append_history(weights, {
+        'utc': 'x', 'kept': True, 'live_after': {'version': 'v1', 'accuracy': 0.7,
+                                                  'unknown_rate': 0.1, 'bar_met': False}})
+    monkeypatch.setattr(model_eval, 'test_shots', lambda l, r: [])
+    assert retrain.run(tmp_path / 'l', tmp_path / 'r', weights, tmp_path) == 1
+    after = model_eval.history(weights)[-1]['live_after']
+    assert after['version'] == 'v1' and after['accuracy'] == 0.7 and after['bar_met'] is False
+    monkeypatch.setattr(facts, 'WEIGHTS_DIR', weights)
+    assert facts._stroke_model_quality() == {'accuracy': 0.7, 'bar_met': False}

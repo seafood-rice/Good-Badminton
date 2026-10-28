@@ -273,3 +273,44 @@ def test_score_script_no_test_shots(tmp_path):
                         "--weights", str(tmp_path / "none.pt")],
                        capture_output=True, text=True, env=dict(os.environ, PYTHONUTF8="1"))
     assert r.returncode == 1 and "no test shots" in r.stdout
+
+
+def test_describe_retrain_failed_keeps_detail():
+    text = me.describe({"code": "retrain_failed", "detail": "ZeroDivisionError: division by zero"})
+    assert "retrain failed" in text and "ZeroDivisionError: division by zero" in text
+
+
+def _half_promote(w):
+    """What a kill between promote's two moves leaves: live retired into history, candidate still staged."""
+    _model(w / "stroke-classifier.pt", "v0")
+    cand = _cand(w, "v1")
+    retired = me._new_history_dir(w)
+    me._move_pair(w / "stroke-classifier.pt", retired / "stroke-classifier.pt")
+    return cand, retired
+
+
+def test_status_restores_a_half_finished_promote(tmp_path):
+    w = tmp_path / "weights"
+    cand, retired = _half_promote(w)
+    assert not (w / "stroke-classifier.pt").exists()
+    me.status(tmp_path / "lab", tmp_path / "res", w)
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+    assert (w / "stroke-classifier.json").is_file() and not retired.exists()
+    assert cand.exists()                      # the candidate is left for the caller to delete
+
+
+def test_promote_and_rollback_recover_first(tmp_path):
+    w = tmp_path / "weights"
+    cand, _ = _half_promote(w)
+    me.promote(w, cand, {})
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v1"
+    assert (sorted((w / "history").iterdir())[-1] / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+    # half rollback: the old model is staged, the live one already retired
+    newest = sorted((w / "history").iterdir())[-1]
+    staged = w / f".rollback-{newest.name}.pt"
+    me._move_pair(newest / "stroke-classifier.pt", staged)
+    retired = me._new_history_dir(w)
+    me._move_pair(w / "stroke-classifier.pt", retired / "stroke-classifier.pt")
+    assert me.rollback(w) is False        # the interrupted rollback was completed
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+    assert not staged.exists()

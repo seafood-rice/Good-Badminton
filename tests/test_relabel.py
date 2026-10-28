@@ -198,3 +198,44 @@ def test_rescore_reports_helper_rescores_with_applied_types(tmp_path):
     assert rep["stroke_type"] == "smash"
     assert json.loads((d / "technique_summary.json").read_text(encoding="utf-8"))["stroke_count"] == 1
     assert relabel.rescore_reports(str(tmp_path / "none")) == 0
+
+
+def _files(d):
+    return {p.name: p.read_bytes() for p in sorted(d.iterdir()) if p.is_file()}
+
+
+def test_a_failed_write_leaves_the_result_files_unchanged(tmp_path, monkeypatch):
+    import pytest
+    from badminton_analysis.analysis import technique_writer
+    d = tmp_path / "V"
+    _old_result(d)
+    (d / "technique_summary.json").write_text('{"old": 1}', encoding="utf-8")
+    m = smod.StrokeNet(INPUT_DIM, hidden=8, levels=1)
+    w = tmp_path / "w.pt"
+    smod.save_stroke_model(m, smod.base_meta(8, 1, 0.0), w)
+    before = _files(d)
+
+    def partial_dump(doc, fh, **kw):
+        fh.write('{"partial')
+        raise OSError("disk full")
+
+    monkeypatch.setattr(json, "dump", partial_dump)      # strokes.json and technique_summary.json
+    with pytest.raises(OSError):
+        relabel.relabel(str(d), str(w))
+    assert _files(d) == before                            # no half file, no temp file left
+
+    monkeypatch.undo()
+    real = technique_writer._clean_value
+    calls = []
+
+    def second_report_fails(value):
+        calls.append(1)
+        if len(calls) > 1:
+            raise OSError("disk full")
+        return real(value)
+
+    monkeypatch.setattr(technique_writer, "_clean_value", second_report_fails)
+    reports = [{"a": 1}, {"b": 2}]
+    with pytest.raises(OSError):
+        technique_writer.write_stroke_reports(str(d / "strokes.jsonl"), reports)
+    assert _files(d) == before

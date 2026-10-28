@@ -141,6 +141,8 @@ def describe(code):
         return "no labelled test shots"
     if k == "training_failed":
         return f"training failed (exit {code.get('exit')})"
+    if k == "retrain_failed":
+        return f"retrain failed: {code.get('detail') or 'unknown error'}"
     if k == "rolled_back":
         return "rolled back"
     if k == "train_labels":
@@ -266,8 +268,37 @@ def _live_after(version, metrics):
             "bar_met": _bar_met(metrics) if metrics else None}
 
 
+def recover(weights_dir):
+    """Undo a swap that was killed half way: the live ``.pt`` is gone but its replacement is not in.
+
+    A staged rollback model (``.rollback-*.pt``) completes the rollback; otherwise the newest
+    history model (what promote retired) goes back to live. Returns True when something moved.
+    Idempotent and a no-op while a live model exists.
+    """
+    weights_dir = Path(weights_dir)
+    live = weights_dir / LIVE_NAME
+    if live.is_file():
+        return False
+    try:
+        staged = sorted(weights_dir.glob(".rollback-*.pt"))
+        if staged:
+            _move_pair(staged[-1], live)
+            for d in _history_dirs(weights_dir, include_retired=False)[-1:]:
+                (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
+            return True
+        dirs = _history_dirs(weights_dir)
+        if dirs:
+            _move_pair(dirs[-1] / LIVE_NAME, live)
+            shutil.rmtree(dirs[-1], ignore_errors=True)
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def promote(weights_dir, candidate_path, record):
     """Make the candidate the live model; the replaced model goes to ``history/<utc>/``."""
+    recover(weights_dir)
     retired = _install(weights_dir, candidate_path)
     _prune(weights_dir)
     entry = dict(record)
@@ -290,9 +321,13 @@ def reject(weights_dir, candidate_path, record):
             pass
     entry = dict(record)
     live = Path(weights_dir) / LIVE_NAME
+    version = _version(live) if live.is_file() else None
+    if live.is_file() and not isinstance(entry.get("live"), dict):
+        after = _carried_scores(weights_dir, version)     # the live model was not scored this time
+    else:
+        after = _live_after(version, entry.get("live"))
     entry.update({"utc": entry.get("utc") or _utc(), "kept": False, "replaced": None,
-                  "bar_met": _bar_met(entry.get("candidate")),
-                  "live_after": _live_after(_version(live) if live.is_file() else None, entry.get("live"))})
+                  "bar_met": _bar_met(entry.get("candidate")), "live_after": after})
     _append_history(weights_dir, entry)
     return entry
 
@@ -307,12 +342,23 @@ def _promoted_scores(weights_dir, version):
     return _live_after(version, None)
 
 
+def _carried_scores(weights_dir, version):
+    """The newest recorded scores of ``version`` (any entry kind), else its promoted scores."""
+    for e in reversed(history(weights_dir)):
+        after = e.get("live_after")
+        if isinstance(after, dict) and after.get("version") == version and after.get("accuracy") is not None:
+            return {"version": version, "accuracy": after.get("accuracy"),
+                    "unknown_rate": after.get("unknown_rate"), "bar_met": after.get("bar_met")}
+    return _promoted_scores(weights_dir, version)
+
+
 def rollback(weights_dir, train_labels=None):
     """Swap in the newest replaced model that no rollback retired; False when there is none.
 
     The model rolled away is kept in history marked retired, so a second rollback goes one
     model further back instead of undoing the first.
     """
+    recover(weights_dir)
     dirs = _history_dirs(weights_dir, include_retired=False)
     if not dirs:
         return False
@@ -375,6 +421,7 @@ def train_count(labels_dir):
 
 
 def status(labels_dir, results_dir, weights_dir):
+    recover(weights_dir)
     shots = test_shots(labels_dir, results_dir)
     train = train_count(labels_dir)
     test = sum(len(truth) for _, _, truth in shots)
