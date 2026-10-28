@@ -227,9 +227,22 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
     def _kind(job_id, stage):
         if str(job_id).startswith('strategy_'):
             return 'strategy'
+        if str(job_id) in ('train_strokes', 'relabel_strokes'):
+            return 'training'
         if str(job_id).startswith('posture_') or 'posture' in str(stage or '').lower():
             return 'posture'
         return 'match'
+
+    def _reason_field(kind, job):
+        """A training job's ``reason_code`` ({code, numbers}) for the UI to localise, scalars only.
+
+        A missing number stays ``None`` (JSON null): the UI shows it as "?" instead of a wrong sentence.
+        """
+        reason = job.get('reason_code') if kind == 'training' else None
+        if not isinstance(reason, dict) or not isinstance(reason.get('code'), str):
+            return {}
+        return {'reason_code': {k: (v[:200] if isinstance(v, str) else v) for k, v in reason.items()
+                                if isinstance(k, str) and (v is None or isinstance(v, (str, int, float, bool)))}}
 
     def _memory_row(order, job_id, job, now):
         video = _video_stem(job.get('video_name') or job_id)
@@ -251,10 +264,11 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             'status': status if isinstance(status, str) else None,
             'stage': stage if isinstance(stage, str) else None,
             'progress': _int_pct(job.get('progress', 0)),
-            'message': (_report_message(job.get('message')) if kind == 'strategy' else
+            'message': (_report_message(job.get('message')) if kind in ('strategy', 'training') else
                         _safe_message(job.get('message'),
                                       status if isinstance(status, str) else None)),
             'updated': updated,
+            **_reason_field(kind, job),
         })
 
     def _detached_row(order, path, now):

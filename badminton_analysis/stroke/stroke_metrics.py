@@ -40,18 +40,42 @@ def score(pairs):
     }
 
 
-def check_bar(m):
-    reasons = []
+def check_bar_codes(m):
+    """``(met, [code])``: why the owner's bar is not met, as language-neutral codes with numbers."""
+    codes = []
     if m["accuracy"] is None or m["accuracy"] < BAR["accuracy"]:
-        reasons.append(f"accuracy {m['accuracy']} < {BAR['accuracy']}")
+        codes.append({"code": "accuracy", "value": m["accuracy"], "bar": BAR["accuracy"]})
     if m["unknown_rate"] is None or m["unknown_rate"] > BAR["unknown"]:
-        reasons.append(f"unknown rate {m['unknown_rate']} > {BAR['unknown']}")
+        codes.append({"code": "unknown", "value": m["unknown_rate"], "bar": BAR["unknown"]})
     for g, r in m["recall"].items():
         if r["n"] < MIN_GROUP_HITS:
-            reasons.append(f"{g}: fewer than {MIN_GROUP_HITS} test hits ({r['n']})")
+            codes.append({"code": "group_few", "group": g, "need": MIN_GROUP_HITS, "have": r["n"]})
         elif r["recall"] < BAR["recall"]:
-            reasons.append(f"{g}: recall {r['recall']} < {BAR['recall']}")
-    return not reasons, reasons
+            codes.append({"code": "group_recall", "group": g, "value": r["recall"], "bar": BAR["recall"]})
+    return not codes, codes
+
+
+def describe_bar_code(c):
+    """English text of one ``check_bar_codes`` code (CLI output and logs)."""
+    k = c.get("code")
+    if k == "accuracy":
+        return f"accuracy {c['value']} < {c['bar']}"
+    if k == "unknown":
+        return f"unknown rate {c['value']} > {c['bar']}"
+    if k == "group_few":
+        return f"{c['group']}: fewer than {c['need']} test hits ({c['have']})"
+    if k == "group_recall":
+        return f"{c['group']}: recall {c['value']} < {c['bar']}"
+    if k == "no_model":
+        return "no model"
+    if k == "unreadable":
+        return "model unreadable" + (f": {c['detail']}" if c.get("detail") else "")
+    return str(k)
+
+
+def check_bar(m):
+    met, codes = check_bar_codes(m)
+    return met, [describe_bar_code(c) for c in codes]
 
 
 def predict_labels(probs, threshold):

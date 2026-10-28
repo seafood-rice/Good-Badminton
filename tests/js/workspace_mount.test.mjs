@@ -542,3 +542,21 @@ test('added points are listed with their time and winner; removing one saves the
     assert.equal(container.querySelectorAll('.ws-added-item').length, 0);
   }, { routes });
 });
+
+test('Strokes block: same shots as the summary (padded membership), also in the all-strokes view', async () => {
+  const routes = singles();
+  // 5.4 s: 0.4 s past rally 1 (the workspace pad is 0.5 s); 12 s: outside every rally
+  routes[out('s', 'strokes.json')].strokes.push(
+    { frame: 162, hitter: 'upper', stroke: 'lift', group: 'lift', uncertain: false, confidence: 0.7 },
+    { frame: 360, hitter: 'lower', stroke: 'drop', group: 'drop', uncertain: false, confidence: 0.7 },
+  );
+  const slRows = (c) => everything(c).filter((e) => e.getAttribute('class') && e.getAttribute('class').split(' ').includes('ws-sl-row'));
+  await withPage(async ({ container }) => {
+    assert.match(container.textContent, /Strokes detected3/, 'summary counts 3 shots in rally 1');
+    assert.equal(slRows(container).length, 3, 'the block lists the same 3');
+    const all = everything(container).find((e) => e.tagName === 'BUTTON' && e.textContent === t('ws.all_strokes', 'en'));
+    all.click();
+    await tick();
+    assert.equal(slRows(container).length, 5, 'all view: every shot, also the one outside every rally');
+  }, { routes });
+});

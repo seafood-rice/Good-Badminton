@@ -91,3 +91,36 @@ test('stage.strategy and the doubles focus caveat exist in both languages', asyn
   assert.equal(STRINGS.zh['strategy.caveat.focus_assumed_team'], '默认将第 1 队视为你方');
   assert.equal(STRINGS.en['strategy.caveat.focus_assumed_team'], 'Team 1 is assumed to be your team');
 });
+
+test('tacticsView shapes the effectiveness and opening tables and their empty states', async () => {
+  const { tacticsView } = await import('../../static/kestrel/views/strategy_model.js');
+  assert.equal(tacticsView(null), null);
+  assert.equal(tacticsView({ facts: [] }), null);
+  const v = tacticsView({
+    tables: {
+      effectiveness: {
+        you: { lift: { effective: 1, neutral: 0, ineffective: 1, unknown: 0, n: 2 }, smash: { effective: 4, neutral: 1, ineffective: 1, unknown: 0, n: 6 }, bad: 'x' },
+        opponent: {},
+      },
+      openings: {
+        complete: 6, total: 8, neutral: 1, insufficient: false, won_by: { you: 3, opponent: 2 }, opening_winner_won_point: { n: 5, won: 4 },
+        rows: [{ rally: 3, advantage: 'you', point_winner: 'opponent', n_shots: 9, shots: [{ hitter: 'you', stroke: 'long_serve', zone: { depth: 'rear', side: 'left' }, sent_to: null }, null] }, null],
+      },
+    },
+  });
+  assert.deepEqual(v.eff.you.map((r) => [r.stroke, r.n, r.few]), [['smash', 6, false], ['lift', 2, true], ['bad', 0, true]]);
+  assert.deepEqual(v.eff.opponent, []);
+  assert.equal(v.openings.complete, 6);
+  assert.equal(v.openings.insufficient, false);
+  assert.deepEqual(v.openings.wonBy, { you: 3, opponent: 2 });
+  assert.deepEqual(v.openings.winPoint, { n: 5, won: 4 });
+  assert.equal(v.openings.rows.length, 1);
+  assert.equal(v.openings.rows[0].pointWinner, 'opponent');
+  assert.deepEqual(v.openings.rows[0].shots[0].zone, { depth: 'rear', side: 'left' });
+  assert.equal(v.openings.rows[0].shots[0].sentTo, null);
+  const empty = tacticsView({ tables: { effectiveness: { you: {}, opponent: {} }, openings: { complete: 0, total: 0, rows: [], insufficient: true } } });
+  assert.deepEqual(empty.eff, { you: [], opponent: [] });
+  assert.equal(empty.openings.insufficient, true);
+  assert.deepEqual(empty.openings.rows, []);
+  assert.equal(tacticsView({ tables: { openings: 'junk' } }).openings.complete, 0);
+});

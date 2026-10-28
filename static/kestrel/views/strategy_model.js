@@ -105,3 +105,53 @@ export function planItems(section) {
   const tf = obj(obj(section).training_focus);
   return { items, trainingFocus: typeof tf.text === 'string' && tf.text ? { text: tf.text, evidence: arr(tf.evidence).filter((x) => typeof x === 'string') } : null };
 }
+
+export const MIN_ATTEMPTS = 5;
+
+const count = (v) => (isNum(v) ? v : 0);
+
+function effRows(cells) {
+  const out = [];
+  for (const [stroke, c] of Object.entries(obj(cells))) {
+    const o = obj(c);
+    const n = count(o.n);
+    out.push({
+      stroke, effective: count(o.effective), neutral: count(o.neutral), ineffective: count(o.ineffective),
+      unknown: count(o.unknown), n, few: n < MIN_ATTEMPTS,
+    });
+  }
+  return out.sort((a, b) => b.n - a.n || (a.stroke < b.stroke ? -1 : 1));
+}
+
+const zoneOf = (z) => (z && typeof z === 'object' && typeof z.depth === 'string' && typeof z.side === 'string' ? { depth: z.depth, side: z.side } : null);
+const whoOf = (v) => (v === 'you' || v === 'opponent' ? v : null);
+
+/** The rally-tactics tables of a report document (`doc.tables`), shaped for drawing; null for a report without them.
+ *  { eff: {you: [row], opponent: [row]}, openings: {complete, total, insufficient, neutral, wonBy, winPoint, rows} } */
+export function tacticsView(doc) {
+  const tables = obj(obj(doc).tables);
+  if (!('effectiveness' in tables) && !('openings' in tables)) return null;
+  const eff = obj(tables.effectiveness);
+  const op = obj(tables.openings);
+  const wonBy = obj(op.won_by);
+  const wp = obj(op.opening_winner_won_point);
+  const complete = count(op.complete);
+  return {
+    eff: { you: effRows(eff.you), opponent: effRows(eff.opponent) },
+    openings: {
+      complete, total: count(op.total), neutral: count(op.neutral),
+      insufficient: op.insufficient === true || complete < MIN_ATTEMPTS,
+      wonBy: { you: count(wonBy.you), opponent: count(wonBy.opponent) },
+      winPoint: { n: count(wp.n), won: count(wp.won) },
+      rows: arr(op.rows).filter((r) => r && typeof r === 'object').map((r) => ({
+        rally: typeof r.rally === 'number' || typeof r.rally === 'string' ? r.rally : '',
+        advantage: r.advantage === 'neutral' ? 'neutral' : whoOf(r.advantage),
+        pointWinner: whoOf(r.point_winner),
+        nShots: count(r.n_shots),
+        shots: arr(r.shots).filter((s) => s && typeof s === 'object').map((s) => ({
+          hitter: whoOf(s.hitter), stroke: typeof s.stroke === 'string' ? s.stroke : '', zone: zoneOf(s.zone), sentTo: zoneOf(s.sent_to),
+        })),
+      })),
+    },
+  };
+}

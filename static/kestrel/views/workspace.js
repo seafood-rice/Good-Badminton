@@ -23,6 +23,7 @@ import { techniquePanel } from '../widgets/technique.js';
 import { clipsPanel } from '../widgets/clips.js';
 import { planPanel } from '../widgets/plan.js';
 import { strategyPanel } from '../widgets/strategy.js';
+import { strokeLabelsBlock } from '../widgets/strokelabels.js';
 import { openDeleteDialog } from '../widgets/videotools.js';
 import {
   normaliseLabels, applyVerdict, addPoint, segmentState, tally, pooledTally, reconciliationStatus, keyToAction,
@@ -109,6 +110,7 @@ export function mount(container, ctx = {}) {
     notice: '',
     saving: false,
     addPrompt: null,
+    modelInput: null, // what buildWorkspaceModel was given (but strokes), to rebuild after a stroke correction
   };
   const refs = {};
   // Tab bodies, built on first open and kept (the clips and plan panels hold their own state and requests).
@@ -178,6 +180,7 @@ export function mount(container, ctx = {}) {
     closeMenu(false);
     destroyPanels();
     if (refs.player) refs.player.destroy();
+    dropStrokesBlock();
     Object.assign(refs, { player: null, video: null, tags: null, sig: null, tabPanel: null, tabBtns: null });
     clock.cancel();
     sections = [];
@@ -1121,6 +1124,7 @@ export function mount(container, ctx = {}) {
     const note = signalNote(m.summary, lang, m.rallies.length);
     if (note) sec.appendChild(h('div', { class: 'ws-sum-note' }, note));
     if (u) sec.appendChild(pointBlock(u));
+    sec.appendChild(strokesBlock(u));
     if (state.addPrompt) sec.appendChild(addPromptBlock());
     return sec;
   }
@@ -1215,6 +1219,45 @@ export function mount(container, ctx = {}) {
     if (state.notice) block.appendChild(h('div', { class: 'ws-pt-notice', role: 'status' }, state.notice));
     block.appendChild(h('div', { class: 'kw-foot-muted' }, t('ws.pt.keys', lang)));
     return block;
+  }
+
+  // ----- stroke correction (spec 2026-10-28 section 5.4) -----
+  /** The Strokes block for rally `u` (null: every shot of the video): one widget per video, kept across repaints (it holds the selection and labels). */
+  function strokesBlock(u) {
+    if (!refs.strokeBlock || refs.strokeBlockStem !== state.stem) {
+      if (refs.strokeBlock) refs.strokeBlock.destroy();
+      refs.strokeBlockStem = state.stem;
+      refs.strokeBlock = strokeLabelsBlock({
+        stem: state.stem, lang, getPlayer: () => refs.player, playerName: sideName, onSaved: onStrokesSaved,
+      });
+      refs.strokeBlock.load();
+    }
+    refs.strokeBlock.update({ strokesDoc: state.strokesDoc, rally: u, rallies: state.model.rallies, fps: state.model.fps });
+    return refs.strokeBlock.el;
+  }
+
+  function dropStrokesBlock() {
+    if (refs.strokeBlock) refs.strokeBlock.destroy();
+    refs.strokeBlock = null;
+    refs.strokeBlockStem = null;
+  }
+
+  /** A save of stroke labels was applied to strokes.json: re-read it and repaint what is built from it. */
+  async function onStrokesSaved(res) {
+    if (!res || !res.applied || !state.model) return;
+    const s = state.stem;
+    const r = await soft(getJSON(endpoints.output(s, 'strokes.json'), LONG));
+    if (state.destroyed || state.stem !== s || !r.ok || !r.data || typeof r.data !== 'object' || !state.modelInput) return;
+    state.strokesDoc = r.data;
+    state.model = buildWorkspaceModel({ ...state.modelInput, strokes: r.data });
+    if (!state.model.rallies.some((x) => x.id === state.unit)) state.unit = state.model.rallies.length ? state.model.rallies[0].id : 'all';
+    if (!unitStrokes().some((x) => x.i === state.sel)) state.sel = unitStrokes().length ? unitStrokes()[0].i : null;
+    paintLane();
+    renderStrip();
+    renderFilters();
+    renderRows();
+    renderSide(false);
+    if (refs.strokeBlock) refs.strokeBlock.focus();
   }
 
   /** The inline "who won the point ending here?" prompt of "Add point end here". */
@@ -1803,14 +1846,15 @@ export function mount(container, ctx = {}) {
       athleteId: sides.athleteId,
       lang,
     }) : null;
-    state.model = buildWorkspaceModel({
+    state.modelInput = {
       rallies: rallyInput(d.rally),
-      strokes: state.strokesDoc,
       techReports: state.tech,
       fps,
       insights: state.insights,
       athleteSide: state.athleteSide,
-    });
+    };
+    state.model = buildWorkspaceModel({ ...state.modelInput, strokes: state.strokesDoc });
+    dropStrokesBlock();
     const m = state.model;
     state.unit = m.rallies.length ? m.rallies[0].id : 'all';
     const first = unitStrokes()[0];
@@ -1826,7 +1870,8 @@ export function mount(container, ctx = {}) {
 
   /** Nothing of a video is shown (a part loading or missing, the Whole match). */
   function clearVideoState(s) {
-    Object.assign(state, { stem: s, video: null, model: null, dbl: null, strokesDoc: null, tech: null, playersFile: null, insights: null });
+    dropStrokesBlock();
+    Object.assign(state, { stem: s, video: null, model: null, modelInput: null, dbl: null, strokesDoc: null, tech: null, playersFile: null, insights: null });
   }
 
   /**

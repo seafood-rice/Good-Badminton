@@ -333,6 +333,9 @@ class BadmintonAnalysisSystem:
         self.racket_model_path = racket_model_path
         self.dominant_hand = dominant_hand
         self.stroke_model_path = stroke_model_path
+        # the owner's stroke corrections, re-applied after every strokes.json write
+        self.stroke_labels_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "stroke_labels")
         self.tracknet_weights = tracknet_weights
         self.inpaintnet_weights = inpaintnet_weights
         self.tracknet_mode = self._normalize_tracknet_mode(tracknet_mode)
@@ -1711,6 +1714,7 @@ class BadmintonAnalysisSystem:
         write_stroke_reports(strokes_path, reports)
         write_json(summary_path, build_match_summary(reports))
         print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
+        self._rescore_owner_stroke_reports()
 
     def _run_stroke_classification(self):
         """Label the shared hit list with the one stroke classifier -> strokes.json (schema 2).
@@ -1770,9 +1774,34 @@ class BadmintonAnalysisSystem:
             _write_json(path, sc.build_payload(labels, info, getattr(self, "_hit_source", None),
                                                getattr(self, "_shuttle_source", None), reason=reason))
             print(f"Stroke classification: {len(labels)} hits -> {path}")
+            self._apply_owner_stroke_labels()
         except Exception as exc:
             print(f"strokes.json could not be written: {exc!r}")
         return labels
+
+    def _apply_owner_stroke_labels(self):
+        """Re-apply the owner's stroke corrections to the fresh strokes.json; never fatal."""
+        from .stroke import owner_labels
+        labels_dir = getattr(self, "stroke_labels_dir", None)
+        if not labels_dir:
+            return
+        try:
+            result = owner_labels.apply_to_result(
+                self.save_dir, labels_dir, getattr(self, "video_name", os.path.basename(self.save_dir)))
+            if result.get("applied"):
+                self._rescore_owner_stroke_reports()
+        except Exception as exc:
+            print(f"Owner stroke labels could not be applied: {exc!r}")
+
+    def _rescore_owner_stroke_reports(self):
+        """Score the posture reports with the owner's stroke types; never fatal, no-op without labels."""
+        try:
+            from .stroke import relabel
+            doc = relabel._json(os.path.join(self.save_dir, "strokes.json"))
+            if isinstance(doc, dict) and "owner_labels" in doc:
+                relabel.rescore_reports(self.save_dir)
+        except Exception as exc:
+            print(f"Posture reports could not be re-scored with the owner's labels: {exc!r}")
 
     def _get_template_path(self):
         """Get the court template image path."""

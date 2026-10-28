@@ -167,3 +167,90 @@ def test_relabel_skips_hit_without_frame_or_hitter(tmp_path):
     doc["hits"] += [{"hitter": "upper"}, {"frame": 160}]
     (d / "hits.json").write_text(json.dumps(doc), encoding="utf-8")
     assert relabel.relabel(str(d), _weights(tmp_path))["labelled"] == 1
+
+
+def test_relabel_doubles_still_applies_owner_labels(tmp_path, monkeypatch):
+    d = tmp_path / "V"
+    _old_result(d)
+    (d / "metadata.json").write_text(json.dumps({"match_format": "doubles"}), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(relabel.owner_labels, "apply_to_result",
+                        lambda rd, ld, stem: calls.append((rd, ld, stem)) or {"applied": True})
+    out = relabel.relabel(str(d), None, labels_dir=str(tmp_path / "L"))
+    assert out["skipped"] == "doubles" and out["applied"] is True
+    assert calls == [(str(d), str(tmp_path / "L"), "V")]
+
+
+def test_default_labels_dir_is_the_project_data_dir():
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert os.path.normpath(relabel.DEFAULT_LABELS_DIR) == os.path.normpath(
+        os.path.join(root, "data", "stroke_labels"))
+
+
+def test_rescore_reports_helper_rescores_with_applied_types(tmp_path):
+    d = tmp_path / "V"
+    _old_result(d)
+    (d / "strokes.json").write_text(json.dumps({"schema": 2, "strokes": [
+        {"frame": 150, "hitter": "lower", "stroke": "smash", "confidence": 0.9}]}), encoding="utf-8")
+    assert relabel.rescore_reports(str(d)) == 1
+    rep = json.loads((d / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rep["stroke_type"] == "smash"
+    assert json.loads((d / "technique_summary.json").read_text(encoding="utf-8"))["stroke_count"] == 1
+    assert relabel.rescore_reports(str(tmp_path / "none")) == 0
+
+
+def _files(d):
+    return {p.name: p.read_bytes() for p in sorted(d.iterdir()) if p.is_file()}
+
+
+def test_a_failed_write_leaves_the_result_files_unchanged(tmp_path, monkeypatch):
+    import pytest
+    from badminton_analysis.analysis import technique_writer
+    d = tmp_path / "V"
+    _old_result(d)
+    (d / "technique_summary.json").write_text('{"old": 1}', encoding="utf-8")
+    m = smod.StrokeNet(INPUT_DIM, hidden=8, levels=1)
+    w = tmp_path / "w.pt"
+    smod.save_stroke_model(m, smod.base_meta(8, 1, 0.0), w)
+    before = _files(d)
+
+    def partial_dump(doc, fh, **kw):
+        fh.write('{"partial')
+        raise OSError("disk full")
+
+    monkeypatch.setattr(json, "dump", partial_dump)      # strokes.json and technique_summary.json
+    with pytest.raises(OSError):
+        relabel.relabel(str(d), str(w))
+    assert _files(d) == before                            # no half file, no temp file left
+
+    monkeypatch.undo()
+    real = technique_writer._clean_value
+    calls = []
+
+    def second_report_fails(value):
+        calls.append(1)
+        if len(calls) > 1:
+            raise OSError("disk full")
+        return real(value)
+
+    monkeypatch.setattr(technique_writer, "_clean_value", second_report_fails)
+    reports = [{"a": 1}, {"b": 2}]
+    with pytest.raises(OSError):
+        technique_writer.write_stroke_reports(str(d / "strokes.jsonl"), reports)
+    assert _files(d) == before
+
+
+def test_relabel_deletes_stale_temp_files_but_not_fresh_ones(tmp_path):
+    import os
+    import time
+    d = tmp_path / "V"
+    _old_result(d)
+    stale, fresh, other = d / ".strokes-abc.tmp", d / ".strokes-new.tmp", d / "keep.tmp"
+    for f in (stale, fresh, other):
+        f.write_text("x", encoding="utf-8")
+    old = time.time() - 600
+    os.utime(stale, (old, old))
+    os.utime(other, (old, old))                  # not a writer's temp name: left alone
+    relabel.relabel(str(d), str(tmp_path / "missing.pt"))      # even a refused relabel cleans up
+    assert not stale.exists() and fresh.exists() and other.exists()

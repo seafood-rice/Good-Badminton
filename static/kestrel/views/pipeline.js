@@ -6,6 +6,7 @@ import { ago } from '../core/format.js';
 import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, setStyle, setText } from '../widgets/frame.js';
+import { strokeModelCard, describeCode } from '../widgets/strokemodel.js';
 import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES, PAUSED_STATUSES, jobStage } from '../widgets/pipeline.js';
 
 export const FAST_MS = 2000;
@@ -47,7 +48,7 @@ export function groupJobs(jobs) {
     let progress = isNum(j.progress) ? Math.max(0, Math.min(100, Math.round(j.progress))) : 0;
     if (status === 'completed') progress = 100;
     const stem = stemOf(j.video);
-    const kind = j.kind === 'posture' ? 'posture' : j.kind === 'strategy' ? 'strategy' : 'match';
+    const kind = ['posture', 'strategy', 'training'].includes(j.kind) ? j.kind : 'match';
     const row = {
       id: String(j.id === undefined || j.id === null ? '' : j.id),
       stem,
@@ -56,6 +57,7 @@ export function groupJobs(jobs) {
       stage: jobStage(j),
       progress,
       message: typeof j.message === 'string' ? j.message : '',
+      reasonCode: j.reason_code && typeof j.reason_code === 'object' && typeof j.reason_code.code === 'string' ? j.reason_code : null,
       updated: isNum(j.updated) ? j.updated : null,
       tone: toneOf(status),
       active: isActive,
@@ -71,12 +73,13 @@ export function groupJobs(jobs) {
 
 /**
  * Pure: the action buttons of a job row, in order. A strategy report cannot be paused: pausing would free
- * its slot while Ollama keeps generating.
+ * its slot while Ollama keeps generating; a training or relabel job cannot either, but a running one can be
+ * cancelled (the server stops its process tree, and refuses once the new model is being saved).
  */
 export function jobActions(row) {
   const r = obj(row);
   if (r.status === 'pending') return ['cancel'];
-  if (r.status === 'running') return r.kind === 'strategy' ? [] : ['pause'];
+  if (r.status === 'running') return r.kind === 'training' ? ['cancel'] : r.kind === 'strategy' ? [] : ['pause'];
   if (r.status === 'paused') return ['resume'];
   return [];
 }
@@ -87,6 +90,14 @@ export function messageText(message, lang) {
   const m = /^(.+?) \/ (.+)$/.exec(s);
   if (m && /[一-鿿]/.test(m[1])) return (lang === 'en' ? m[2] : m[1]).trim();
   return s;
+}
+
+/** Pure: the text of a job row's message line; a coded reason (training jobs) is appended in the UI language. */
+export function jobMessage(row, lang) {
+  const r = obj(row);
+  const msg = messageText(r.message, lang);
+  const why = r.reasonCode ? describeCode(r.reasonCode, lang) : '';
+  return why ? (msg ? msg + ': ' : '') + why : msg;
 }
 
 function stageText(stage, lang) {
@@ -164,6 +175,17 @@ export function mount(container, ctx = {}) {
   const root = h('div', { class: 'page pv', 'data-view': 'pipeline' });
   container.appendChild(root);
   const bars = new Map(); // job id -> {bar, pctEl, stateEl, row}
+  // Stroke model card: survives re-renders of the job list; refreshed on every jobs poll (the server caches it).
+  const modelCard = strokeModelCard({ lang, api, onChanged: () => { loadModel(); poll(); } });
+  let modelBusy = false;
+  async function loadModel() {
+    if (modelBusy || state.destroyed) return;
+    modelBusy = true;
+    try {
+      const data = await api.strokeModel({ timeout: 10000 });
+      if (!state.destroyed) modelCard.update(data);
+    } catch (e) { /* the card keeps its last state */ } finally { modelBusy = false; }
+  }
 
   function header() {
     const g = state.groups;
@@ -227,7 +249,7 @@ export function mount(container, ctx = {}) {
   }
 
   function paintText(refs, r) {
-    const msg = messageText(r.message, lang);
+    const msg = jobMessage(r, lang);
     setText(refs.msgEl, msg);
     refs.msgEl.hidden = !msg;
     setText(refs.updEl, r.updated !== null ? t('pv.updated', lang, { time: ago(Math.max(0, Date.now() / 1000 - r.updated)) }) : '');
@@ -246,6 +268,7 @@ export function mount(container, ctx = {}) {
     root.textContent = '';
     bars.clear();
     root.appendChild(header());
+    root.appendChild(modelCard.el);
     const g = state.groups;
     if (state.error) {
       root.appendChild(h('div', { class: g ? 'ov-alert' : 'card ov-state', role: 'alert' }, [
@@ -296,6 +319,7 @@ export function mount(container, ctx = {}) {
     onData: (data) => {
       const next = groupJobs(data);
       const wasActive = !!(state.groups && state.groups.anyActive);
+      loadModel();
       // A failed action shows its alert for a few seconds (re-rendering each poll), then clears.
       if (state.actionError && Date.now() - state.actionError.at > 5000) state.actionError = null;
       if (state.actionError || !patch(next)) {

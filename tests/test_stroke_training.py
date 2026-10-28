@@ -83,3 +83,59 @@ def test_load_dji_reports_skipped_rows(tmp_path, capsys):
     rallies = tsc.load_dji(str(sheet), str(res))
     assert len(rallies[0].hits) == 1
     assert "A: skipped 1 labelled row(s) without player or frame" in capsys.readouterr().out
+
+
+def _owner_fixture(tmp_path):
+    from badminton_analysis.stroke import owner_labels as ol
+    res, lab = tmp_path / "res", tmp_path / "lab"
+    for stem in ("A", "B", "T"):
+        d = res / stem
+        d.mkdir(parents=True)
+        (d / "hits.json").write_text(json.dumps(
+            {"fps": 30.0, "hits": [{"frame": 60, "hitter": "lower"}, {"frame": 120, "hitter": "upper"}]}),
+            encoding="utf-8")
+        save_signals(d / "hit_signals.npz", _sig())
+    rows = [{"time_sec": 2.0, "hitter": "lower", "stroke": "smash", "kind": "label"},
+            {"time_sec": 4.0, "hitter": "upper", "stroke": None, "kind": "not_hit"},
+            {"time_sec": 5.0, "hitter": "lower", "stroke": "lift", "kind": "added"},
+            {"time_sec": 6.0, "hitter": "lower", "stroke": None, "kind": "unsure"},
+            {"time_sec": 15.0, "hitter": "lower", "stroke": "lift", "kind": "added"}]
+    for stem, split in (("A", "train"), ("B", "train"), ("T", "test")):
+        ol.save(lab / f"{stem}.json", {"schema": 1, "revision": 1, "split": split, "labels": rows})
+    return res, lab
+
+
+def test_load_owner_train_split_only_and_counts_outside_frames(tmp_path, capsys):
+    res, lab = _owner_fixture(tmp_path)
+    rallies = tsc.load_owner(str(lab), str(res))
+    assert [r.match for r in rallies] == ["owner:A", "owner:B"]
+    # label at 60, added at 150 and 450 (outside the 300-frame npz); not_hit and unsure excluded
+    assert [(h["frame"], h["stroke"]) for h in rallies[0].hits] == [(60, "smash"), (150, "lift"), (450, "lift")]
+    assert "2 hit(s) outside the saved signals" in capsys.readouterr().out
+    assert tsc.load_owner(str(tmp_path / "nolabels"), str(res)) == []
+
+
+def test_main_no_labels_no_dataset_is_a_clear_exit(tmp_path):
+    res, lab = _owner_fixture(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        tsc.main(["--stroke-labels", str(tmp_path / "nolabels"), "--results-dir", str(res),
+                  "--out", str(tmp_path / "o.pt")])
+    assert "need training and validation data" in str(e.value)
+
+
+def test_main_owner_calib_accepts_bare_stem_and_holds_it_out(tmp_path, monkeypatch):
+    res, lab = _owner_fixture(tmp_path)
+    seen = {}
+
+    def fake_train(train_r, val_r, **kw):
+        seen["train"], seen["val"] = [r.match for r in train_r], [r.match for r in val_r]
+        return "model", {"unknown_threshold": 0.5, "val_metrics": {"accuracy": 1, "unknown_rate": 0}}
+
+    monkeypatch.setattr(tsc, "train", fake_train)
+    monkeypatch.setattr(tsc.smod, "save_stroke_model", lambda *a: None)
+    assert tsc.main(["--stroke-labels", str(lab), "--results-dir", str(res), "--calib-video", "A",
+                     "--out", str(tmp_path / "o.pt")]) == 0
+    assert seen == {"train": ["owner:B"], "val": ["owner:A"]}
+    assert tsc.main(["--stroke-labels", str(lab), "--results-dir", str(res),
+                     "--calib-video", "owner:B", "--out", str(tmp_path / "o.pt")]) == 0
+    assert seen == {"train": ["owner:A"], "val": ["owner:B"]}

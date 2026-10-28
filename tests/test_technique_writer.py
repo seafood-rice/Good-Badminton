@@ -62,3 +62,22 @@ def test_build_match_summary_counts_strengths():
     assert {s["metric"] for s in summary["strengths"]} == {
         "elbow_extension", "knee_flexion", "wrist_snap"
     }
+
+
+def test_write_stroke_reports_survives_one_transient_permission_error(tmp_path, monkeypatch):
+    import time
+    real = os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) == 1:
+            raise PermissionError("busy")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
+    out = tmp_path / "strokes.jsonl"
+    write_stroke_reports(str(out), [_report("smash", 80, [])])
+    assert len(calls) == 2 and len(out.read_text(encoding="utf-8").splitlines()) == 1
+    assert [p.name for p in tmp_path.iterdir()] == ["strokes.jsonl"]

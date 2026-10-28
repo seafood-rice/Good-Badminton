@@ -95,6 +95,18 @@ def save(path, doc):
     write_json_atomic(path, doc)
 
 
+def _replace_with_retry(tmp, path):
+    """``os.replace``, retrying briefly on PermissionError (Windows indexers hold new files open)."""
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SEC)
+
+
 def write_json_atomic(path, doc):
     """Write ``doc`` as JSON atomically (temp file in the same directory + os.replace)."""
     path = Path(path)
@@ -103,14 +115,7 @@ def write_json_atomic(path, doc):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(doc, f, ensure_ascii=False, indent=1)
-        for attempt in range(_REPLACE_ATTEMPTS):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:   # Windows indexers briefly hold new files open
-                if attempt == _REPLACE_ATTEMPTS - 1:
-                    raise
-                time.sleep(_REPLACE_BACKOFF_SEC)
+        _replace_with_retry(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)

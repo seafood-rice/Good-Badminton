@@ -68,8 +68,20 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
   match queues `strategy_<stem>` in the shared job slots; local Ollama `qwen3.8:27b` writes en+zh from a facts
   pack; every claim cites fact ids and every number must be held by a cited fact, else retry then plain-text
   fallback. Config `GB_STRATEGY_*` env > `data/settings.json` `strategy` > defaults (`GB_STRATEGY_REPORT=off`).
+- Stroke correction (spec `docs/superpowers/specs/2026-10-28-stroke-correction-and-rally-tactics-design.md`): owner
+  labels in `data/stroke_labels/<stem>.json` overlay `strokes.json` reversibly (`stroke/owner_labels.py`; relabel and
+  re-analysis keep them). Retrain (`train_strokes` job, Pipeline card) keeps a candidate only if its 7-group accuracy
+  >= the live model's on the same owner test shots and unknown <= 15 %; history and roll back in `weights/`. The
+  strategy report adds an effectiveness tally, openings and overview facts from `strategy/shots.py`.
 
 ## Blockers and loose ends
+- Stroke correction: no owner stroke labels exist yet, so Retrain has never run on real labels (smoke-tested on
+  placeholder labels: 90 s on the RTX 4090, reject path). Position check fails 0004 (both sides) and 0003's far side,
+  so zone/rushed facts are thin; only 3 of 30 openings in 0003 are complete until missed shots are added. Doubles
+  tactics untested live. Owner next: label strokes on 0003/0004 (one match as test), then Retrain.
+- To-do (owner, 2026-10-28; not planned): forehand/backhand detection; shuttle landing depth; a per-game split of
+  rallies; feeding owner not-a-hit / added shots into hit-detector training; career-wide tactical report; classifier
+  relabel for doubles.
 - Strategy report: doubles not yet tried against the live model (no doubles run in `outputs/`). A live singles run
   took 832 s for en+zh (cold model load, full test suite running beside it); a first run timed out at 300 s, so the
   default timeout is 600 s per language.

@@ -190,3 +190,88 @@ test('a doubles run with an assumed focus names the team, not the lower side', a
     p.destroy();
   } finally { removeEnv(); }
 });
+
+const TABLES = {
+  effectiveness: {
+    you: { smash: { effective: 4, neutral: 1, ineffective: 1, unknown: 0, n: 6 }, lift: { effective: 1, neutral: 0, ineffective: 0, unknown: 0, n: 1 } },
+    opponent: {},
+  },
+  openings: {
+    complete: 6, total: 8, neutral: 1, insufficient: false, won_by: { you: 3, opponent: 2 }, opening_winner_won_point: { n: 5, won: 4 },
+    rows: [{ rally: 3, advantage: 'you', point_winner: 'opponent', n_shots: 9, shots: [
+      { hitter: 'you', stroke: 'long_serve', zone: { depth: 'rear', side: 'left' }, sent_to: { depth: 'mid', side: 'centre' } },
+      { hitter: 'opponent', stroke: '<i>x</i>', zone: null, sent_to: null },
+    ] }],
+  },
+};
+
+test('tactics section renders both tables from report.tables, literal text, in both languages', async () => {
+  installEnv();
+  try {
+    for (const lang of ['en', 'zh']) {
+      const pl = payload();
+      pl.report.tables = TABLES;
+      pl.report.by_lang.en.caveats = [{ code: 'stroke_model', params: { accuracy: 0.81, bar_met: false } }, { code: 'positions_unusable', params: { sides: ['opponent'] } },
+        { code: 'openings_incomplete', params: { complete: 2, total: 6 } }, { code: 'owner_labelled', params: { share: 0.25 } }];
+      pl.report.by_lang.zh = pl.report.by_lang.en;
+      const p = strategyPanel({ stem: 's', lang, api: fakeApi(pl), timers: fakeTimers() });
+      await tick();
+      const sec = everything(p.el).find((e) => e.tagName === 'DETAILS' && e.getAttribute('data-sec') === 'tactics');
+      assert.ok(sec, 'tactics section present');
+      const txt = sec.textContent;
+      assert.ok(txt.includes(t('strategy.sec.tactics', lang)));
+      assert.ok(txt.includes(t('stroke.smash', lang)));
+      assert.ok(txt.includes(t('strategy.tactics.few', lang)), 'lift has 1 attempt');
+      assert.ok(txt.includes(t('stroke.long_serve', lang)));
+      assert.ok(txt.includes('<i>x</i>'), 'unknown stroke ids are text, not HTML');
+      assert.equal(everything(sec).some((e) => e.tagName === 'I'), false);
+      assert.equal(everything(sec).filter((e) => e.tagName === 'TABLE').length, 2);
+      assert.ok(!txt.includes(t('strategy.tactics.open_few', lang)));
+      const all = p.el.textContent;
+      assert.ok(all.includes(t('strategy.caveat.stroke_model', lang, { accuracy: '81%', bar: t('strategy.bar.not_met', lang) })));
+      assert.ok(all.includes(t('strategy.caveat.positions_unusable', lang, { sides: t('strategy.who.opponent', lang) })));
+      assert.ok(all.includes(t('strategy.caveat.openings_incomplete', lang, { complete: 2, total: 6 })));
+      assert.ok(all.includes(t('strategy.caveat.owner_labelled', lang, { share: '25%' })));
+      p.destroy();
+    }
+  } finally { removeEnv(); }
+});
+
+test('tactics section shows empty states when nothing could be measured, and is absent without tables', async () => {
+  installEnv();
+  try {
+    const pl = payload();
+    pl.report.tables = {
+      effectiveness: { you: {}, opponent: {} },
+      openings: { complete: 0, total: 0, neutral: 0, insufficient: true, won_by: { you: 0, opponent: 0 }, opening_winner_won_point: { n: 0, won: 0 }, rows: [] },
+    };
+    const p = strategyPanel({ stem: 's', lang: 'en', api: fakeApi(pl), timers: fakeTimers() });
+    await tick();
+    const sec = everything(p.el).find((e) => e.tagName === 'DETAILS' && e.getAttribute('data-sec') === 'tactics');
+    const txt = sec.textContent;
+    assert.ok(txt.includes(t('strategy.tactics.no_eff', 'en')));
+    assert.ok(txt.includes(t('strategy.tactics.no_openings', 'en')));
+    assert.ok(txt.includes(t('strategy.tactics.open_few', 'en')));
+    assert.equal(everything(sec).some((e) => e.tagName === 'TABLE'), false);
+    const old = strategyPanel({ stem: 's', lang: 'en', api: fakeApi(payload()), timers: fakeTimers() });
+    await tick();
+    assert.equal(everything(old.el).some((e) => e.tagName === 'DETAILS' && e.getAttribute('data-sec') === 'tactics'), false);
+  } finally { removeEnv(); }
+});
+
+test('the hitter_unknown caveat is shown in both languages', async () => {
+  installEnv();
+  try {
+    for (const lang of ['en', 'zh']) {
+      const pl = payload();
+      pl.report.by_lang.en.caveats = [{ code: 'hitter_unknown', params: {} }];
+      pl.report.by_lang.zh = pl.report.by_lang.en;
+      const p = strategyPanel({ stem: 's', lang, api: fakeApi(pl), timers: fakeTimers() });
+      await tick();
+      const text = t('strategy.caveat.hitter_unknown', lang);
+      assert.notEqual(text, 'strategy.caveat.hitter_unknown');
+      assert.ok(p.el.textContent.includes(text));
+      p.destroy();
+    }
+  } finally { removeEnv(); }
+});

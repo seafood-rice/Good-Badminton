@@ -41,7 +41,11 @@ def tree(tmp_path):
             break
         time.sleep(0.05)
     yield proc, parent_out, child_out
-    for p in [psutil.Process(proc.pid)] + psutil.Process(proc.pid).children(recursive=True):
+    try:
+        leftovers = [psutil.Process(proc.pid)] + psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:      # already gone (kill_tree test)
+        leftovers = []
+    for p in leftovers:
         try:
             p.resume()
             p.kill()
@@ -67,3 +71,30 @@ def test_an_exited_process_raises():
         proc_control.suspend_tree(proc.pid)
     with pytest.raises(psutil.NoSuchProcess):
         proc_control.resume_tree(proc.pid)
+
+
+def test_kill_tree_stops_parent_and_child(tree):
+    proc, parent_out, child_out = tree
+    child_pids = [c.pid for c in psutil.Process(proc.pid).children(recursive=True)]
+    assert child_pids
+    proc_control.kill_tree(proc.pid)
+    proc.wait(10)
+    assert not psutil.pid_exists(proc.pid) or psutil.Process(proc.pid).status() == psutil.STATUS_ZOMBIE
+    for pid in child_pids:
+        assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    assert not _grows(parent_out, 0.3) and not _grows(child_out, 0.3)
+
+
+def test_kill_tree_of_an_exited_process_is_quiet():
+    proc = subprocess.Popen([sys.executable, '-c', 'pass'])
+    proc.wait(10)
+    proc_control.kill_tree(proc.pid)
+
+
+def test_kill_tree_stops_before_touching_anything_when_told_to_abort(tree):
+    proc, parent_out, child_out = tree
+    asked = []
+    assert proc_control.kill_tree(proc.pid, should_abort=lambda: asked.append(1) or True) is False
+    assert asked == [1] and proc.poll() is None and psutil.Process(proc.pid).is_running()
+    assert proc_control.kill_tree(proc.pid, should_abort=lambda: False) is None
+    proc.wait(10)

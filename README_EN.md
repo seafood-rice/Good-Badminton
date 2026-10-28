@@ -59,6 +59,7 @@ Video preview: `assets/demo_en.mp4`.
 - **Stroke technique analysis** - Detects stroke types, analyzes key joint angles, generates biomechanical scores and improvement suggestions.
 - **Intelligent training plan** - Generates progressive multi-week training plans targeting detected weaknesses, with on-court and at-home exercises.
 - **Match strategy report** - After a match analysis finishes, a local LLM writes a coaching and scouting report (singles and doubles, English and Chinese) from the measured facts. Every claim cites its numbers and is checked against them. It appears in the Strategy tab of Match details; see [Match strategy report](#match-strategy-report-docker-and-ollama).
+- **Stroke correction and retraining** - Correct detected strokes from the video; corrections apply at once and retrain the stroke classifier on demand, keeping a new model only if it scores at least as well. See [Correcting strokes](#correcting-strokes-and-retraining-the-classifier).
 
 > 📄 For training data, metrics, and licensing notes behind the racket detector and AI form-scoring models, see the [model cards](docs/model-cards.md).
 
@@ -439,6 +440,14 @@ Each finished match analysis queues a strategy report job. It needs an OpenAI-co
 | `GB_STRATEGY_REPORT` | `on` | Set `off` to disable the report and its auto-queue |
 
 More settings (`GB_STRATEGY_LLM_KEY`, `GB_STRATEGY_LLM_TIMEOUT`, `GB_STRATEGY_LANGS`) and an optional `strategy` object in `data/settings.json` are described in the design spec. A report problem (Ollama down, model missing) never changes the match job's status; the Strategy tab shows the reason and any fallback text.
+
+The report also has a **Rally tactics** part: how effective each stroke type was (effective / neutral / ineffective / unknown), the opening 3-shot exchanges and who gained the advantage, active play time and rally lengths. Openings and sequences need complete shot lists, so they get much better once strokes are corrected (below).
+
+### Correcting strokes and retraining the classifier
+
+On Match details, the **Strokes** block under the rally summary lists the detected shots of the selected rally (or of the whole video in the all-shots view). Click a shot to jump the video to it, then press a key: a stroke-type key (shown on the buttons), `P` swap player, `X` not a hit, `?` unsure, `Enter` confirm and go to the next shot. "Add missed shot here" adds a shot at the current video time. Corrections are saved to `data/stroke_labels/<stem>.json`, apply to the stats and the strategy report at once, and survive a re-analysis. Mark each match **train** or **test**; test matches are only used to measure accuracy.
+
+The **Stroke model** card on the Pipeline page shows the current model's accuracy on your test matches and the label counts. **Retrain** unlocks at 50 new train labels and 20 labelled test shots. A new model is kept only if it scores at least as well as the current one on the same test shots; every match is then relabelled with your corrections kept. **Roll back** restores the previous model. Weights and history live in `weights/` (a mounted volume in Docker).
 
 ## 📝 Usage
 
