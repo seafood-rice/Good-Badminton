@@ -429,7 +429,9 @@ def test_doubles_side_hitters_are_used_as_they_are(tmp_path):
     table = build_shots(doubles_dir(tmp_path, SIDE_STROKES))
     assert [s["hitter"] for s in table["shots"]] == [L, U, L]
     assert table["positions_ok"] == {"upper": True, "lower": True}
-    assert table["shots"][0]["zone"] is not None            # the team's positions
+    # no hits.json hitter_id: the team's mean position says nothing about who hit, so no zone
+    assert [s["zone"] for s in table["shots"]] == [None, None, None]
+    assert [s["rushed_reply"] for s in table["shots"]] == [None, None, None]
     assert table["rallies"][0]["complete_opening"] is True
 
 

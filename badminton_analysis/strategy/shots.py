@@ -147,22 +147,6 @@ def _hit_pids(out_dir):
     return out
 
 
-def _team_positions(side_of, points):
-    """``{side: {frame: mean (x, y) of that team's players}}`` for the per-team fallback."""
-    acc = {}
-    for pid, frames in points.items():
-        side = side_of.get(pid)
-        if side not in SIDES:
-            continue
-        for f, (x, y) in frames.items():
-            a = acc.setdefault(side, {}).setdefault(f, [0.0, 0.0, 0])
-            a[0] += x
-            a[1] += y
-            a[2] += 1
-    return {side: {f: (a[0] / a[2], a[1] / a[2]) for f, a in frames.items()}
-            for side, frames in acc.items()}
-
-
 def _read_detections(out_dir):
     """``{"upper": {frame: (x, y)}, "lower": {...}}`` from ``detections.jsonl`` (read once)."""
     pos = {side: {} for side in SIDES}
@@ -294,7 +278,7 @@ def build_shots(out_dir):
         actor = hitter
         if doubles:
             # the player behind the hit (hits.json, by frame) when it is on this side, else the
-            # team's own positions
+            # side itself (no position)
             pid = hit_pid.get(int(frame))
             actor = pid if pid in player_pts and side_of.get(pid) == side else (
                 hitter if hitter in side_of and side_of[hitter] == side else side)
@@ -304,8 +288,9 @@ def build_shots(out_dir):
             per_seg[i].append((t, int(frame), side, actor, s))
 
     det = _read_detections(out_dir)
-    # positions by actor: singles = side, doubles = player id
-    positions = (dict(player_pts) | _team_positions(side_of, player_pts)) if doubles else det
+    # positions by actor: singles = side, doubles = player id. A doubles hit with no known hitter
+    # has no position: the partners' mean says nothing about who hit.
+    positions = dict(player_pts) if doubles else det
     in_play = {side: [] for side in SIDES}
     spans = [(round(seg["start_sec"] * fps), round(seg["end_sec"] * fps)) for seg in segments]
     if doubles:
