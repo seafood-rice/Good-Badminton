@@ -14,6 +14,7 @@ import numpy as np
 from . import segment_features as sf
 
 SCHEMA = 1
+MODES = ("gap", "swing_veto")
 SERVE_PAD_SEC = 2.0
 END_PAD_SEC = 1.0
 SWING_FRAC = 0.25          # a lone hit needs swing activity above this share of the run's p99
@@ -32,9 +33,14 @@ def _sigmoid(z):
     return 1.0 / (1.0 + np.exp(-np.clip(z, -40.0, 40.0)))
 
 
-def train(examples, features=None):
-    """The model dict from ``[(features_dict, label 0|1)]``; ValueError without both classes."""
-    features = list(features or sf.FEATURES)
+def train(examples, features=None, mode="gap"):
+    """The model dict from ``[(features_dict, label 0|1)]``; ValueError without both classes.
+
+    ``mode`` is stored: ``"gap"`` (examples are hit gaps, default features ``FEATURES``) or
+    ``"swing_veto"`` (examples are swing segments, default features ``VETO_FEATURES``)."""
+    if mode not in MODES:
+        raise ValueError(f"unknown mode {mode!r}")
+    features = list(features or (sf.VETO_FEATURES if mode == "swing_veto" else sf.FEATURES))
     rows = [(f, int(y)) for f, y in examples if y in (0, 1)]
     y = np.array([y for _, y in rows], dtype=float)
     if len(rows) == 0 or y.min() == y.max():
@@ -51,7 +57,7 @@ def train(examples, features=None):
         err = (_sigmoid(z @ coef + intercept) - y) * w_row
         coef -= LEARNING_RATE * (z.T @ err / len(y) + L2 * coef)
         intercept -= LEARNING_RATE * float(err.mean())
-    return {"schema": SCHEMA, "features": features,
+    return {"schema": SCHEMA, "mode": mode, "features": features,
             "mean": [float(v) for v in mean], "scale": [float(v) for v in scale],
             "coef": [float(v) for v in coef], "intercept": float(intercept),
             "threshold": 0.5,
@@ -75,6 +81,8 @@ def load(path):
     except (OSError, ValueError, RecursionError, MemoryError):
         return None
     if not isinstance(model, dict) or model.get("schema") != SCHEMA:
+        return None
+    if model.setdefault("mode", "gap") not in MODES:
         return None
     names = model.get("features")
     if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
@@ -146,6 +154,8 @@ def segments(inputs, model):
     rallies is split 1:2 (end pad : serve pad). A run of one hit without swing activity
     is dropped.
     """
+    if model.get("mode", "gap") == "swing_veto":
+        return _veto_segments(inputs, model)
     hits = list(inputs.hits or [])
     if not hits:
         return []
@@ -180,6 +190,45 @@ def segments(inputs, model):
     return [{"id": n, "start_frame": int(round(r[0] * fps)), "end_frame": int(round(r[1] * fps)),
              "start_sec": float(r[0]), "end_sec": float(r[1]), "degraded": False, "p_point": float(r[4])}
             for n, r in enumerate(kept, 1)]
+
+
+def _veto_segments(inputs, model):
+    """The swing segments the veto classifier keeps (``p_point`` = its point probability)."""
+    rows = sf.segment_rows(inputs)
+    probs = predict(model, rows)
+    cut = float(model.get("threshold", 0.5))
+    fps = float(inputs.fps)
+    kept = [(r, p) for r, p in zip(rows, probs) if p >= cut]
+    return [{"id": n, "start_frame": int(round(r.start * fps)), "end_frame": int(round(r.end * fps)),
+             "start_sec": float(r.start), "end_sec": float(r.end), "degraded": False, "p_point": float(p)}
+            for n, (r, p) in enumerate(kept, 1)]
+
+
+def fit(matches):
+    """The best model from ``[(inputs, owner_labels_doc, true_end_secs)]`` (training matches only).
+
+    Trains the gap model and the swing-veto model, tunes each threshold on these matches and
+    keeps the mode with the higher pooled training point-end F1 (a tie goes to
+    ``swing_veto``, the one that cannot add segments). The result carries ``train_f1`` and
+    ``mode_scores``. Raises ValueError when neither mode has both classes to learn from.
+    """
+    tune = [(inp, ends) for inp, _doc, ends in matches]
+    gap_ex, veto_ex = [], []
+    for inp, doc, _ends in matches:
+        gaps = sf.gaps(inp)
+        gap_ex += [(g.features, y) for g, y in zip(gaps, sf.labels_for(gaps, doc, [])) if y is not None]
+        rows = sf.segment_rows(inp)
+        veto_ex += [(r.features, y) for r, y in zip(rows, sf.veto_labels_for(rows, doc)) if y is not None]
+    scored = {}
+    for mode, ex in (("swing_veto", veto_ex), ("gap", gap_ex)):
+        try:
+            scored[mode] = tune_threshold(train(ex, mode=mode), tune)
+        except ValueError:
+            continue
+    if not scored:
+        raise ValueError("no mode has examples of both classes")
+    best = max(scored, key=lambda m: (scored[m]["train_f1"], m == "swing_veto"))
+    return dict(scored[best], mode_scores={m: scored[m]["train_f1"] for m in scored})
 
 
 def point_end_f1(pred_ends, true_ends, tol=1.5):

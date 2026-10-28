@@ -160,3 +160,80 @@ def labels_for(gap_list, owner_labels_doc, segments=()):   # segments: kept for 
         j = bisect.bisect_left(unsure, g.start - LABEL_PAD_SEC)
         out.append(None if j < len(unsure) and unsure[j] <= g.end + LABEL_PAD_SEC else 0)
     return out
+
+
+# --- swing-anchored veto mode: one example per swing segment -----------------------------
+
+VETO_FEATURES = ("seg_dur", "hits_n", "alt_share", "max_hit_gap", "swing_mean", "swing_max",
+                 "shuttle_share", "gap_prev", "gap_next", "walk_upper_mps", "walk_lower_mps",
+                 "svc_first")
+NEIGHBOUR_CAP_SEC = 30.0
+
+
+@dataclass
+class Seg:
+    start: float
+    end: float
+    features: dict = field(default_factory=dict)
+    index: int = -1   # index into the sorted ``inputs.swing_segments``
+
+
+def segment_rows(inputs):
+    """``[Seg]``: one per swing segment (``inputs.swing_segments``) with the veto features."""
+    segs = sorted((float(a), float(b)) for a, b in (getattr(inputs, "swing_segments", None) or ()))
+    if not segs:
+        return []
+    hits = list(inputs.hits or [])
+    fps = float(inputs.fps)
+    swing_t = np.array([t for t, _ in inputs.swing], dtype=float)
+    swing_a = np.array([a for _, a in inputs.swing], dtype=float)
+    shuttle = np.array(sorted(inputs.shuttle_frames or ()), dtype=np.int64)
+    ordered = {s: sorted((inputs.positions or {}).get(s) or {}) for s in SIDES}
+    ok = inputs.positions_ok or {}
+    out = []
+    for k, (start, end) in enumerate(segs):
+        dur = max(end - start, 1e-3)
+        inside = [h for h in hits if start <= h[0] <= end]
+        times = [h[0] for h in inside]
+        pairs = list(zip(inside, inside[1:]))
+        alt = sum(1 for a, b in pairs if a[2] != b[2]) / len(pairs) if pairs else 0.0
+        lo = int(np.searchsorted(swing_t, start, side="left"))
+        hi = int(np.searchsorted(swing_t, end, side="right"))
+        act = swing_a[lo:hi]
+        f0, f1 = int(round(start * fps)), int(round(end * fps))
+        seen = int(np.searchsorted(shuttle, f1, side="right") - np.searchsorted(shuttle, f0, side="left"))
+        walk = {s: (_walked(inputs.positions[s], ordered[s], fps, f0, f1) / dur if ok.get(s) else 0.0)
+                for s in SIDES}
+        svc = 0.0
+        if inside and ok.get(inside[0][2]):
+            xy = _lookup(inputs.positions.get(inside[0][2]) or {}, int(inside[0][1]))
+            svc = 1.0 if any(_service_flags(inside[0][2], xy)) else 0.0
+        prev_gap = start - segs[k - 1][1] if k > 0 else NEIGHBOUR_CAP_SEC
+        next_gap = segs[k + 1][0] - end if k + 1 < len(segs) else NEIGHBOUR_CAP_SEC
+        out.append(Seg(start, end, {
+            "seg_dur": dur, "hits_n": float(len(inside)), "alt_share": alt,
+            "max_hit_gap": max((b - a for a, b in zip(times, times[1:])), default=0.0),
+            "swing_mean": float(act.mean()) if act.size else 0.0,
+            "swing_max": float(act.max()) if act.size else 0.0,
+            "shuttle_share": min(1.0, seen / max(1, f1 - f0 + 1)),
+            "gap_prev": min(NEIGHBOUR_CAP_SEC, max(0.0, prev_gap)),
+            "gap_next": min(NEIGHBOUR_CAP_SEC, max(0.0, next_gap)),
+            "walk_upper_mps": walk["upper"], "walk_lower_mps": walk["lower"], "svc_first": svc,
+        }, k))
+    return out
+
+
+def veto_labels_for(seg_list, owner_labels_doc):
+    """``[1 | 0 | None]`` per swing segment: 0 when an owner ``not_point`` label attaches to it,
+    1 when an owner point verdict (upper / lower) does, None otherwise (unlabelled, unsure,
+    or no label document)."""
+    if not isinstance(owner_labels_doc, dict) or not owner_labels_doc.get("labels"):
+        return [None] * len(seg_list)
+    rows = [{"id": i, "start_sec": s.start, "end_sec": s.end} for i, s in enumerate(seg_list)]
+    by_segment, _added = lab.attach(owner_labels_doc["labels"], rows)
+    out = []
+    for i in range(len(seg_list)):
+        label = by_segment.get(i)
+        verdict = label["verdict"] if label else None
+        out.append(0 if verdict == "not_point" else 1 if verdict in lab.SIDES else None)
+    return out

@@ -272,3 +272,97 @@ def test_segments_use_nms_and_tuned_threshold_is_stored():
     # a threshold above every p scores 0, so a truth the model cannot hit still returns a model
     assert sg.tune_threshold(model, [(long_gap_inputs(hits), [50.0])])["train_f1"] == 0.0
     json.dumps(tuned)
+
+
+# --- swing-anchored veto mode -----------------------------------------------------------
+
+def veto_inputs(swing_segments, hits=(), end_sec=200.0):
+    swing = [(t / 10.0, 5.0) for t in range(0, int(end_sec * 10))]
+    return inputs(list(hits), swing=swing, shuttle=range(0, 3000), end_sec=end_sec)._replace(
+        swing_segments=tuple(swing_segments))
+
+
+def test_segment_rows_features():
+    hits = [(10.0, "lower"), (11.0, "upper"), (12.5, "lower"), (13.0, "lower")]
+    inp = veto_inputs([(8.0, 15.0), (30.0, 40.0)], hits)
+    a, b = sf.segment_rows(inp)
+    assert set(a.features) == set(sf.VETO_FEATURES)
+    assert a.features["seg_dur"] == pytest.approx(7.0) and a.features["hits_n"] == 4.0
+    assert a.features["alt_share"] == pytest.approx(2 / 3) and a.features["max_hit_gap"] == pytest.approx(1.5)
+    assert a.features["gap_prev"] == 30.0 and a.features["gap_next"] == pytest.approx(15.0)
+    assert b.features["hits_n"] == 0.0 and b.features["gap_prev"] == pytest.approx(15.0)
+    assert a.features["swing_mean"] == pytest.approx(5.0) and a.features["shuttle_share"] > 0.9
+    assert sf.segment_rows(veto_inputs([])) == []
+
+
+def test_veto_labels():
+    rows = sf.segment_rows(veto_inputs([(8.0, 15.0), (30.0, 40.0), (50.0, 60.0), (70.0, 80.0)]))
+    doc = labels((7.0, 14.8, "lower", False), (30.0, 40.0, "not_point", False),
+                 (50.0, 59.5, "unsure", False))
+    assert sf.veto_labels_for(rows, doc) == [1, 0, None, None]   # unsure and unlabelled give None
+    assert sf.veto_labels_for(rows, None) == [None] * 4
+    assert sf.veto_labels_for(rows, {"schema": 1, "revision": 0, "labels": []}) == [None] * 4
+
+
+def veto_model(threshold=0.5):
+    # keeps segments with at least 2 hits
+    return {"mode": "swing_veto", "features": ["hits_n"], "mean": [0.0], "scale": [1.0], "coef": [4.0],
+            "intercept": -6.0, "threshold": threshold}
+
+
+def test_segments_dispatch_on_mode():
+    hits = [(10.0, "lower"), (11.0, "upper"), (12.0, "lower"), (31.0, "lower")]
+    inp = veto_inputs([(8.0, 14.0), (30.0, 33.0)], hits)
+    segs = sg.segments(inp, veto_model())
+    assert len(segs) == 1 and segs[0]["id"] == 1 and segs[0]["degraded"] is False
+    assert (segs[0]["start_sec"], segs[0]["end_sec"]) == (8.0, 14.0)
+    assert segs[0]["start_frame"] == round(8.0 * FPS) and segs[0]["end_frame"] == round(14.0 * FPS)
+    assert segs[0]["p_point"] > 0.5
+    assert [s["id"] for s in sg.segments(inp, veto_model(threshold=0.0))] == [1, 2]
+    gap_model = dict(easy_model(), mode="gap")
+    assert sg.segments(inp, gap_model) == sg.segments(inp, easy_model())   # a missing mode is gap
+    assert sg.segments(veto_inputs([]), veto_model()) == []   # no swing segments: nothing to keep
+
+
+def test_train_stores_mode_and_load_defaults_it(tmp_path):
+    m = sg.train(synthetic_examples())
+    assert m["mode"] == "gap"
+    v = sg.train([({n: float(i % 2) for n in sf.VETO_FEATURES}, i % 2) for i in range(10)], mode="swing_veto")
+    assert v["mode"] == "swing_veto" and v["features"] == list(sf.VETO_FEATURES)
+    with pytest.raises(ValueError):
+        sg.train(synthetic_examples(), mode="nope")
+    path = tmp_path / "m.json"
+    old = dict(m)
+    del old["mode"]
+    path.write_text(json.dumps(old), encoding="utf-8")
+    assert sg.load(path)["mode"] == "gap"
+    path.write_text(json.dumps({**m, "mode": "bogus"}), encoding="utf-8")
+    assert sg.load(path) is None
+    path.write_text(json.dumps(v), encoding="utf-8")
+    assert sg.load(path)["mode"] == "swing_veto"
+
+
+def veto_match():
+    """Swing segments at 10, 30, 50, 70 s: the 2 with several hits are points, the 2 with one hit are not."""
+    spans = [(8.0, 14.0), (28.0, 34.0), (48.0, 54.0), (68.0, 74.0)]
+    hits = []
+    for k, (a, _b) in enumerate(spans):
+        n = 4 if k % 2 == 0 else 1
+        hits += [(a + 2 + 1.0 * j, "lower" if j % 2 else "upper") for j in range(n)]
+    inp = veto_inputs(spans, hits, end_sec=80.0)
+    doc = labels((8.0, 14.0, "lower", False), (28.0, 34.0, "not_point", False),
+                 (48.0, 54.0, "upper", False), (68.0, 74.0, "not_point", False))
+    return inp, doc, [14.0, 54.0]
+
+
+def test_fit_picks_the_mode_with_the_higher_training_f1():
+    inp, doc, ends = veto_match()
+    model = sg.fit([(inp, doc, ends), (inp, doc, ends)])
+    assert model["mode"] in sg.MODES and set(model["mode_scores"]) <= set(sg.MODES)
+    assert model["train_f1"] == max(model["mode_scores"].values())
+    assert model["mode"] == "swing_veto" and model["train_f1"] == 1.0   # vetoing the one-hit segments is exact
+    assert [(s["start_sec"], s["end_sec"]) for s in sg.segments(inp, model)] == [(8.0, 14.0), (48.0, 54.0)]
+    json.dumps(model)
+    # labels with no usable class: no model
+    with pytest.raises(ValueError):
+        sg.fit([(inp, {"schema": 1, "revision": 0, "labels": []}, [])])
