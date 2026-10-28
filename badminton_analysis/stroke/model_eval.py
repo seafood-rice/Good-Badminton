@@ -2,21 +2,15 @@
 
 ``test_shots`` lists the owner-labelled hits of every test-split video, ``score_weights``
 runs any weights file over exactly those shots, ``decide`` applies the keep rule, and
-``promote`` / ``rollback`` swap the live model with ``os.replace`` (the ``.pt`` and its
-``.json`` sidecar always move together). ``weights_dir`` is always a parameter. This
+``promote`` / ``rollback`` swap the live model with ``os.replace`` through ``models/store.py``
+(the ``.pt`` and its ``.json`` sidecar always move together). ``weights_dir`` is always a parameter. This
 module takes no lock: the caller serialises retrain, promote and rollback.
 """
 import json
-import os
 import re
-import shutil
-import time
-from contextlib import contextmanager
 from pathlib import Path
 
-import psutil
-
-from ..outcomes.labels import write_json_atomic
+from ..models import store
 from . import owner_labels
 from . import stroke_classifier as sc
 from .hit_signals import load_signals
@@ -160,22 +154,28 @@ def describe(code):
 
 
 # ---------------------------------------------------------------- history and swaps
+# The swap machinery lives in ``models/store.py``; these are the stroke-model wrappers (a ``.pt``
+# with its ``.json`` sidecar is a spec with two files).
 
-def _history_path(weights_dir):
-    return Path(weights_dir) / HISTORY_FILE
+STROKE = store.ModelSpec("stroke", (LIVE_NAME, Path(meta_path(LIVE_NAME)).name), HISTORY_FILE, None,
+                         KEEP_REPLACED, marker=SWAP_MARKER)
+SIDECAR_NAME = STROKE.files[1]
+SwapInProgress = store.SwapInProgress
+_read_marker = store.read_marker
+_started = store.started
+_marker_alive = store.marker_alive
 
 
 def history(weights_dir):
-    doc = _json(_history_path(weights_dir))
-    return [e for e in doc if isinstance(e, dict)] if isinstance(doc, list) else []
+    return store.history(STROKE, weights_dir)
 
 
 def _append_history(weights_dir, entry):
-    write_json_atomic(_history_path(weights_dir), history(weights_dir) + [entry])
+    store.append_history(STROKE, weights_dir, entry)
 
 
 def _utc():
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return store.utc()
 
 
 def _pair(pt):
@@ -183,74 +183,38 @@ def _pair(pt):
     return pt, Path(meta_path(pt))
 
 
+def _files(pt):
+    """``{file name: path}`` for a ``.pt`` and its sidecar (None when the sidecar is absent)."""
+    pt, sidecar = _pair(pt)
+    return {LIVE_NAME: pt, SIDECAR_NAME: sidecar if sidecar.is_file() else None}
+
+
 def _history_dirs(weights_dir, include_retired=True):
-    """Stamp-named history dirs holding a model, oldest first; retired ones only on request."""
-    d = Path(weights_dir) / HISTORY_DIR
-    if not d.is_dir():
-        return []
-    return sorted(p for p in d.iterdir()
-                  if p.is_dir() and _STAMP_DIR.match(p.name) and (p / LIVE_NAME).is_file()
-                  and (include_retired or not (p / RETIRED_MARK).exists()))
+    return store.history_dirs(STROKE, weights_dir, include_retired)
 
 
 def _new_history_dir(weights_dir):
-    """A new stamp dir that sorts after every existing stamp dir, even if the clock went back."""
-    base = Path(weights_dir) / HISTORY_DIR
-    base.mkdir(parents=True, exist_ok=True)
-    stamps = [p.name for p in base.iterdir() if p.is_dir() and _STAMP_DIR.match(p.name)]
-    latest = max(stamps, default="")
-    prefix = max(time.strftime("%Y%m%dT%H%M%S", time.gmtime()), latest[:15])
-    for n in range(1000):
-        path = base / f"{prefix}{n:03d}Z"
-        if path.name > latest and not path.exists():
-            path.mkdir()
-            return path
-    suffix = "a"                  # 1000 dirs in one second: append a suffix instead
-    while (base / (latest + suffix)).exists():
-        suffix += "a"
-    path = base / (latest + suffix)
-    path.mkdir()
-    return path
+    return store.new_history_dir(STROKE, weights_dir)
 
 
 def _move_pair(src_pt, dst_pt):
     """Move a model ``.pt`` and its sidecar; the sidecar goes first so a failure undoes cleanly."""
     (src, src_meta), (dst, dst_meta) = _pair(src_pt), _pair(dst_pt)
-    moved = []
-    try:
-        if src_meta.is_file():
-            os.replace(src_meta, dst_meta)
-            moved.append((dst_meta, src_meta))
-        os.replace(src, dst)
-    except OSError:
-        for back_from, back_to in moved:
-            os.replace(back_from, back_to)
-        raise
+    pairs = [(src_meta, dst_meta)] if src_meta.is_file() else []
+    store.move_group(pairs + [(src, dst)])
 
 
 def _install(weights_dir, src_pt):
     """Retire the live model into a new history dir and put ``src_pt`` in its place."""
-    weights_dir = Path(weights_dir)
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    live = weights_dir / LIVE_NAME
-    retired = None
-    if live.is_file():
-        retired = _new_history_dir(weights_dir)
-        _move_pair(live, retired / LIVE_NAME)
-    try:
-        _move_pair(src_pt, live)
-    except OSError:
-        if retired is not None:
-            _move_pair(retired / LIVE_NAME, live)
-            shutil.rmtree(retired, ignore_errors=True)
-        raise
-    return retired
+    return store.install(STROKE, weights_dir, _files(src_pt))
+
+
+def _install_staged(weights_dir, files):
+    return _install(weights_dir, files[LIVE_NAME])      # looked up at call time (tests spy on it)
 
 
 def _prune(weights_dir):
-    dirs = _history_dirs(weights_dir)
-    for old in dirs[:-KEEP_REPLACED]:
-        shutil.rmtree(old, ignore_errors=True)
+    store.prune(STROKE, weights_dir)
 
 
 def _version(pt):
@@ -273,155 +237,44 @@ def _live_after(version, metrics):
             "bar_met": _bar_met(metrics) if metrics else None}
 
 
-class SwapInProgress(RuntimeError):
-    """Another process is promoting or rolling back the live model."""
-
-
-def _read_marker(path):
-    """``(pid, started)`` of the marker's writer; pid None when unreadable, started None when absent."""
-    doc = _json(path)
-    pid = doc.get("pid") if isinstance(doc, dict) else None
-    if type(pid) is not int or pid <= 0:
-        return None, None
-    started = doc.get("started")
-    return pid, started if isinstance(started, (int, float)) and not isinstance(started, bool) else None
-
-
-def _started(pid):
-    """The process's start time (seconds since the epoch), or None when it is not running."""
-    try:
-        return psutil.Process(pid).create_time()
-    except psutil.Error:
-        return None
-
-
-def _marker_alive(path):
-    """True while the process that wrote the swap marker may still be running.
-
-    The writer's start time is compared too: container PIDs are small and reused after a restart,
-    so a live process with the same pid is a different process when it started at another time.
-    """
-    pid, started = _read_marker(path)
-    if pid is None:       # unreadable: a writer may be mid-create, so only an old file counts as stale
-        try:
-            return time.time() - os.stat(path).st_mtime < _MARKER_GRACE_SEC
-        except OSError:
-            return False
-    try:
-        now = _started(pid)
-    except Exception:
-        return True
-    if now is None:
-        return False
-    return started is None or abs(now - started) < 1.0
-
-
 def _clear_marker(weights_dir):
-    try:
-        os.remove(Path(weights_dir) / SWAP_MARKER)
-    except OSError:
-        pass
+    store._clear_marker(STROKE, weights_dir)
 
 
-@contextmanager
 def _swap_marker(weights_dir, what):
-    """Hold ``weights/.swap-in-progress`` (pid + what) for the length of a swap.
-
-    Raises ``SwapInProgress`` when another live process holds it. A marker left by a dead process
-    is repaired by ``recover`` first.
-    """
-    weights_dir = Path(weights_dir)
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    marker = weights_dir / SWAP_MARKER
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-    for attempt in range(2):
-        try:
-            fd = os.open(marker, flags)
-            break
-        except FileExistsError:
-            if attempt or _marker_alive(marker):
-                raise SwapInProgress(f"a model swap is already running ({marker})")
-            recover(weights_dir)
-            _clear_marker(weights_dir)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"pid": os.getpid(), "started": _started(os.getpid()), "what": what,
-                       "utc": _utc()}, fh)
-        yield
-    finally:
-        _clear_marker(weights_dir)
+    """Hold ``weights/.swap-in-progress`` (pid + start time + what) for the length of a swap."""
+    return store.swap_marker(STROKE, weights_dir, what)
 
 
 def recover(weights_dir):
-    """Undo a swap whose process was killed half way: the live ``.pt`` is gone, its replacement not in.
-
-    Acts only when ``.swap-in-progress`` exists and its pid is not alive; without a marker a
-    missing live model is left alone (the owner may have deleted it), and a live process's swap is
-    never touched. A staged rollback model (``.rollback-*.pt``) completes the rollback; otherwise
-    the newest history model (what promote retired) goes back to live. Returns True when
-    something moved. Idempotent.
-    """
-    weights_dir = Path(weights_dir)
-    marker = weights_dir / SWAP_MARKER
-    if not marker.is_file() or _marker_alive(marker):
-        return False
-    live = weights_dir / LIVE_NAME
-    moved = False
-    if not live.is_file():
-        try:
-            staged = sorted(weights_dir.glob(".rollback-*.pt"))
-            if staged:
-                _move_pair(staged[-1], live)
-                for d in _history_dirs(weights_dir, include_retired=False)[-1:]:
-                    (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
-                moved = True
-            else:
-                dirs = _history_dirs(weights_dir)
-                if dirs:
-                    _move_pair(dirs[-1] / LIVE_NAME, live)
-                    shutil.rmtree(dirs[-1], ignore_errors=True)
-                    moved = True
-        except OSError:
-            return False          # keep the marker: the next call tries again
-    _clear_marker(weights_dir)
-    return moved
+    """Undo a swap whose process was killed half way (see ``store.recover``). Returns True when something moved."""
+    return store.recover(STROKE, weights_dir)
 
 
 def promote(weights_dir, candidate_path, record):
     """Make the candidate the live model; the replaced model goes to ``history/<utc>/``."""
-    recover(weights_dir)
-    with _swap_marker(weights_dir, "promote"):
-        retired = _install(weights_dir, candidate_path)
-    _prune(weights_dir)
-    entry = dict(record)
-    live = Path(weights_dir) / LIVE_NAME
-    entry.update({"utc": entry.get("utc") or _utc(), "kept": True,
-                  "replaced": retired.name if retired is not None else None,
-                  "bar_met": _bar_met(entry.get("candidate")),
-                  "live_after": _live_after(_version(live), entry.get("candidate"))})
-    _append_history(weights_dir, entry)
-    return entry
+    def annotate(entry):
+        live = Path(weights_dir) / LIVE_NAME
+        return {"bar_met": _bar_met(entry.get("candidate")),
+                "live_after": _live_after(_version(live), entry.get("candidate"))}
+
+    return store.promote(STROKE, weights_dir, _files(candidate_path), record, annotate,
+                         install_fn=_install_staged)
 
 
 def reject(weights_dir, candidate_path, record):
     """Delete a candidate that lost and record the numbers."""
+    def annotate(entry):
+        live = Path(weights_dir) / LIVE_NAME
+        version = _version(live) if live.is_file() else None
+        if live.is_file() and not isinstance(entry.get("live"), dict):
+            after = _carried_scores(weights_dir, version)     # the live model was not scored this time
+        else:
+            after = _live_after(version, entry.get("live"))
+        return {"bar_met": _bar_met(entry.get("candidate")), "live_after": after}
+
     pt, sidecar = _pair(candidate_path)
-    for p in (pt, sidecar):
-        try:
-            p.unlink()
-        except FileNotFoundError:
-            pass
-    entry = dict(record)
-    live = Path(weights_dir) / LIVE_NAME
-    version = _version(live) if live.is_file() else None
-    if live.is_file() and not isinstance(entry.get("live"), dict):
-        after = _carried_scores(weights_dir, version)     # the live model was not scored this time
-    else:
-        after = _live_after(version, entry.get("live"))
-    entry.update({"utc": entry.get("utc") or _utc(), "kept": False, "replaced": None,
-                  "bar_met": _bar_met(entry.get("candidate")), "live_after": after})
-    _append_history(weights_dir, entry)
-    return entry
+    return store.reject(STROKE, weights_dir, {LIVE_NAME: pt, SIDECAR_NAME: sidecar}, record, annotate)
 
 
 def _promoted_scores(weights_dir, version):
@@ -445,8 +298,8 @@ def _carried_scores(weights_dir, version):
 
 
 def can_rollback(weights_dir):
-    """True when an earlier model is kept that no rollback has retired."""
-    return bool(_history_dirs(weights_dir, include_retired=False))
+    """True when an earlier model is kept that no rollback retired."""
+    return store.can_rollback(STROKE, weights_dir)
 
 
 def rollback(weights_dir, train_labels=None):
@@ -455,35 +308,11 @@ def rollback(weights_dir, train_labels=None):
     The model rolled away is kept in history marked retired, so a second rollback goes one
     model further back instead of undoing the first.
     """
-    recover(weights_dir)
-    dirs = _history_dirs(weights_dir, include_retired=False)
-    if not dirs:
-        return False
-    newest = dirs[-1]
-    version = _version(newest / LIVE_NAME)
-    with _swap_marker(weights_dir, "rollback"):
-        # stage the old model outside history so the swap cannot see it as the current one
-        staged = Path(weights_dir) / f".rollback-{newest.name}.pt"
-        _move_pair(newest / LIVE_NAME, staged)
-        try:
-            retired = _install(weights_dir, staged)
-        except OSError:
-            _move_pair(staged, newest / LIVE_NAME)
-            raise
-        if retired is not None:
-            try:
-                (retired / RETIRED_MARK).write_text("", encoding="utf-8")
-            except OSError:
-                pass
-    shutil.rmtree(newest, ignore_errors=True)
-    _prune(weights_dir)
-    entry = {"utc": _utc(), "kept": True, "rollback": True, "reason": {"code": "rolled_back"},
-             "replaced": retired.name if retired is not None else None, "restored": newest.name,
-             "live_after": _promoted_scores(weights_dir, version)}
-    if train_labels is not None:
-        entry["train_labels"] = int(train_labels)
-    _append_history(weights_dir, entry)
-    return True
+    return store.rollback(
+        STROKE, weights_dir,
+        live_after=lambda newest: _promoted_scores(weights_dir, _version(newest / LIVE_NAME)),
+        install_fn=_install_staged,
+        train_labels=int(train_labels) if train_labels is not None else None)
 
 
 def split_locked(stem, weights_dir):
