@@ -205,9 +205,9 @@ def test_rollback_busy_none_and_ok(env, monkeypatch):
     webapp.jobs['train_strokes'] = {'status': 'running', 'kind': 'training'}
     assert client.post('/api/stroke-model/rollback').status_code == 409
     webapp.jobs['train_strokes']['status'] = 'cancelled'
-    monkeypatch.setattr(model_eval, 'rollback', lambda w: False)
+    monkeypatch.setattr(model_eval, 'rollback', lambda w, **k: False)
     assert client.post('/api/stroke-model/rollback').status_code == 404
-    monkeypatch.setattr(model_eval, 'rollback', lambda w: True)
+    monkeypatch.setattr(model_eval, 'rollback', lambda w, **k: True)
     r = client.post('/api/stroke-model/rollback')
     assert r.status_code == 200
     assert _wait('relabel_strokes')['status'] == 'completed'
@@ -237,3 +237,178 @@ def test_split_lock_uses_model_eval(env, monkeypatch):
     monkeypatch.setattr(model_eval, 'split_locked', lambda stem, w: stem == 'a')
     assert client.get('/api/stroke-labels/a').get_json()['split_locked'] is True
     assert client.get('/api/stroke-labels/b').get_json()['split_locked'] is False
+
+
+# ---- cancel, split lock, relabel vs label saves (QA findings 2, 6, 8)
+
+class _BlockingProc:
+    """A child that runs until ``kill`` is called, then exits with -9."""
+    pid = 4242
+
+    def __init__(self):
+        self.returncode = None
+        self.done = threading.Event()
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self):
+        self.done.wait(10)
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+        self.done.set()
+
+
+@pytest.fixture
+def blocking(env, monkeypatch):
+    _, tmp, popen, _ = env
+    procs, killed = [], []
+
+    def fake_popen(cmd, *args, **kwargs):
+        popen['cmds'].append(cmd)
+        proc = _BlockingProc()
+        procs.append(proc)
+        return proc
+
+    def fake_kill_tree(pid):
+        killed.append(pid)
+        procs[-1].kill()
+
+    monkeypatch.setattr(webapp.subprocess, 'Popen', fake_popen)
+    monkeypatch.setattr(webapp.proc_control, 'kill_tree', fake_kill_tree)
+    return procs, killed
+
+
+def _wait_status(job_id, status):
+    for _ in range(500):
+        job = webapp.jobs.get(job_id)
+        if job and job.get('status') == status:
+            return job
+        threading.Event().wait(0.01)
+    raise AssertionError(f'{job_id} never reached {status}: {webapp.jobs.get(job_id)}')
+
+
+def test_cancel_a_running_training_kills_the_tree_and_cleans_up(env, blocking):
+    client, tmp, popen, _ = env
+    procs, killed = blocking
+    cand = tmp / 'weights' / 'candidates'
+    cand.mkdir(parents=True)
+    (cand / 'stroke-classifier-20261028T000000Z.pt').write_bytes(b'x')
+    (cand / 'stroke-classifier-20261028T000000Z.json').write_text('{}')
+    assert client.post('/api/stroke-model/retrain').status_code == 200
+    _wait_status('train_strokes', 'running')
+    r = client.post('/api/jobs/train_strokes/cancel')
+    assert r.status_code == 200 and killed == [4242]
+    job = _wait('train_strokes', ('cancelled',))
+    assert job['stage'] == 'cancelled'
+    assert not list(cand.glob('stroke-classifier-*'))
+    assert 'relabel_strokes' not in webapp.jobs        # a cancel never queues the relabel
+    assert len(popen['cmds']) == 1
+    assert client.post('/api/stroke-model/retrain').status_code == 200   # the slot is free again
+    _wait_status('train_strokes', 'running')
+    client.post('/api/jobs/train_strokes/cancel')
+    _wait('train_strokes', ('cancelled',))
+
+
+def test_cancel_is_refused_once_the_model_is_being_promoted(env, blocking):
+    client, tmp, _, _ = env
+    procs, killed = blocking
+    assert client.post('/api/stroke-model/retrain').status_code == 200
+    job = _wait_status('train_strokes', 'running')
+    with open(job['log_path'], 'a', encoding='utf-8') as fh:
+        fh.write('training...\nPHASE promote\n')
+    r = client.post('/api/jobs/train_strokes/cancel')
+    assert r.status_code == 409 and r.get_json()['reason'] == 'promoting' and killed == []
+    procs[-1].kill()
+    _wait('train_strokes', ('completed', 'error'))
+
+
+def test_cancel_a_running_relabel_does_not_rerun_it(env, blocking):
+    client, tmp, popen, _ = env
+    procs, killed = blocking
+    webapp.queue_relabel_strokes()
+    _wait_status('relabel_strokes', 'running')
+    assert webapp.queue_relabel_strokes()[0] is False          # asks for a rerun
+    assert webapp.jobs['relabel_strokes'].get('rerun') is True
+    assert client.post('/api/jobs/relabel_strokes/cancel').status_code == 200
+    _wait('relabel_strokes', ('cancelled',))
+    assert len(popen['cmds']) == 1 and killed == [4242]
+
+
+def test_cancel_of_a_finished_or_unstarted_training_job_is_409(env):
+    client, *_ = env
+    webapp.jobs['train_strokes'] = {'status': 'running', 'kind': 'training', 'proc': _Proc(0)}
+    assert client.post('/api/jobs/train_strokes/cancel').status_code == 409
+    webapp.jobs['train_strokes'] = {'status': 'running', 'kind': 'training'}
+    assert client.post('/api/jobs/train_strokes/cancel').status_code == 409
+    webapp.jobs['train_strokes']['status'] = 'cancelled'
+
+
+def test_split_is_locked_while_a_training_job_is_queued_or_running(env, monkeypatch):
+    client, *_ = env
+    monkeypatch.setattr(model_eval, 'split_locked', lambda stem, w: False)
+    assert client.get('/api/stroke-labels/a').get_json()['split_locked'] is False
+    for status in ('pending', 'running'):
+        webapp.jobs['train_strokes'] = {'status': status, 'kind': 'training'}
+        assert client.get('/api/stroke-labels/a').get_json()['split_locked'] is True
+        r = client.put('/api/stroke-labels/a', json={'revision': 0, 'labels': [], 'split': 'test'})
+        assert r.status_code == 409 and r.get_json()['reason'] == 'split_locked'
+    webapp.jobs['train_strokes']['status'] = 'completed'
+    assert client.get('/api/stroke-labels/a').get_json()['split_locked'] is False
+    webapp.jobs['relabel_strokes'] = {'status': 'running', 'kind': 'training'}
+    assert client.get('/api/stroke-labels/a').get_json()['split_locked'] is False
+    webapp.jobs['relabel_strokes']['status'] = 'cancelled'
+
+
+def _owner_run(outputs, stem):
+    from badminton_analysis.stroke import stroke_classifier as sc
+    from badminton_analysis.stroke.stroke_types import group_of
+    run = outputs / stem
+    run.mkdir(parents=True, exist_ok=True)
+    (run / 'hits.json').write_text(json.dumps({'fps': 60.0, 'hits': []}), encoding='utf-8')
+    rows = [{'frame': 60, 'hitter': 'lower', 'stroke': 'clear', 'group': group_of('clear'), 'confidence': 0.6}]
+    (run / 'strokes.json').write_text(
+        json.dumps(sc.build_payload(rows, {'version': 't'}, 'model', 'tracknet')), encoding='utf-8')
+    return run
+
+
+def _stroke_of(run):
+    return json.loads((run / 'strokes.json').read_text(encoding='utf-8'))['strokes'][0]['stroke']
+
+
+LABEL = {'time_sec': 1.0, 'hitter': 'lower', 'stroke': 'smash', 'kind': 'label'}
+
+
+def test_label_save_during_a_relabel_job_skips_apply_and_the_job_applies_it_at_its_end(env, monkeypatch):
+    client, tmp, popen, _ = env
+    run = _owner_run(webapp.OUTPUTS, 'a')
+    saved = {}
+
+    def fake_popen(cmd, *args, **kwargs):
+        popen['cmds'].append(cmd)
+        # the owner saves a label while the child is running
+        saved['res'] = client.put('/api/stroke-labels/a', json={'revision': 0, 'labels': [LABEL]})
+        return _Proc(0)
+
+    monkeypatch.setattr(webapp.subprocess, 'Popen', fake_popen)
+    webapp.queue_relabel_strokes()
+    _wait('relabel_strokes')
+    body = saved['res'].get_json()
+    assert saved['res'].status_code == 200
+    assert body['applied'] is False and body['apply_skipped'] == 'job_active'
+    assert _stroke_of(run) == 'smash'             # applied by the job's final re-apply
+    # once the job has finished a save applies itself again
+    r = client.put('/api/stroke-labels/a', json={'revision': 1, 'labels': []})
+    assert r.get_json()['applied'] is True and _stroke_of(run) == 'clear'
+
+
+def test_rollback_records_the_train_count(env, monkeypatch):
+    client, *_ = env
+    seen = {}
+    monkeypatch.setattr(model_eval, 'train_count', lambda d: 77)
+    monkeypatch.setattr(model_eval, 'rollback', lambda w, **k: seen.update(k) or True)
+    assert client.post('/api/stroke-model/rollback').status_code == 200
+    assert seen == {'train_labels': 77}
+    _wait('relabel_strokes')

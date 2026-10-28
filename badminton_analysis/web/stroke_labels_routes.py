@@ -3,8 +3,9 @@
 ``GET`` / ``PUT /api/stroke-labels/<stem>`` over ``badminton_analysis.stroke.owner_labels``.
 A save carries the revision it was based on; a stale one is refused (409) so two tabs
 cannot silently overwrite each other. A save then rewrites ``strokes.json`` with the labels
-applied, except while an analysis job is active on the video (that job's own
-``strokes.json`` write re-applies them) or when the video has no ``strokes.json``.
+applied and re-scores the posture reports with the applied types, except while an analysis or
+relabel job is active (``job_active``: its own write or its final re-apply covers the save) or
+when the video has no ``strokes.json``.
 
 Like ``rally_labels_routes``, it owns no state: ``app.py`` passes getters resolved per
 request. Error bodies are static bilingual strings.
@@ -20,6 +21,15 @@ _UNREADABLE = {'error': '标注文件不可读，未被覆盖 / stroke label fil
 _SPLIT_LOCKED = {'error': '该视频已用于训练或评分，不能更改训练或测试划分 / '
                           'this video was already used for training or scoring; its split cannot change'}
 _SAVE_FAILED = {'error': '无法保存标注，请重试 / could not save labels, please retry'}
+
+
+def _rescore_reports(result_dir):
+    """Re-score the posture reports with the applied stroke types; never fatal."""
+    try:
+        from badminton_analysis.stroke import relabel
+        relabel.rescore_reports(result_dir)
+    except Exception as exc:
+        print(f'Could not re-score posture reports in {result_dir}: {exc}')
 
 
 def register(app, *, labels_dir, outputs, lock, safe_stem, job_active, split_locked):
@@ -70,6 +80,8 @@ def register(app, *, labels_dir, outputs, lock, safe_stem, job_active, split_loc
                 return jsonify({'revision': doc['revision'], 'applied': False,
                                 'apply_skipped': 'job_active'})
             result = owner_labels.apply_to_result(outputs() / stem, labels_dir(), stem)
+            if result['applied']:
+                _rescore_reports(outputs() / stem)
         out = {'revision': doc['revision'], 'applied': result['applied']}
         if not result['applied']:
             out['apply_skipped'] = result['reason']

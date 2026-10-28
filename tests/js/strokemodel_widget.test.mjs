@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installEnv, removeEnv, tick, everything } from './fake_dom.mjs';
-import { cardModel, historyRow, strokeModelCard } from '../../static/kestrel/widgets/strokemodel.js';
+import { cardModel, describeCode, historyRow, strokeModelCard } from '../../static/kestrel/widgets/strokemodel.js';
 import { groupJobs, jobActions } from '../../static/kestrel/views/pipeline.js';
 
 const live = (extra = {}) => ({ version: '2026-10-01T00:00:00Z', metrics: { accuracy: 0.9, unknown_rate: 0.05 }, bar_met: true, bar_reasons: [], ...extra });
@@ -49,10 +49,12 @@ test('history rows: newest first, kept / rejected / rolled back, rollback availa
   assert.equal(historyRow({ utc: '2026-10-01T10:00:00Z', kept: true }, 'zh').when, '2026-10-01 10:00');
 });
 
-test('pipeline: training jobs are their own kind and cannot be paused', () => {
+test('pipeline: training jobs are their own kind; a running one can be cancelled but not paused', () => {
   const g = groupJobs([{ id: 'train_strokes', video: 'stroke-classifier', kind: 'training', status: 'running', progress: 0 }]);
   assert.equal(g.active[0].kind, 'training');
-  assert.deepEqual(jobActions(g.active[0]), []);
+  assert.deepEqual(jobActions(g.active[0]), ['cancel']);
+  assert.deepEqual(jobActions({ status: 'running', kind: 'strategy' }), []);
+  assert.deepEqual(jobActions({ status: 'running', kind: 'match' }), ['pause']);
   assert.deepEqual(jobActions({ status: 'pending', kind: 'training' }), ['cancel']);
 });
 
@@ -97,4 +99,26 @@ test('retrain is disabled with not enough labels and the missing text is shown',
   } finally {
     removeEnv();
   }
+});
+
+test('codes with numbers are rendered in the UI language; plain strings pass through', () => {
+  const tl = { code: 'train_labels', need: 50, have: 3 };
+  assert.equal(describeCode(tl, 'en'), '47 more train labels needed (50 new in total)');
+  assert.match(describeCode(tl, 'zh'), /还差 47 个训练标注/);
+  assert.equal(describeCode({ code: 'accuracy', value: 0.81, bar: 0.85 }, 'en'), '7-group accuracy 81% is below the bar 85%');
+  assert.match(describeCode({ code: 'lower_accuracy', candidate: 0.5, live: 0.8 }, 'zh'), /50%.*80%/);
+  assert.equal(describeCode('old text', 'en'), 'old text');
+  assert.equal(describeCode({ code: 'brand_new_code' }, 'en'), 'brand new code');
+  assert.equal(describeCode(null, 'en'), '');
+  const m = cardModel(body({
+    can_retrain: false,
+    missing: [tl, { code: 'test_shots', need: 20, have: 5 }],
+    live: live({ bar_met: false, bar_reasons: [{ code: 'group_few', group: 'drive', need: 20, have: 7 }, { code: 'no_model' }] }),
+    history: [{ utc: '2026-10-02T10:00:00Z', kept: false, reason: { code: 'lower_accuracy', candidate: 0.5, live: 0.8 }, live: { accuracy: 0.8 }, candidate: { accuracy: 0.5 } }],
+  }), 'en');
+  assert.deepEqual(m.missing, ['47 more train labels needed (50 new in total)', '15 more labelled test shots needed (20 in total)']);
+  assert.deepEqual(m.barReasons, ['drive: fewer than 20 test hits (7)', 'No model yet']);
+  assert.match(m.history[0].text, /Rejected \(80% → 50%\): New model accuracy 50% is below the current 80%/);
+  const zh = cardModel(body({ can_retrain: false, missing: [tl] }), 'zh');
+  assert.match(zh.missing[0], /还差 47/);
 });

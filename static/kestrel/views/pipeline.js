@@ -72,12 +72,13 @@ export function groupJobs(jobs) {
 
 /**
  * Pure: the action buttons of a job row, in order. A strategy report cannot be paused: pausing would free
- * its slot while Ollama keeps generating; a training or relabel job cannot either.
+ * its slot while Ollama keeps generating; a training or relabel job cannot either, but a running one can be
+ * cancelled (the server stops its process tree, and refuses once the new model is being saved).
  */
 export function jobActions(row) {
   const r = obj(row);
   if (r.status === 'pending') return ['cancel'];
-  if (r.status === 'running') return r.kind === 'strategy' || r.kind === 'training' ? [] : ['pause'];
+  if (r.status === 'running') return r.kind === 'training' ? ['cancel'] : r.kind === 'strategy' ? [] : ['pause'];
   if (r.status === 'paused') return ['resume'];
   return [];
 }

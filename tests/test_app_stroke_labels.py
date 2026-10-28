@@ -173,3 +173,48 @@ def test_delete_match_keeps_labels(client):
     res = c.post("/api/delete/vid", json={"scope": "match"})
     assert res.status_code == 200, res.get_json()
     assert (labels_dir / "vid.json").is_file()
+
+
+def _write_report(run):
+    measured = {"elbow_extension": 150.0, "trunk_rotation": 30.0, "wrist_flexion": 90.0,
+                "knee_flexion": 156.0, "hip_shoulder_separation": 25.0, "weight_transfer": 0.35}
+    report = {"stroke_type": "high_clear", "contact_frame": 60, "player_side": "lower",
+              "confidence": 0.2, "overall_score": 100.0, "feature_space": "2d",
+              "per_metric": {k: {"measured": v} for k, v in measured.items()},
+              "weaknesses": [], "strengths": []}
+    (run / "strokes.jsonl").write_text(json.dumps(report) + "\n", encoding="utf-8")
+
+
+def _report_type(run):
+    return json.loads((run / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])["stroke_type"]
+
+
+def test_put_rescores_the_posture_reports(client):
+    c, outputs, _ = client
+    _write_report(outputs / "vid")
+    assert _put(c, 0, [LABEL]).get_json()["applied"] is True
+    assert _report_type(outputs / "vid") == "smash"
+    assert json.loads((outputs / "vid" / "technique_summary.json").read_text(encoding="utf-8"))["stroke_count"] == 1
+    assert _put(c, 1, []).get_json()["applied"] is True
+    assert _report_type(outputs / "vid") == "clear"
+
+
+def test_labels_saved_during_an_analysis_are_applied_when_it_completes(client, monkeypatch):
+    c, outputs, labels_dir = client
+    _write_report(outputs / "vid")
+    monkeypatch.setitem(webapp.jobs, "vid", {"status": "running", "video_name": "vid"})
+    res = _put(c, 0, [LABEL])
+    assert res.get_json() == {"revision": 1, "applied": False, "apply_skipped": "job_active"}
+    assert _stroke(outputs) == "clear"
+    webapp.jobs["vid"]["status"] = "completed"
+    webapp._after_match_completed("vid")
+    assert _stroke(outputs) == "smash" and _report_type(outputs / "vid") == "smash"
+
+
+def test_after_match_completed_never_raises_on_bad_labels_or_missing_results(client, monkeypatch):
+    _, outputs, labels_dir = client
+    webapp._after_match_completed("never-analysed")          # no result folder, no labels
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    (labels_dir / "vid.json").write_text("{not json", encoding="utf-8")
+    webapp._after_match_completed("vid")
+    assert _stroke(outputs) == "clear"

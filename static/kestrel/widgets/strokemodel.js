@@ -9,6 +9,24 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const pct = (v) => (isNum(v) ? Math.round(v * 100) + '%' : '—');
 
+const PCT_PARAMS = ['value', 'bar', 'candidate', 'live', 'unknown'];
+
+/**
+ * Pure: a server code ({code, ...numbers}) -> text in `lang`. A plain string (an entry written before codes
+ * existed) is shown as is; an unknown code falls back to its name.
+ */
+export function describeCode(code, lang) {
+  if (typeof code === 'string') return code;
+  const c = obj(code);
+  if (typeof c.code !== 'string') return '';
+  const key = 'sm.code.' + c.code;
+  const params = { ...c };
+  for (const k of PCT_PARAMS) if (isNum(c[k])) params[k] = pct(c[k]);
+  if (isNum(c.need) && isNum(c.have)) params.more = Math.max(0, c.need - c.have);
+  const text = t(key, lang, params);
+  return text === key ? c.code.replace(/_/g, ' ') : text;
+}
+
 /** Pure: one history entry -> {when, kept, rollback, text}. */
 export function historyRow(entry, lang) {
   const e = obj(entry);
@@ -22,7 +40,8 @@ export function historyRow(entry, lang) {
   else {
     const move = isNum(live.accuracy) || isNum(cand.accuracy) ? ` (${pct(live.accuracy)} → ${pct(cand.accuracy)})` : '';
     text = t(kept ? 'sm.hist.kept' : 'sm.hist.rejected', lang) + move;
-    if (!kept && typeof e.reason === 'string' && e.reason) text += ': ' + e.reason;
+    const why = describeCode(e.reason, lang);
+    if (!kept && why) text += ': ' + why;
   }
   return { when, kept, rollback, text };
 }
@@ -40,7 +59,8 @@ export function cardModel(data, lang) {
   const history = (Array.isArray(data.history) ? data.history : []).slice(-5).reverse();
   const hasModel = typeof live.version === 'string' && live.version !== '';
   const canRollback = (Array.isArray(data.history) ? data.history : []).some((e) => e && e.kept === true && e.replaced);
-  const missing = Array.isArray(data.missing) ? data.missing.filter((m) => typeof m === 'string') : [];
+  const texts = (list) => (Array.isArray(list) ? list.map((x) => describeCode(x, lang)).filter(Boolean) : []);
+  const missing = texts(data.missing);
   const state = job ? 'running' : data.pending ? 'loading' : data.can_retrain ? 'ready' : 'not_enough';
   return {
     state,
@@ -50,7 +70,7 @@ export function cardModel(data, lang) {
     unknown: pct(metrics.unknown_rate),
     scored: isNum(metrics.accuracy),
     barMet: live.bar_met === true,
-    barReasons: Array.isArray(live.bar_reasons) ? live.bar_reasons.filter((r) => typeof r === 'string') : [],
+    barReasons: texts(live.bar_reasons),
     counts: { train: counts.train || 0, test: counts.test || 0, newTrain: counts.new_train || 0 },
     missing,
     jobMessage: job && typeof job.message === 'string' ? job.message : '',

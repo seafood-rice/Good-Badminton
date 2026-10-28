@@ -65,7 +65,7 @@ rally_labels_routes.register(app, labels_dir=lambda: RALLY_LABELS_DIR,
 stroke_labels_routes.register(app, labels_dir=lambda: STROKE_LABELS_DIR, outputs=lambda: OUTPUTS,
                               lock=lambda: _STROKE_LABELS_LOCK,
                               safe_stem=lambda name: _safe_stem(name),
-                              job_active=lambda stem: _match_job_active(stem),
+                              job_active=lambda stem: _match_job_active(stem) or _relabel_job_active(),
                               split_locked=lambda stem: _stroke_split_locked(stem))
 strategy_routes.register(app, outputs=lambda: OUTPUTS, athletes_path=lambda: ATHLETES_PATH,
                          athletes_lock=lambda: _ATHLETES_LOCK, jobs=lambda: jobs,
@@ -289,7 +289,8 @@ def queue_strategy_job(stem, focus=None):
 
 
 def _after_match_completed(stem):
-    """Queue the strategy report after a match analysis succeeded. Never raises."""
+    """Apply the owner's stroke labels, then queue the strategy report. Never raises."""
+    _apply_stroke_labels_to(stem)
     try:
         if strategy_config.load_config(_strategy_settings_path()).enabled:
             job_id = 'strategy_' + stem
@@ -314,8 +315,99 @@ _stroke_model_cache = {'key': None, 'value': None}
 
 
 def _stroke_split_locked(stem):
+    """The train/test split is frozen once a run used the video, and while a training run is going."""
     from badminton_analysis.stroke import model_eval
+    if (jobs.get('train_strokes') or {}).get('status') in _ACTIVE_JOB_STATUSES:
+        return True
     return model_eval.split_locked(stem, WEIGHTS)
+
+
+def _relabel_job_active():
+    return (jobs.get('relabel_strokes') or {}).get('status') in _ACTIVE_JOB_STATUSES
+
+
+def _apply_stroke_labels_to(stem):
+    """Apply the owner's labels to ``outputs/<stem>`` and re-score its posture reports. Never raises."""
+    try:
+        from badminton_analysis.stroke import owner_labels, relabel
+        with _STROKE_LABELS_LOCK:
+            if owner_labels.apply_to_result(OUTPUTS / stem, STROKE_LABELS_DIR, stem)['applied']:
+                relabel.rescore_reports(OUTPUTS / stem)
+    except Exception as exc:
+        print(f'owner stroke labels not applied for {stem} ({type(exc).__name__})')
+
+
+def _reapply_owner_stroke_labels():
+    """Re-apply every label file to its result (caller holds ``_STROKE_LABELS_LOCK``).
+
+    Covers labels saved while a relabel job ran: their save skipped the apply. Results with
+    an active match analysis are left to that analysis.
+    """
+    from badminton_analysis.stroke import owner_labels, relabel
+    try:
+        stems = sorted(p.stem for p in Path(STROKE_LABELS_DIR).glob('*.json'))
+    except OSError:
+        return
+    for stem in stems:
+        if _match_job_active(stem):
+            continue
+        try:
+            if owner_labels.apply_to_result(OUTPUTS / stem, STROKE_LABELS_DIR, stem)['applied']:
+                relabel.rescore_reports(OUTPUTS / stem)
+        except Exception as exc:
+            print(f'owner stroke labels not re-applied for {stem} ({type(exc).__name__})')
+
+
+def _log_has_line(path, text):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            return any(line.strip() == text for line in fh)
+    except (OSError, TypeError):
+        return False
+
+
+def _delete_partial_candidates():
+    for path in Path(WEIGHTS, 'candidates').glob('stroke-classifier-*'):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def _training_cancelled(job_id, job):
+    """Finish a training job that was cancelled while running: no decision, no relabel, no leftovers."""
+    with _JOBS_LOCK:
+        job['status'], job['stage'], job['progress'] = 'cancelled', 'cancelled', 0
+        job['message'] = ''
+        job['updated'] = time.time()
+        job.pop('rerun', None)
+    if job_id == 'train_strokes':
+        _delete_partial_candidates()
+    _invalidate_stroke_model()
+
+
+def _cancel_running_training(job_id, job):
+    """Stop a running train / relabel job's process tree (spec 2026-10-28 section 6)."""
+    from badminton_analysis.stroke import retrain
+    with _JOBS_LOCK:
+        proc = job.get('proc')
+        if job.get('status') != 'running' or proc is None or proc.poll() is not None:
+            return jsonify({'error': '任务不在运行中 / job is not running'}), 409
+        if job.get('cancel_requested'):
+            return jsonify({'ok': True})
+        # once the new model is being swapped in, a kill could land between the two os.replace calls
+        if job_id == 'train_strokes' and _log_has_line(job.get('log_path'), retrain.PROMOTE_PHASE):
+            return jsonify({'error': '正在保存新模型，现在不能取消 / the new model is being saved; '
+                                     'it cannot be cancelled now', 'reason': 'promoting'}), 409
+        job['cancel_requested'] = True
+        job['message'] = '正在取消 / cancelling'
+        pid = proc.pid
+    try:
+        proc_control.kill_tree(pid)
+    except Exception as exc:
+        print(f'job {job_id} could not be killed ({type(exc).__name__})')
+    return jsonify({'ok': True})
 
 
 def _mtime_size(path):
@@ -381,7 +473,7 @@ def _queue_training_job(job_id, message, cmd, log_path, finish):
     relabel while one is waiting or running makes it run once more when it ends.
     """
     job = {'status': 'pending', 'progress': 0, 'message': message, 'video_name': 'stroke-classifier',
-           'stage': 'training', 'kind': 'training', 'updated': time.time()}
+           'stage': 'training', 'kind': 'training', 'log_path': str(log_path), 'updated': time.time()}
     with _JOBS_LOCK:
         if _training_job_active():
             current = jobs.get(job_id) or {}
@@ -423,6 +515,9 @@ def _queue_training_job(job_id, message, cmd, log_path, finish):
             log_fh.close()
         except Exception:
             pass
+        if job.get('cancel_requested'):
+            _training_cancelled(job_id, job)
+            return
         try:
             finish(job, proc.returncode)
         finally:
@@ -452,8 +547,10 @@ def queue_train_strokes():
            '--weights-dir', str(WEIGHTS), '--project-root', str(PROJECT_ROOT)]
 
     def finish(job, code):
+        from badminton_analysis.stroke import model_eval
         result = _last_json_line(log_path)
         _invalidate_stroke_model()
+        why = model_eval.describe(result.get('reason'))[:120] if isinstance(result, dict) and result.get('reason') else ''
         with _JOBS_LOCK:
             if not isinstance(result, dict):
                 job['status'], job['stage'] = 'error', 'error'
@@ -461,13 +558,13 @@ def queue_train_strokes():
                                   else '训练结果不可读 / training result unreadable')
             elif code != 0 and not result.get('kept'):
                 job['status'], job['stage'] = 'error', 'error'
-                job['message'] = '训练失败 / training failed: ' + str(result.get('reason') or '')[:120]
+                job['message'] = '训练失败 / training failed: ' + why
             else:
                 job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
                 if result.get('kept'):
                     job['message'] = '新模型已采用 / new stroke model kept'
                 else:
-                    job['message'] = '新模型未采用 / candidate rejected: ' + str(result.get('reason') or '')[:120]
+                    job['message'] = '新模型未采用 / candidate rejected: ' + why
         if isinstance(result, dict) and result.get('kept'):
             queue_relabel_strokes()
 
@@ -494,13 +591,18 @@ def _relabel_command():
 def queue_relabel_strokes():
     """Queue relabel + apply over every result with strokes.json (skips active matches)."""
     def finish(job, code):
-        with _JOBS_LOCK:
-            if code == 0:
-                job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
-                job['message'] = '已重新标注 / results relabelled'
-            else:
-                job['status'], job['stage'] = 'error', 'error'
-                job['message'] = '重新标注失败 / relabel failed'
+        # Labels saved while the child ran skipped their own apply (the child may already have passed
+        # that result): apply them all again. The status flips inside the same lock hold, so a save
+        # either lands before this (and is applied here) or sees the job finished (and applies itself).
+        with _STROKE_LABELS_LOCK:
+            _reapply_owner_stroke_labels()
+            with _JOBS_LOCK:
+                if code == 0:
+                    job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                    job['message'] = '已重新标注 / results relabelled'
+                else:
+                    job['status'], job['stage'] = 'error', 'error'
+                    job['message'] = '重新标注失败 / relabel failed'
 
     return _queue_training_job('relabel_strokes', '等待重新标注 / waiting to relabel',
                                _relabel_command, Path(WEIGHTS) / 'candidates' / 'relabel.log', finish)
@@ -512,7 +614,7 @@ def _rollback_stroke_model():
     with _STROKE_MODEL_LOCK:
         if _training_job_active():
             return 'busy'
-        done = model_eval.rollback(WEIGHTS)
+        done = model_eval.rollback(WEIGHTS, train_labels=model_eval.train_count(STROKE_LABELS_DIR))
         _stroke_model_cache['key'] = None
     if not done:
         return 'none'
@@ -1526,10 +1628,12 @@ def api_job_slots():
 
 @app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
 def api_job_cancel(job_id):
-    """Drop a queued job before it starts. A running job cannot be cancelled here."""
+    """Drop a queued job before it starts; only a running train / relabel job can be stopped."""
     job = jobs.get(job_id)
     if not job:
         return jsonify({'error': '未知的任务 / unknown job'}), 404
+    if job_id in _TRAINING_JOB_IDS and job.get('status') == 'running':
+        return _cancel_running_training(job_id, job)
     # A paused job waiting to resume is queued too, but cancelling it would orphan its process.
     if job.get('status') != 'pending' or not _job_slots.cancel(job_id):
         return jsonify({'error': '任务不在队列中 / job is not queued'}), 409
