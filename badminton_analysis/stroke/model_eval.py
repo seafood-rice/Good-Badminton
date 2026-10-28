@@ -352,6 +352,11 @@ def _carried_scores(weights_dir, version):
     return _promoted_scores(weights_dir, version)
 
 
+def can_rollback(weights_dir):
+    """True when an earlier model is kept that no rollback has retired."""
+    return bool(_history_dirs(weights_dir, include_retired=False))
+
+
 def rollback(weights_dir, train_labels=None):
     """Swap in the newest replaced model that no rollback retired; False when there is none.
 

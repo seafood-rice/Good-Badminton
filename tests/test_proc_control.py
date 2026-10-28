@@ -89,3 +89,12 @@ def test_kill_tree_of_an_exited_process_is_quiet():
     proc = subprocess.Popen([sys.executable, '-c', 'pass'])
     proc.wait(10)
     proc_control.kill_tree(proc.pid)
+
+
+def test_kill_tree_stops_before_touching_anything_when_told_to_abort(tree):
+    proc, parent_out, child_out = tree
+    asked = []
+    assert proc_control.kill_tree(proc.pid, should_abort=lambda: asked.append(1) or True) is False
+    assert asked == [1] and proc.poll() is None and psutil.Process(proc.pid).is_running()
+    assert proc_control.kill_tree(proc.pid, should_abort=lambda: False) is None
+    proc.wait(10)

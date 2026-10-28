@@ -272,7 +272,7 @@ def blocking(env, monkeypatch):
         procs.append(proc)
         return proc
 
-    def fake_kill_tree(pid):
+    def fake_kill_tree(pid, should_abort=None):
         killed.append(pid)
         procs[-1].kill()
 
@@ -412,3 +412,86 @@ def test_rollback_records_the_train_count(env, monkeypatch):
     assert client.post('/api/stroke-model/rollback').status_code == 200
     assert seen == {'train_labels': 77}
     _wait('relabel_strokes')
+
+
+# ---- review findings: cancel applies saved labels, promote re-check, reason codes, can_rollback
+
+def test_cancel_a_running_relabel_applies_labels_saved_during_it(env, blocking):
+    client, *_ = env
+    procs, killed = blocking
+    run = _owner_run(webapp.OUTPUTS, 'a')
+    webapp.queue_relabel_strokes()
+    _wait_status('relabel_strokes', 'running')
+    res = client.put('/api/stroke-labels/a', json={'revision': 0, 'labels': [LABEL]})
+    assert res.get_json()['apply_skipped'] == 'job_active' and _stroke_of(run) == 'clear'
+    assert client.post('/api/jobs/relabel_strokes/cancel').status_code == 200
+    _wait('relabel_strokes', ('cancelled',))
+    assert _stroke_of(run) == 'smash'            # applied by the cancel, not left for the next save
+    assert client.put('/api/stroke-labels/a', json={'revision': 1, 'labels': []}).get_json()['applied'] is True
+
+
+def test_only_stems_skipped_during_the_job_are_reapplied(env, monkeypatch):
+    from badminton_analysis.stroke import owner_labels
+    client, tmp, popen, _ = env
+    run_a = _owner_run(webapp.OUTPUTS, 'a')
+    run_b = _owner_run(webapp.OUTPUTS, 'b')
+    owner_labels.save(owner_labels.labels_path(webapp.STROKE_LABELS_DIR, 'b'),
+                      {'schema': owner_labels.SCHEMA, 'revision': 1, 'split': 'train', 'labels': [LABEL]})
+
+    def fake_popen(cmd, *args, **kwargs):
+        popen['cmds'].append(cmd)
+        client.put('/api/stroke-labels/a', json={'revision': 0, 'labels': [LABEL]})
+        return _Proc(0)
+
+    monkeypatch.setattr(webapp.subprocess, 'Popen', fake_popen)
+    webapp.queue_relabel_strokes()
+    _wait('relabel_strokes')
+    assert _stroke_of(run_a) == 'smash'
+    assert _stroke_of(run_b) == 'clear'          # b had no save during the job: untouched
+    assert not webapp._skipped_stroke_stems
+
+
+def test_cancel_rechecks_the_promote_line_right_before_the_kill(env, blocking, monkeypatch):
+    client, tmp, _, _ = env
+    procs, killed = blocking
+    client.post('/api/stroke-model/retrain')
+    job = _wait_status('train_strokes', 'running')
+
+    def fake_kill_tree(pid, should_abort=None):
+        with open(job['log_path'], 'a', encoding='utf-8') as fh:      # the child reaches the swap now
+            fh.write('PHASE promote\n')
+        assert should_abort() is True
+        return False
+
+    monkeypatch.setattr(webapp.proc_control, 'kill_tree', fake_kill_tree)
+    r = client.post('/api/jobs/train_strokes/cancel')
+    assert r.status_code == 409 and r.get_json()['reason'] == 'promoting'
+    assert not job.get('cancel_requested') and job['status'] == 'running'
+    procs[-1].kill()
+    assert _wait('train_strokes', ('completed', 'error'))['status'] != 'cancelled'
+
+
+def test_training_job_view_and_listing_carry_the_reason_code(env):
+    client, _, popen, _ = env
+    popen['final'] = {'kept': False, 'reason': {'code': 'lower_accuracy', 'candidate': 0.5, 'live': 0.6},
+                      'candidate': {}, 'live': {}}
+    client.post('/api/stroke-model/retrain')
+    job = _wait('train_strokes')
+    assert job['reason_code']['code'] == 'lower_accuracy' and 'accuracy' not in job['message']
+    rows = {r['id']: r for r in client.get('/api/jobs').get_json()}
+    assert rows['train_strokes']['reason_code'] == {'code': 'lower_accuracy', 'candidate': 0.5, 'live': 0.6}
+    webapp.jobs['relabel_strokes'] = {'status': 'running', 'kind': 'training', 'message': 'm',
+                                      'reason_code': {'code': 'x'}}
+    assert webapp._training_job_view()['reason_code'] == {'code': 'x'}
+    webapp.jobs['relabel_strokes']['status'] = 'cancelled'
+
+
+def test_status_offers_can_rollback_from_the_history_dirs(env):
+    client, tmp, _, _ = env
+    assert client.get('/api/stroke-model').get_json()['can_rollback'] is False
+    old = tmp / 'weights' / 'history' / '20261001T000000000Z'
+    old.mkdir(parents=True)
+    (old / 'stroke-classifier.pt').write_bytes(b'x')
+    assert client.get('/api/stroke-model').get_json()['can_rollback'] is True
+    (old / '.retired').write_text('')
+    assert client.get('/api/stroke-model').get_json()['can_rollback'] is False

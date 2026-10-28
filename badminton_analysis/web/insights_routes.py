@@ -233,6 +233,14 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             return 'posture'
         return 'match'
 
+    def _reason_field(kind, job):
+        """A training job's ``reason_code`` ({code, numbers}) for the UI to localise, scalars only."""
+        reason = job.get('reason_code') if kind == 'training' else None
+        if not isinstance(reason, dict) or not isinstance(reason.get('code'), str):
+            return {}
+        return {'reason_code': {k: (v[:200] if isinstance(v, str) else v) for k, v in reason.items()
+                                if isinstance(k, str) and isinstance(v, (str, int, float, bool))}}
+
     def _memory_row(order, job_id, job, now):
         video = _video_stem(job.get('video_name') or job_id)
         status = job.get('status')
@@ -257,6 +265,7 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
                         _safe_message(job.get('message'),
                                       status if isinstance(status, str) else None)),
             'updated': updated,
+            **_reason_field(kind, job),
         })
 
     def _detached_row(order, path, now):

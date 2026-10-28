@@ -43,10 +43,12 @@ def resume_tree(pid):
     parent.resume()
 
 
-def kill_tree(pid, timeout=5.0):
+def kill_tree(pid, timeout=5.0, should_abort=None):
     """Terminate *pid* and every descendant; kill whatever ignores it for *timeout* seconds.
 
-    Quiet when *pid* has already exited (the job ended on its own first).
+    Quiet when *pid* has already exited (the job ended on its own first). ``should_abort()`` is
+    asked right before each terminate; when it says True nothing further is touched and the
+    result is False (None otherwise).
     """
     try:
         parent = psutil.Process(pid)
@@ -54,6 +56,8 @@ def kill_tree(pid, timeout=5.0):
         return
     procs = _children(parent) + [parent]   # collect first: a dead parent hides its children
     for p in procs:
+        if should_abort is not None and should_abort():
+            return False
         try:
             p.terminate()
         except psutil.Error:

@@ -15,12 +15,12 @@ _NO_HISTORY = {'error': '没有可回滚的旧模型 / no earlier model to roll 
 _FAILED = {'error': '操作失败，请重试 / the operation failed, please retry'}
 
 
-def register(app, *, status, active_job, queue_retrain, rollback):
+def register(app, *, status, active_job, queue_retrain, rollback, can_rollback=lambda: False):
     """Register the routes on ``app``.
 
     ``status()`` -> the card dict (cached by the caller), ``active_job()`` -> the active
     training/relabel job as a dict or None, ``queue_retrain()`` -> ``(ok, job_id, queued)``,
-    ``rollback()`` -> ``'busy' | 'none' | 'ok'``.
+    ``rollback()`` -> ``'busy' | 'none' | 'ok'``, ``can_rollback()`` -> whether an earlier model exists.
     """
     bp = Blueprint('stroke_model', __name__)
 
@@ -31,6 +31,10 @@ def register(app, *, status, active_job, queue_retrain, rollback):
         except Exception:
             return jsonify(_FAILED), 500
         doc['job'] = active_job()
+        try:
+            doc['can_rollback'] = bool(can_rollback())
+        except Exception:
+            doc['can_rollback'] = False
         return jsonify(doc)
 
     @bp.route('/api/stroke-model/retrain', methods=['POST'])
