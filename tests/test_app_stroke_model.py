@@ -563,3 +563,13 @@ def test_rollback_while_another_process_swaps_is_busy(env, monkeypatch):
     monkeypatch.setattr(model_eval, 'rollback', refuse)
     r = client.post('/api/stroke-model/rollback')
     assert r.status_code == 409 and 'relabel_strokes' not in webapp.jobs
+
+
+def test_the_job_listing_keeps_a_missing_reason_number_as_null(env):
+    client, *_ = env
+    webapp.jobs['train_strokes'] = {'status': 'completed', 'kind': 'training', 'message': 'm', 'video_name': 'x',
+                                    'stage': 'done', 'updated': 1.0,
+                                    'reason_code': {'code': 'lower_accuracy', 'candidate': None, 'live': 0.6,
+                                                    'nested': {'a': 1}}}
+    rows = {r['id']: r for r in client.get('/api/jobs').get_json()}
+    assert rows['train_strokes']['reason_code'] == {'code': 'lower_accuracy', 'candidate': None, 'live': 0.6}

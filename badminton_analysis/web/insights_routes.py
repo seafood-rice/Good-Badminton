@@ -234,12 +234,15 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
         return 'match'
 
     def _reason_field(kind, job):
-        """A training job's ``reason_code`` ({code, numbers}) for the UI to localise, scalars only."""
+        """A training job's ``reason_code`` ({code, numbers}) for the UI to localise, scalars only.
+
+        A missing number stays ``None`` (JSON null): the UI shows it as "?" instead of a wrong sentence.
+        """
         reason = job.get('reason_code') if kind == 'training' else None
         if not isinstance(reason, dict) or not isinstance(reason.get('code'), str):
             return {}
         return {'reason_code': {k: (v[:200] if isinstance(v, str) else v) for k, v in reason.items()
-                                if isinstance(k, str) and isinstance(v, (str, int, float, bool))}}
+                                if isinstance(k, str) and (v is None or isinstance(v, (str, int, float, bool)))}}
 
     def _memory_row(order, job_id, job, now):
         video = _video_stem(job.get('video_name') or job_id)

@@ -139,3 +139,11 @@ test('pipeline: a training job row localises its reason code with the sm.code st
   assert.equal(plain.reasonCode, null);
   assert.equal(jobMessage(plain, 'en'), 'boom');
 });
+
+test('a code with a missing number renders it as "?"', () => {
+  assert.equal(describeCode({ code: 'lower_accuracy', candidate: null, live: 0.8 }, 'en'),
+    'New model accuracy ? is below the current 80%');
+  assert.equal(describeCode({ code: 'train_labels', need: 50, have: null }, 'en'),
+    '? more train labels needed (50 new in total)');
+  assert.match(describeCode({ code: 'accuracy', value: null, bar: 0.85 }, 'zh'), /\?/);
+});
