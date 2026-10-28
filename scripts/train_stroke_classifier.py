@@ -3,11 +3,12 @@
 Usage:
   python scripts/train_stroke_classifier.py --dataset data/hit_dataset \
       --val-match Pusarla_V._Sindhu_Pornpawee_Chochuwong_HSBC_BWF_WORLD_TOUR_FINALS_2020_QuarterFinals \
-      [--dji-labels outputs/dji-stroke-labels/LABELS.md --results-dir outputs [--calib-video NAME]] \
+      [--dji-labels outputs/dji-stroke-labels/LABELS.md --results-dir outputs [--calib-video NAME]]       [--stroke-labels data/stroke_labels] \
       [--epochs 60] [--device cuda] [--out weights/stroke-classifier.pt]
 
 Training rallies come from the hit dataset (ShuttleSet stroke_raw mapped to the 12 types)
-plus the DJI sheet's train split. The DJI test split is never loaded. The unknown
+plus the DJI sheet's train split and the owner's stroke labels (train-split files of
+--stroke-labels, match names ``owner:<stem>``). The DJI and owner test splits are never loaded. The unknown
 threshold is tuned on the validation match plus any --calib-video DJI videos, which are
 held out of training.
 """
@@ -26,6 +27,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from badminton_analysis.stroke import owner_labels as ol  # noqa: E402
+from badminton_analysis.stroke import stroke_classifier as sc  # noqa: E402
 from badminton_analysis.stroke import stroke_labels as sl  # noqa: E402
 from badminton_analysis.stroke import stroke_model as smod  # noqa: E402
 from badminton_analysis.stroke.hit_augment import augment, jittered_index  # noqa: E402
@@ -78,6 +81,51 @@ def load_dji(sheet_path, results_dir, split="train", only=None):
         if hits:
             sig = load_signals(os.path.join(results_dir, name, "hit_signals.npz"))
             rallies.append(Rally(sig, hits, f"dji:{name}"))
+    return rallies
+
+
+def _owner_hits(result_dir, doc):
+    """The owner's trainable hits (label + added) for one result, as ``apply`` sees them."""
+    fps = ol._fps(result_dir)
+    if fps is None:
+        return []
+    strokes_doc = ol._json(os.path.join(result_dir, "strokes.json"))
+    if not isinstance(strokes_doc, dict) or not isinstance(strokes_doc.get("strokes"), list):
+        hits_doc = ol._json(os.path.join(result_dir, "hits.json"))
+        raw = hits_doc.get("hits") if isinstance(hits_doc, dict) else None
+        raw = [h for h in raw or [] if isinstance(h, dict) and isinstance(h.get("frame"), int)
+               and h.get("hitter")]
+        strokes_doc = {"schema": sc.STROKES_SCHEMA, "strokes": sc.unknown_labels(raw)}
+    applied = ol.apply(strokes_doc, doc, fps)
+    return [{"frame": int(s["frame"]), "hitter": s["hitter"], "stroke": s["stroke"]}
+            for s in applied["strokes"] if s.get("source") == "owner"]
+
+
+def load_owner(labels_dir, results_dir):
+    """Rallies from the owner's train-split stroke labels (the test split is never read)."""
+    rallies, outside = [], 0
+    if not os.path.isdir(labels_dir):
+        return rallies
+    for name in sorted(os.listdir(labels_dir)):
+        if not name.endswith(".json"):
+            continue
+        stem = name[:-5]
+        doc = ol.load(os.path.join(labels_dir, name))
+        if doc is None or doc["split"] != "train":
+            continue
+        result_dir = os.path.join(results_dir, stem)
+        signals = os.path.join(result_dir, "hit_signals.npz")
+        if not os.path.isfile(signals):
+            continue
+        hits = _owner_hits(result_dir, doc)
+        if not hits:
+            continue
+        sig = load_signals(signals)
+        inside = [h for h in hits if sig.first_frame <= h["frame"] < sig.first_frame + sig.n_frames]
+        outside += len(hits) - len(inside)
+        rallies.append(Rally(sig, hits, f"owner:{stem}"))
+    if outside:
+        print(f"owner labels: {outside} hit(s) outside the saved signals; skipped")
     return rallies
 
 
@@ -169,8 +217,9 @@ def train(train_rallies, val_rallies, epochs=60, hidden=64, levels=3, batch=64, 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--dataset", action="append", default=[])
-    p.add_argument("--val-match", required=True)
+    p.add_argument("--val-match")
     p.add_argument("--dji-labels")
+    p.add_argument("--stroke-labels")
     p.add_argument("--results-dir", default=os.path.join(ROOT, "outputs"))
     p.add_argument("--calib-video", action="append", default=[])
     p.add_argument("--epochs", type=int, default=60)
@@ -181,14 +230,22 @@ def main(argv=None):
         p.error("--epochs must be at least 1")
     shuttle = [r for d in a.dataset for r in load_shuttleset(d)]
     dji = load_dji(a.dji_labels, a.results_dir) if a.dji_labels else []
-    calib = {f"dji:{v}" for v in a.calib_video}
+    owner = load_owner(a.stroke_labels, a.results_dir) if a.stroke_labels else []
+    calib = set()
     for v in a.calib_video:
-        if f"dji:{v}" not in {r.match for r in dji}:
+        stem = v[len("owner:"):] if v.startswith("owner:") else v
+        names = {f"dji:{stem}", f"owner:{stem}"}
+        found = names & {r.match for r in dji + owner}
+        if not found:
             print(f"calibration video {v} not found in the train split; ignored")
-    train_r = [r for r in shuttle if r.match != a.val_match] + [r for r in dji if r.match not in calib]
-    val_r = [r for r in shuttle if r.match == a.val_match] + [r for r in dji if r.match in calib]
+        calib |= found
+    held = [r for r in dji + owner]
+    train_r = [r for r in shuttle if r.match != a.val_match] + [r for r in held if r.match not in calib]
+    val_r = [r for r in shuttle if r.match == a.val_match] + [r for r in held if r.match in calib]
     if not train_r or not val_r:
-        raise SystemExit(f"need training and validation data (val match {a.val_match!r})")
+        raise SystemExit(f"need training and validation data (val match {a.val_match!r}, "
+                         f"calibration videos {a.calib_video!r}; {len(train_r)} training and "
+                         f"{len(val_r)} validation rallies found)")
     print(f"{sum(len(r.hits) for r in train_r)} training hits, {sum(len(r.hits) for r in val_r)} validation hits")
     model, meta = train(train_r, val_r, epochs=a.epochs, device=a.device)
     smod.save_stroke_model(model, meta, a.out)
