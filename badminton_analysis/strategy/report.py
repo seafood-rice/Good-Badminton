@@ -563,6 +563,9 @@ _CAVEATS = {
     "positions_unusable": ("Player positions were not usable for: {sides}; zones and rushed "
                            "replies are missing for them.",
                            "以下球员的位置数据不可用：{sides}，缺少落点区域与被迫回球判断。"),
+    "hitter_unknown": ("The doubles hitter was not identified, so shot zones and rushed replies "
+                       "are missing.",
+                       "未能识别双打击球人，因此缺少落点区域与被迫回球判断。"),
     "openings_incomplete": ("Only {complete} of {total} points have a fully detected opening, "
                             "so no opening claims are made.",
                             "{total} 个回合中只有 {complete} 个完整识别了前三拍，因此不对开局下结论。"),

@@ -936,6 +936,8 @@ def _tactics(ctx, fmt, sides):
             caveats.append({"code": "positions_unusable",
                             "params": {"sides": [w for w in names if w in bad]
                                        + sorted(w for w in bad if w not in names)}})
+        if fmt == "doubles" and shot_rows and all(s.get("zone") is None for s in shot_rows):
+            caveats.append({"code": "hitter_unknown", "params": {}})   # no hitter_id: no zone, no reply claims
         if table.get("rallies") and op["complete"] < shots_mod.MIN_OPENINGS:
             caveats.append({"code": "openings_incomplete",
                             "params": {"complete": op["complete"], "total": op["total"]}})

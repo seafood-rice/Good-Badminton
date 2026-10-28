@@ -258,3 +258,20 @@ test('tactics section shows empty states when nothing could be measured, and is 
     assert.equal(everything(old.el).some((e) => e.tagName === 'DETAILS' && e.getAttribute('data-sec') === 'tactics'), false);
   } finally { removeEnv(); }
 });
+
+test('the hitter_unknown caveat is shown in both languages', async () => {
+  installEnv();
+  try {
+    for (const lang of ['en', 'zh']) {
+      const pl = payload();
+      pl.report.by_lang.en.caveats = [{ code: 'hitter_unknown', params: {} }];
+      pl.report.by_lang.zh = pl.report.by_lang.en;
+      const p = strategyPanel({ stem: 's', lang, api: fakeApi(pl), timers: fakeTimers() });
+      await tick();
+      const text = t('strategy.caveat.hitter_unknown', lang);
+      assert.notEqual(text, 'strategy.caveat.hitter_unknown');
+      assert.ok(p.el.textContent.includes(text));
+      p.destroy();
+    }
+  } finally { removeEnv(); }
+});

@@ -433,3 +433,10 @@ def test_generate_stores_tables_and_missing_tables_render_nothing(run, stub):
     assert doc["tables"] == pack["tables"]
     assert "Rally tactics" not in render_markdown({"by_lang": {"en": {}}}, "en")
     assert render_markdown(doc, "en")
+
+
+def test_hitter_unknown_caveat_text_in_both_languages():
+    from badminton_analysis.strategy.report import _caveat_text
+    item = {"code": "hitter_unknown", "params": {}}
+    assert "hitter was not identified" in _caveat_text(item, "en")
+    assert "击球人" in _caveat_text(item, "zh")

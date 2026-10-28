@@ -485,3 +485,14 @@ def test_doubles_tactics_are_unavailable_or_empty(tmp_path, no_weights):
     assert not [i for i in f if ".eff." in i]
     assert f["match.openings.complete"]["status"] in ("insufficient", "unavailable")
     assert pack["tables"]["effectiveness"] == {"you": {}, "opponent": {}}
+
+
+def test_doubles_without_any_known_hitter_gets_the_hitter_unknown_caveat(tmp_path, no_weights):
+    from tests.test_strategy_shots import SIDE_STROKES, doubles_dir
+    pack = build_facts(doubles_dir(tmp_path / "a", SIDE_STROKES), {"format": "doubles"}, STORE)
+    assert {"code": "hitter_unknown", "params": {}} in pack["caveats"]
+    hits = [{"frame": 100, "hitter_id": "P1", "hitter_team": 1, "hitter_evidence": "shuttle"}]
+    known = build_facts(doubles_dir(tmp_path / "b", SIDE_STROKES, hits), {"format": "doubles"}, STORE)
+    assert "hitter_unknown" not in codes(known)                     # one zone is enough
+    singles = build_facts(tactic_run(tmp_path / "c"), SINGLES_RECORD, STORE)
+    assert "hitter_unknown" not in codes(singles)
