@@ -732,6 +732,15 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .ws-strat-focus{display:flex;flex-direction:column;gap:4px;}
 .ws-strat-link{color:var(--accentInk);font-weight:600;text-decoration:none;}
 .ws-strat-link:hover{text-decoration:underline;}
+/* strategy tab: rally tactics tables */
+.ws-strat-tablebox{display:flex;flex-direction:column;gap:4px;overflow-x:auto;}
+.ws-strat-table{min-width:360px;}
+.ws-strat-table th,.ws-strat-table td{padding:6px 8px;}
+.ws-strat-table td.mono{text-align:right;}
+.ws-strat-few td{color:var(--ink2);}
+.ws-strat-few .ws-strat-fb{margin-left:6px;}
+.ws-strat-opsum{font-size:13px;color:var(--ink2);}
+.ws-strat-open td{vertical-align:top;}
 /* match details: header "..." menu (the Matches row menu's look, anchored under its button) */
 .ws-menu-wrap{position:relative;display:inline-flex;}
 .ws-menu-btn{min-width:40px;justify-content:center;font-size:16px;line-height:1;}

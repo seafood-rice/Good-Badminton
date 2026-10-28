@@ -121,6 +121,15 @@ _MATCH = {
                              "跟踪质量下降的回合占比：{v}。"),
     "match.result": ("Result: {v}.", "结果：{v}。"),
     "match.outcome_coverage": ("Rallies with a known winner: {v}.", "已知胜者的回合占比：{v}。"),
+    "match.active_play_sec": ("Time the shuttle was in play: {v}.", "实际比赛时间：{v}。"),
+    "match.rallies_under_9s_share": ("Rallies shorter than 9 seconds: {v}.",
+                                     "短于 9 秒的回合占比：{v}。"),
+    "match.shots_per_rally": ("Average shots per rally: {v}.", "每回合平均击球数：{v}。"),
+    "match.owner_labelled_share": ("Shots whose type was set by the owner: {v}.",
+                                   "击球类型由本人标注的比例：{v}。"),
+    "match.openings.complete": ("Points whose first three shots were fully detected "
+                                "(3 shots): {v}.", "前三拍完整识别的得分回合（3 拍）：{v}。"),
+    "match.openings.total": ("Points counted for openings: {v}.", "统计开局的回合数：{v}。"),
 }
 _SIDE = {
     "mix.attack_share": ("{W} attacking strokes (smash, drive, drop), share of non-serve "
@@ -151,6 +160,11 @@ _SIDE = {
     "points_won": ("{W} points won: {v}.", "{W}得分：{v}。"),
     "won_by": ("{W} points won by ending stroke: {v}.", "{W}得分的终结击球：{v}。"),
     "lost_by": ("{W} points lost by outcome: {v}.", "{W}失分类型：{v}。"),
+    "openings.won": ("{W} openings won (advantage after the first three shots): {v}.",
+                     "{W}在前三拍中取得优势的次数：{v}。"),
+    "opening_win_point": ("{W} openings won, and how many of those points were won "
+                          "(n = points with a known winner): {v}.",
+                          "{W}取得开局优势的回合中赢下该分的情况（n 为已知胜者的回合数）：{v}。"),
     "pulled.n": ("{W} shots counted for the pull zones: {v}.", "{W}用于统计调动区域的击球数：{v}。"),
 }
 for _z, (_en, _zh) in {"front": ("front court", "前场"), "mid": ("mid court", "中场"),
@@ -198,6 +212,10 @@ def _template(fid):
     if m and m.group(2) in _TEAM_TEXT:
         return _TEAM_TEXT[m.group(2)] + ({"who": m.group(1), "team": True},)
     m = _SIDE_ID.match(fid)
+    if m and m.group(2).startswith("eff.") and len(m.group(2)) > 4:
+        stroke = m.group(2)[4:]
+        return ("{W} " + stroke.replace("_", " ") + " attempts and how they turned out: {v}.",
+                "{W}" + _word(stroke, "zh") + "的结果：{v}。", {"who": m.group(1)})
     if m and m.group(2) in _SIDE:
         return _SIDE[m.group(2)] + ({"who": m.group(1)},)
     return None
@@ -396,7 +414,7 @@ def generate(out_dir, record, athletes, config, *, focus=None, client=None, cloc
     doc = {"schema": SCHEMA_VERSION, "format": fmt, "status": "ok", "reason": None,
            "model": config.model, "endpoint": config.url, "generated_at": _iso(started),
            "duration_sec": 0.0, "inputs": pack.get("inputs", {}), "focus": pack.get("focus"),
-           "facts": pack.get("facts", []), "by_lang": {}}
+           "facts": pack.get("facts", []), "tables": pack.get("tables") or {}, "by_lang": {}}
     failure = None
     fell_by_lang = {}
     try:
@@ -490,7 +508,18 @@ _TITLES = {
            "date": "Date", "result": "Result", "vs": "vs",
            "fallback": "_This section was not written by the AI; it only lists measured "
                        "numbers._",
-           "footer": "AI-written from measured data"},
+           "footer": "AI-written from measured data", "tactics": "Rally tactics",
+           "eff": "Stroke effectiveness", "eff_cols": ("Stroke", "Effective", "Neutral",
+                                                       "Ineffective", "Unknown", "Attempts"),
+           "eff_few": "fewer than 5 attempts", "eff_none": "No stroke types were measured.",
+           "you": "You", "opponent": "Opponent", "neutral": "neutral",
+           "openings": "Openings (first three shots)",
+           "open_cols": ("Rally", "Advantage", "Point won by", "Shots"),
+           "open_sum": "Openings fully detected: {complete} of {total}. Advantage after the "
+                       "first three shots: you {you}, opponent {opp}, neither {neutral}. "
+                       "Points won by the side with the advantage: {won} of {n}.",
+           "open_few": "Fewer than 5 complete openings: shown for reference, no opening claims.",
+           "open_none": "No opening could be fully detected."},
     "zh": {"title": "比赛策略报告", "summary": "摘要", "match_profile": "比赛概况",
            "your_game": "你的表现", "shot_selection": "选球", "movement": "跑动",
            "patterns": "战术模式", "strengths": "优势", "weaknesses": "不足",
@@ -498,7 +527,16 @@ _TITLES = {
            "evidence": "证据", "do": "做", "why": "原因", "cue": "提示", "training": "训练重点",
            "confidence": "可信度", "date": "日期", "result": "结果", "vs": "对",
            "fallback": "_本节不是 AI 撰写，仅列出测量数据。_",
-           "footer": "AI 根据测量数据撰写"},
+           "footer": "AI 根据测量数据撰写", "tactics": "回合战术",
+           "eff": "击球效果", "eff_cols": ("击球", "有效", "中性", "无效", "未知", "次数"),
+           "eff_few": "少于 5 次", "eff_none": "没有测量到击球类型。",
+           "you": "你", "opponent": "对手", "neutral": "均势",
+           "openings": "开局（前三拍）",
+           "open_cols": ("回合", "优势方", "得分方", "击球"),
+           "open_sum": "完整识别的开局：{total} 个中的 {complete} 个。前三拍后的优势：你 {you}，"
+                       "对手 {opp}，均势 {neutral}。有优势的一方赢下该分：{n} 个中的 {won} 个。",
+           "open_few": "完整开局少于 5 个：仅供参考，不对开局下结论。",
+           "open_none": "没有可完整识别的开局。"},
 }
 _CAVEATS = {
     "no_rally_outcomes": ("Who won each rally was not recorded, so there are no win or error "
@@ -518,6 +556,16 @@ _CAVEATS = {
     "outcomes_unreconciled": ("Rally winners do not yet add up to the recorded score "
                               "(reconciliation: {status}), so point counts may be incomplete.",
                               "回合胜负尚未与记录的比分对上（核对状态：{status}），得分统计可能不完整。"),
+    "stroke_model": ("Stroke types come from a model that scores {accuracy} on the owner's "
+                     "labelled shots{bar}.", "击球类型来自在本人标注击球上准确率为 {accuracy} 的模型{bar}。"),
+    "owner_labelled": ("{share} of the shots carry stroke types set by the owner.",
+                       "{share} 的击球类型由本人标注。"),
+    "positions_unusable": ("Player positions were not usable for: {sides}; zones and rushed "
+                           "replies are missing for them.",
+                           "以下球员的位置数据不可用：{sides}，缺少落点区域与被迫回球判断。"),
+    "openings_incomplete": ("Only {complete} of {total} points have a fully detected opening, "
+                            "so no opening claims are made.",
+                            "{total} 个回合中只有 {complete} 个完整识别了前三拍，因此不对开局下结论。"),
 }
 
 
@@ -531,8 +579,17 @@ def _caveat_text(item, lang):
     params = dict(params)
     if isinstance(params.get("files"), list):
         params["files"] = ", ".join(str(f) for f in params["files"])
-    if isinstance(params.get("share"), (int, float)):
-        params["share"] = f"{round(params['share'] * 100):d}%"
+    for key in ("share", "accuracy"):
+        if isinstance(params.get(key), (int, float)) and not isinstance(params[key], bool):
+            params[key] = f"{round(params[key] * 100):d}%"
+    if "bar_met" in params:
+        met = params.pop("bar_met")
+        params["bar"] = ("" if not isinstance(met, bool) else
+                         ("（达标）" if met else "（未达标）") if lang == "zh" else
+                         (", bar met" if met else ", bar not met"))
+    if isinstance(params.get("sides"), list):
+        names = {"you": "你", "opponent": "对手"} if lang == "zh" else {}
+        params["sides"] = ", ".join(names.get(x, str(x)) for x in params["sides"])
     try:
         return tpl[1 if lang == "zh" else 0].format(**params)
     except (KeyError, IndexError, ValueError):
@@ -572,6 +629,72 @@ def _md_claims(claims, notes):
 
 _UNIT_ZH = {"s": " s", "m": " m", "m_per_s": " m/s", "shots_per_s": " 拍/秒",
             "per_rally": " 次/回合", "score": " 分"}
+
+
+def _md_count(v):
+    return str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else "-"
+
+
+def _md_zone(zone, lang):
+    if not isinstance(zone, dict):
+        return "?"
+    return f"{_word(zone.get('depth', '?'), lang)} {_word(zone.get('side', '?'), lang)}"
+
+
+def _md_who(who, t):
+    return t.get(who, who) if who in ("you", "opponent") else str(who or "-")
+
+
+def _md_tactics(tables, lang, t):
+    """The effectiveness and opening tables as Markdown lines (empty when the report has none)."""
+    if not isinstance(tables, dict) or not ("effectiveness" in tables or "openings" in tables):
+        return []
+    out = ["", f"## {t['tactics']}", "", f"### {t['eff']}"]
+    eff = tables.get("effectiveness") if isinstance(tables.get("effectiveness"), dict) else {}
+    shown = False
+    for who in ("you", "opponent"):
+        cells = eff.get(who) if isinstance(eff.get(who), dict) else {}
+        if not cells:
+            continue
+        shown = True
+        out.extend(["", f"**{_esc(t[who])}**", "", "| " + " | ".join(t["eff_cols"]) + " |",
+                    "|" + " --- |" * len(t["eff_cols"])])
+        for stroke in sorted(cells):
+            c = cells[stroke] if isinstance(cells[stroke], dict) else {}
+            n = c.get("n")
+            few = f" ({t['eff_few']})" if isinstance(n, (int, float)) and n < 5 else ""
+            out.append(f"| {_esc(_word(stroke, lang))}{few} | "
+                       + " | ".join(_md_count(c.get(k)) for k in
+                                    ("effective", "neutral", "ineffective", "unknown", "n"))
+                       + " |")
+    if not shown:
+        out.extend(["", t["eff_none"]])
+    out.extend(["", f"### {t['openings']}", ""])
+    op = tables.get("openings") if isinstance(tables.get("openings"), dict) else {}
+    won_by = op.get("won_by") if isinstance(op.get("won_by"), dict) else {}
+    wp = op.get("opening_winner_won_point") if isinstance(
+        op.get("opening_winner_won_point"), dict) else {}
+    rows = [r for r in op.get("rows") or [] if isinstance(r, dict)]
+    out.append(t["open_sum"].format(
+        complete=_md_count(op.get("complete")), total=_md_count(op.get("total")),
+        you=_md_count(won_by.get("you")), opp=_md_count(won_by.get("opponent")),
+        neutral=_md_count(op.get("neutral")), won=_md_count(wp.get("won")),
+        n=_md_count(wp.get("n"))))
+    if op.get("insufficient"):
+        out.extend(["", t["open_few"]])
+    if not rows:
+        out.extend(["", t["open_none"]])
+        return out
+    out.extend(["", "| " + " | ".join(t["open_cols"]) + " |", "|" + " --- |" * len(t["open_cols"])])
+    for r in rows:
+        adv = t["neutral"] if r.get("advantage") == "neutral" else _md_who(r.get("advantage"), t)
+        shots = "; ".join(
+            f"{_md_who(s.get('hitter'), t)} {_word(s.get('stroke') or '?', lang)} "
+            f"({_md_zone(s.get('zone'), lang)} > {_md_zone(s.get('sent_to'), lang)})"
+            for s in r.get("shots") or [] if isinstance(s, dict))
+        out.append(f"| {_esc(r.get('rally'))} | {_esc(adv)} | "
+                   f"{_esc(_md_who(r.get('point_winner'), t))} | {_esc(shots)} |")
+    return out
 
 
 def _evidence_line(i, fid, fact, lang):
@@ -647,6 +770,7 @@ def render_markdown(doc, lang):
     if isinstance(scouting, dict):
         heading(2, "scouting", scouting)
         out.extend(_md_claims(scouting.get("claims"), notes))
+    out.extend(_md_tactics(doc.get("tables"), lang, t))
     caveats = report.get("caveats")
     items = caveats.get("items") if isinstance(caveats, dict) else None
     if items:

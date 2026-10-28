@@ -2,11 +2,11 @@
 // report as collapsible sections, claims with evidence chips, caveats and a footer, plus Regenerate, Export Markdown
 // and "write from the other side". Everything that comes from the report file (names, claims, plan items) is set as
 // text or as an attribute value, never parsed as HTML. The state logic is in views/strategy_model.js.
-import { t } from '../core/i18n.js';
+import { t, strokeTypeLabel } from '../core/i18n.js';
 import { getJSON, sendJSON } from '../core/api.js';
 import { h } from './frame.js';
 import {
-  panelState, reportFor, claimsOf, partClaims, evidenceText, isFallback, otherSide, planItems, obj, YOUR_GAME_PARTS,
+  panelState, reportFor, claimsOf, partClaims, evidenceText, isFallback, otherSide, planItems, obj, tacticsView, YOUR_GAME_PARTS,
 } from '../views/strategy_model.js';
 
 const POLL_MS = 3000;
@@ -33,6 +33,9 @@ function caveatText(c, lang) {
   const p = { ...obj(o.params) };
   if (typeof p.share === 'number') p.share = Math.round(p.share * 100) + '%';
   if (Array.isArray(p.files)) p.files = p.files.join(', ');
+  if (typeof p.accuracy === 'number') p.accuracy = Math.round(p.accuracy * 100) + '%';
+  if ('bar_met' in p) p.bar = typeof p.bar_met === 'boolean' ? t(p.bar_met ? 'strategy.bar.met' : 'strategy.bar.not_met', lang) : '';
+  if (Array.isArray(p.sides)) p.sides = p.sides.map((x) => t('strategy.who.' + x, lang)).join(', ');
   const key = 'strategy.caveat.' + code;
   const v = t(key, lang, p);
   return v !== key ? v : (str(o.text) || code);
@@ -123,6 +126,7 @@ export function strategyPanel({ stem, lang, api = defaultApi, timers = defaultTi
     if (rep.your_game) out.push(sectionBox('your_game', rep.your_game, yourGameBlock(rep.your_game, facts), false));
     if (rep.game_plan) out.push(sectionBox('game_plan', rep.game_plan, planBlock(rep.game_plan, facts), true));
     simple('scouting', false);
+    out.push(tacticsBlock(doc));
     const cav = Array.isArray(rep.caveats) ? rep.caveats : Array.isArray(obj(rep.caveats).items) ? rep.caveats.items : [];
     if (cav.length) {
       out.push(h('details', { class: 'ws-strat-sec', 'data-sec': 'caveats' }, [
@@ -133,6 +137,63 @@ export function strategyPanel({ stem, lang, api = defaultApi, timers = defaultTi
     const when = str(doc.generated_at).replace('T', ' ').slice(0, 16);
     out.push(h('div', { class: 'ws-strat-foot mv-hint' }, t('strategy.footer', lang, { model: str(doc.model), time: when })));
     return out;
+  }
+
+  const strokeName = (id) => {
+    const v = strokeTypeLabel(id, lang);
+    return v === 'stroke.' + id ? id.replace(/_/g, ' ') : v;
+  };
+  const zoneName = (z) => (z ? t('strategy.zone.' + z.depth, lang) + ' ' + t('strategy.zone.' + z.side, lang) : '?');
+  const whoName = (w) => (w === 'neutral' ? t('strategy.tactics.neutral', lang) : w ? t('strategy.who.' + w, lang) : '—');
+
+  function effTable(who, rows) {
+    const cols = ['stroke', 'effective', 'neutral', 'ineffective', 'unknown', 'n'];
+    return h('div', { class: 'ws-strat-tablebox', 'data-who': who }, [
+      h('div', { class: 'k-label' }, t('strategy.who.' + who, lang)),
+      h('table', { class: 'table ws-strat-table' }, [
+        h('thead', null, h('tr', null, cols.map((c) => h('th', null, t('strategy.tactics.col.' + c, lang))))),
+        h('tbody', null, rows.map((r) => h('tr', { class: r.few ? 'ws-strat-few' : null }, [
+          h('td', null, [strokeName(r.stroke), r.few ? h('span', { class: 'k-chip ws-strat-fb' }, t('strategy.tactics.few', lang)) : null]),
+          h('td', { class: 'mono' }, String(r.effective)), h('td', { class: 'mono' }, String(r.neutral)),
+          h('td', { class: 'mono' }, String(r.ineffective)), h('td', { class: 'mono' }, String(r.unknown)),
+          h('td', { class: 'mono' }, String(r.n)),
+        ]))),
+      ]),
+    ]);
+  }
+
+  function openingsBlock(op) {
+    const out = [h('div', { class: 'ws-strat-opsum' }, t('strategy.tactics.open_sum', lang, {
+      complete: op.complete, total: op.total, you: op.wonBy.you, opp: op.wonBy.opponent, neutral: op.neutral, won: op.winPoint.won, n: op.winPoint.n,
+    }))];
+    if (op.insufficient) out.push(h('div', { class: 'mv-hint' }, t('strategy.tactics.open_few', lang)));
+    if (!op.rows.length) {
+      out.push(h('div', { class: 'mv-hint' }, t('strategy.tactics.no_openings', lang)));
+      return out;
+    }
+    out.push(h('table', { class: 'table ws-strat-table ws-strat-open' }, [
+      h('thead', null, h('tr', null, ['rally', 'advantage', 'winner', 'shots'].map((c) => h('th', null, t('strategy.tactics.col.' + c, lang))))),
+      h('tbody', null, op.rows.map((r) => h('tr', null, [
+        h('td', { class: 'mono' }, String(r.rally)), h('td', null, whoName(r.advantage)), h('td', null, whoName(r.pointWinner)),
+        h('td', null, r.shots.map((sh) => h('div', null, whoName(sh.hitter) + ' ' + strokeName(sh.stroke) + ' (' + zoneName(sh.zone) + ' > ' + zoneName(sh.sentTo) + ')'))),
+      ]))),
+    ]));
+    return out;
+  }
+
+  function tacticsBlock(doc) {
+    const view = tacticsView(doc);
+    if (!view) return null;
+    const effBoxes = ['you', 'opponent'].filter((w) => view.eff[w].length).map((w) => effTable(w, view.eff[w]));
+    return h('details', { class: 'ws-strat-sec', 'data-sec': 'tactics' }, [
+      h('summary', { class: 'ws-strat-sum' }, t('strategy.sec.tactics', lang)),
+      h('div', { class: 'ws-strat-body' }, [
+        h('div', { class: 'k-label' }, t('strategy.tactics.eff', lang)),
+        effBoxes.length ? effBoxes : h('div', { class: 'mv-hint' }, t('strategy.tactics.no_eff', lang)),
+        h('div', { class: 'k-label' }, t('strategy.tactics.openings', lang)),
+        openingsBlock(view.openings),
+      ]),
+    ]);
   }
 
   function reasonText(doc) {

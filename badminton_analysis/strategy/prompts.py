@@ -76,6 +76,23 @@ _GLOSSARY = (
     "where this player's shots drag the OTHER player. recovery_median_sec = seconds to get "
     "back to base after a hit. short rally = 5 shots or fewer, long rally = 10 or more.")
 
+_TACTICS = {
+    "en": (
+        "Rally tactics: <p>.eff.<stroke> = how this player's attempts of that stroke turned out "
+        "(effective, neutral, ineffective, unknown, n attempts). match.openings.* and "
+        "<p>.openings.* / <p>.opening_win_point = the first three shots of each point. Base "
+        "strengths, weaknesses and the game plan on the eff.* and openings.* facts when they are "
+        "available. Never call a stroke a strength or a weakness when its fact is insufficient "
+        "(fewer than 5 attempts) or unavailable; say there is not enough data instead. If "
+        "match.openings.complete is insufficient, make no claim about openings."),
+    "zh": (
+        "回合战术：<p>.eff.<stroke> = 该球员这种击球的结果（有效、中性、无效、未知，n 为次数）；"
+        "match.openings.*、<p>.openings.*、<p>.opening_win_point = 每分前三拍的情况。"
+        "优势、不足和比赛计划应尽量依据 eff.* 与 openings.* 数据。"
+        "当某种击球的数据为 insufficient（少于 5 次）或 unavailable 时，不得称其为优势或不足，"
+        "应写“数据不足”。若 match.openings.complete 为 insufficient，不要对开局下结论。"),
+}
+
 _SYSTEM_EN = (
     "You are an experienced badminton coach talking directly to your athlete (use \"you\"). "
     "Write a {fmt} match strategy report from the measured facts you are given.\n"
@@ -93,7 +110,7 @@ _SYSTEM_EN = (
     "6. Word limits: summary {summary} words in total, match_profile {match_profile}, "
     "your_game {your_game}, game_plan {game_plan}, scouting {scouting}.\n"
     "7. Write in English. Answer with the JSON object only.\n"
-    "{glossary}")
+    "{glossary}\n{tactics}")
 
 _SYSTEM_ZH = (
     "你是一位经验丰富的羽毛球教练，直接对你的运动员说话（用“你”）。请根据给定的测量数据，"
@@ -109,7 +126,7 @@ _SYSTEM_ZH = (
     "6. 字数上限：summary 共 {summary} 字，match_profile {match_profile} 字，"
     "your_game {your_game} 字，game_plan {game_plan} 字，scouting {scouting} 字。\n"
     "7. 用简体中文书写。只输出 JSON 对象。\n"
-    "{glossary}")
+    "{glossary}\n{tactics}")
 
 _FMT_RULES = {
     ("en", "singles"): "Stroke types are measured for both players; use them.",
@@ -126,7 +143,8 @@ def system_prompt(lang, fmt):
     fmt = "doubles" if fmt == "doubles" else "singles"
     template = _SYSTEM_ZH if lang == "zh" else _SYSTEM_EN
     return template.format(fmt=fmt, fmt_zh="双打" if fmt == "doubles" else "单打",
-                           fmt_rule=_FMT_RULES[(lang, fmt)], glossary=_GLOSSARY, **WORD_CAPS)
+                           fmt_rule=_FMT_RULES[(lang, fmt)], glossary=_GLOSSARY,
+                           tactics=_TACTICS[lang], **WORD_CAPS)
 
 
 def user_message(pack):

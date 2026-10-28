@@ -380,3 +380,38 @@ def test_markdown_renders_outcomes_unreconciled_caveat():
     item = {"code": "outcomes_unreconciled", "params": {"status": "incomplete"}}
     doc = {"by_lang": {"en": {"caveats": {"items": [item]}}}}
     assert "reconciliation: incomplete" in render_markdown(doc, "en")
+
+
+def test_markdown_exports_both_tables_escaped():
+    doc = {"by_lang": {"en": {"header": {}, "caveats": {"items": [
+        {"code": "openings_incomplete", "params": {"complete": 2, "total": 6}},
+        {"code": "stroke_model", "params": {"accuracy": 0.81, "bar_met": False}},
+        {"code": "owner_labelled", "params": {"share": 0.25}},
+        {"code": "positions_unusable", "params": {"sides": ["you"]}}]}}},
+        "facts": [],
+        "tables": {"effectiveness": {"you": {"sm*ash": {"effective": 3, "neutral": 1,
+                                                          "ineffective": 1, "unknown": 0, "n": 5}},
+                                     "opponent": {}},
+                   "openings": {"complete": 6, "total": 8, "insufficient": False, "neutral": 1,
+                                "won_by": {"you": 3, "opponent": 2},
+                                "opening_winner_won_point": {"n": 5, "won": 4},
+                                "rows": [{"rally": 1, "advantage": "you", "point_winner": "you",
+                                          "n_shots": 7, "shots": [
+                                              {"hitter": "you", "stroke": "long<serve>",
+                                               "zone": {"depth": "rear", "side": "left"},
+                                               "sent_to": None}]}]}}}
+    en = render_markdown(doc, "en")
+    assert "## Rally tactics" in en and "sm\\*ash" in en and "long\\<serve\\>" in en
+    assert "| 3 | 1 | 1 | 0 | 5 |" in en
+    assert "81%" in en and "25%" in en and "<serve>" not in en
+    zh = render_markdown(doc, "zh")
+    assert "## 回合战术" in zh and "81%" in zh
+
+
+def test_generate_stores_tables_and_missing_tables_render_nothing(run, stub):
+    out, pack = run
+    serve(stub, pack)
+    doc = generate(out, RECORD, STORE, cfg(stub.url))
+    assert doc["tables"] == pack["tables"]
+    assert "Rally tactics" not in render_markdown({"by_lang": {"en": {}}}, "en")
+    assert render_markdown(doc, "en")

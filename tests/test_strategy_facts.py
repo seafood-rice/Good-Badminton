@@ -1,6 +1,8 @@
 """The strategy facts pack (badminton_analysis/strategy/facts.py)."""
 import json
 
+import pytest
+
 from badminton_analysis.strategy.facts import (INPUT_FILES, build_facts, current_inputs,
                                                fact_map)
 from tests.insights_fixtures import (doubles_hit, doubles_tracklet, make_doubles_run,
@@ -48,7 +50,7 @@ def test_facts_are_well_formed(tmp_path):
     assert len(ids) == len(set(ids))
     for fact in pack["facts"]:
         assert set(fact) - {"defs"} == {"id", "value", "unit", "who", "status", "reason", "validated"}
-        assert fact["status"] in ("ok", "partial", "unavailable")
+        assert fact["status"] in ("ok", "partial", "insufficient", "unavailable")
         if fact["status"] == "unavailable":
             assert fact["value"] is None and fact["reason"]
     json.dumps(pack)                                  # serialisable
@@ -299,3 +301,139 @@ def test_doubles_focus_assumed_names_the_team(tmp_path):
     pack = build_facts(out, {"format": "doubles"}, STORE)
     assert pack["focus"]["assumed"] is True and pack["focus"]["team"] == 1
     assert "focus_assumed_team" in codes(pack) and "focus_assumed" not in codes(pack)
+
+
+# ---------------------------------------------------------------- rally tactics (plan task 8)
+
+FPS = 30.0
+
+
+def tactic_run(tmp_path, n=6, *, winner="lower", owner=True, same_hitter=False, positions=None):
+    """``n`` rallies of serve (lower), lift (upper), smash (lower); the lower side wins them."""
+    rallies = [(10 * i, 10 * i + 8) for i in range(n)]
+    strokes = []
+    for i in range(n):
+        for k, (hitter, stroke) in enumerate((("lower", "long_serve"), ("upper", "lift"),
+                                              ("lower", "smash"))):
+            if same_hitter:
+                hitter = "lower"
+            strokes.append({"frame": round((10 * i + 1 + k) * FPS), "hitter": hitter,
+                            "stroke": stroke, "group": "serve" if "serve" in stroke else stroke,
+                            "confidence": 0.9, "source": "owner" if owner else "model"})
+    out = make_run(tmp_path, rallies=rallies, strokes=strokes, frames=int(10 * n * FPS),
+                   positions=positions)
+    if winner:
+        outs = [{"id": i + 1, "segment_id": i + 1, "start_sec": 10.0 * i, "end_sec": 10.0 * i + 8,
+                 "winner_side": winner, "source": "owner" if owner else "auto"}
+                for i in range(n)]
+        (out / "rally_outcomes.json").write_text(
+            json.dumps({"schema": 1, "rallies": outs, "summary": {"coverage": 1.0}}),
+            encoding="utf-8")
+    return out
+
+
+@pytest.fixture
+def no_weights(tmp_path, monkeypatch):
+    from badminton_analysis.strategy import facts
+    monkeypatch.setattr(facts, "WEIGHTS_DIR", tmp_path / "no_weights")
+
+
+def test_tactics_facts_singles(tmp_path, no_weights):
+    pack = build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE)
+    f = fact_map(pack)
+    assert f["match.active_play_sec"]["value"] == 48.0 and f["match.active_play_sec"]["unit"] == "s"
+    assert f["match.rallies_under_9s_share"]["value"] == 1.0
+    assert f["match.rallies_under_9s_share"]["defs"] == [9]
+    assert f["match.shots_per_rally"]["value"] == 3.0
+    assert f["match.owner_labelled_share"]["value"] == 1.0
+    smash = f["you.eff.smash"]
+    assert smash["status"] == "ok" and smash["value"]["n"] == 6
+    assert set(smash["value"]) == {"effective", "neutral", "ineffective", "unknown", "n"}
+    assert smash["value"]["effective"] == 6
+    assert f["opponent.eff.lift"]["value"]["n"] == 6
+    assert f["match.openings.complete"]["value"] == 6
+    assert f["match.openings.complete"]["defs"] == [3]
+    assert f["match.openings.complete"]["status"] == "ok"
+    assert f["match.openings.total"]["value"] == 6
+    assert f["you.openings.won"]["value"] + f["opponent.openings.won"]["value"] <= 6
+    assert set(f["you.opening_win_point"]["value"]) == {"n", "won"}
+    assert f["match.stroke_model"]["status"] == "unavailable"
+    assert "owner_labelled" in codes(pack) and "openings_incomplete" not in codes(pack)
+    tables = pack["tables"]
+    assert tables["effectiveness"]["you"]["smash"]["n"] == 6
+    assert tables["effectiveness"]["opponent"]["lift"]["n"] == 6
+    op = tables["openings"]
+    assert op["complete"] == 6 and op["insufficient"] is False
+    assert {r["advantage"] for r in op["rows"]} <= {"you", "opponent", "neutral"}
+    assert all(s["hitter"] in ("you", "opponent") for r in op["rows"] for s in r["shots"])
+    json.dumps(pack)
+
+
+def test_tactics_insufficient_rules(tmp_path, no_weights):
+    pack = build_facts(tactic_run(tmp_path, n=2), SINGLES_RECORD, STORE)
+    f = fact_map(pack)
+    smash = f["you.eff.smash"]
+    assert smash["status"] == "insufficient" and smash["reason"] == "few_attempts"
+    assert smash["value"]["n"] == 2
+    for fid in ("match.openings.complete", "match.openings.total", "you.openings.won",
+                "opponent.openings.won", "you.opening_win_point"):
+        assert f[fid]["status"] == "insufficient" and f[fid]["reason"] == "few_openings"
+    assert {"code": "openings_incomplete", "params": {"complete": 2, "total": 2}} in pack["caveats"]
+    assert pack["tables"]["openings"]["insufficient"] is True
+
+
+EMPTY_TABLES = {"effectiveness": {"you": {}, "opponent": {}},
+                "openings": {"complete": 0, "total": 0, "rows": [],
+                             "won_by": {"you": 0, "opponent": 0},
+                             "opening_winner_won_point": {"n": 0, "won": 0},
+                             "neutral": 0, "insufficient": True}}
+
+
+def test_tactics_nothing_usable_never_raises(tmp_path, no_weights):
+    out = tactic_run(tmp_path, n=3, winner=None, owner=False, same_hitter=True)
+    pack = build_facts(out, SINGLES_RECORD, STORE)
+    f = fact_map(pack)
+    assert f["match.openings.complete"]["value"] == 0
+    assert f["match.openings.complete"]["status"] == "insufficient"
+    assert f["you.eff.smash"]["status"] == "insufficient"
+    assert f["you.eff.smash"]["value"]["unknown"] == 3
+    assert pack["tables"]["openings"]["rows"] == []
+    assert f["match.owner_labelled_share"]["value"] == 0.0
+    assert "owner_labelled" not in codes(pack) and "openings_incomplete" in codes(pack)
+    for bad in (build_facts(tmp_path / "nope", None, None),
+                build_facts(make_run(tmp_path, stem="bare"), {}, STORE)):
+        assert bad["tables"] == EMPTY_TABLES
+        assert fact_map(bad).get("match.active_play_sec", {"status": "unavailable"})[
+            "status"] == "unavailable"
+
+
+def test_tactics_positions_unusable_caveat(tmp_path, no_weights):
+    out = tactic_run(tmp_path, positions={"upper": (0.1, 3.0), "lower": (3.0, 10.0)})
+    pack = build_facts(out, SINGLES_RECORD, STORE)
+    assert {"code": "positions_unusable", "params": {"sides": ["opponent"]}} in pack["caveats"]
+
+
+def test_stroke_model_fact_from_history(tmp_path, monkeypatch):
+    from badminton_analysis.strategy import facts
+    weights = tmp_path / "w"
+    weights.mkdir()
+    history = [{"kept": True, "candidate": {"accuracy": 0.5}, "utc": "a"},
+               {"kept": True, "candidate": {"accuracy": 0.81, "unknown_rate": 0.1},
+                "bar_met": True, "utc": "b"},
+               {"kept": False, "candidate": {"accuracy": 0.99}, "utc": "c"},
+               {"kept": True, "rollback": True, "utc": "d"}]
+    (weights / "stroke-model-history.json").write_text(json.dumps(history), encoding="utf-8")
+    monkeypatch.setattr(facts, "WEIGHTS_DIR", weights)
+    pack = build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE)
+    fact = fact_map(pack)["match.stroke_model"]
+    assert fact["status"] == "ok" and fact["value"] == {"accuracy": 0.81, "bar_met": True}
+    assert {"code": "stroke_model", "params": {"accuracy": 0.81, "bar_met": True}} in pack["caveats"]
+
+
+def test_doubles_tactics_are_unavailable_or_empty(tmp_path, no_weights):
+    out = make_doubles_run(tmp_path, frames=60)
+    pack = build_facts(out, {"format": "doubles"}, STORE)
+    f = fact_map(pack)
+    assert not [i for i in f if ".eff." in i]
+    assert f["match.openings.complete"]["status"] in ("insufficient", "unavailable")
+    assert pack["tables"]["effectiveness"] == {"you": {}, "opponent": {}}

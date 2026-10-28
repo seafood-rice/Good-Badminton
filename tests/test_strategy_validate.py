@@ -268,3 +268,22 @@ def test_percent_after_small_int_checked():
 def test_prompts_ask_for_digits():
     assert "Arabic digits" in system_prompt("en", "singles")
     assert "阿拉伯数字" in system_prompt("zh", "singles")
+
+
+def test_tactics_facts_validate_with_their_numbers():
+    eff = fact("you.eff.smash", {"effective": 7, "neutral": 3, "ineffective": 2, "unknown": 1,
+                                 "n": 13}, "count")
+    pack = dict(PACK, facts=PACK["facts"] + [eff])
+    ok = with_summary("Of 13 smashes, 7 were effective and 2 were not.", "you.eff.smash")
+    assert check(ok, pack=pack) == {}
+    bad = with_summary("Of 13 smashes, 8 were effective.", "you.eff.smash")
+    assert list(check(bad, pack=pack)) == ["summary"]
+
+
+def test_user_message_keeps_tables_out_and_prompt_names_the_tally():
+    pack = dict(PACK, tables={"effectiveness": {"you": {}}, "openings": {}})
+    body = json.loads(user_message(pack))
+    assert set(body) == {"format", "focus", "header", "facts"}
+    for lang in ("en", "zh"):
+        text = system_prompt(lang, "singles")
+        assert "eff." in text and "openings." in text

@@ -4,7 +4,7 @@
 the insights sidecar and the tolerant loaders) and returns a JSON-able dict::
 
     {"format", "focus", "header", "facts": [{id, value, unit, who, status, reason, validated}],
-     "caveats": [{code, params}], "inputs"}
+     "caveats": [{code, params}], "tables", "inputs"}
 
 Contract:
 - It is total: a missing or half-written run, a hostile record or a failing fact group never
@@ -30,6 +30,7 @@ from ..insights.movement import NET_Y
 from ..insights.rally import SHOT_PAD_SEC, rally_windows
 from ..insights.sidecar import compute_video
 from ..library import athletes as athlete_store
+from . import shots as shots_mod
 
 INPUT_FILES = ("insights.json", "strokes.json", "rally_segments.json", "hits.json",
                "players.json", "tracklets.jsonl", "technique_summary.json",
@@ -790,6 +791,157 @@ def _env_teams(env):
     return {t["id"]: t for t in teams or [] if isinstance(t, dict) and "id" in t}
 
 
+# ---------------------------------------------------------------- rally tactics (shots.py)
+
+TACTICS_MATCH_IDS = ("match.active_play_sec", "match.rallies_under_9s_share",
+                     "match.shots_per_rally", "match.owner_labelled_share", "match.stroke_model",
+                     "match.openings.complete", "match.openings.total")
+WEIGHTS_DIR = Path(__file__).resolve().parents[2] / "weights"
+HISTORY_FILE = "stroke-model-history.json"
+
+
+def _empty_tables():
+    return {"effectiveness": {"you": {}, "opponent": {}},
+            "openings": {"complete": 0, "total": 0, "rows": [],
+                         "won_by": {"you": 0, "opponent": 0},
+                         "opening_winner_won_point": {"n": 0, "won": 0}, "neutral": 0,
+                         "insufficient": True}}
+
+
+def _stroke_model_quality():
+    """``{accuracy, bar_met}`` of the live stroke model, or None when nothing is recorded.
+
+    The last kept entry of ``weights/stroke-model-history.json`` holds the model's scored
+    metrics (``candidate``) and, when the evaluator wrote it, ``bar_met``. One place to point at
+    ``stroke.model_eval.status`` later."""
+    try:
+        with open(WEIGHTS_DIR / HISTORY_FILE, encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError, RecursionError, MemoryError):
+        return None
+    for entry in reversed(entries if isinstance(entries, list) else []):
+        metrics = entry.get("candidate") if isinstance(entry, dict) and entry.get("kept") else None
+        accuracy = number(metrics.get("accuracy")) if isinstance(metrics, dict) else None
+        if accuracy is not None:
+            bar = entry.get("bar_met")
+            return {"accuracy": round(accuracy, 3), "bar_met": bar if isinstance(bar, bool) else None}
+    return None
+
+
+def _tactics_overview_facts(table, ov, quality):
+    out = []
+
+    def one(fid, val, unit, defs=None):
+        if val is None:
+            out.append(_unavailable(fid, "match", "no_data", unit))
+            return
+        made = _fact(fid, val, "match", unit)
+        if defs:
+            made["defs"] = defs
+        out.append(made)
+
+    one("match.active_play_sec", ov.get("active_play_sec"), "s")
+    one("match.rallies_under_9s_share", ov.get("rallies_under_9s_share"), "share",
+        [int(shots_mod.SHORT_RALLY_SEC)])
+    one("match.shots_per_rally", ov.get("shots_per_rally"), "shots")
+    rows = table.get("shots") or []
+    one("match.owner_labelled_share",
+        _share(sum(1 for s in rows if s.get("source") == "owner") / len(rows)) if rows else None,
+        "share")
+    if quality is None:
+        out.append(_unavailable("match.stroke_model", "match", "no_model_scores"))
+    else:
+        out.append(_fact("match.stroke_model", dict(quality), "match"))
+    return out
+
+
+def _eff_facts(table, who_of, prefix_of):
+    out = []
+    eff = {}
+    for side, p in who_of.items():
+        cells = shots_mod.effectiveness(table, side)
+        eff[p] = cells
+        for stroke in sorted(cells):
+            cell = cells[stroke]
+            few = cell["n"] < shots_mod.MIN_ATTEMPTS
+            out.append(_fact(f"{prefix_of(p)}.eff.{stroke}", dict(cell), p, "count",
+                             "insufficient" if few else "ok", "few_attempts" if few else None))
+    return out, eff
+
+
+def _opening_facts(table, who_of, prefix_of, op):
+    ids = ["match.openings.complete", "match.openings.total"]
+    if not table.get("rallies"):
+        return [_unavailable(i, "match", "no_rallies", "count") for i in ids]
+    few = op["complete"] < shots_mod.MIN_OPENINGS
+    status, reason = ("insufficient", "few_openings") if few else ("ok", None)
+    done = _fact(ids[0], op["complete"], "match", "count", status, reason)
+    done["defs"] = [3]
+    out = [done, _fact(ids[1], op["total"], "match", "count", status, reason)]
+    for side, p in who_of.items():
+        out.append(_fact(f"{prefix_of(p)}.openings.won", op["won_by"][side], p, "count",
+                         status, reason))
+        out.append(_fact(f"{prefix_of(p)}.opening_win_point", dict(op["opening_winner_won_point"]),
+                         p, "count", status, reason))
+    return out
+
+
+def _tactics(ctx, fmt, sides):
+    """``(facts, caveats, tables)`` of the rally-tactics part (never raises)."""
+    tables = _empty_tables()
+    try:
+        table = shots_mod.build_shots(ctx.out_dir)
+        who_of = {side: p for p, side in sides.items() if side in SIDES}
+        prefix_of = (lambda p: f"team.{p}") if fmt == "doubles" else (lambda p: p)
+        quality = _stroke_model_quality()
+        facts = _group(TACTICS_MATCH_IDS[:5], "match", lambda: _tactics_overview_facts(
+            table, shots_mod.overview(table, ctx.out_dir), quality))
+        eff, tables["effectiveness"] = [], {"you": {}, "opponent": {}}
+        try:
+            eff, by_who = _eff_facts(table, who_of, prefix_of)
+            tables["effectiveness"].update(by_who)
+        except Exception:
+            pass
+        facts.extend(eff)
+        op = shots_mod.openings(table)
+        facts.extend(_group(TACTICS_MATCH_IDS[5:], "match",
+                            lambda: _opening_facts(table, who_of, prefix_of, op)))
+        who = lambda side: who_of.get(side, side)         # noqa: E731
+        tables["openings"] = {
+            "complete": op["complete"], "total": op["total"], "neutral": op["neutral"],
+            "insufficient": op["complete"] < shots_mod.MIN_OPENINGS,
+            "won_by": {p: op["won_by"].get(side, 0) for side, p in who_of.items()}
+            | {p: 0 for p in ("you", "opponent") if p not in who_of.values()},
+            "opening_winner_won_point": dict(op["opening_winner_won_point"]),
+            "rows": [{"rally": r["rally"], "n_shots": r["n_shots"],
+                      "advantage": who(r["advantage"]) if r["advantage"] != "neutral"
+                      else "neutral",
+                      "point_winner": who(r["point_winner"]) if r["point_winner"] else None,
+                      "shots": [{"hitter": who(s["hitter"]), "stroke": s["stroke"],
+                                 "zone": s["zone"], "sent_to": s["sent_to"]}
+                                for s in r["shots"]]} for r in op["rows"]]}
+        caveats = []
+        if quality is not None:
+            caveats.append({"code": "stroke_model", "params": dict(quality)})
+        shot_rows = table.get("shots") or []
+        owned = sum(1 for s in shot_rows if s.get("source") == "owner")
+        if owned:
+            caveats.append({"code": "owner_labelled",
+                            "params": {"share": _share(owned / len(shot_rows))}})
+        bad = [who(s) for s in SIDES if not table["positions_ok"].get(s)]
+        if shot_rows and bad:
+            names = ("you", "opponent")
+            caveats.append({"code": "positions_unusable",
+                            "params": {"sides": [w for w in names if w in bad]
+                                       + sorted(w for w in bad if w not in names)}})
+        if table.get("rallies") and op["complete"] < shots_mod.MIN_OPENINGS:
+            caveats.append({"code": "openings_incomplete",
+                            "params": {"complete": op["complete"], "total": op["total"]}})
+        return facts, caveats, tables
+    except Exception:
+        return ([_unavailable(i, "match") for i in TACTICS_MATCH_IDS], [], _empty_tables())
+
+
 # ---------------------------------------------------------------- focus, header
 
 def _store(athletes):
@@ -921,7 +1073,7 @@ def _empty_ctx_pack(out_dir, record):
                        "sets": None, "part_of": None, "confidence": "low",
                        "both_registered": False},
             "facts": [], "caveats": [{"code": "missing", "params": {"files": []}}],
-            "inputs": current_inputs(out_dir, record)}
+            "tables": _empty_tables(), "inputs": current_inputs(out_dir, record)}
 
 
 def build_facts(out_dir, record, athletes, focus=None):
@@ -964,6 +1116,9 @@ def _build(out_dir, record, store, focus):
             caveats.extend(_outcome_caveats(outcomes))
         except Exception:
             caveats.append({"code": "no_rally_outcomes", "params": {}})
+    tactic_facts, tactic_caveats, tables = _tactics(ctx, fmt, sides)
+    facts.extend(tactic_facts)
+    caveats.extend(tactic_caveats)
     if fmt == "doubles":
         caveats.append({"code": "doubles_strokes_withheld", "params": {}})
         caveats.append({"code": "doubles_hits_unvalidated", "params": {}})
@@ -993,7 +1148,8 @@ def _build(out_dir, record, store, focus):
               else None,
               "confidence": _confidence(ctx, fmt, degraded), "both_registered": both}
     return {"format": fmt, "focus": fcs, "header": header, "facts": facts,
-            "caveats": caveats, "inputs": current_inputs(ctx.out_dir, record)}
+            "caveats": caveats, "tables": tables,
+            "inputs": current_inputs(ctx.out_dir, record)}
 
 
 def _doubles_part(ctx, focus, record, sides):
