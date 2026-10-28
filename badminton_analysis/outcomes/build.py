@@ -204,11 +204,12 @@ def _final_sets(record, fmt):
     return [(int(s[0]), int(s[1])) for s in sets]
 
 
-def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model, labels_dir):
+def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model, labels_dir, inputs=None):
     """``({segment_id: {"upper", "lower", "none"}}, final_open)`` for ``out_dir``'s segments.
 
     Every part of the match up to this one is decoded in order, each starting from the
-    previous part's end distribution (sides mapped with ``sides_swapped``).
+    previous part's end distribution (sides mapped with ``sides_swapped``). ``inputs``
+    (optional) are ``out_dir``'s already loaded run inputs.
     """
     from . import run_inputs
     stem = run.stem
@@ -221,7 +222,8 @@ def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model
     covered = True
     for index, (part, swapped) in enumerate(parts):
         if part == stem:
-            part_items = _decoder_items(run, segments, auto, labels_doc, run_inputs.load(out_dir))
+            part_items = _decoder_items(run, segments, auto, labels_doc,
+                                        inputs if inputs is not None else run_inputs.load(out_dir))
         else:
             part_dir = Path(out_dir).parent / part
             try:
