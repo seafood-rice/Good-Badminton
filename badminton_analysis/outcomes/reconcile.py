@@ -4,8 +4,16 @@ The match is the primary record plus its linked parts; each part's points are
 mapped into the primary's sides (exchanged when the part has ``sides_swapped``).
 A one-set result is compared per side; more sets only by the point total (the
 players change ends between sets, so a video's sides no longer name a player).
+
+A record with a ``scoring`` format (outcomes/scoring.py) adds two things: a result
+impossible under the format makes the status ``no_result`` with reason
+``scoring_mismatch``; and in a one-game match with a mid-game end change
+(``change_ends_at``) the rallies of the part holding the change are mapped to the
+players per rally (the sides swap once the leader first reaches that score).
+Records without ``scoring`` behave exactly as before.
 """
 from ..library import athletes as libathletes
+from . import scoring
 
 SIDES = ("upper", "lower")
 
@@ -43,9 +51,40 @@ def _count(value):
     return value if type(value) is int and value >= 0 else None
 
 
-def _no_result(parts):
-    return {"status": "no_result", "scope": None, "expected": None, "claimed": None,
-            "parts": [p for p, _ in parts]}
+def _no_result(parts, reason=None):
+    out = {"status": "no_result", "scope": None, "expected": None, "claimed": None,
+           "parts": [p for p, _ in parts]}
+    if reason:
+        out["reason"] = reason
+    return out
+
+
+def _claimed_per_rally(fmt, parts, part_docs):
+    """``{upper, lower}`` points won by the primary's sides, mapping every rally of a
+    part through the mid-game end change; None when a part has no rally list.
+
+    Within a part the sides swap once the leader first reaches ``change_ends_at``
+    (the swap resets at each part boundary: a part's own ``sides_swapped`` already
+    says how it lines up). Rallies without a winner do not move the score.
+    """
+    claimed = {"upper": 0, "lower": 0}
+    score = [0, 0]
+    for part, swapped in parts:
+        rallies = (part_docs.get(part) or {}).get("rallies")
+        if not isinstance(rallies, list):
+            return None
+        flipped = False
+        for rally in rallies:
+            side = rally.get("winner_side") if isinstance(rally, dict) else None
+            if side not in SIDES:
+                continue
+            idx = SIDES.index(side) ^ int(swapped) ^ int(flipped)
+            prev = tuple(score)
+            score[idx] += 1
+            claimed[SIDES[idx]] += 1
+            if scoring.ends_change(fmt, 1, score[0], score[1], prev[0], prev[1]):
+                flipped = not flipped
+    return claimed
 
 
 def reconcile(data, stem, part_docs):
@@ -54,9 +93,13 @@ def reconcile(data, stem, part_docs):
     if not parts:
         return _no_result([(stem, False)])
     primary = parts[0][0]
-    expected, scope = _expected(libathletes.resolve_record(data, primary))
+    record = libathletes.resolve_record(data, primary)
+    expected, scope = _expected(record)
     if expected is None:
         return _no_result(parts)
+    fmt = scoring.resolve(record) if record.get("scoring") is not None else None
+    if fmt is not None and not scoring.consistent(fmt, record["result"]["sets"]):
+        return _no_result(parts, "scoring_mismatch")
     claimed = {"upper": 0, "lower": 0}
     complete = True
     for part, swapped in parts:
@@ -75,6 +118,11 @@ def reconcile(data, stem, part_docs):
         claimed["lower"] += low
         if summary.get("labelled") != summary.get("entries"):
             complete = False
+    if (fmt is not None and scope == "sides" and fmt["best_of"] == 1
+            and fmt["change_ends_at"] is not None):
+        per_rally = _claimed_per_rally(fmt, parts, part_docs)
+        if per_rally is not None:
+            claimed = per_rally
     if scope == "sides":
         over = any(claimed[s] > expected[s] for s in SIDES)
         equal = claimed == expected

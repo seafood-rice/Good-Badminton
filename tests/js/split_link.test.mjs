@@ -609,3 +609,78 @@ test('mount: after a link error the pickers are rebuilt from the refreshed list 
     saveMatch: async () => { throw new ApiError('http', 400, { zh: '找不到这场比赛', en: 'That match was not found' }); },
   });
 });
+
+// ---------- scoring format in the match editor (spec 2026-10-28 section 4) ----------
+
+const fire = (el, type) => (el.listeners[type] || []).forEach((f) => f({}));
+const byIdSuffix = (root, suffix) => everything(root).find((e) => (e.getAttribute('id') || '').endsWith(suffix));
+
+test('mount: the editor offers the format presets; an untouched default saves no scoring', async () => {
+  await withView(async ({ container, calls }) => {
+    container.querySelector('[data-rec="x"]').click();
+    await tick(5);
+    const preset = byIdSuffix(container, '-preset');
+    const options = everything(preset).filter((o) => o.tagName === 'OPTION').map((o) => o.getAttribute('value'));
+    assert.deepEqual(options, ['bwf_21x3', 'one_game_30', '15x3', 'custom']);
+    assert.equal(preset.value, 'bwf_21x3');
+    everything(container).find((e) => e.getAttribute('id') === 'mv-date').value = '2026-10-01';
+    submitForm(container);
+    await tick(10);
+    assert.equal('scoring' in calls.save[0][1], false);
+  });
+});
+
+test('mount: picking a preset fills the fields and saves the scoring; editing a field makes it custom', async () => {
+  await withView(async ({ container, calls }) => {
+    container.querySelector('[data-rec="x"]').click();
+    await tick(5);
+    const preset = byIdSuffix(container, '-preset');
+    preset.value = 'one_game_30';
+    fire(preset, 'change');
+    assert.equal(byIdSuffix(container, '-points_to_win').value, '30');
+    assert.equal(byIdSuffix(container, '-best_of').value, '1');
+    assert.equal(byIdSuffix(container, '-change_ends_at').value, '15');
+    assert.equal(byIdSuffix(container, '-cap').value, '');
+    everything(container).find((e) => e.getAttribute('id') === 'mv-date').value = '2026-10-01';
+    submitForm(container);
+    await tick(10);
+    assert.deepEqual(calls.save[0][1].scoring, { preset: 'one_game_30', points_to_win: 30, win_by: 1, cap: null, best_of: 1, change_ends_after_game: false, change_ends_at: 15 });
+
+  }, { overview: () => ({ matches: [{ stem: 'x', status: 'analysed', side: 'lower', parts: [] }] }) });
+});
+
+test('mount: editing a field switches the selector to custom, and a bad value is an error, not a save', async () => {
+  await withView(async ({ container, calls }) => {
+    container.querySelector('[data-rec="x"]').click();
+    await tick(5);
+    const points = byIdSuffix(container, '-points_to_win');
+    points.value = '99';
+    fire(points, 'input');
+    assert.equal(byIdSuffix(container, '-preset').value, 'custom');
+    submitForm(container);
+    await tick(10);
+    assert.equal(calls.save.length, 0);
+    assert.match(container.querySelector('.mv-scoring').textContent, /Invalid scoring format/);
+  });
+});
+
+test('mount: a stored scoring reloads into the form, and a result impossible under it warns but still saves', async () => {
+  await withView(async ({ container, calls }) => {
+    container.querySelector('[data-rec="m1"]').click();
+    await tick(5);
+    assert.equal(byIdSuffix(container, '-preset').value, 'one_game_30');
+    assert.equal(byIdSuffix(container, '-points_to_win').value, '30');
+    const warn = container.querySelector('.mv-warn');
+    assert.equal(warn.textContent, '', 'a legal 30-13 does not warn');
+    const sets = everything(container).find((e) => e.getAttribute('id') === 'mv-sets');
+    sets.value = '31-29';
+    fire(sets, 'input');
+    assert.match(warn.textContent, /not possible under this format/);
+    submitForm(container);
+    await tick(10);
+    assert.equal(calls.save.length, 1, 'saved as typed');
+    assert.deepEqual(calls.save[0][1].result.sets, [[31, 29]]);
+    assert.equal(calls.save[0][1].scoring.preset, 'one_game_30');
+    assert.ok(calls.toasts.some((m) => /not possible under this format/.test(m)));
+  }, { match: async () => ({ date: '2026-10-01', upper: { name: 'S' }, lower: { name: 'A' }, result: { winner: 'upper', sets: [[30, 13]] }, scoring: { preset: 'one_game_30', points_to_win: 30, win_by: 1, cap: null, best_of: 1, change_ends_after_game: false, change_ends_at: 15 } }) });
+});

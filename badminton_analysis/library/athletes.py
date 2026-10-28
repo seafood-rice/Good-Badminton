@@ -53,6 +53,8 @@ import tempfile
 import time
 import uuid
 
+from ..outcomes import scoring as _scoring
+
 SCHEMA_VERSION = 1
 
 MAX_NAME_LEN = 60
@@ -248,6 +250,20 @@ def _clean_players(players, data):
     return clean, None
 
 
+def _clean_scoring(record, clean):
+    """Set the optional ``clean["scoring"]`` from ``record``; an error code or None.
+
+    Absent or null stays absent (the default preset applies). A link never reaches
+    here: ``_clean_link`` refuses the key.
+    """
+    scoring, err = _scoring.validate(record.get("scoring"))
+    if err:
+        return err
+    if scoring is not None:
+        clean["scoring"] = scoring
+    return None
+
+
 def _clean_date(record, clean):
     """Set ``clean["date"]`` from ``record``; an error code or None."""
     date = record.get("date")
@@ -334,8 +350,10 @@ def validate_match(record, data, stem=None):
     has parts (``has_parts``; parts would be orphaned).
 
     Codes: ``invalid_record``, ``invalid_date``, ``invalid_side``,
-    ``invalid_result``, ``invalid_players``, ``unknown_athlete``, ``invalid_link``,
-    ``part_has_record``, ``has_parts``. Never mutates ``record``.
+    ``invalid_result``, ``invalid_players``, ``invalid_scoring``, ``unknown_athlete``,
+    ``invalid_link``, ``part_has_record``, ``has_parts``. A primary (singles or
+    doubles) may carry an optional ``scoring`` object (see ``outcomes/scoring.py``);
+    a link may not (``invalid_record``). Never mutates ``record``.
     """
     if not isinstance(record, dict):
         return None, "invalid_record"
@@ -348,6 +366,9 @@ def validate_match(record, data, stem=None):
         clean, err = _validate_doubles(record, data)
         if err is None and stem is not None and has_parts(data, stem):
             return None, "has_parts"
+        if err is None:
+            err = _clean_scoring(record, clean)
+            clean = None if err else clean
         return clean, err
     if record.get("players") is not None:
         return None, "invalid_record"
@@ -367,6 +388,9 @@ def validate_match(record, data, stem=None):
     if err:
         return None, err
     clean["result"] = result
+    err = _clean_scoring(record, clean)
+    if err:
+        return None, err
     return clean, None
 
 
@@ -408,6 +432,8 @@ def set_match(data, stem, record):
     if stored.get("format") == "doubles" and has_parts(data, stem):
         raise ValueError("has_parts")
     stored.update({key: copy.deepcopy(record.get(key)) for key in stored})
+    if record.get("scoring") is not None:
+        stored["scoring"] = copy.deepcopy(record["scoring"])
     if stored.get("format") == "doubles" and not isinstance(stored["players"], dict):
         stored["players"] = {}
     out["matches"][stem] = stored

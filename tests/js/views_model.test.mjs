@@ -844,3 +844,30 @@ test('groupJobs / jobsModel: a paused job stays active; waiting to resume counts
   assert.equal(t('job.state.paused', 'zh'), '已暂停');
   assert.equal(t('pv.resume', 'en'), 'Resume');
 });
+
+test('validateScoringForm / scoringConsistent / scoringWarning mirror the server rules', async () => {
+  const m = await import('../../static/kestrel/views/matches.js');
+  const one = m.validateScoringForm(m.scoringFormFrom(m.SCORING_PRESETS.one_game_30)).scoring;
+  assert.deepEqual(one, m.SCORING_PRESETS.one_game_30);
+  assert.deepEqual(m.scoringFormFrom(undefined).preset, 'bwf_21x3');
+  for (const bad of [{ points_to_win: '4' }, { points_to_win: '51' }, { win_by: '3' }, { cap: '20' }, { best_of: '2' }, { change_ends_at: '0' }, { change_ends_at: '21' }, { points_to_win: 'x' }]) {
+    assert.equal(m.validateScoringForm({ ...m.scoringFormFrom(undefined), ...bad }).error, 'scoring.err', JSON.stringify(bad));
+  }
+  const bwf = m.SCORING_PRESETS.bwf_21x3;
+  assert.equal(m.scoringConsistent(bwf, [[21, 15], [18, 21], [21, 19]]), true);
+  assert.equal(m.scoringConsistent(bwf, [[30, 29], [21, 0]]), true);
+  assert.equal(m.scoringConsistent(bwf, [[30, 13]]), false);
+  assert.equal(m.scoringConsistent(bwf, [[22, 15], [21, 10]]), false);
+  assert.equal(m.scoringConsistent(m.SCORING_PRESETS.one_game_30, [[30, 13]]), true);
+  assert.equal(m.scoringConsistent(m.SCORING_PRESETS.one_game_30, [[31, 29]]), false);
+  assert.equal(m.scoringConsistent(m.SCORING_PRESETS['15x3'], [[21, 20], [15, 3]]), true);
+  assert.equal(m.scoringWarning({ result: { sets: [[31, 29]] } }), null, 'no explicit format: no warning');
+  assert.equal(m.scoringWarning({ scoring: m.SCORING_PRESETS.one_game_30, result: { sets: [[31, 29]] } }), 'scoring.warn');
+});
+
+test('validateRecordForm: scoring round-trips and is absent when the form has none', () => {
+  const rec = { date: null, upper: null, lower: null, result: null, scoring: { preset: 'custom', points_to_win: 11, win_by: 1, cap: null, best_of: 1, change_ends_after_game: false, change_ends_at: 6 } };
+  const form = formFromRecord(rec);
+  assert.deepEqual(validateRecordForm(form).record, rec);
+  assert.equal(validateRecordForm({ ...form, scoring: { ...form.scoring, win_by: '7' } }).errors.scoring, 'scoring.err');
+});

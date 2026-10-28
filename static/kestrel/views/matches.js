@@ -220,6 +220,144 @@ function parseSets(text) {
   return sets.length > MAX_SETS ? { sets: [], bad: true } : { sets, bad: false };
 }
 
+// ----- scoring format (spec 2026-10-28 section 4): mirrors badminton_analysis/outcomes/scoring.py -----
+export const SCORING_PRESETS = {
+  bwf_21x3: { preset: 'bwf_21x3', points_to_win: 21, win_by: 2, cap: 30, best_of: 3, change_ends_after_game: true, change_ends_at: 11 },
+  one_game_30: { preset: 'one_game_30', points_to_win: 30, win_by: 1, cap: null, best_of: 1, change_ends_after_game: false, change_ends_at: 15 },
+  '15x3': { preset: '15x3', points_to_win: 15, win_by: 2, cap: 21, best_of: 3, change_ends_after_game: true, change_ends_at: 8 },
+};
+export const SCORING_PRESET_IDS = ['bwf_21x3', 'one_game_30', '15x3', 'custom'];
+const DEFAULT_PRESET = 'bwf_21x3';
+
+/** Pure: a stored scoring object (or nothing) -> the editor's text fields. Nothing = the default preset. */
+export function scoringFormFrom(scoring) {
+  const s = obj(scoring);
+  const base = SCORING_PRESETS[s.preset] || SCORING_PRESETS[DEFAULT_PRESET];
+  const v = { ...base, ...s };
+  const text = (x) => (x === null || x === undefined ? '' : String(x));
+  return {
+    preset: SCORING_PRESET_IDS.includes(s.preset) ? s.preset : (Object.keys(s).length ? 'custom' : DEFAULT_PRESET),
+    points_to_win: text(v.points_to_win), win_by: text(v.win_by), cap: text(v.cap), best_of: text(v.best_of),
+    change_ends_after_game: v.change_ends_after_game === true, change_ends_at: text(v.change_ends_at),
+  };
+}
+
+/** Pure: the editor's scoring fields -> {scoring, error: i18n key|null}; ranges as the server's. */
+export function validateScoringForm(form) {
+  const f = obj(form);
+  const num = (x) => (/^\d{1,3}$/.test(str(x).trim()) ? Number(str(x).trim()) : NaN);
+  const opt = (x) => (str(x).trim() === '' ? null : num(x));
+  const preset = SCORING_PRESET_IDS.includes(f.preset) ? f.preset : 'custom';
+  const points = num(f.points_to_win);
+  const winBy = num(f.win_by);
+  const cap = opt(f.cap);
+  const bestOf = num(f.best_of);
+  const at = opt(f.change_ends_at);
+  const ok = points >= 5 && points <= 50 && (winBy === 1 || winBy === 2) && (cap === null || cap >= points)
+    && [1, 3, 5].includes(bestOf) && (at === null || (at >= 1 && at <= points - 1));
+  if (!ok) return { scoring: null, error: 'scoring.err' };
+  return {
+    scoring: { preset, points_to_win: points, win_by: winBy, cap, best_of: bestOf, change_ends_after_game: f.change_ends_after_game === true, change_ends_at: at },
+    error: null,
+  };
+}
+
+function scoringGameOver(fmt, a, b) {
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+  if (fmt.cap !== null && hi >= fmt.cap) return true;
+  return hi >= fmt.points_to_win && hi - lo >= fmt.win_by;
+}
+
+/** Pure: true when every set is a legal final score under `fmt` and the sets decide the match exactly. */
+export function scoringConsistent(fmt, sets) {
+  if (!Array.isArray(sets) || !sets.length) return true;
+  const need = Math.floor(fmt.best_of / 2) + 1;
+  const wins = [0, 0];
+  for (const p of sets) {
+    if (Math.max(...wins) >= need) return false;
+    if (!Array.isArray(p) || !isNum(p[0]) || !isNum(p[1])) return false;
+    const [a, b] = p;
+    const hi = Math.max(a, b);
+    if (a === b || Math.min(a, b) < 0 || !scoringGameOver(fmt, a, b) || scoringGameOver(fmt, hi - 1, Math.min(a, b))) return false;
+    wins[a > b ? 0 : 1] += 1;
+  }
+  return Math.max(...wins) >= need;
+}
+
+/** Pure: i18n key of the warning for a record whose result is impossible under its own format, else null.
+ * Only a record with an explicit `scoring` is checked (as the server's reconciliation); never a refusal. */
+export function scoringWarning(record) {
+  const r = obj(record);
+  const sets = obj(r.result).sets;
+  if (!r.scoring || !Array.isArray(sets) || !sets.length) return null;
+  const { scoring } = validateScoringForm(scoringFormFrom(r.scoring));
+  return scoring && !scoringConsistent(scoring, sets) ? 'scoring.warn' : null;
+}
+
+/**
+ * The scoring-format control of the match editor: a preset selector plus the editable fields. Picking a preset
+ * fills the fields; editing a field switches the selector to "custom". `read()` is the text form
+ * validateScoringForm reads, or undefined while it is the untouched default of a record with no format of its own
+ * (that record keeps no `scoring`). `onChange` runs after any edit.
+ */
+function scoringControl(initial, lang, onChange) {
+  const start = scoringFormFrom(initial || undefined);
+  const id = `mv-sc-${Math.random().toString(36).slice(2, 8)}`;
+  const preset = h('select', { class: 'mv-input', id: `${id}-preset`, 'aria-label': t('scoring.format', lang) },
+    SCORING_PRESET_IDS.map((p) => h('option', { value: p }, t(`scoring.preset.${p}`, lang))));
+  const field = (key) => h('input', { type: 'text', class: 'mv-input mono', id: `${id}-${key}`, inputmode: 'numeric' });
+  const inputs = { points_to_win: field('points_to_win'), cap: field('cap'), change_ends_at: field('change_ends_at') };
+  const winBy = h('select', { class: 'mv-input', id: `${id}-win_by` }, [h('option', { value: '1' }, '1'), h('option', { value: '2' }, '2')]);
+  const bestOf = h('select', { class: 'mv-input', id: `${id}-best_of` }, ['1', '3', '5'].map((n) => h('option', { value: n }, n)));
+  const afterGame = h('input', { type: 'checkbox', id: `${id}-after` });
+  const controls = { ...inputs, win_by: winBy, best_of: bestOf };
+  function write(f) {
+    preset.value = f.preset;
+    for (const [k, c] of Object.entries(controls)) c.value = f[k];
+    afterGame.checked = f.change_ends_after_game === true;
+  }
+  write(start);
+  const read = () => {
+    const f = { preset: preset.value, change_ends_after_game: afterGame.checked === true };
+    for (const [k, c] of Object.entries(controls)) f[k] = c.value;
+    return f;
+  };
+  const err = h('span', { class: 'mv-err', role: 'alert' });
+  preset.addEventListener('change', () => {
+    const base = SCORING_PRESETS[preset.value];
+    if (base) write(scoringFormFrom(base));
+    onChange();
+  });
+  const edited = () => { preset.value = 'custom'; onChange(); };
+  for (const c of [...Object.values(controls), afterGame]) {
+    c.addEventListener('input', edited);
+    c.addEventListener('change', edited);
+  }
+  const lbl = (key, forId, ctl) => h('div', { class: 'mv-field' }, [h('label', { for: forId }, t(`scoring.${key}`, lang)), ctl]);
+  const el = h('fieldset', { class: 'mv-scoring' }, [
+    h('legend', {}, t('scoring.title', lang)),
+    h('div', { class: 'mv-fields' }, [
+      lbl('format', `${id}-preset`, preset),
+      lbl('points_to_win', `${id}-points_to_win`, inputs.points_to_win),
+      lbl('win_by', `${id}-win_by`, winBy),
+      lbl('cap', `${id}-cap`, inputs.cap),
+      lbl('best_of', `${id}-best_of`, bestOf),
+      lbl('change_ends_at', `${id}-change_ends_at`, inputs.change_ends_at),
+      h('div', { class: 'mv-field mv-check' }, [afterGame, h('label', { for: `${id}-after` }, t('scoring.change_after_game', lang))]),
+    ]),
+    h('span', { class: 'mv-hint' }, t('scoring.hint', lang)),
+    err,
+  ]);
+  const isDefaultUntouched = () => {
+    if (initial) return false;
+    const f = read();
+    const d = scoringFormFrom(undefined);
+    return Object.keys(d).every((k) => f[k] === d[k]);
+  };
+  return { el, err, controls: { preset, ...controls }, read: () => (isDefaultUntouched() ? undefined : read()) };
+}
+
 function cleanSide(side, errors, key) {
   const s = obj(side);
   const id = str(s.athlete_id).trim();
@@ -266,8 +404,16 @@ export function validateRecordForm(form) {
   const winner = SIDES.includes(f.winner) ? f.winner : null;
   if (sets.length && !winner && !errors.sets) errors.winner = 'record.err.winner';
   const result = winner ? { winner, sets: errors.sets ? [] : sets } : null;
+  let scoring = null;
+  if (f.scoring !== undefined && f.scoring !== null) {
+    const sc = validateScoringForm(f.scoring);
+    if (sc.error) errors.scoring = sc.error;
+    else scoring = sc.scoring;
+  }
   if (Object.keys(errors).length) return { record: null, errors };
-  return { record: { date, upper, lower, result }, errors };
+  const record = { date, upper, lower, result };
+  if (scoring) record.scoring = scoring;
+  return { record, errors };
 }
 
 /** Pure: a stored record (or {}) -> the editor form validateRecordForm reads. */
@@ -284,6 +430,7 @@ export function formFromRecord(record) {
     lower: side('lower'),
     winner: SIDES.includes(res.winner) ? res.winner : '',
     sets: setsText(res.sets),
+    ...(r.scoring ? { scoring: scoringFormFrom(r.scoring) } : {}),
   };
 }
 
@@ -1529,6 +1676,16 @@ export function mount(container, ctx = {}) {
     const err = (id) => h('span', { class: 'mv-err', id, role: 'alert' });
     const errs = { date: err(errDate), winner: err(errDate + '-w'), sets: err(errDate + '-s') };
     const formErr = h('div', { class: 'mv-err form', role: 'alert' });
+    const scoringWarn = h('div', { class: 'mv-warn', role: 'status' });
+    const refreshWarning = () => {
+      const f = sc.read();
+      const sv = f ? validateScoringForm(f) : { scoring: null };
+      const w = sv.scoring ? scoringWarning({ scoring: sv.scoring, result: { sets: parseSets(sets.value).sets } }) : null;
+      scoringWarn.textContent = w ? t(w, lang) : '';
+    };
+    const sc = scoringControl(form.scoring, lang, refreshWarning);
+    sets.addEventListener('input', refreshWarning);
+    refreshWarning();
     const saveBtn = h('button', { type: 'submit', class: 'ov-btn small primary' }, t('btn.save', lang));
     const fields = h('div', { class: 'mv-fields' }, [
       h('div', { class: 'mv-field' }, [h('label', { for: 'mv-date' }, t('record.date', lang)), date, errs.date]),
@@ -1539,7 +1696,7 @@ export function mount(container, ctx = {}) {
         h('span', { class: 'mv-hint', id: errDate + '-sh' }, t('record.sets_order', lang)), errs.sets]),
     ]);
     const formEl = h('form', { class: 'mv-form', novalidate: true }, [
-      fields, formErr,
+      fields, sc.el, scoringWarn, formErr,
       h('div', { class: 'mv-actions' }, [
         saveBtn,
         hasRecord ? h('button', {
@@ -1558,6 +1715,7 @@ export function mount(container, ctx = {}) {
     function showErrors(errors) {
       for (const k of ['date', 'winner', 'sets']) errs[k].textContent = errors[k] ? t(errors[k], lang) : '';
       for (const k of SIDES) sideErr[k].textContent = errors[k] ? t(errors[k], lang) : '';
+      sc.err.textContent = errors.scoring ? t(errors.scoring, lang) : '';
       for (const [k, c] of Object.entries(ctlOf)) c.setAttribute('aria-invalid', errors[k] ? 'true' : 'false');
       const firstBad = Object.keys(ctlOf).find((k) => errors[k]);
       if (firstBad) ctlOf[firstBad].focus();
@@ -1569,7 +1727,11 @@ export function mount(container, ctx = {}) {
       try {
         await api.saveMatch(row.stem, record, LONG);
         if (state.destroyed) return;
-        if (typeof state.ctx.toast === 'function') state.ctx.toast(t('toast.saved', lang));
+        if (typeof state.ctx.toast === 'function') {
+          state.ctx.toast(t('toast.saved', lang));
+          // A result impossible under the chosen format is kept, with a visible warning.
+          if (scoringWarning(record)) state.ctx.toast(t('scoring.warn', lang));
+        }
         state.editing = null;
         await load({ reveal: false });
         const safe = String(row.stem).replace(/["\\]/g, '\\$&');
@@ -1584,7 +1746,7 @@ export function mount(container, ctx = {}) {
 
     formEl.addEventListener('submit', (e) => {
       e.preventDefault();
-      const out = validateRecordForm({ date: date.value, upper: upper.read(), lower: lower.read(), winner: winner.value, sets: sets.value });
+      const out = validateRecordForm({ date: date.value, upper: upper.read(), lower: lower.read(), winner: winner.value, sets: sets.value, scoring: sc.read() });
       showErrors(out.errors);
       if (!out.record) return;
       if (linkedParts > 0 && isBlankRecord(out.record) && !confirmClear()) return;
