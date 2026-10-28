@@ -849,17 +849,15 @@ def queue_train_rally():
 
 
 def _resegment_command():
-    dirs = []
     try:
         entries = sorted(Path(OUTPUTS).iterdir(), key=lambda p: p.name)
     except OSError:
         entries = []
-    for path in entries:
-        if (path.is_dir() and (path / 'hits.json').is_file() and (path / 'detections.jsonl').is_file()
-                and not _match_job_active(path.name)):
-            dirs.append(str(path))
+    candidates = [path for path in entries
+                  if path.is_dir() and (path / 'hits.json').is_file() and (path / 'detections.jsonl').is_file()]
     global _resegment_rebuild_all, _resegment_cmd_rebuild_all
-    with _STROKE_LABELS_LOCK:
+    with _STROKE_LABELS_LOCK:          # the filter and the publish are one step next to /api/analyze's register
+        dirs = [str(path) for path in candidates if not _match_job_active(path.name)]
         _relabel_job_stems.clear()
         _relabel_job_stems.update(Path(d).name for d in dirs)
         _resegment_cmd_rebuild_all, _resegment_rebuild_all = _resegment_rebuild_all, False

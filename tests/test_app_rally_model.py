@@ -1,6 +1,7 @@
 """Rally model card, retrain and re-segment jobs in app.py (badminton_analysis/web/rally_model_routes.py)."""
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -504,3 +505,22 @@ def test_status_uses_the_apps_athletes_path_and_its_mtime_is_in_the_key(env):
     (tmp / 'data' / 'athletes.json').write_text('{}', encoding='utf-8')     # the match grouping changed
     client.get('/api/rally-model')
     assert state['calls'] == 2
+
+
+def test_resegment_command_skips_an_analysis_registered_during_the_scan(env, monkeypatch):
+    """Review 2: the active-match filter runs under the lock /api/analyze registers its job with."""
+    seen = []
+    real = webapp._match_job_active
+
+    def spy(stem):
+        seen.append((stem, webapp._STROKE_LABELS_LOCK.locked()))
+        return real(stem)
+
+    monkeypatch.setattr(webapp, '_match_job_active', spy)
+    webapp.jobs['b'] = {'status': 'running'}
+    try:
+        cmd = webapp._resegment_command()
+    finally:
+        webapp.jobs.pop('b', None)
+    assert seen and all(locked for _, locked in seen)
+    assert [Path(d).name for d in cmd[cmd.index('--athletes') + 2:]] == ['a', 'd']
