@@ -332,11 +332,38 @@ def _emit_none(model, o):
     return f
 
 
+def _unfold_start(fmt, final, start):
+    """A carried ``{state: probability}`` in the unfolded space a ``final`` constraint decodes in.
+
+    A previous part decoded without ``final`` keeps a deuce score of an uncapped win-by-2 game as
+    its folded class; the concrete scores of that class (a+2k, b+2k) that this game's recorded
+    score can still reach share its probability.
+    """
+    out = {}
+    for s, p in start.items():
+        if s == END:
+            out[s] = out.get(s, 0.0) + float(p)
+            continue
+        g, a, b, sv, fl, ga = s
+        if g > len(final) or min(a, b) < fmt["points_to_win"] - 1 or fmt["cap"] is not None                 or fmt["win_by"] != 2:
+            out[s] = out.get(s, 0.0) + float(p)
+            continue
+        fa, fb = final[g - 1]
+        cands = [(a + 2 * k, b + 2 * k) for k in range(max(fa, fb) + 1)
+                 if a + 2 * k <= fa and b + 2 * k <= fb] or [(a, b)]
+        for ca, cb in cands:
+            t = (g, ca, cb, sv, fl, ga)
+            out[t] = out.get(t, 0.0) + float(p) / len(cands)
+    return out
+
+
 class _Run:
     def __init__(self, model, fmt, obs, clamps, start, final, swapped):
         self.model, self.obs, self.clamps = model, obs, clamps
         self.n = len(obs)
         self.final = final
+        if final is not None and not isinstance(start, str):
+            start = _unfold_start(fmt, final, start)
         starts = {"zero": [START_ZERO], "free": _free_states(fmt, final)}.get(start) \
             if isinstance(start, str) else [s for s in start if s == END or _legal(fmt, final, s)]
         if not starts:

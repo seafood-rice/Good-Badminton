@@ -276,3 +276,19 @@ def test_free_start_covers_every_folded_deuce_state():
     assert all(dec._fold(UNCAPPED, a, b) == (a, b) for a, b in ab)
     free = dec.decode(neutral(), UNCAPPED, pts(4), start="free")
     assert len(free["p"]) == 4
+
+
+def test_a_deuce_end_carries_into_a_later_part_with_a_final_constraint():
+    """Review 6: part 1 ends 6-6 (folded to 4-4); part 2 decodes unfolded and must still continue from it."""
+    one = dict(UNCAPPED, best_of=1, change_ends_after_game=False, change_ends_at=None)
+    alternate = {i: ("upper" if i % 2 == 0 else "lower") for i in range(12)}
+    first = dec.decode(neutral(), one, pts(12), clamps=alternate, start="zero")
+    assert {(a, b) for _g, a, b, _s, _f, _ga in first["end"]} == {(4, 4)}        # 6-6, folded
+    # part 2: 7-6, 7-7, 8-7, 9-7: the game ends 9-7, which only 6-6 can reach in 4 points
+    clamps = {0: "upper", 1: "lower", 2: "upper", 3: "upper"}
+    second = dec.decode(neutral(), one, pts(4), clamps=clamps, start=first["end"], final=[(9, 7)])
+    assert second["start"] == "carried" and second["final_open"] is False
+    assert winners(second) == ["upper", "lower", "upper", "upper"]
+    # a later part that cannot be reached from 6-6 / 4-4 at all still falls back as before
+    nope = dec.decode(neutral(), one, pts(4), clamps=clamps, start=first["end"], final=[(5, 0)])
+    assert nope["start"] != "carried" or nope["final_open"] is True
