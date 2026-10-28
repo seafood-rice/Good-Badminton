@@ -341,6 +341,9 @@ def _apply_stroke_labels_to(stem):
 # Stems whose label save skipped its apply because a relabel job was active (guarded by
 # ``_STROKE_LABELS_LOCK``); the job re-applies exactly these when it ends or is cancelled.
 _skipped_stroke_stems = set()
+# Stems of the result dirs the running relabel child was given (guarded by ``_STROKE_LABELS_LOCK``);
+# a cancelled or failed child may have written the model-only strokes.json and died before applying.
+_relabel_job_stems = set()
 
 
 def _stroke_apply_blocked(stem):
@@ -353,14 +356,19 @@ def _stroke_apply_blocked(stem):
     return False
 
 
-def _reapply_owner_stroke_labels():
+def _reapply_owner_stroke_labels(include_job_stems=False):
     """Re-apply the labels whose save was skipped during the relabel job (caller holds ``_STROKE_LABELS_LOCK``).
 
-    Results with an active match analysis are left to that analysis.
+    With ``include_job_stems`` (the job was cancelled or failed) every result dir the child was given
+    is re-applied too: applying is idempotent. Results with an active match analysis are left to it.
     """
     from badminton_analysis.stroke import owner_labels, relabel
-    stems = sorted(_skipped_stroke_stems)
+    stems = set(_skipped_stroke_stems)
+    if include_job_stems:
+        stems |= _relabel_job_stems
+    stems = sorted(stems)
     _skipped_stroke_stems.clear()
+    _relabel_job_stems.clear()
     for stem in stems:
         if _match_job_active(stem):
             continue
@@ -388,14 +396,16 @@ def _delete_partial_candidates():
             pass
 
 
-def _settle_relabel(set_status):
+def _settle_relabel(set_status, interrupted=False):
     """End a relabel job: re-apply the labels saved during it, then flip its status.
 
     The flip happens inside the same lock hold (LABELS then JOBS), so a save either lands before
-    this (and is applied here) or sees the job finished (and applies itself).
+    this (and is applied here) or sees the job finished (and applies itself). An ``interrupted`` job
+    (cancelled, or the child exited non-zero) may have died between writing a model-only
+    strokes.json and applying the labels, so every result it was given is re-applied.
     """
     with _STROKE_LABELS_LOCK:
-        _reapply_owner_stroke_labels()
+        _reapply_owner_stroke_labels(include_job_stems=interrupted)
         with _JOBS_LOCK:
             set_status()
 
@@ -409,7 +419,7 @@ def _training_cancelled(job_id, job):
         job.pop('rerun', None)
 
     if job_id == 'relabel_strokes':
-        _settle_relabel(flip)         # labels saved while it ran are applied before it counts as over
+        _settle_relabel(flip, interrupted=True)         # labels saved while it ran are applied before it counts as over
     else:
         with _JOBS_LOCK:
             flip()
@@ -564,6 +574,12 @@ def _queue_training_job(job_id, message, cmd, log_path, finish):
             log_fh.close()
         except Exception:
             pass
+        if job.get('cancel_requested') and job_id == 'train_strokes':
+            from badminton_analysis.stroke import retrain
+            if _log_has_line(log_path, retrain.PROMOTE_PHASE):
+                # the child reached the swap and exited before the cancel could be withdrawn: it is not a cancel
+                with _JOBS_LOCK:
+                    job.pop('cancel_requested', None)
         if job.get('cancel_requested'):
             _training_cancelled(job_id, job)
             return
@@ -635,6 +651,9 @@ def _relabel_command():
     for path in entries:
         if path.is_dir() and (path / 'strokes.json').is_file() and not _match_job_active(path.name):
             dirs.append(str(path))
+    with _STROKE_LABELS_LOCK:
+        _relabel_job_stems.clear()
+        _relabel_job_stems.update(Path(d).name for d in dirs)
     if not dirs:
         return None
     return [_venv_python, '-m', 'badminton_analysis.stroke.relabel',
@@ -655,7 +674,7 @@ def queue_relabel_strokes():
                 job['status'], job['stage'] = 'error', 'error'
                 job['message'] = '重新标注失败 / relabel failed'
 
-        _settle_relabel(flip)
+        _settle_relabel(flip, interrupted=code != 0)
 
     return _queue_training_job('relabel_strokes', '等待重新标注 / waiting to relabel',
                                _relabel_command, Path(WEIGHTS) / 'candidates' / 'relabel.log', finish)

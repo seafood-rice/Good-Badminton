@@ -495,3 +495,59 @@ def test_status_offers_can_rollback_from_the_history_dirs(env):
     assert client.get('/api/stroke-model').get_json()['can_rollback'] is True
     (old / '.retired').write_text('')
     assert client.get('/api/stroke-model').get_json()['can_rollback'] is False
+
+
+# ---- review round 2
+
+def _save_label_file(stem, labels=(LABEL,)):
+    from badminton_analysis.stroke import owner_labels
+    owner_labels.save(owner_labels.labels_path(webapp.STROKE_LABELS_DIR, stem),
+                      {'schema': owner_labels.SCHEMA, 'revision': 1, 'split': 'train', 'labels': list(labels)})
+
+
+def test_a_cancelled_relabel_restores_the_owner_overlay_on_every_result_dir(env, blocking):
+    client, *_ = env
+    procs, killed = blocking
+    run = _owner_run(webapp.OUTPUTS, 'a')
+    _save_label_file('a')                          # saved earlier: not a skipped stem
+    webapp.queue_relabel_strokes()
+    _wait_status('relabel_strokes', 'running')
+    assert _stroke_of(run) == 'clear'              # the child rewrote the model-only strokes.json
+    assert client.post('/api/jobs/relabel_strokes/cancel').status_code == 200
+    _wait('relabel_strokes', ('cancelled',))
+    assert _stroke_of(run) == 'smash'
+
+
+def test_a_failing_relabel_restores_the_owner_overlay_on_every_result_dir(env, blocking):
+    procs, killed = blocking[0], blocking[1]
+    run = _owner_run(webapp.OUTPUTS, 'a')
+    _save_label_file('a')
+    webapp.queue_relabel_strokes()
+    _wait_status('relabel_strokes', 'running')
+    procs[-1].kill()                               # exits non-zero
+    assert _wait('relabel_strokes', ('error',))['status'] == 'error'
+    assert _stroke_of(run) == 'smash'
+
+
+def test_a_cancel_that_loses_the_race_with_a_finished_promote_is_a_normal_finish(env, blocking, monkeypatch):
+    client, *_ = env
+    procs, killed = blocking
+    client.post('/api/stroke-model/retrain')
+    job = _wait_status('train_strokes', 'running')
+    log = job['log_path']
+
+    def fake_kill_tree(pid, should_abort=None):
+        # the child promotes and exits cleanly before the cancel is withdrawn
+        with open(log, 'a', encoding='utf-8') as fh:
+            fh.write('PHASE promote\n' + json.dumps({'kept': True, 'reason': 'ok'}) + '\n')
+        procs[-1].returncode = 0
+        procs[-1].done.set()
+        return True
+
+    monkeypatch.setattr(webapp.proc_control, 'kill_tree', fake_kill_tree)
+    client.post('/api/jobs/train_strokes/cancel')
+    done = _wait('train_strokes', ('completed', 'error', 'cancelled'))
+    assert done['status'] == 'completed' and done['message'].startswith('新模型已采用')
+    _wait_status('relabel_strokes', 'running')       # kept -> the relabel is queued
+    procs[-1].kill()
+    _wait('relabel_strokes', ('completed', 'error'))
