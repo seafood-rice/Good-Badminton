@@ -150,7 +150,7 @@ def decide(totals):
     elif swing is not None and seg < swing:
         segmenter = (False, {"code": "lower_f1", "candidate": round(seg, 4), "swing": round(swing, 4)})
     else:
-        segmenter = (True, {"code": "better_or_equal", "candidate": round(seg, 4),
+        segmenter = (True, {"code": "f1_ok", "candidate": round(seg, 4),
                             "swing": round(swing, 4) if swing is not None else None})
     claimed, correct = totals.get("dec_claimed") or 0, totals.get("dec_correct") or 0
     precision, rules = totals.get("dec_precision"), totals.get("rules_correct") or 0
@@ -163,10 +163,10 @@ def decide(totals):
     elif precision < KEEP_PRECISION:
         decoder = (False, {"code": "low_precision", "value": round(precision, 4), "bar": KEEP_PRECISION})
     elif correct < rules:
-        decoder = (False, {"code": "fewer_correct", "candidate": correct, "rules": rules})
+        decoder = (False, {"code": "fewer_correct", "correct": correct, "rules": rules})
     else:
-        decoder = (True, {"code": "better_or_equal", "precision": round(precision, 4),
-                          "candidate": correct, "rules": rules})
+        decoder = (True, {"code": "decoder_ok", "precision": round(precision, 4),
+                          "correct": correct, "rules": rules})
     return {"segmenter": segmenter, "decoder": decoder}
 
 
@@ -175,10 +175,9 @@ def describe(code):
     if not isinstance(code, dict):
         return str(code)
     k = code.get("code")
-    if k == "better_or_equal":
-        if "precision" in code:
-            return (f"precision {code.get('precision')}, {code.get('candidate')} correct claims "
-                    f">= rules {code.get('rules')}")
+    if k == "decoder_ok":
+        return f"precision {code.get('precision')}, {code.get('correct')} correct claims >= rules {code.get('rules')}"
+    if k == "f1_ok":
         return f"point-end F1 {code.get('candidate')} >= swing {code.get('swing')}"
     if k == "lower_f1":
         return f"point-end F1 {code.get('candidate')} < swing {code.get('swing')}"
@@ -191,7 +190,7 @@ def describe(code):
     if k == "low_precision":
         return f"held-out precision {code.get('value')} < {code.get('bar')}"
     if k == "fewer_correct":
-        return f"{code.get('candidate')} correct claims < the rules' {code.get('rules')}"
+        return f"{code.get('correct')} correct claims < the rules' {code.get('rules')}"
     if k == "not_enough_matches":
         return "fewer than two labelled matches with learned hits"
     if k == "retrain_failed":

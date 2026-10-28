@@ -9,7 +9,7 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const pct = (v) => (isNum(v) ? Math.round(v * 100) + '%' : '—');
 
-const PCT_PARAMS = ['value', 'bar', 'candidate', 'live', 'unknown'];
+const PCT_PARAMS = ['value', 'bar', 'candidate', 'live', 'unknown', 'swing', 'precision', 'target'];
 
 /**
  * Pure: a server code ({code, ...numbers}) -> text in `lang`. A plain string (an entry written before codes
@@ -26,7 +26,14 @@ export function describeCode(code, lang) {
   if (isNum(c.need) && isNum(c.have)) params.more = Math.max(0, c.need - c.have);
   else if ('need' in c || 'have' in c) params.more = '?';
   const text = t(key, lang, params);
-  return text === key ? c.code.replace(/_/g, ' ') : text;
+  if (text !== key) return text;
+  // Rally model codes (widgets/rallymodel.js); a job's code names its model: "Segmenter: ...".
+  const rally = t('rm.code.' + c.code, lang, params);
+  if (rally !== 'rm.code.' + c.code) {
+    const model = typeof c.model === 'string' && t('rm.model.' + c.model, lang) !== 'rm.model.' + c.model ? t('rm.model.' + c.model, lang) : '';
+    return model ? model + ': ' + rally : rally;
+  }
+  return c.code.replace(/_/g, ' ');
 }
 
 /** Pure: one history entry -> {when, kept, rollback, text}. */

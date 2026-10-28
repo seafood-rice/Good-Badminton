@@ -53,12 +53,15 @@ def write_labels(labels_dir, stem, times, winners, extra=()):
         {"schema": 1, "revision": 1, "labels": rows}), encoding="utf-8")
 
 
-def make_match(results_dir, labels_dir, stem, n, seed=0, offset=5.0, source="learned", labelled=True):
-    """Write one synthetic labelled match; returns ``(times, winners)``."""
+def make_match(results_dir, labels_dir, stem, n, seed=0, offset=5.0, source="learned", labelled=True,
+               segments=None):
+    """Write one synthetic labelled match; returns ``(times, winners)``.
+
+    ``segments`` ``[(id, start, end)]`` overrides the live (swing) segments: one per rally by default."""
     times = rally_times(n, offset)
     winners = winners_for(n, seed)
     out = Path(results_dir) / stem
-    segs = [(i + 1, first - 2.0, last + 1.0) for i, (first, last) in enumerate(times)]
+    segs = segments or [(i + 1, first - 2.0, last + 1.0) for i, (first, last) in enumerate(times)]
     make_run(out, segs, hits=hits_for(times, winners))
     if source != "learned":
         doc = json.loads((out / "hits.json").read_text())

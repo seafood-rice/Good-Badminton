@@ -33,9 +33,9 @@ def force(monkeypatch, seg, dm):
     def decide(totals):
         out = real(totals)
         if seg is not None:
-            out["segmenter"] = (seg, {"code": "better_or_equal"} if seg else {"code": "lower_f1", "candidate": 0.4, "swing": 0.5})
+            out["segmenter"] = (seg, {"code": "f1_ok"} if seg else {"code": "lower_f1", "candidate": 0.4, "swing": 0.5})
         if dm is not None:
-            out["decoder"] = (dm, {"code": "better_or_equal"} if dm else {"code": "fewer_correct", "candidate": 1, "rules": 2})
+            out["decoder"] = (dm, {"code": "decoder_ok"} if dm else {"code": "fewer_correct", "correct": 1, "rules": 2})
         return out
 
     monkeypatch.setattr(me, "decide", decide)
@@ -47,7 +47,7 @@ def test_both_kept_are_promoted_with_history(world, capsys):
     out, last = final_line(capsys)
     assert rt.PROMOTE_PHASE in out
     assert last["segmenter"]["kept"] and last["decoder"]["kept"]
-    assert last["segmenter"]["reason"]["code"] == "better_or_equal" and last["totals"]["points"] == 21
+    assert last["segmenter"]["reason"]["code"] == "f1_ok" and last["totals"]["points"] == 21
     seg, dm = sg.load(weights / me.SEGMENTER_FILE), dec.load(weights / me.DECODER_FILE)
     assert seg["heldout"]["f1"] > 0.9 and seg["heldout"]["swing_f1"] == 0.0
     assert dm["claim_threshold"] == pytest.approx(last["totals"]["threshold"])

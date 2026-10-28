@@ -174,3 +174,48 @@ def load(out_dir):
                   shuttle_frames=traj if traj is not None else det_shuttle,
                   positions_ok=ok, quad=quad, end_sec=end_sec,
                   swing_segments=swing_segments)
+
+
+def load_track(out_dir):
+    """``(track, fps, quad)`` for ``rallies.segment_rallies``: the per-frame records rebuilt from
+    ``detections.jsonl`` (frame, shuttle image point, both wrists), the run's fps and court
+    corners. None when metadata or detections are unusable. Never raises for bad input."""
+    out_dir = Path(out_dir)
+    meta = _read_json(out_dir / "metadata.json")
+    if not isinstance(meta, dict):
+        return None
+    video = meta.get("video") if isinstance(meta.get("video"), dict) else {}
+    fps = _num(video.get("fps"))
+    if not fps or fps <= 0:
+        return None
+    court = meta.get("court") if isinstance(meta.get("court"), dict) else {}
+    quad = court.get("corners")
+    try:
+        quad = [list(map(float, p)) for p in quad]
+    except (ValueError, TypeError):
+        quad = None
+    track = []
+    try:
+        with open(out_dir / "detections.jsonl", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                frame = d.get("frame") if isinstance(d, dict) else None
+                if type(frame) is not int:
+                    continue
+                players = d.get("players") if isinstance(d.get("players"), dict) else {}
+                shuttle = d.get("shuttlecock") if isinstance(d.get("shuttlecock"), dict) else {}
+                rec = {"frame": frame, "shuttle": _pair(shuttle.get("image"))}
+                for side in SIDES:
+                    p = players.get(side) if isinstance(players.get(side), dict) else {}
+                    hands = p.get("hands") if isinstance(p.get("hands"), dict) else {}
+                    rec["wrist_" + side] = rallies.wrists_from_hands(hands.get("left"), hands.get("right"))
+                track.append(rec)
+    except (OSError, UnicodeDecodeError, MemoryError):
+        return None
+    return (track, fps, quad) if track else None

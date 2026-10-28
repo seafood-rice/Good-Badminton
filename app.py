@@ -11,7 +11,7 @@ from badminton_analysis.library import tags as libtags
 from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
 from badminton_analysis.web import (athletes_routes, insights_routes, job_slots, proc_control,
-                                    rally_labels_routes, stroke_labels_routes,
+                                    rally_labels_routes, rally_model_routes, stroke_labels_routes,
                                     stroke_model_routes, strategy_routes)
 from badminton_analysis.strategy import config as strategy_config
 from badminton_analysis.strategy import report as strategy_report
@@ -61,7 +61,7 @@ rally_labels_routes.register(app, labels_dir=lambda: RALLY_LABELS_DIR,
                              athletes_path=lambda: ATHLETES_PATH, outputs=lambda: OUTPUTS,
                              lock=lambda: _RALLY_LABELS_LOCK,
                              safe_stem=lambda name: _safe_stem(name),
-                             job_active=lambda stem: _match_job_active(stem))
+                             job_active=lambda stem: _rally_rebuild_blocked(stem))
 stroke_labels_routes.register(app, labels_dir=lambda: STROKE_LABELS_DIR, outputs=lambda: OUTPUTS,
                               lock=lambda: _STROKE_LABELS_LOCK,
                               safe_stem=lambda name: _safe_stem(name),
@@ -78,6 +78,10 @@ stroke_model_routes.register(app, status=lambda: _stroke_model_status(),
                              queue_retrain=lambda: queue_train_strokes(),
                              rollback=lambda: _rollback_stroke_model(),
                              can_rollback=lambda: _can_rollback_stroke_model())
+rally_model_routes.register(app, status=lambda: _rally_model_status(),
+                            active_job=lambda: _training_job_view(),
+                            queue_retrain=lambda: queue_train_rally(),
+                            rollback=lambda: _rollback_rally_model())
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -310,9 +314,15 @@ def _after_match_completed(stem):
 
 
 # ── Stroke model: retrain / relabel jobs (spec 2026-10-28 section 6) ─────────
-_TRAINING_JOB_IDS = ('train_strokes', 'relabel_strokes')
+# One training job at a time across all four ids. The relabel-like ones rewrite results in place:
+# label saves wait for them (see ``_settle_relabel``). The promote-like ones swap model files.
+_TRAINING_JOB_IDS = ('train_strokes', 'relabel_strokes', 'train_rally', 'resegment_rallies')
+_RELABEL_JOB_IDS = ('relabel_strokes', 'resegment_rallies')
+_PROMOTE_JOB_IDS = ('train_strokes', 'train_rally')
 _STROKE_MODEL_LOCK = threading.Lock()
 _stroke_model_cache = {'key': None, 'value': None}
+_RALLY_MODEL_LOCK = threading.Lock()
+_rally_model_cache = {'key': None, 'value': None}
 
 
 def _stroke_split_locked(stem):
@@ -324,7 +334,40 @@ def _stroke_split_locked(stem):
 
 
 def _relabel_job_active():
-    return (jobs.get('relabel_strokes') or {}).get('status') in _ACTIVE_JOB_STATUSES
+    return any((jobs.get(i) or {}).get('status') in _ACTIVE_JOB_STATUSES for i in _RELABEL_JOB_IDS)
+
+
+def _resegment_job_active():
+    return (jobs.get('resegment_rallies') or {}).get('status') in _ACTIVE_JOB_STATUSES
+
+
+# Stems whose rally-label save skipped its outcomes rebuild because a re-segment job was active (guarded
+# by ``_RALLY_LABELS_LOCK``); the job rebuilds exactly these when it ends or is cancelled.
+_skipped_rally_stems = set()
+
+
+def _rally_rebuild_blocked(stem):
+    """True when a rally-label save must not rebuild outcomes now (caller holds ``_RALLY_LABELS_LOCK``)."""
+    if _match_job_active(stem):
+        return True
+    if _resegment_job_active():
+        _skipped_rally_stems.add(stem)
+        return True
+    return False
+
+
+def _rebuild_skipped_rally_outcomes():
+    """Rebuild the outcomes of the label saves that waited for the re-segment job (caller holds ``_RALLY_LABELS_LOCK``)."""
+    from badminton_analysis.outcomes import build as outcomes_build
+    stems = sorted(_skipped_rally_stems)
+    _skipped_rally_stems.clear()
+    for stem in stems:
+        if _match_job_active(stem):
+            continue
+        try:
+            outcomes_build.rebuild_match(OUTPUTS, stem, RALLY_LABELS_DIR, ATHLETES_PATH)
+        except Exception as exc:
+            print(f'rally outcomes not rebuilt for {stem} ({type(exc).__name__})')
 
 
 def _apply_stroke_labels_to(stem):
@@ -387,8 +430,8 @@ def _log_has_line(path, text):
         return False
 
 
-def _delete_partial_candidates():
-    for path in Path(WEIGHTS, 'candidates').glob('stroke-classifier-*'):
+def _delete_partial_candidates(pattern='stroke-classifier-*'):
+    for path in Path(WEIGHTS, 'candidates').glob(pattern):
         try:
             if path.is_file():
                 path.unlink()
@@ -397,7 +440,7 @@ def _delete_partial_candidates():
 
 
 def _settle_relabel(set_status, interrupted=False):
-    """End a relabel job: re-apply the labels saved during it, then flip its status.
+    """End a relabel or re-segment job: re-apply the labels saved during it, then flip its status.
 
     The flip happens inside the same lock hold (LABELS then JOBS), so a save either lands before
     this (and is applied here) or sees the job finished (and applies itself). An ``interrupted`` job
@@ -406,8 +449,10 @@ def _settle_relabel(set_status, interrupted=False):
     """
     with _STROKE_LABELS_LOCK:
         _reapply_owner_stroke_labels(include_job_stems=interrupted)
-        with _JOBS_LOCK:
-            set_status()
+        with _RALLY_LABELS_LOCK:
+            _rebuild_skipped_rally_outcomes()
+            with _JOBS_LOCK:
+                set_status()
 
 
 def _training_cancelled(job_id, job):
@@ -418,14 +463,15 @@ def _training_cancelled(job_id, job):
         job['updated'] = time.time()
         job.pop('rerun', None)
 
-    if job_id == 'relabel_strokes':
+    if job_id in _RELABEL_JOB_IDS:
         _settle_relabel(flip, interrupted=True)         # labels saved while it ran are applied before it counts as over
     else:
         with _JOBS_LOCK:
             flip()
-    if job_id == 'train_strokes':
-        _delete_partial_candidates()
+    if job_id in _PROMOTE_JOB_IDS:
+        _delete_partial_candidates('stroke-classifier-*' if job_id == 'train_strokes' else 'rally-*')
     _invalidate_stroke_model()
+    _invalidate_rally_model()
 
 
 def _cancel_running_training(job_id, job):
@@ -438,7 +484,7 @@ def _cancel_running_training(job_id, job):
         if job.get('cancel_requested'):
             return jsonify({'ok': True})
         # once the new model is being swapped in, a kill could land between the two os.replace calls
-        if job_id == 'train_strokes' and _log_has_line(job.get('log_path'), retrain.PROMOTE_PHASE):
+        if job_id in _PROMOTE_JOB_IDS and _log_has_line(job.get('log_path'), retrain.PROMOTE_PHASE):
             return jsonify({'error': '正在保存新模型，现在不能取消 / the new model is being saved; '
                                      'it cannot be cancelled now', 'reason': 'promoting'}), 409
         job['cancel_requested'] = True
@@ -447,7 +493,7 @@ def _cancel_running_training(job_id, job):
         log_path = job.get('log_path')
 
     def promoting():
-        return job_id == 'train_strokes' and _log_has_line(log_path, retrain.PROMOTE_PHASE)
+        return job_id in _PROMOTE_JOB_IDS and _log_has_line(log_path, retrain.PROMOTE_PHASE)
 
     killed = True
     try:
@@ -517,16 +563,16 @@ def _stroke_model_status():
         return _stroke_model_cache['value']
 
 
-def _queue_training_job(job_id, message, cmd, log_path, finish):
+def _queue_training_job(job_id, message, cmd, log_path, finish, video_name='stroke-classifier', stage='training'):
     """Register and queue one child-process job of kind ``training``: ``(ok, job_id, queued)``.
 
     ``finish(job, returncode)`` runs after the child exits (job lock not held) and sets
     the final message/status; ``cmd`` may be a callable returning the command at start time
     (None = nothing to do). Only one training/relabel job is active at a time; asking for a
-    relabel while one is waiting or running makes it run once more when it ends.
+    relabel or re-segment while one is waiting or running makes it run once more when it ends.
     """
-    job = {'status': 'pending', 'progress': 0, 'message': message, 'video_name': 'stroke-classifier',
-           'stage': 'training', 'kind': 'training', 'log_path': str(log_path), 'updated': time.time()}
+    job = {'status': 'pending', 'progress': 0, 'message': message, 'video_name': video_name,
+           'stage': stage, 'kind': 'training', 'log_path': str(log_path), 'updated': time.time()}
     with _JOBS_LOCK:
         if _training_job_active():
             current = jobs.get(job_id) or {}
@@ -541,11 +587,12 @@ def _queue_training_job(job_id, message, cmd, log_path, finish):
             if argv is None:
                 def done():
                     job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
-                    job['message'] = '无需重新标注 / nothing to relabel'
+                    job['message'] = ('无需重新分段 / nothing to re-segment' if job_id == 'resegment_rallies'
+                                      else '无需重新标注 / nothing to relabel')
                     job['updated'] = time.time()
                     job['ended'] = True
 
-                if job_id == 'relabel_strokes':
+                if job_id in _RELABEL_JOB_IDS:
                     _settle_relabel(done)       # a save while it was queued skipped its apply
                 else:
                     with _JOBS_LOCK:
@@ -574,7 +621,7 @@ def _queue_training_job(job_id, message, cmd, log_path, finish):
             log_fh.close()
         except Exception:
             pass
-        if job.get('cancel_requested') and job_id == 'train_strokes':
+        if job.get('cancel_requested') and job_id in _PROMOTE_JOB_IDS:
             from badminton_analysis.stroke import retrain
             if _log_has_line(log_path, retrain.PROMOTE_PHASE):
                 # the child reached the swap and exited before the cancel could be withdrawn: it is not a cancel
@@ -590,6 +637,8 @@ def _queue_training_job(job_id, message, cmd, log_path, finish):
                 job['updated'] = time.time()
         if job.get('rerun') and job_id == 'relabel_strokes':
             queue_relabel_strokes()
+        elif job.get('rerun') and job_id == 'resegment_rallies':
+            queue_resegment_rallies()
 
     queued = not _job_slots.submit(job_id, start)
     return True, job_id, queued
@@ -678,6 +727,138 @@ def queue_relabel_strokes():
 
     return _queue_training_job('relabel_strokes', '等待重新标注 / waiting to relabel',
                                _relabel_command, Path(WEIGHTS) / 'candidates' / 'relabel.log', finish)
+
+
+# -- Rally models: retrain / re-segment jobs (rally-winner-learning spec section 7) ----------
+
+def _rally_model_key():
+    """What the card depends on: live model files and history (mtime+size), the label files, the result dirs."""
+    labels = [m for m in (_mtime_size(p) for p in Path(RALLY_LABELS_DIR).glob('*.json')) if m]
+    hits = [_mtime_size(Path(OUTPUTS) / p.stem / 'hits.json') for p in Path(RALLY_LABELS_DIR).glob('*.json')]
+    return (_mtime_size(Path(WEIGHTS) / 'rally-segmenter.json'), _mtime_size(Path(WEIGHTS) / 'rally-decoder.json'),
+            _mtime_size(Path(WEIGHTS) / 'rally-model-history.json'),
+            max((m[0] for m in labels), default=None), len(labels), tuple(hits))
+
+
+def _invalidate_rally_model():
+    with _RALLY_MODEL_LOCK:
+        _rally_model_cache['key'] = None
+
+
+def _rally_model_status():
+    """``outcomes.model_eval.status``, recomputed only when its key changed; a stub while a training job runs."""
+    from badminton_analysis.outcomes import model_eval as rally_eval
+    with _RALLY_MODEL_LOCK:
+        if _training_job_active():
+            if _rally_model_cache['value'] is not None:
+                return _rally_model_cache['value']
+            return {'live': None, 'counts': None, 'can_retrain': False, 'missing': [],
+                    'history': rally_eval.history(WEIGHTS), 'pending': True}
+        key = _rally_model_key()
+        if _rally_model_cache['key'] != key or _rally_model_cache['value'] is None:
+            _rally_model_cache['value'] = rally_eval.status(RALLY_LABELS_DIR, OUTPUTS, WEIGHTS)
+            _rally_model_cache['key'] = key
+        return _rally_model_cache['value']
+
+
+def queue_train_rally():
+    """Queue the rally-model retrain (measure leave-one-match-out, keep or reject): ``(ok, job_id, queued)``."""
+    log_path = Path(WEIGHTS) / 'candidates' / 'train-rally.log'
+    cmd = [_venv_python, '-m', 'badminton_analysis.outcomes.retrain',
+           '--labels-dir', str(RALLY_LABELS_DIR), '--results-dir', str(OUTPUTS),
+           '--athletes', str(ATHLETES_PATH), '--weights-dir', str(WEIGHTS)]
+
+    def finish(job, code):
+        result = _last_json_line(log_path)
+        _invalidate_rally_model()
+        models = {name: result.get(name) for name in ('segmenter', 'decoder')} if isinstance(result, dict) else {}
+        models = {n: m for n, m in models.items() if isinstance(m, dict)}
+        kept = [n for n, m in models.items() if m.get('kept')]
+        rejected = [n for n, m in models.items() if not m.get('kept')]
+        reason = models[rejected[0]].get('reason') if rejected else None
+        coded = isinstance(reason, dict) and isinstance(reason.get('code'), str)
+        with _JOBS_LOCK:
+            if coded:
+                job['reason_code'] = dict(reason, model=rejected[0])
+            if not models:
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = ('训练失败 / training failed' if code != 0
+                                  else '训练结果不可读 / training result unreadable')
+            elif code != 0 and not kept:
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = '训练失败 / training failed'
+            else:
+                job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                if len(kept) == len(models):
+                    job['message'] = '新回合模型已采用 / new rally models kept'
+                elif kept:
+                    job['message'] = '已采用一个回合模型 / one rally model kept'
+                else:
+                    job['message'] = '回合模型未采用 / rally models not kept'
+        if kept:
+            queue_resegment_rallies()
+
+    return _queue_training_job('train_rally', '等待训练回合模型 / waiting to train the rally models',
+                               cmd, log_path, finish, video_name='rally-models', stage='rally_training')
+
+
+def _resegment_command():
+    dirs = []
+    try:
+        entries = sorted(Path(OUTPUTS).iterdir(), key=lambda p: p.name)
+    except OSError:
+        entries = []
+    for path in entries:
+        if (path.is_dir() and (path / 'hits.json').is_file() and (path / 'detections.jsonl').is_file()
+                and not _match_job_active(path.name)):
+            dirs.append(str(path))
+    with _STROKE_LABELS_LOCK:
+        _relabel_job_stems.clear()
+        _relabel_job_stems.update(Path(d).name for d in dirs)
+    if not dirs:
+        return None
+    return [_venv_python, '-m', 'badminton_analysis.outcomes.resegment',
+            '--weights-dir', str(WEIGHTS), '--labels-dir', str(RALLY_LABELS_DIR),
+            '--stroke-labels-dir', str(STROKE_LABELS_DIR), '--athletes', str(ATHLETES_PATH)] + dirs
+
+
+def queue_resegment_rallies():
+    """Queue the re-segmenting of every result with hits + detections (skips active matches)."""
+    def finish(job, code):
+        # Label saves that waited for the child are applied / rebuilt now, then the status flips
+        # (see _settle_relabel); a failed child may have died between two files of one result.
+        def flip():
+            if code == 0:
+                job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                job['message'] = '已重新分段 / rallies re-segmented'
+            else:
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = '重新分段失败 / re-segmenting failed'
+
+        _invalidate_rally_model()
+        _settle_relabel(flip, interrupted=code != 0)
+
+    return _queue_training_job('resegment_rallies', '等待重新分段 / waiting to re-segment',
+                               _resegment_command, Path(WEIGHTS) / 'candidates' / 'resegment.log', finish,
+                               video_name='rally-models', stage='rally_resegment')
+
+
+def _rollback_rally_model():
+    """``'busy' | 'none' | 'ok'``; on ok the re-segment job is queued."""
+    from badminton_analysis.outcomes import model_eval as rally_eval
+    with _RALLY_MODEL_LOCK:
+        if _training_job_active():
+            return 'busy'
+        points = sum(n for _s, _d, n in rally_eval.scan(RALLY_LABELS_DIR, OUTPUTS)[0])
+        try:
+            done = rally_eval.rollback(WEIGHTS, points=points)
+        except rally_eval.store.SwapInProgress:      # another process (an orphaned retrain) is swapping
+            return 'busy'
+        _rally_model_cache['key'] = None
+    if not done:
+        return 'none'
+    queue_resegment_rallies()
+    return 'ok'
 
 
 def _can_rollback_stroke_model():
@@ -1723,7 +1904,7 @@ def api_job_cancel(job_id):
         job['message'] = ''
         job['updated'] = time.time()
 
-    if job_id == 'relabel_strokes':
+    if job_id in _RELABEL_JOB_IDS:
         _settle_relabel(flip)         # saves while it was queued skipped their apply
     else:
         with _JOBS_LOCK:
@@ -1835,6 +2016,15 @@ def api_clip():
 
     clip_output_dir = save_dir / 'clips'
     clip_output_dir.mkdir(exist_ok=True)
+    # Re-segmenting marks the clips cut from the old segments stale: re-cut on request.
+    stale_mark = clip_output_dir / '.stale'
+    was_stale = stale_mark.is_file()
+    if was_stale:
+        for old_clip in clip_output_dir.glob('*.mp4'):
+            try:
+                old_clip.unlink()
+            except OSError:
+                pass
 
     env = os.environ.copy()
     env['PATH'] = f"{os.path.expanduser('~/.local/bin')}:{env.get('PATH', '')}"
@@ -1858,6 +2048,11 @@ def api_clip():
 
         # 查找生成的剪辑文件
         clips = sorted(clip_output_dir.glob('*.mp4'))
+        if was_stale and clips:
+            try:
+                stale_mark.unlink()
+            except OSError:
+                pass
         result = {
             'ok': True,
             'mode': mode,
@@ -1878,6 +2073,10 @@ def serve_output(video_name, subpath):
     filepath = OUTPUTS / video_name / subpath
     if not filepath.exists():
         return jsonify({'error': f'文件不存在: {subpath}'}), 404
+    if (subpath.startswith('clips/') and filepath.suffix in ('.mp4', '.webm')
+            and (OUTPUTS / video_name / 'clips' / '.stale').is_file()):
+        return jsonify({'error': '回合已重新分段，请重新生成剪辑 / the rallies were re-segmented; generate the clips again',
+                        'stale': True}), 404
     if filepath.suffix in ('.mp4', '.webm'):
         return send_file(str(filepath), mimetype='video/mp4', conditional=True)
     if filepath.suffix == '.jsonl':

@@ -795,6 +795,7 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 
 /* Stroke model card (Pipeline view, stroke correction spec section 6.1) */
 .sm-card{margin-bottom:16px;gap:8px;}
+.sm-version div+div{margin-top:2px;}
 .sm-metrics{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
 .sm-history{gap:4px;}
 .sm-hist-row{font-size:12.5px;color:var(--ink2);padding:4px 0;border-top:1px solid var(--line);}

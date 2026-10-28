@@ -69,12 +69,12 @@ def totals(**kw):
 def test_decide_keeps_or_rejects_each_model_separately():
     both = me.decide(totals())
     assert both["segmenter"][0] and both["decoder"][0]
-    assert both["segmenter"][1]["code"] == "better_or_equal"
+    assert both["segmenter"][1]["code"] == "f1_ok" and both["decoder"][1]["code"] == "decoder_ok"
     worse_seg = me.decide(totals(seg_f1=0.45, swing_f1=0.53))
     assert worse_seg["segmenter"] == (False, {"code": "lower_f1", "candidate": 0.45, "swing": 0.53})
     assert worse_seg["decoder"][0] is True
     fewer = me.decide(totals(dec_correct=2, dec_claimed=2, dec_precision=1.0))
-    assert fewer["decoder"] == (False, {"code": "fewer_correct", "candidate": 2, "rules": 3})
+    assert fewer["decoder"] == (False, {"code": "fewer_correct", "correct": 2, "rules": 3})
     low = me.decide(totals(dec_precision=0.8))
     assert low["decoder"][1]["code"] == "low_precision" and low["decoder"][0] is False
     unreachable = me.decide(totals(threshold=None, dec_claimed=0, dec_correct=0, dec_precision=None))

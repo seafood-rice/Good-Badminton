@@ -7,6 +7,7 @@ import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, setStyle, setText } from '../widgets/frame.js';
 import { strokeModelCard, describeCode } from '../widgets/strokemodel.js';
+import { rallyModelCard } from '../widgets/rallymodel.js';
 import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES, PAUSED_STATUSES, jobStage } from '../widgets/pipeline.js';
 
 export const FAST_MS = 2000;
@@ -177,6 +178,7 @@ export function mount(container, ctx = {}) {
   const bars = new Map(); // job id -> {bar, pctEl, stateEl, row}
   // Stroke model card: survives re-renders of the job list; refreshed on every jobs poll (the server caches it).
   const modelCard = strokeModelCard({ lang, api, onChanged: () => { loadModel(); poll(); } });
+  const rallyCard = rallyModelCard({ lang, api, onChanged: () => { loadModel(); poll(); } });
   let modelBusy = false;
   async function loadModel() {
     if (modelBusy || state.destroyed) return;
@@ -184,6 +186,10 @@ export function mount(container, ctx = {}) {
     try {
       const data = await api.strokeModel({ timeout: 10000 });
       if (!state.destroyed) modelCard.update(data);
+    } catch (e) { /* the card keeps its last state */ }
+    try {
+      const data = await api.rallyModel({ timeout: 10000 });
+      if (!state.destroyed) rallyCard.update(data);
     } catch (e) { /* the card keeps its last state */ } finally { modelBusy = false; }
   }
 
@@ -269,6 +275,7 @@ export function mount(container, ctx = {}) {
     bars.clear();
     root.appendChild(header());
     root.appendChild(modelCard.el);
+    root.appendChild(rallyCard.el);
     const g = state.groups;
     if (state.error) {
       root.appendChild(h('div', { class: g ? 'ov-alert' : 'card ov-state', role: 'alert' }, [
