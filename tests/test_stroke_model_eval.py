@@ -295,8 +295,30 @@ def _dead_pid():
     return proc.pid
 
 
-def _marker(w, pid, what="promote"):
-    (w / me.SWAP_MARKER).write_text(json.dumps({"pid": pid, "what": what}), encoding="utf-8")
+def _marker(w, pid, what="promote", started=None):
+    doc = {"pid": pid, "what": what}
+    if started is not None:
+        doc["started"] = started
+    (w / me.SWAP_MARKER).write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_a_reused_pid_does_not_keep_a_dead_swap_alive(tmp_path):
+    # container PIDs are reused after a restart: a live process with the marker's pid but another
+    # start time is not the writer, so the half swap is repaired instead of blocking forever
+    w = tmp_path / "weights"
+    _half_promote(w)
+    _marker(w, os.getpid(), started=me._started(os.getpid()) - 3600)
+    assert me.recover(w) is True
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+    _marker(w, os.getpid(), started=me._started(os.getpid()))
+    assert me._marker_alive(w / me.SWAP_MARKER) is True
+
+
+def test_the_swap_marker_records_the_writer_start_time(tmp_path):
+    w = tmp_path / "weights"
+    with me._swap_marker(w, "promote"):
+        doc = json.loads((w / me.SWAP_MARKER).read_text(encoding="utf-8"))
+    assert doc["pid"] == os.getpid() and abs(doc["started"] - me._started(os.getpid())) < 1.0
 
 
 def test_status_restores_a_half_finished_promote(tmp_path):

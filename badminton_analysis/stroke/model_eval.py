@@ -278,23 +278,42 @@ class SwapInProgress(RuntimeError):
 
 
 def _read_marker(path):
+    """``(pid, started)`` of the marker's writer; pid None when unreadable, started None when absent."""
     doc = _json(path)
     pid = doc.get("pid") if isinstance(doc, dict) else None
-    return pid if type(pid) is int and pid > 0 else None
+    if type(pid) is not int or pid <= 0:
+        return None, None
+    started = doc.get("started")
+    return pid, started if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+
+
+def _started(pid):
+    """The process's start time (seconds since the epoch), or None when it is not running."""
+    try:
+        return psutil.Process(pid).create_time()
+    except psutil.Error:
+        return None
 
 
 def _marker_alive(path):
-    """True while the process that wrote the swap marker may still be running."""
-    pid = _read_marker(path)
+    """True while the process that wrote the swap marker may still be running.
+
+    The writer's start time is compared too: container PIDs are small and reused after a restart,
+    so a live process with the same pid is a different process when it started at another time.
+    """
+    pid, started = _read_marker(path)
     if pid is None:       # unreadable: a writer may be mid-create, so only an old file counts as stale
         try:
             return time.time() - os.stat(path).st_mtime < _MARKER_GRACE_SEC
         except OSError:
             return False
     try:
-        return psutil.pid_exists(pid)
+        now = _started(pid)
     except Exception:
         return True
+    if now is None:
+        return False
+    return started is None or abs(now - started) < 1.0
 
 
 def _clear_marker(weights_dir):
@@ -326,7 +345,8 @@ def _swap_marker(weights_dir, what):
             _clear_marker(weights_dir)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"pid": os.getpid(), "what": what, "utc": _utc()}, fh)
+            json.dump({"pid": os.getpid(), "started": _started(os.getpid()), "what": what,
+                       "utc": _utc()}, fh)
         yield
     finally:
         _clear_marker(weights_dir)
