@@ -465,8 +465,16 @@ export function validateDoublesRecordForm(form) {
   const wt = String(f.winner_team === undefined || f.winner_team === null ? '' : f.winner_team);
   const winner = wt === '1' ? 1 : wt === '2' ? 2 : null;
   if (parsed.sets.length && winner === null) errors.winner = 'record.err.winner';
+  let scoring = null;
+  if (f.scoring !== undefined && f.scoring !== null) {
+    const sc = validateScoringForm(f.scoring);
+    if (sc.error) errors.scoring = sc.error;
+    else scoring = sc.scoring;
+  }
   if (Object.keys(errors).length) return { record: null, errors };
-  return { record: { date, format: 'doubles', players, result: winner ? { winner_team: winner, sets: parsed.sets } : null }, errors };
+  const record = { date, format: 'doubles', players, result: winner ? { winner_team: winner, sets: parsed.sets } : null };
+  if (scoring) record.scoring = scoring;
+  return { record, errors };
 }
 
 /** Pure: a stored record (or {}) -> the doubles editor form; a singles record's sides and winner are not carried over. */
@@ -484,6 +492,7 @@ export function formFromDoublesRecord(record) {
     players,
     winner_team: res.winner_team === 1 || res.winner_team === 2 ? String(res.winner_team) : '',
     sets: res.winner_team === 1 || res.winner_team === 2 ? setsText(res.sets) : '',
+    ...(r.scoring ? { scoring: scoringFormFrom(r.scoring) } : {}),
   };
 }
 
@@ -1820,6 +1829,16 @@ export function mount(container, ctx = {}) {
     const sets = h('input', { type: 'text', class: 'mv-input mono', id: 'mv-sets', value: form.sets, placeholder: '21-18, 19-21, 21-15', 'aria-describedby': `${uid}-s ${uid}-sh` });
     const errs = { date: err(uid + '-d'), winner: err(uid + '-w'), sets: err(uid + '-s') };
     const formErr = h('div', { class: 'mv-err form', role: 'alert' });
+    const scoringWarn = h('div', { class: 'mv-warn', role: 'status' });
+    const refreshWarning = () => {
+      const f = sc.read();
+      const sv = f ? validateScoringForm(f) : { scoring: null };
+      const w = sv.scoring ? scoringWarning({ scoring: sv.scoring, result: { sets: parseSets(sets.value).sets } }) : null;
+      scoringWarn.textContent = w ? t(w, lang) : '';
+    };
+    const sc = scoringControl(form.scoring, lang, refreshWarning);
+    sets.addEventListener('input', refreshWarning);
+    refreshWarning();
     const saveBtn = h('button', { type: 'submit', class: 'ov-btn small primary' }, t('btn.save', lang));
     const formEl = h('form', { class: 'mv-form', novalidate: true }, [
       h('div', { class: 'mv-fields' }, [h('div', { class: 'mv-field' }, [h('label', { for: 'mv-date' }, t('record.date', lang)), date, errs.date])]),
@@ -1831,6 +1850,7 @@ export function mount(container, ctx = {}) {
         h('div', { class: 'mv-field wide' }, [h('label', { for: 'mv-sets' }, t('record.sets', lang)), sets,
           h('span', { class: 'mv-hint', id: uid + '-sh' }, t('dbl.record.sets_order', lang)), errs.sets]),
       ]),
+      sc.el, scoringWarn,
       formErr,
       h('div', { class: 'mv-actions' }, [
         saveBtn,
@@ -1846,6 +1866,7 @@ export function mount(container, ctx = {}) {
 
     function showErrors(errors) {
       for (const [k, el] of Object.entries(errOf)) if (el) el.textContent = errors[k] ? t(errors[k], lang) : '';
+      sc.err.textContent = errors.scoring ? t(errors.scoring, lang) : '';
       for (const [k, c] of Object.entries(ctlOf)) c.setAttribute('aria-invalid', errors[k] ? 'true' : 'false');
       const firstBad = Object.keys(ctlOf).find((k) => errors[k]);
       if (firstBad) ctlOf[firstBad].focus();
@@ -1857,7 +1878,11 @@ export function mount(container, ctx = {}) {
       try {
         await api.saveMatch(row.stem, record, LONG);
         if (state.destroyed) return;
-        if (typeof state.ctx.toast === 'function') state.ctx.toast(t('toast.saved', lang));
+        if (typeof state.ctx.toast === 'function') {
+          state.ctx.toast(t('toast.saved', lang));
+          // A result impossible under the chosen format is kept, with a visible warning.
+          if (scoringWarning(record)) state.ctx.toast(t('scoring.warn', lang));
+        }
         state.editing = null;
         await load({ reveal: false });
         const safe = String(row.stem).replace(/["\\]/g, '\\$&');
@@ -1877,6 +1902,7 @@ export function mount(container, ctx = {}) {
         players: Object.fromEntries(IDENTITY_IDS.map((pid) => [pid, pickers[pid].read()])),
         winner_team: winner.value,
         sets: sets.value,
+        scoring: sc.read(),
       });
       showErrors(out.errors);
       if (out.record) submit(out.record);
