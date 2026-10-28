@@ -323,6 +323,7 @@ export const STRINGS = {
     'signal.shuttle': '羽毛球轨迹',
     'signal.courtview': '场地视角',
     'signal.swing': '挥拍信号',
+    'signal.learned': '学习模型',
     'signal.degraded': '粗略窗口',
     'signal.none': '无信号',
     'signal.error': '出错',
@@ -373,6 +374,7 @@ export const STRINGS = {
     'ws.signal_note.degraded': '没有可靠的信号，这里只显示粗略的片段窗口，不提供击球类型。',
     'ws.signal_note.shuttle': '依据羽毛球轨迹分割。',
     'ws.signal_note.courtview': '依据场地视角分割。',
+    'ws.signal_note.learned': '依据击球间隔由已学习的模型分割回合。',
     'ws.empty.title': '没有击球数据',
     'ws.empty.body': '这场比赛还没有击球检测结果。',
 
@@ -1438,6 +1440,7 @@ export const STRINGS = {
     'signal.shuttle': 'Shuttle',
     'signal.courtview': 'Court view',
     'signal.swing': 'Swing signal',
+    'signal.learned': 'Learned model',
     'signal.degraded': 'Coarse windows',
     'signal.none': 'No signal',
     'signal.error': 'Error',
@@ -1488,6 +1491,7 @@ export const STRINGS = {
     'ws.signal_note.degraded': 'No reliable signal, so only coarse windows are shown and stroke labels are withheld.',
     'ws.signal_note.shuttle': 'Segmented from the shuttle path.',
     'ws.signal_note.courtview': 'Segmented from the court view.',
+    'ws.signal_note.learned': 'Rallies split from the gaps between hits by the learned model.',
     'ws.empty.title': 'No stroke data',
     'ws.empty.body': 'This match has no stroke detection results yet.',
 

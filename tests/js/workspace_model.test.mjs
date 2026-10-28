@@ -98,3 +98,20 @@ test('partTechIndex and planSessions', () => {
   assert.deepEqual(M.planSessions(plan, 'court').map((x) => [x.week, x.session.name]), [[1, 'b'], [2, 'c']]);
   assert.deepEqual(M.planSessions(null, 'home'), []);
 });
+
+test('workspace_model: a learned segmentation counts as rallies, not segments or windows', () => {
+  const payload = { rallies: [{ id: 1, start_sec: 1, end_sec: 4 }, { id: 2, start_sec: 9, end_sec: 12 }],
+    detection: { signal: 'learned', attempted_signal: 'learned', degraded: false, model: { version: 'v1', mode: 'gap', f1: 0.8 } } };
+  const s = M.summariseRallyPayload(payload);
+  assert.deepEqual(s, { count: 2, suppressed: false, label: 'rallies', signal: 'learned', degraded: false, failed: false });
+  assert.equal(M.unitKey(s), 'ws.unit.rally');
+  assert.equal(M.rallyCountText(s, 'en'), M.rallyCountText({ ...s, signal: 'courtview' }, 'en'));
+  for (const lang of ['en', 'zh']) {
+    const note = M.signalNote(s, lang, 2);
+    assert.ok(note && note !== 'ws.signal_note.learned', lang + ' note is translated');
+    assert.notEqual(note, M.signalNote({ ...s, signal: 'swing', label: 'segments' }, lang, 2));
+  }
+  const m = M.buildWorkspaceModel({ rallies: payload, strokes: [{ frame: 60, hitter: 'lower', stroke: 'smash' }], fps: 30 });
+  assert.equal(m.rallies.length, 2);
+  assert.equal(m.summary.label, 'rallies');
+});

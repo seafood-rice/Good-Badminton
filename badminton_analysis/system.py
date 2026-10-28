@@ -540,6 +540,7 @@ class BadmintonAnalysisSystem:
 
         self._write_progress("visualizing")
         self._run_hit_detection(fps, frame_count)
+        self._apply_learned_segments(fps)
         if self.match_format == "doubles":
             self._withhold_singles_outputs_for_doubles()
         else:
@@ -835,6 +836,92 @@ class BadmintonAnalysisSystem:
         elif detection.get("degraded"):
             line += f", degraded: {detection.get('reason')}"
         print(line)
+
+    def _rally_segmenter_path(self):
+        """The learned segmenter's weights: the injected path, else ``weights/rally-segmenter.json``."""
+        path = getattr(self, "rally_segmenter_path", None)
+        if path:
+            return path
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "weights", "rally-segmenter.json")
+
+    def _apply_learned_segments(self, fps):
+        """Replace the swing segments with the learned segmenter's, when a kept model exists.
+
+        Post-step by design: rally_segments.json is written before the frame loop's detections
+        and the hit list exist, and the segmenter reads ``hits.json`` / ``detections.jsonl`` /
+        ``metadata.json`` / ``shuttle_trajectory.json`` back from the result dir (the same
+        inputs training saw). So it runs right after ``_run_hit_detection`` and before the
+        stroke stage, rewriting ``rally_segments.json`` and the hits' ``rally_id``. The swing
+        segments still decide the shuttle-coverage check in hit detection (they existed first).
+        No model, no learned hits, no segments or any failure: nothing is touched.
+        """
+        if getattr(self, "_hit_source", None) != "learned" or not getattr(self, "_hit_list", None):
+            return
+        from .data.writer import write_json as _write_json
+
+        seg_path = os.path.join(self.save_dir, "rally_segments.json")
+        old_rallies, old_detection = list(self.rally_list or []), self.rally_detection
+        old_text = None
+        try:
+            from .outcomes import run_inputs, segmenter
+            model = segmenter.load(self._rally_segmenter_path())
+            if model is None:
+                return
+            writer = getattr(self, "detection_writer", None)
+            if writer is not None:
+                writer.flush()
+            inputs = run_inputs.load(self.save_dir)
+            if inputs is None or not inputs.hits:
+                return
+            segs = segmenter.segments(inputs, model)
+            if not segs:
+                return
+            rallies = [{"id": s["id"], "start_frame": s["start_frame"], "end_frame": s["end_frame"],
+                        "start_sec": s["start_sec"], "end_sec": s["end_sec"], "degraded": False,
+                        "p_point": s["p_point"]} for s in segs]
+            version = model.get("version")
+            detection = dict(old_detection or {})
+            detection.update({
+                "signal": "learned", "attempted_signal": "learned", "degraded": False,
+                "reason": f"learned segmenter {version}",
+                "model": {"version": version, "mode": model.get("mode", "gap"),
+                          "f1": model.get("train_f1")},
+                "stroke_labels_withheld": False,
+            })
+            with open(seg_path, encoding="utf-8") as f:
+                old_text = f.read()
+            _write_json(seg_path, {"fps": fps, "rallies": rallies, "detection": detection})
+            try:
+                self._rewrite_hit_rally_ids(rallies)
+            except Exception:
+                with open(seg_path, "w", encoding="utf-8") as f:
+                    f.write(old_text)
+                raise
+            self.rally_detection, self.rally_list = detection, list(rallies)
+            print(f"Rally segmentation: signal=learned, {len(rallies)} segments "
+                  f"(segmenter {version})")
+        except Exception as exc:
+            self.rally_detection, self.rally_list = old_detection, old_rallies
+            print(f"Learned rally segmenter not used, keeping the swing segments: {exc!r}")
+
+    def _rewrite_hit_rally_ids(self, rallies):
+        """Point every hit in hits.json at the new rally list (one atomic-enough rewrite)."""
+        from .data.writer import write_json as _write_json
+
+        path = os.path.join(self.save_dir, "hits.json")
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+
+        def rally_id(frame):
+            for r in rallies:
+                if int(r["start_frame"]) <= frame <= int(r["end_frame"]):
+                    return r["id"]
+            return None
+
+        for h in payload["hits"]:
+            h["rally_id"] = rally_id(int(h["frame"]))
+        _write_json(path, payload)
 
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
         metadata = {

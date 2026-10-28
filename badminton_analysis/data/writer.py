@@ -42,6 +42,10 @@ class JsonlDetectionWriter:
         self._file.write(json.dumps(_clean_value(record), ensure_ascii=False, separators=(",", ":")))
         self._file.write("\n")
 
+    def flush(self):
+        if not self._file.closed:
+            self._file.flush()
+
     def close(self):
         if not self._file.closed:
             self._file.close()

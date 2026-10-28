@@ -290,6 +290,7 @@ export function signalNote(summary, lang, nRallies) {
   if (s.label === 'segments') return t('ws.signal_note.swing', lang);
   if (s.signal === 'shuttle') return t('ws.signal_note.shuttle_hedged', lang);
   if (s.signal === 'courtview') return t('ws.signal_note.courtview', lang);
+  if (s.signal === 'learned') return t('ws.signal_note.learned', lang);
   return '';
 }
 
