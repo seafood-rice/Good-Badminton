@@ -288,3 +288,102 @@ def test_a_sidecar_only_history_dir_is_not_a_rollback_target(tmp_path):
     other = store.new_history_dir(SPEC, w)
     (other / DEC).write_text("d", encoding="utf-8")
     assert store.can_rollback(SPEC, w) is True
+
+
+STROKE = ModelSpec("stroke", ("m.pt", "m.json"), "h.json", None, marker=".swap", primary="m.pt",
+                   rollback_to_absent=False)
+
+
+def _group_marker(spec, w, what, **info):
+    w.mkdir(parents=True, exist_ok=True)
+    doc = {"pid": _dead_pid(), "what": what, **info}
+    (w / spec.marker_name).write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _pair_live(w, pt, js):
+    w.mkdir(parents=True, exist_ok=True)
+    (w / "m.pt").write_text(pt, encoding="utf-8")
+    (w / "m.json").write_text(js, encoding="utf-8")
+
+
+def test_stroke_recover_half_promote_restores_the_pair(tmp_path):
+    """Review 1: a kill between the sidecar install and the .pt install must not leave a mixed pair."""
+    w = tmp_path / "weights"
+    w.mkdir()
+    retired = store.new_history_dir(STROKE, w)          # both old files retired ...
+    (retired / "m.pt").write_text("old-pt", encoding="utf-8")
+    (retired / "m.json").write_text("old-js", encoding="utf-8")
+    (w / "m.json").write_text("new-js", encoding="utf-8")   # ... the new sidecar landed, the .pt did not
+    _group_marker(STROKE, w, "promote", names=["m.pt", "m.json"], installs=["m.pt", "m.json"], after="")
+    assert store.recover(STROKE, w) is True
+    assert _read(w, "m.pt") == "old-pt" and _read(w, "m.json") == "old-js"
+    assert not retired.exists() and not (w / STROKE.marker_name).exists()
+
+
+def test_stroke_recover_half_retire_restores_the_sidecar(tmp_path):
+    w = tmp_path / "weights"
+    _pair_live(w, "old-pt", "old-js")
+    retired = store.new_history_dir(STROKE, w)
+    os.replace(w / "m.json", retired / "m.json")        # killed between the two retire moves
+    _group_marker(STROKE, w, "promote", names=["m.pt", "m.json"], installs=["m.pt", "m.json"], after="")
+    assert store.recover(STROKE, w) is True
+    assert _read(w, "m.pt") == "old-pt" and _read(w, "m.json") == "old-js"
+
+
+def test_recover_leaves_a_finished_promote_alone(tmp_path):
+    """A candidate without a sidecar: the old sidecar is retired on purpose and stays retired."""
+    w = tmp_path / "weights"
+    retired = store.new_history_dir(STROKE, w)
+    (retired / "m.pt").write_text("old-pt", encoding="utf-8")
+    (retired / "m.json").write_text("old-js", encoding="utf-8")
+    (w / "m.pt").write_text("new-pt", encoding="utf-8")
+    _group_marker(STROKE, w, "promote", names=["m.pt", "m.json"], installs=["m.pt"], after="")
+    assert store.recover(STROKE, w) is False
+    assert _read(w, "m.pt") == "new-pt" and not (w / "m.json").exists() and retired.exists()
+
+
+def test_stroke_recover_staged_rollback_between_the_retire_moves(tmp_path):
+    w = tmp_path / "weights"
+    _pair_live(w, "v0-pt", "v0-js")
+    store.promote(STROKE, w, {"m.pt": _cand(w, **{"m.pt": "v1-pt"})["m.pt"],
+                              "m.json": _cand(w, **{"m.json": "v1-js"})["m.json"]}, {})
+    home = sorted(p for p in w.joinpath("history").iterdir())[-1]
+    staged_js, staged_pt = w / f".rollback-{home.name}.json", w / f".rollback-{home.name}.pt"
+    os.replace(home / "m.json", staged_js)
+    os.replace(home / "m.pt", staged_pt)
+    retired = store.new_history_dir(STROKE, w)
+    os.replace(w / "m.json", retired / "m.json")        # killed before the .pt was retired
+    _group_marker(STROKE, w, "rollback", names=["m.pt", "m.json"], stamp=home.name, after=home.name)
+    assert store.recover(STROKE, w) is True
+    assert _read(w, "m.pt") == "v0-pt" and _read(w, "m.json") == "v0-js"
+    assert (retired / "m.pt").read_text(encoding="utf-8") == "v1-pt"
+    assert (retired / "m.json").read_text(encoding="utf-8") == "v1-js"
+    assert (retired / store.RETIRED_MARK).is_file() and not staged_pt.exists() and not staged_js.exists()
+    assert not home.exists() and store.can_rollback(STROKE, w) is False
+
+
+def test_recover_only_touches_the_files_the_swap_moved(tmp_path):
+    w = tmp_path / "weights"
+    _live(w, seg="other-s", dec=None)                   # the segmenter is outside this promote
+    retired = store.new_history_dir(SPEC, w)
+    (retired / DEC).write_text("old-d", encoding="utf-8")
+    (retired / SEG).write_text("stale-s", encoding="utf-8")
+    _group_marker(SPEC, w, "promote", names=[DEC], installs=[DEC], after="")
+    assert store.recover(SPEC, w) is True
+    assert _read(w, SEG) == "other-s" and _read(w, DEC) == "old-d"
+    assert (retired / SEG).read_text(encoding="utf-8") == "stale-s"
+
+
+def test_real_promote_and_rollback_record_their_group_in_the_marker(tmp_path):
+    w = tmp_path / "weights"
+    _pair_live(w, "v0-pt", "v0-js")
+    seen = []
+
+    def spy(wd, files):
+        seen.append(json.loads((w / STROKE.marker_name).read_text(encoding="utf-8")))
+        return store.install(STROKE, wd, files)
+
+    store.promote(STROKE, w, {"m.pt": _cand(w, **{"m.pt": "v1"})["m.pt"], "m.json": None}, {}, install_fn=spy)
+    assert seen[-1]["names"] == ["m.pt", "m.json"] and seen[-1]["installs"] == ["m.pt"]
+    assert store.rollback(STROKE, w, install_fn=spy) is True
+    assert seen[-1]["names"] == ["m.pt", "m.json"] and seen[-1]["stamp"] and "after" in seen[-1]

@@ -242,6 +242,18 @@ def marker_alive(path):
     return began is None or abs(now - began) < 1.0
 
 
+def _stamp_dirs(spec, weights_dir):
+    d = _base(spec, weights_dir)
+    if not d.is_dir():
+        return []
+    return sorted(p for p in d.iterdir() if p.is_dir() and _STAMP_DIR.match(p.name))
+
+
+def _latest_stamp(spec, weights_dir):
+    dirs = _stamp_dirs(spec, weights_dir)
+    return dirs[-1].name if dirs else ""
+
+
 def _clear_marker(spec, weights_dir):
     try:
         os.remove(Path(weights_dir) / spec.marker_name)
@@ -250,10 +262,13 @@ def _clear_marker(spec, weights_dir):
 
 
 @contextmanager
-def swap_marker(spec, weights_dir, what):
+def swap_marker(spec, weights_dir, what, info=None):
     """Hold the swap marker (pid + start time + what) for the length of a swap.
 
-    Raises ``SwapInProgress`` when another live process holds it. A marker left by a dead process
+    ``info`` (optional) is recorded in the marker too: ``names`` (the spec files the swap moves),
+    ``installs`` (the ones it puts live) and ``stamp`` (a rollback's source history dir), so
+    ``recover`` can restore exactly that group. The newest history stamp at the start is
+    recorded as ``after``: a dir sorting later was made by this swap. Raises ``SwapInProgress`` when another live process holds it. A marker left by a dead process
     is repaired by ``recover`` first.
     """
     weights_dir = Path(weights_dir)
@@ -271,8 +286,10 @@ def swap_marker(spec, weights_dir, what):
             _clear_marker(spec, weights_dir)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"pid": os.getpid(), "started": started(os.getpid()), "what": what,
-                       "utc": utc()}, fh)
+            doc = {"pid": os.getpid(), "started": started(os.getpid()), "what": what, "utc": utc()}
+            if info is not None:
+                doc.update(info, after=_latest_stamp(spec, weights_dir))
+            json.dump(doc, fh)
         yield
     finally:
         _clear_marker(spec, weights_dir)
@@ -317,40 +334,140 @@ def recover(spec, weights_dir):
     marker = weights_dir / spec.marker_name
     if not marker.is_file() or marker_alive(marker):
         return False
-    moved = False
+    group = _marker_group(spec, read_json(marker))
     try:
-        stamp, staged = _staged_files(spec, weights_dir)
-        if staged:
-            missing = [n for n in staged if not _is_live(weights_dir, n)]
-            if missing:
-                move_group([(staged[n], weights_dir / n) for n in _order(spec, missing)])
-                for d in history_dirs(spec, weights_dir, include_retired=False)[-1:]:
-                    (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
-                moved = True
-            left = [n for n in staged if _is_live(weights_dir, n) and staged[n].is_file()]
-            if left:        # the rollback had not reached these: give them back to their history dir
-                home = _base(spec, weights_dir) / stamp
-                home.mkdir(parents=True, exist_ok=True)
-                move_group([(staged[n], home / n) for n in _order(spec, left)])
-                moved = True
+        if group is None:
+            moved = _recover_legacy(spec, weights_dir)
+        elif group["what"] == "promote":
+            moved = _recover_promote(spec, weights_dir, group)
         else:
-            dirs = history_dirs(spec, weights_dir)
-            if dirs:
-                newest = dirs[-1]
-                names = [n for n in spec.files if (newest / n).is_file()]
-                missing = [n for n in names if not _is_live(weights_dir, n)]
-                if missing:
-                    move_group([(newest / n, weights_dir / n) for n in _order(spec, missing)])
-                    moved = True
-                absent = _absent_names(newest) if spec.rollback_to_absent else []
-                if absent and any(not _is_live(weights_dir, n) for n in absent):
-                    (newest / ABSENT_MARK).unlink()      # the install never put them live: nothing was absent
-                    moved = True
-                if not any((newest / n).is_file() for n in spec.files) and not (newest / ABSENT_MARK).is_file():
-                    shutil.rmtree(newest, ignore_errors=True)
+            moved = _recover_rollback(spec, weights_dir, group)
     except OSError:
         return False          # keep the marker: the next call tries again
     _clear_marker(spec, weights_dir)
+    return moved
+
+
+def _marker_group(spec, doc):
+    """The swap a marker recorded (``what``, ``names``, ...), or None for a marker without a group."""
+    if not isinstance(doc, dict) or doc.get("what") not in ("promote", "rollback"):
+        return None
+    names = doc.get("names")
+    if not isinstance(names, list) or not isinstance(doc.get("after"), str):
+        return None
+    names = [n for n in spec.files if n in names]
+    if not names:
+        return None
+    group = {"what": doc["what"], "names": names, "after": doc["after"]}
+    if doc["what"] == "promote":
+        installs = doc.get("installs")
+        if not isinstance(installs, list):
+            return None
+        group["installs"] = [n for n in spec.files if n in installs]
+    else:
+        stamp = doc.get("stamp")
+        if not isinstance(stamp, str) or not _STAMP_DIR.match(stamp):
+            return None
+        group["stamp"] = stamp
+    return group
+
+
+def _has_files(spec, d):
+    return any((d / n).is_file() for n in spec.files)
+
+
+def _recover_promote(spec, weights_dir, group):
+    """An interrupted promote: when a file it was to install is not live, put the whole group back.
+
+    The files the swap retired return to live (a half-installed new file of the group is
+    overwritten, so a pair is never mixed); files outside the group are never touched.
+    """
+    after = [d for d in _stamp_dirs(spec, weights_dir) if d.name > group["after"]]
+    if not after:
+        return False          # nothing was retired, so nothing can be restored
+    retired = after[-1]
+    names = group["names"]
+    held = [n for n in names if (retired / n).is_file()]
+    absent = [n for n in _absent_names(retired) if n in names] if spec.rollback_to_absent else []
+    watch = group["installs"] or held
+    if all(_is_live(weights_dir, n) for n in watch):
+        return False          # the swap finished; only its marker was left
+    if held:
+        move_group([(retired / n, weights_dir / n) for n in _order(spec, held)])
+    if absent:
+        (retired / ABSENT_MARK).unlink()         # the install never completed: nothing was absent
+    if not _has_files(spec, retired) and not (retired / ABSENT_MARK).is_file():
+        shutil.rmtree(retired, ignore_errors=True)
+    return True
+
+
+def _recover_rollback(spec, weights_dir, group):
+    """An interrupted rollback: complete it for the whole group, so the live files are one model.
+
+    The old model's files (staged, or still in its history dir) go live; a live file they
+    replace is retired first. The live files of the model rolled away are kept, marked retired.
+    """
+    home = _base(spec, weights_dir) / group["stamp"]
+    old = {}
+    for n in group["names"]:
+        staged = weights_dir / _staged_name(spec, group["stamp"], n)
+        if staged.is_file():
+            old[n] = staged
+        elif (home / n).is_file():
+            old[n] = home / n
+    absent = [n for n in _absent_names(home) if n in group["names"]] if home.is_dir() else []
+    if not old and not absent:
+        if home.is_dir() and not _has_files(spec, home):
+            shutil.rmtree(home, ignore_errors=True)       # the rollback only missed its cleanup
+        return False
+    after = [d for d in _stamp_dirs(spec, weights_dir) if d.name > group["after"]]
+    retired = after[-1] if after else None
+    for n in _order(spec, set(old) | set(absent)):
+        live = weights_dir / n
+        if live.is_file() and (retired is None or not (retired / n).is_file()):
+            if retired is None:
+                retired = new_history_dir(spec, weights_dir)
+            os.replace(live, retired / n)
+        if n in old:
+            os.replace(old[n], live)
+    if retired is not None:
+        (retired / RETIRED_MARK).write_text("", encoding="utf-8")
+    shutil.rmtree(home, ignore_errors=True)
+    return True
+
+
+def _recover_legacy(spec, weights_dir):
+    """A marker without a recorded group: restore only the files missing live."""
+    moved = False
+    stamp, staged = _staged_files(spec, weights_dir)
+    if staged:
+        missing = [n for n in staged if not _is_live(weights_dir, n)]
+        if missing:
+            move_group([(staged[n], weights_dir / n) for n in _order(spec, missing)])
+            for d in history_dirs(spec, weights_dir, include_retired=False)[-1:]:
+                (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
+            moved = True
+        left = [n for n in staged if _is_live(weights_dir, n) and staged[n].is_file()]
+        if left:        # the rollback had not reached these: give them back to their history dir
+            home = _base(spec, weights_dir) / stamp
+            home.mkdir(parents=True, exist_ok=True)
+            move_group([(staged[n], home / n) for n in _order(spec, left)])
+            moved = True
+    else:
+        dirs = history_dirs(spec, weights_dir)
+        if dirs:
+            newest = dirs[-1]
+            names = [n for n in spec.files if (newest / n).is_file()]
+            missing = [n for n in names if not _is_live(weights_dir, n)]
+            if missing:
+                move_group([(newest / n, weights_dir / n) for n in _order(spec, missing)])
+                moved = True
+            absent = _absent_names(newest) if spec.rollback_to_absent else []
+            if absent and any(not _is_live(weights_dir, n) for n in absent):
+                (newest / ABSENT_MARK).unlink()      # the install never put them live: nothing was absent
+                moved = True
+            if not any((newest / n).is_file() for n in spec.files) and not (newest / ABSENT_MARK).is_file():
+                shutil.rmtree(newest, ignore_errors=True)
     return moved
 
 
@@ -369,7 +486,9 @@ def promote(spec, weights_dir, candidate_files, record, annotate=None, install_f
     """
     do_install = _install_hook(spec, install_fn)
     recover(spec, weights_dir)
-    with swap_marker(spec, weights_dir, "promote"):
+    info = {"names": list(candidate_files),
+            "installs": [n for n, p in candidate_files.items() if p is not None]}
+    with swap_marker(spec, weights_dir, "promote", info):
         retired = do_install(weights_dir, dict(candidate_files))
     prune(spec, weights_dir)
     entry = dict(record)
@@ -414,7 +533,8 @@ def rollback(spec, weights_dir, live_after=None, install_fn=None, **record):
     after = live_after(newest) if live_after is not None else None
     names = [n for n in spec.files if (newest / n).is_file()]
     absent = _absent_names(newest) if spec.rollback_to_absent else []
-    with swap_marker(spec, weights_dir, "rollback"):
+    info = {"names": [n for n in spec.files if n in names or n in absent], "stamp": newest.name}
+    with swap_marker(spec, weights_dir, "rollback", info):
         # stage the old model outside history so the swap cannot see it as the current one
         staged = {n: weights_dir / _staged_name(spec, newest.name, n) for n in names}
         move_group([(newest / n, staged[n]) for n in _order(spec, names)])
