@@ -223,7 +223,7 @@ def describe(code):
     if k == "rolled_back":
         return "rolled back"
     if k == "matches":
-        return f"{max(0, code.get('need', 0) - code.get('have', 0))} more matches with {MIN_POINTS}+ point labels"
+        return "label points on another match"
     if k == "new_points":
         return f"{max(0, code.get('need', 0) - code.get('have', 0))} more point labels (need {code.get('need')} new)"
     return str(code)
@@ -422,12 +422,22 @@ def rollback(weights_dir, points=None):
                           points=int(points) if points is not None else None)
 
 
-def status(labels_dir, results_dir, weights_dir):
-    """The Rally model card's data: live models, label counts, what is missing, history."""
+def status(labels_dir, results_dir, weights_dir, athletes_path=None):
+    """The Rally model card's data: live models, label counts, what is missing, history.
+
+    ``counts.matches`` counts labelled matches the way ``evaluate`` folds them (the parts of one
+    match are one match; a match qualifies with ``MIN_POINTS`` point labels summed over its
+    parts); ``counts.videos`` counts the labelled videos. ``athletes_path`` defaults to the
+    project's ``data/athletes.json``."""
     recover(weights_dir)
     usable, skipped = scan(labels_dir, results_dir)
+    athletes = libathletes.load(athletes_path if athletes_path is not None else ob.DEFAULT_ATHLETES)
     points = sum(n for _s, _d, n in usable)
-    qualifying = sum(1 for _s, _d, n in usable if n >= MIN_POINTS)
+    per_match = {}
+    for stem, _d, n in usable:
+        g = _group(athletes, stem)
+        per_match[g] = per_match.get(g, 0) + n
+    qualifying = sum(1 for n in per_match.values() if n >= MIN_POINTS)
     hist = history(weights_dir)
     seen = [e["points"] for e in hist if type(e.get("points")) is int and not e.get("rollback")]
     new_points = max(0, points - (seen[-1] if seen else 0))
@@ -437,7 +447,8 @@ def status(labels_dir, results_dir, weights_dir):
     if new_points < MIN_NEW_POINTS:
         missing.append({"code": "new_points", "need": MIN_NEW_POINTS, "have": new_points})
     return {"live": live_views(weights_dir),
-            "counts": {"matches": qualifying, "points": points, "new_points": new_points},
+            "counts": {"matches": qualifying, "videos": len(usable), "points": points,
+                       "new_points": new_points},
             "can_retrain": not missing, "missing": missing, "skipped": skipped,
             "history": hist, "can_rollback": can_rollback(weights_dir)}
 

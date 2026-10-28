@@ -232,10 +232,10 @@ def test_lomo_groups_split_match_parts(world, monkeypatch):
 # ---- card status -----------------------------------------------------------------------------
 
 def test_status_gates_and_history(world, tmp_path):
-    results, labels, _ = world
+    results, labels, athletes = world
     weights = tmp_path / "weights"
-    st = me.status(labels, results, weights)
-    assert st["counts"] == {"matches": 0, "points": 21, "new_points": 21}   # 6 + 7 + 8; none has 20 points
+    st = me.status(labels, results, weights, athletes)
+    assert st["counts"] == {"matches": 0, "videos": 3, "points": 21, "new_points": 21}   # 6 + 7 + 8; none has 20 points
     assert st["can_retrain"] is False
     assert st["missing"] == [{"code": "matches", "need": 2, "have": 0}]
     assert st["live"] == {"segmenter": None, "decoder": None} and st["can_rollback"] is False
@@ -243,11 +243,11 @@ def test_status_gates_and_history(world, tmp_path):
     big = tmp_path / "big"
     for i in range(2):
         make_match(big / "outputs", big / "labels", f"b{i}", 21, seed=i)
-    st = me.status(big / "labels", big / "outputs", weights)
-    assert st["counts"] == {"matches": 2, "points": 42, "new_points": 42} and st["can_retrain"] is True
+    st = me.status(big / "labels", big / "outputs", weights, athletes)
+    assert st["counts"] == {"matches": 2, "videos": 2, "points": 42, "new_points": 42} and st["can_retrain"] is True
     assert st["missing"] == []
     store.append_history(me.RALLY, weights, {"kept": False, "points": 30, "utc": "2026-10-28T00:00:00Z"})
-    st = me.status(big / "labels", big / "outputs", weights)
+    st = me.status(big / "labels", big / "outputs", weights, athletes)
     assert st["counts"]["new_points"] == 12 and st["can_retrain"] is False
     assert st["missing"] == [{"code": "new_points", "need": 20, "have": 12}]
     assert len(st["history"]) == 1
@@ -305,7 +305,7 @@ def test_script_without_labelled_matches_says_so(tmp_path, capsys):
 
 
 def test_status_baseline_skips_rollback_entries(world, tmp_path):
-    results, labels, _ = world
+    results, labels, athletes = world
     weights = tmp_path / "weights"
     big = tmp_path / "big"
     for i in range(2):
@@ -313,5 +313,34 @@ def test_status_baseline_skips_rollback_entries(world, tmp_path):
     store.append_history(me.RALLY, weights, {"kept": True, "points": 30, "utc": "2026-10-28T00:00:00Z"})
     store.append_history(me.RALLY, weights, {"kept": True, "rollback": True, "points": 5,
                                              "reason": {"code": "rolled_back"}, "utc": "2026-10-28T01:00:00Z"})
-    st = me.status(big / "labels", big / "outputs", weights)
+    st = me.status(big / "labels", big / "outputs", weights, athletes)
     assert st["counts"]["new_points"] == 12            # still measured from the 30 of the last real retrain
+
+
+def test_status_counts_matches_by_match_not_video(tmp_path):
+    out, lab_dir = tmp_path / "outputs", tmp_path / "labels"
+    for stem in ("p1", "p2"):
+        make_match(out, lab_dir, stem, 21, seed=1)
+    athletes = tmp_path / "ath.json"
+    athletes.write_text(json.dumps({"schema_version": 1, "squads": {}, "athletes": {}, "matches": {
+        "p1": {"upper": {"name": "A"}, "lower": {"name": "B"}},
+        "p2": {"part_of": "p1", "sides_swapped": False}}}), encoding="utf-8")
+    st = me.status(lab_dir, out, tmp_path / "w", athletes)
+    assert st["counts"]["matches"] == 1 and st["counts"]["videos"] == 2 and st["counts"]["points"] == 42
+    assert st["can_retrain"] is False and st["missing"] == [{"code": "matches", "need": 2, "have": 1}]
+    make_match(out, lab_dir, "other", 21, seed=2)
+    st = me.status(lab_dir, out, tmp_path / "w", athletes)
+    assert st["counts"]["matches"] == 2 and st["counts"]["videos"] == 3 and st["can_retrain"] is True
+
+
+def test_status_match_needs_its_points_summed_over_parts(tmp_path):
+    out, lab_dir = tmp_path / "outputs", tmp_path / "labels"
+    make_match(out, lab_dir, "p1", 12, seed=1)
+    make_match(out, lab_dir, "p2", 12, seed=2)
+    make_match(out, lab_dir, "solo", 12, seed=3)
+    athletes = tmp_path / "ath.json"
+    athletes.write_text(json.dumps({"schema_version": 1, "squads": {}, "athletes": {}, "matches": {
+        "p1": {"upper": {"name": "A"}, "lower": {"name": "B"}},
+        "p2": {"part_of": "p1", "sides_swapped": False}}}), encoding="utf-8")
+    st = me.status(lab_dir, out, tmp_path / "w", athletes)
+    assert st["counts"]["matches"] == 1          # p1+p2 = 24 points; solo has 12

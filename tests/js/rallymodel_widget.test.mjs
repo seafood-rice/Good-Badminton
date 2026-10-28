@@ -27,7 +27,7 @@ test('card states: loading, not enough, ready, running', () => {
   assert.equal(cardModel(body({ pending: true, live: null }), 'en').state, 'loading');
   const low = cardModel(body({ can_retrain: false, missing: [{ code: 'matches', need: 2, have: 1 }] }), 'en');
   assert.equal(low.state, 'not_enough');
-  assert.deepEqual(low.missing, ['1 more matches with 20+ point labels needed (2 in total)']);
+  assert.deepEqual(low.missing, ['Label points on another match']);
   assert.equal(cardModel(body(), 'en').state, 'ready');
   const running = cardModel(body({ can_rollback: true, job: { id: 'resegment_rallies', status: 'running', message: 'x' } }), 'en');
   assert.equal(running.state, 'running');

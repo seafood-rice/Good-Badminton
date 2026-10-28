@@ -1016,7 +1016,7 @@ export const STRINGS = {
     'rm.code.no_claims': '在验证比赛上没有给出任何判断',
     'rm.code.no_training_data': '没有可用于训练和验证的已标注比赛',
     'rm.code.not_enough_matches': '带有击球检测的已标注比赛不足两场',
-    'rm.code.matches': '还差 {more} 场至少有 20 个得分标注的比赛（共需 {need} 场）',
+    'rm.code.matches': '请再标注另一场比赛的得分',
     'rm.code.new_points': '还差 {more} 个新的得分标注（共需新增 {need} 个）',
 
     // technique metrics (stroke inspector, Task 11)
@@ -2165,7 +2165,7 @@ export const STRINGS = {
     'rm.code.no_claims': 'it made no claim on the held-out matches',
     'rm.code.no_training_data': 'no labelled match to train and measure on',
     'rm.code.not_enough_matches': 'fewer than two labelled matches with detected hits',
-    'rm.code.matches': '{more} more matches with 20+ point labels needed ({need} in total)',
+    'rm.code.matches': 'Label points on another match',
     'rm.code.new_points': '{more} more point labels needed ({need} new in total)',
 
     // technique metrics (stroke inspector, Task 11)
