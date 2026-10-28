@@ -5,6 +5,7 @@ import tempfile
 from collections import Counter, defaultdict
 
 from ..data.writer import clean_value as _clean_value
+from ..outcomes.labels import _replace_with_retry
 
 
 def write_stroke_reports(path, reports):
@@ -17,7 +18,7 @@ def write_stroke_reports(path, reports):
             for report in reports:
                 f.write(json.dumps(_clean_value(report), ensure_ascii=False, separators=(",", ":")))
                 f.write("\n")
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
