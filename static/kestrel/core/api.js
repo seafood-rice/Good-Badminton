@@ -132,6 +132,7 @@ export const endpoints = {
   stats: () => '/api/stats',
   status: (jobId) => '/api/status/' + enc(jobId),
   rallyLabels: (stem) => '/api/rally-labels/' + enc(stem),
+  strokeLabels: (stem) => '/api/stroke-labels/' + enc(stem),
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
 };
 
@@ -188,4 +189,9 @@ export const api = {
   rallyLabels: (stem, opts) => getJSON(endpoints.rallyLabels(stem), opts),
   saveRallyLabels: (stem, doc, opts) => sendJSON('PUT', endpoints.rallyLabels(stem), { revision: doc.revision, labels: doc.labels }, opts),
   rallyOutcomes: (stem, opts) => getJSON(endpoints.output(stem, 'rally_outcomes.json'), opts),
+  // Stroke correction (spec 2026-10-28 section 5.3). getStrokeLabels -> {schema, revision, split, split_locked, labels};
+  // putStrokeLabels sends {revision, split?, labels} and answers {revision, applied, apply_skipped?}; a 409 carries
+  // body.reason 'stale' (reload), 'unreadable' or 'split_locked'.
+  getStrokeLabels: (stem, opts) => getJSON(endpoints.strokeLabels(stem), opts),
+  putStrokeLabels: (stem, body, opts) => sendJSON('PUT', endpoints.strokeLabels(stem), body, opts),
 };
