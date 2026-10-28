@@ -781,7 +781,8 @@ def _rally_model_key():
     hits = [_mtime_size(Path(OUTPUTS) / p.stem / 'hits.json') for p in Path(RALLY_LABELS_DIR).glob('*.json')]
     return (_mtime_size(Path(WEIGHTS) / 'rally-segmenter.json'), _mtime_size(Path(WEIGHTS) / 'rally-decoder.json'),
             _mtime_size(Path(WEIGHTS) / 'rally-model-history.json'),
-            max((m[0] for m in labels), default=None), len(labels), tuple(hits))
+            max((m[0] for m in labels), default=None), len(labels), tuple(hits),
+            _mtime_size(ATHLETES_PATH))
 
 
 def _invalidate_rally_model():
@@ -800,7 +801,7 @@ def _rally_model_status():
                     'history': rally_eval.history(WEIGHTS), 'pending': True}
         key = _rally_model_key()
         if _rally_model_cache['key'] != key or _rally_model_cache['value'] is None:
-            _rally_model_cache['value'] = rally_eval.status(RALLY_LABELS_DIR, OUTPUTS, WEIGHTS)
+            _rally_model_cache['value'] = rally_eval.status(RALLY_LABELS_DIR, OUTPUTS, WEIGHTS, athletes_path=ATHLETES_PATH)
             _rally_model_cache['key'] = key
         return _rally_model_cache['value']
 

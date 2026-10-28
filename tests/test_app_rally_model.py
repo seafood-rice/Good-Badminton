@@ -47,7 +47,8 @@ def env(tmp_path, monkeypatch):
     webapp._skipped_stroke_stems.clear()
     state = {'status': dict(READY), 'calls': 0}
 
-    def fake_status(*args):
+    def fake_status(*args, **kwargs):
+        state['kwargs'] = kwargs
         state['calls'] += 1
         return state['status']
 
@@ -492,3 +493,14 @@ def test_clips_without_the_marker_are_untouched(env, monkeypatch):
     r = client.post('/api/clip', json={'video': 'a.mp4', 'mode': 'clips'})
     assert [c['name'] for c in r.get_json()['clips']] == ['keep.mp4']
     assert client.get('/api/output/a/clips/keep.mp4').status_code == 200
+
+
+def test_status_uses_the_apps_athletes_path_and_its_mtime_is_in_the_key(env):
+    client, tmp, _, state = env
+    assert client.get('/api/rally-model').status_code == 200
+    assert state['kwargs'] == {'athletes_path': tmp / 'data' / 'athletes.json'}
+    client.get('/api/rally-model')
+    assert state['calls'] == 1
+    (tmp / 'data' / 'athletes.json').write_text('{}', encoding='utf-8')     # the match grouping changed
+    client.get('/api/rally-model')
+    assert state['calls'] == 2
