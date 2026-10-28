@@ -200,7 +200,9 @@ Built from `strokes.json` (owner labels applied), rally segments, `rally_outcome
 Position check per video and player: unusable when > 40 % of in-play frames lie within 0.25 m
 of that half's outline or the net; zones and rushed are then unavailable for that video.
 
-All cut-offs are constants in `shots.py`, set from 0003 (0004 fails the position check);
+All cut-offs are constants in `shots.py`, set from 0003. As built, the position check fails both sides of
+0004 and the far side of 0003 (41 % of its in-play positions sit in a cluster just outside the right
+sideline, likely a tracker lock on someone off court), so zones are only available for 0003's near side;
 recheck them on owner-labelled matches.
 
 ### 7.2 Effectiveness tally
