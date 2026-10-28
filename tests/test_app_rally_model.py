@@ -46,6 +46,9 @@ def env(tmp_path, monkeypatch):
     webapp._rally_model_cache.update(key=None, value=None)
     webapp._skipped_rally_stems.clear()
     webapp._skipped_stroke_stems.clear()
+    monkeypatch.setattr(webapp, '_resegment_rebuild_all', False)
+    monkeypatch.setattr(webapp, '_resegment_cmd_rebuild_all', False)
+    monkeypatch.setattr(webapp, '_rebuild_auto_retried', False)
     state = {'status': dict(READY), 'calls': 0}
 
     def fake_status(*args, **kwargs):
@@ -524,3 +527,62 @@ def test_resegment_command_skips_an_analysis_registered_during_the_scan(env, mon
         webapp.jobs.pop('b', None)
     assert seen and all(locked for _, locked in seen)
     assert [Path(d).name for d in cmd[cmd.index('--athletes') + 2:]] == ['a', 'd']
+
+
+def _wait_cmds(popen, n):
+    for _ in range(500):
+        if len(popen['cmds']) >= n:
+            return
+        threading.Event().wait(0.01)
+    raise AssertionError(f'only {len(popen["cmds"])} children started')
+
+
+def _wait_idle():
+    for _ in range(500):
+        if not webapp._training_job_active() and webapp.jobs['resegment_rallies'].get('ended'):
+            return
+        threading.Event().wait(0.01)
+    raise AssertionError('jobs still active')
+
+
+def test_interrupted_rebuild_all_requeues(env):
+    """Review 4: a failed --rebuild-all child is queued again once, and the wish is kept on disk."""
+    _, tmp, popen, _ = env
+    popen['code'] = 1
+    webapp.queue_resegment_rallies(rebuild_all=True)
+    pending = tmp / 'weights' / '.rally-rebuild-pending'
+    assert pending.is_file()
+    _wait_cmds(popen, 2)
+    assert '--rebuild-all' in popen['cmds'][0] and '--rebuild-all' in popen['cmds'][1]
+    _wait_idle()
+    threading.Event().wait(0.2)
+    assert len(popen['cmds']) == 2                    # a child that keeps failing is not retried forever
+    assert pending.is_file()                           # a restart or the next job still honours it
+
+
+def test_a_finished_rebuild_all_clears_the_pending_file(env):
+    _, tmp, popen, _ = env
+    webapp.queue_resegment_rallies(rebuild_all=True)
+    assert (tmp / 'weights' / '.rally-rebuild-pending').is_file()
+    _wait('resegment_rallies')
+    assert not (tmp / 'weights' / '.rally-rebuild-pending').exists() and len(popen['cmds']) == 1
+
+
+def test_startup_repairs_journaled_results_and_requeues_a_pending_rebuild(env, monkeypatch):
+    _, tmp, popen, _ = env
+    (tmp / 'outputs' / 'b' / '.resegment-pending.json').write_text('{}', encoding='utf-8')
+    (tmp / 'weights').mkdir(exist_ok=True)
+    (tmp / 'weights' / '.rally-rebuild-pending').write_text('', encoding='utf-8')
+    calls = _stub_repair(monkeypatch)
+    webapp._recover_resegment_at_startup()
+    assert calls == [['b']]
+    _wait('resegment_rallies')
+    assert '--rebuild-all' in popen['cmds'][0]
+    assert not (tmp / 'weights' / '.rally-rebuild-pending').exists()
+
+
+def test_startup_with_nothing_pending_does_nothing(env, monkeypatch):
+    _, tmp, popen, _ = env
+    calls = _stub_repair(monkeypatch)
+    webapp._recover_resegment_at_startup()
+    assert calls == [] and popen['cmds'] == [] and 'resegment_rallies' not in webapp.jobs

@@ -395,6 +395,53 @@ _relabel_job_stems = set()
 # not finish. ``_resegment_cmd_rebuild_all`` is what the running child was given (``_STROKE_LABELS_LOCK``).
 _resegment_rebuild_all = False
 _resegment_cmd_rebuild_all = False
+_REBUILD_PENDING_NAME = '.rally-rebuild-pending'   # in ``weights/``: a restart still honours a rebuild-all wish
+_rebuild_auto_retried = False                      # the last re-queue after a failed child (no endless retry)
+
+
+def _persist_rebuild_pending(on):
+    path = Path(WEIGHTS) / _REBUILD_PENDING_NAME
+    try:
+        if on:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('', encoding='utf-8')
+        else:
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _requeue_pending_rebuild(failed=False):
+    """Queue a rebuild-all that an interrupted child left unfinished, when no training job is active.
+
+    After a failed child it is queued once; if that one fails too the wish stays on disk and in memory
+    for the next job or restart. A cancel never calls this: the owner stopped it.
+    """
+    global _rebuild_auto_retried
+    with _STROKE_LABELS_LOCK:
+        if not _resegment_rebuild_all or (failed and _rebuild_auto_retried):
+            return
+    ok = queue_resegment_rallies(rebuild_all=True)[0]
+    if ok and failed:
+        _rebuild_auto_retried = True
+
+
+def _recover_resegment_at_startup():
+    """Repair the results a killed re-segment left half written, then re-queue a pending rebuild-all."""
+    global _resegment_rebuild_all
+    try:
+        stems = [p.name for p in Path(OUTPUTS).iterdir()
+                 if p.is_dir() and (p / '.resegment-pending.json').is_file()]
+    except OSError:
+        stems = []
+    if stems:
+        with _STROKE_LABELS_LOCK:
+            with _RALLY_LABELS_LOCK:
+                _repair_resegmented(set(stems))
+    if (Path(WEIGHTS) / _REBUILD_PENDING_NAME).is_file():
+        with _STROKE_LABELS_LOCK:
+            _resegment_rebuild_all = True
+        _requeue_pending_rebuild()
 
 
 def _models_updating(stem):
@@ -407,6 +454,7 @@ def _restore_rebuild_all():
     global _resegment_rebuild_all
     if _resegment_cmd_rebuild_all:
         _resegment_rebuild_all = True
+        _persist_rebuild_pending(True)
 
 
 def _repair_resegmented(stems):
@@ -683,6 +731,7 @@ def _queue_training_job(job_id, message, cmd, log_path, finish, video_name='stro
             queue_relabel_strokes()
         elif job.get('rerun') and job_id == 'resegment_rallies':
             queue_resegment_rallies()
+        _requeue_pending_rebuild(failed=job_id == 'resegment_rallies' and proc.returncode != 0)
 
     queued = not _job_slots.submit(job_id, start)
     return True, job_id, queued
@@ -864,6 +913,8 @@ def _resegment_command():
         rebuild_all = _resegment_cmd_rebuild_all
     if not dirs:
         _resegment_cmd_rebuild_all = False
+        if rebuild_all:
+            _persist_rebuild_pending(False)      # nothing to rebuild
         return None
     return ([_venv_python, '-m', 'badminton_analysis.outcomes.resegment',
              '--weights-dir', str(WEIGHTS), '--labels-dir', str(RALLY_LABELS_DIR),
@@ -880,6 +931,8 @@ def queue_resegment_rallies(rebuild_all=False):
     if rebuild_all:
         with _STROKE_LABELS_LOCK:
             _resegment_rebuild_all = True
+        _persist_rebuild_pending(True)
+
     def finish(job, code):
         # Label saves that waited for the child are applied / rebuilt now, then the status flips
         # (see _settle_relabel); a failed child may have died between two files of one result.
@@ -891,8 +944,14 @@ def queue_resegment_rallies(rebuild_all=False):
                 job['status'], job['stage'] = 'error', 'error'
                 job['message'] = '重新分段失败 / re-segmenting failed'
 
+        global _rebuild_auto_retried
         _invalidate_rally_model()
         _settle_relabel(flip, interrupted=code != 0, resegment=True)
+        if code == 0:
+            _rebuild_auto_retried = False
+            with _STROKE_LABELS_LOCK:
+                if not _resegment_rebuild_all:
+                    _persist_rebuild_pending(False)      # every outcome was rebuilt
 
     return _queue_training_job('resegment_rallies', '等待重新分段 / waiting to re-segment',
                                _resegment_command, Path(WEIGHTS) / 'candidates' / 'resegment.log', finish,
@@ -2636,6 +2695,7 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=5050)
     p.add_argument('--host', default='0.0.0.0')
     args = p.parse_args()
+    _recover_resegment_at_startup()
     try:   # one-time: filled rows of the DJI stroke-label sheet become owner labels
         with _STROKE_LABELS_LOCK:
             from badminton_analysis.stroke import owner_labels as _owner_labels
