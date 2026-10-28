@@ -24,10 +24,9 @@ from . import owner_labels
 from . import stroke_classifier as sc
 from .hit_signals import load_signals
 
-DEFAULT_WEIGHTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "weights", "stroke-classifier.pt")
-DEFAULT_LABELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))), "data", "stroke_labels")
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_WEIGHTS = os.path.join(_ROOT, "weights", "stroke-classifier.pt")
+DEFAULT_LABELS_DIR = os.path.join(_ROOT, "data", "stroke_labels")
 
 
 def _json(path):
@@ -36,6 +35,63 @@ def _json(path):
             return json.load(fh)
     except (OSError, ValueError):
         return None
+
+
+def _read_reports(result_dir):
+    """The parsed ``strokes.jsonl`` rows, or None when the file does not exist."""
+    reports_path = os.path.join(result_dir, "strokes.jsonl")
+    if not os.path.isfile(reports_path):
+        return None
+    reports, bad = [], 0
+    with open(reports_path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                rec = None
+            if isinstance(rec, dict):
+                reports.append(rec)
+            else:
+                bad += 1
+    if bad:
+        print(f"{result_dir}: skipped {bad} unusable line(s) in strokes.jsonl")
+    return reports
+
+
+def _write_rescored(result_dir, reports, labels):
+    by_key = {(l["frame"], l.get("model_hitter", l["hitter"])): l for l in labels}
+    new = []
+    for r in reports:
+        label = by_key.get((r.get("contact_frame"), r.get("player_side"))) or {}
+        out = rescore_report(r, label.get("stroke") or "unknown")
+        out["confidence"] = label.get("confidence")
+        new.append(out)
+    write_stroke_reports(os.path.join(result_dir, "strokes.jsonl"), new)
+    write_json(os.path.join(result_dir, "technique_summary.json"), build_match_summary(new))
+    return len(new)
+
+
+def rescore_reports(result_dir, labels=None):
+    """Re-score ``strokes.jsonl`` / ``technique_summary.json`` with the types in ``strokes.json``.
+
+    Used after the owner's labels were applied. Returns the number of reports rescored; 0 (and
+    nothing written) when there are no reports or no readable strokes.json.
+    """
+    result_dir = str(result_dir)
+    try:
+        reports = _read_reports(result_dir)
+        if reports is None:
+            return 0
+        if labels is None:
+            labels = (_json(os.path.join(result_dir, "strokes.json")) or {}).get("strokes")
+        if not isinstance(labels, list) or not labels:
+            return 0
+        return _write_rescored(result_dir, reports, labels)
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        print(f"{result_dir}: reports not re-scored ({exc!r})")
+        return 0
 
 
 def relabel(result_dir, weights, allow_unknown=False, labels_dir=None):
@@ -63,24 +119,7 @@ def relabel(result_dir, weights, allow_unknown=False, labels_dir=None):
     if not hits:
         return {"result": result_dir, "skipped": "no hits.json"}
     # parse the old reports before writing anything, so a bad file leaves the result untouched
-    reports_path = os.path.join(result_dir, "strokes.jsonl")
-    reports = None
-    if os.path.isfile(reports_path):
-        reports, bad = [], 0
-        with open(reports_path, encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except ValueError:
-                    rec = None
-                if isinstance(rec, dict):
-                    reports.append(rec)
-                else:
-                    bad += 1
-        if bad:
-            print(f"{result_dir}: skipped {bad} unusable line(s) in strokes.jsonl")
+    reports = _read_reports(result_dir)
     labels, info, reason = None, None, "no stroke model"
     if weights and os.path.isfile(weights):
         try:
@@ -103,18 +142,7 @@ def relabel(result_dir, weights, allow_unknown=False, labels_dir=None):
     if applied:
         # the reports are scored with the owner's types; they stay keyed by the model's hitter
         labels = (_json(os.path.join(result_dir, "strokes.json")) or {}).get("strokes") or labels
-    by_key = {(l["frame"], l.get("model_hitter", l["hitter"])): l for l in labels}
-    n_reports = 0
-    if reports is not None:
-        new = []
-        for r in reports:
-            label = by_key.get((r.get("contact_frame"), r.get("player_side"))) or {}
-            out = rescore_report(r, label.get("stroke") or "unknown")
-            out["confidence"] = label.get("confidence")
-            new.append(out)
-        write_stroke_reports(reports_path, new)
-        write_json(os.path.join(result_dir, "technique_summary.json"), build_match_summary(new))
-        n_reports = len(new)
+    n_reports = _write_rescored(result_dir, reports, labels) if reports is not None else 0
     try:
         os.remove(os.path.join(result_dir, "training_plan.json"))
     except FileNotFoundError:

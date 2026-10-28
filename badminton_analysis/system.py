@@ -1714,6 +1714,7 @@ class BadmintonAnalysisSystem:
         write_stroke_reports(strokes_path, reports)
         write_json(summary_path, build_match_summary(reports))
         print(f"Technique analysis: {len(reports)} strokes -> {strokes_path}")
+        self._rescore_owner_stroke_reports()
 
     def _run_stroke_classification(self):
         """Label the shared hit list with the one stroke classifier -> strokes.json (schema 2).
@@ -1785,10 +1786,22 @@ class BadmintonAnalysisSystem:
         if not labels_dir:
             return
         try:
-            owner_labels.apply_to_result(
+            result = owner_labels.apply_to_result(
                 self.save_dir, labels_dir, getattr(self, "video_name", os.path.basename(self.save_dir)))
+            if result.get("applied"):
+                self._rescore_owner_stroke_reports()
         except Exception as exc:
             print(f"Owner stroke labels could not be applied: {exc!r}")
+
+    def _rescore_owner_stroke_reports(self):
+        """Score the posture reports with the owner's stroke types; never fatal, no-op without labels."""
+        try:
+            from .stroke import relabel
+            doc = relabel._json(os.path.join(self.save_dir, "strokes.json"))
+            if isinstance(doc, dict) and "owner_labels" in doc:
+                relabel.rescore_reports(self.save_dir)
+        except Exception as exc:
+            print(f"Posture reports could not be re-scored with the owner's labels: {exc!r}")
 
     def _get_template_path(self):
         """Get the court template image path."""

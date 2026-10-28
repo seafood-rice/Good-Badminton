@@ -8,6 +8,7 @@ module takes no lock: the caller serialises retrain, promote and rollback.
 """
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -16,7 +17,7 @@ from ..outcomes.labels import write_json_atomic
 from . import owner_labels
 from . import stroke_classifier as sc
 from .hit_signals import load_signals
-from .stroke_metrics import BAR, check_bar, score
+from .stroke_metrics import BAR, check_bar_codes, describe_bar_code, score
 from .stroke_model import meta_path
 
 SINDHU_VAL = "Pusarla_V._Sindhu_Pornpawee_Chochuwong_HSBC_BWF_WORLD_TOUR_FINALS_2020_QuarterFinals"
@@ -26,6 +27,8 @@ HISTORY_DIR = "history"
 KEEP_REPLACED = 5
 MIN_NEW_TRAIN = 50
 MIN_TEST_SHOTS = 20
+RETIRED_MARK = ".retired"
+_STAMP_DIR = re.compile(r"^\d{8}T\d{6}\d{3}Z[a-z]*$")
 
 
 def _json(path):
@@ -104,18 +107,49 @@ def score_weights(weights, shots, results_dir):
 
 
 def decide(candidate_m, live_m):
-    """``(keep, reason)`` per the keep rule (spec 6.3)."""
+    """``(keep, reason)`` per the keep rule (spec 6.3); ``reason`` is a code dict (see ``describe``)."""
     unknown, acc = candidate_m.get("unknown_rate"), candidate_m.get("accuracy")
     if acc is None or unknown is None:
-        return False, "candidate scored no confident test shot"
+        return False, {"code": "no_confident_shot"}
     if unknown > BAR["unknown"]:
-        return False, f"candidate unknown rate {unknown} > {BAR['unknown']}"
+        return False, {"code": "unknown_rate", "value": unknown, "bar": BAR["unknown"]}
     if live_m is None:
-        return True, f"no live model; candidate unknown rate {unknown} <= {BAR['unknown']}"
+        return True, {"code": "first_model", "unknown": unknown, "bar": BAR["unknown"]}
     live_acc = live_m.get("accuracy") or 0.0
     if acc < live_acc:
-        return False, f"candidate accuracy {acc} < live {live_acc}"
-    return True, f"candidate accuracy {acc} >= live {live_acc}, unknown rate {unknown}"
+        return False, {"code": "lower_accuracy", "candidate": acc, "live": live_acc}
+    return True, {"code": "better_or_equal", "candidate": acc, "live": live_acc, "unknown": unknown}
+
+
+def describe(code):
+    """English text of a reason / missing / bar code (CLI output and job messages)."""
+    if not isinstance(code, dict):
+        return str(code)
+    k = code.get("code")
+    if k == "no_confident_shot":
+        return "candidate scored no confident test shot"
+    if k == "unknown_rate":
+        return f"candidate unknown rate {code.get('value')} > {code.get('bar')}"
+    if k == "first_model":
+        return f"no live model; candidate unknown rate {code.get('unknown')} <= {code.get('bar')}"
+    if k == "lower_accuracy":
+        return f"candidate accuracy {code.get('candidate')} < live {code.get('live')}"
+    if k == "better_or_equal":
+        return (f"candidate accuracy {code.get('candidate')} >= live {code.get('live')}, "
+                f"unknown rate {code.get('unknown')}")
+    if k == "no_test_shots":
+        return "no labelled test shots"
+    if k == "training_failed":
+        return f"training failed (exit {code.get('exit')})"
+    if k == "rolled_back":
+        return "rolled back"
+    if k == "train_labels":
+        need, have = code.get("need", 0), code.get("have", 0)
+        return f"{max(0, need - have)} more train labels (need {need} new)"
+    if k == "test_shots":
+        need, have = code.get("need", 0), code.get("have", 0)
+        return f"{max(0, need - have)} more labelled test shots (need {need})"
+    return describe_bar_code(code)
 
 
 # ---------------------------------------------------------------- history and swaps
@@ -142,22 +176,34 @@ def _pair(pt):
     return pt, Path(meta_path(pt))
 
 
-def _history_dirs(weights_dir):
+def _history_dirs(weights_dir, include_retired=True):
+    """Stamp-named history dirs holding a model, oldest first; retired ones only on request."""
     d = Path(weights_dir) / HISTORY_DIR
-    return sorted(p for p in d.iterdir() if p.is_dir() and (p / LIVE_NAME).is_file()) if d.is_dir() else []
+    if not d.is_dir():
+        return []
+    return sorted(p for p in d.iterdir()
+                  if p.is_dir() and _STAMP_DIR.match(p.name) and (p / LIVE_NAME).is_file()
+                  and (include_retired or not (p / RETIRED_MARK).exists()))
 
 
 def _new_history_dir(weights_dir):
+    """A new stamp dir that sorts after every existing stamp dir, even if the clock went back."""
     base = Path(weights_dir) / HISTORY_DIR
     base.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-    n = 0
-    while True:
-        path = base / f"{stamp}{n:03d}Z"
-        if not path.exists() and all(p.name < path.name for p in base.iterdir()):
+    stamps = [p.name for p in base.iterdir() if p.is_dir() and _STAMP_DIR.match(p.name)]
+    latest = max(stamps, default="")
+    prefix = max(time.strftime("%Y%m%dT%H%M%S", time.gmtime()), latest[:15])
+    for n in range(1000):
+        path = base / f"{prefix}{n:03d}Z"
+        if path.name > latest and not path.exists():
             path.mkdir()
             return path
-        n += 1
+    suffix = "a"                  # 1000 dirs in one second: append a suffix instead
+    while (base / (latest + suffix)).exists():
+        suffix += "a"
+    path = base / (latest + suffix)
+    path.mkdir()
+    return path
 
 
 def _move_pair(src_pt, dst_pt):
@@ -200,13 +246,36 @@ def _prune(weights_dir):
         shutil.rmtree(old, ignore_errors=True)
 
 
+def _version(pt):
+    sidecar = _json(meta_path(Path(pt))) or {}
+    return sidecar.get("created_utc") or "unversioned"
+
+
+def _bar_met(metrics):
+    if not isinstance(metrics, dict):
+        return None
+    return check_bar_codes({"accuracy": metrics.get("accuracy"), "unknown_rate": metrics.get("unknown_rate"),
+                            "recall": metrics.get("recall") or {}})[0]
+
+
+def _live_after(version, metrics):
+    """The live model's scores as recorded on a history entry."""
+    metrics = metrics if isinstance(metrics, dict) else {}
+    return {"version": version, "accuracy": metrics.get("accuracy"),
+            "unknown_rate": metrics.get("unknown_rate"),
+            "bar_met": _bar_met(metrics) if metrics else None}
+
+
 def promote(weights_dir, candidate_path, record):
     """Make the candidate the live model; the replaced model goes to ``history/<utc>/``."""
     retired = _install(weights_dir, candidate_path)
     _prune(weights_dir)
     entry = dict(record)
+    live = Path(weights_dir) / LIVE_NAME
     entry.update({"utc": entry.get("utc") or _utc(), "kept": True,
-                  "replaced": retired.name if retired is not None else None})
+                  "replaced": retired.name if retired is not None else None,
+                  "bar_met": _bar_met(entry.get("candidate")),
+                  "live_after": _live_after(_version(live), entry.get("candidate"))})
     _append_history(weights_dir, entry)
     return entry
 
@@ -220,17 +289,35 @@ def reject(weights_dir, candidate_path, record):
         except FileNotFoundError:
             pass
     entry = dict(record)
-    entry.update({"utc": entry.get("utc") or _utc(), "kept": False, "replaced": None})
+    live = Path(weights_dir) / LIVE_NAME
+    entry.update({"utc": entry.get("utc") or _utc(), "kept": False, "replaced": None,
+                  "bar_met": _bar_met(entry.get("candidate")),
+                  "live_after": _live_after(_version(live) if live.is_file() else None, entry.get("live"))})
     _append_history(weights_dir, entry)
     return entry
 
 
-def rollback(weights_dir):
-    """Swap in the newest replaced model; False when there is none."""
-    dirs = _history_dirs(weights_dir)
+def _promoted_scores(weights_dir, version):
+    """The ``live_after`` of the newest kept entry that made ``version`` live, else empty values."""
+    for e in reversed(history(weights_dir)):
+        after = e.get("live_after")
+        if e.get("kept") and isinstance(after, dict) and after.get("version") == version:
+            return {"version": version, "accuracy": after.get("accuracy"),
+                    "unknown_rate": after.get("unknown_rate"), "bar_met": after.get("bar_met")}
+    return _live_after(version, None)
+
+
+def rollback(weights_dir, train_labels=None):
+    """Swap in the newest replaced model that no rollback retired; False when there is none.
+
+    The model rolled away is kept in history marked retired, so a second rollback goes one
+    model further back instead of undoing the first.
+    """
+    dirs = _history_dirs(weights_dir, include_retired=False)
     if not dirs:
         return False
     newest = dirs[-1]
+    version = _version(newest / LIVE_NAME)
     # stage the old model outside history so the swap cannot see it as the current one
     staged = Path(weights_dir) / f".rollback-{newest.name}.pt"
     _move_pair(newest / LIVE_NAME, staged)
@@ -239,12 +326,19 @@ def rollback(weights_dir):
     except OSError:
         _move_pair(staged, newest / LIVE_NAME)
         raise
+    if retired is not None:
+        try:
+            (retired / RETIRED_MARK).write_text("", encoding="utf-8")
+        except OSError:
+            pass
     shutil.rmtree(newest, ignore_errors=True)
     _prune(weights_dir)
-    _append_history(weights_dir, {
-        "utc": _utc(), "kept": True, "rollback": True, "reason": "rolled back",
-        "replaced": retired.name if retired is not None else None,
-        "restored": newest.name})
+    entry = {"utc": _utc(), "kept": True, "rollback": True, "reason": {"code": "rolled_back"},
+             "replaced": retired.name if retired is not None else None, "restored": newest.name,
+             "live_after": _promoted_scores(weights_dir, version)}
+    if train_labels is not None:
+        entry["train_labels"] = int(train_labels)
+    _append_history(weights_dir, entry)
     return True
 
 
@@ -263,30 +357,37 @@ def split_locked(stem, weights_dir):
 def _live_view(weights_dir, shots, results_dir):
     live = Path(weights_dir) / LIVE_NAME
     if not live.is_file():
-        return {"version": None, "metrics": None, "bar_met": False, "bar_reasons": ["no model"]}
+        return {"version": None, "metrics": None, "bar_met": False, "bar_reasons": [{"code": "no_model"}]}
     sidecar = _json(meta_path(live)) or {}
     version = sidecar.get("created_utc") or "unversioned"
     try:
         metrics = score_weights(live, shots, results_dir)
     except Exception as exc:        # an unreadable model must not break the card
         return {"version": version, "metrics": None, "bar_met": False,
-                "bar_reasons": [f"model unreadable: {exc}"]}
-    met, reasons = check_bar(metrics)
+                "bar_reasons": [{"code": "unreadable", "detail": str(exc)[:200]}]}
+    met, reasons = check_bar_codes(metrics)
     return {"version": version, "metrics": metrics, "bar_met": met, "bar_reasons": reasons}
+
+
+def train_count(labels_dir):
+    """Trainable owner labels (label + added rows) in the train split."""
+    return sum(_trainable(doc) for _, doc in _label_docs(labels_dir, "train"))
 
 
 def status(labels_dir, results_dir, weights_dir):
     shots = test_shots(labels_dir, results_dir)
-    train = sum(_trainable(doc) for _, doc in _label_docs(labels_dir, "train"))
+    train = train_count(labels_dir)
     test = sum(len(truth) for _, _, truth in shots)
     hist = history(weights_dir)
-    kept = [e for e in hist if e.get("kept")]
-    new_train = max(0, train - int((kept[-1].get("train_labels") or 0) if kept else 0))
+    # the train count at the newest run that recorded one (kept, rejected or rolled back)
+    seen = [e["train_labels"] for e in hist
+            if isinstance(e.get("train_labels"), int) and not isinstance(e.get("train_labels"), bool)]
+    new_train = max(0, train - (seen[-1] if seen else 0))
     missing = []
     if new_train < MIN_NEW_TRAIN:
-        missing.append(f"{MIN_NEW_TRAIN - new_train} more train labels (need {MIN_NEW_TRAIN} new)")
+        missing.append({"code": "train_labels", "need": MIN_NEW_TRAIN, "have": new_train})
     if test < MIN_TEST_SHOTS:
-        missing.append(f"{MIN_TEST_SHOTS - test} more labelled test shots (need {MIN_TEST_SHOTS})")
+        missing.append({"code": "test_shots", "need": MIN_TEST_SHOTS, "have": test})
     return {"live": _live_view(weights_dir, shots, results_dir),
             "counts": {"train": train, "test": test, "new_train": new_train},
             "can_retrain": not missing, "missing": missing, "history": hist}

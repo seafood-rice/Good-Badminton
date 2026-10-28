@@ -264,3 +264,40 @@ def test_analysis_without_labels_dir_writes_plain_model_output(tmp_path):
     from tests.test_stroke_pipeline import _bare
     _bare(tmp_path)._run_stroke_classification()
     assert "source" not in json.loads((tmp_path / "strokes.json").read_text(encoding="utf-8"))["strokes"][0]
+
+
+def _with_report(run):
+    from tests.test_relabel import _old_result
+    _old_result(run)
+    (run / "strokes.json").unlink()
+
+
+def test_analysis_rescores_posture_reports_after_applying_labels(tmp_path):
+    from tests.test_stroke_pipeline import _bare
+    run = tmp_path / "run"
+    _with_report(run)
+    labels = tmp_path / "labels"
+    ol.save(ol.labels_path(labels, "run"), doc_of(lab(5.0, stroke="smash")))
+    s = _bare(run)
+    s.stroke_labels_dir = str(labels)
+    s._run_stroke_classification()
+    rep = json.loads((run / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rep["stroke_type"] == "smash"
+    assert json.loads((run / "technique_summary.json").read_text(encoding="utf-8"))["stroke_count"] == 1
+
+
+def test_technique_reports_written_after_the_labels_get_the_owner_types(tmp_path):
+    from tests.test_stroke_pipeline import _bare
+    run = tmp_path / "run"
+    _with_report(run)
+    labels = tmp_path / "labels"
+    ol.save(ol.labels_path(labels, "run"), doc_of(lab(5.0, stroke="smash")))
+    s = _bare(run)
+    s.stroke_labels_dir = str(labels)
+    s._run_stroke_classification()
+    # the technique stage then writes its reports with the model's types
+    rep = json.loads((run / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    rep["stroke_type"] = "unknown"
+    (run / "strokes.jsonl").write_text(json.dumps(rep) + "\n", encoding="utf-8")
+    s._rescore_owner_stroke_reports()
+    assert json.loads((run / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])["stroke_type"] == "smash"

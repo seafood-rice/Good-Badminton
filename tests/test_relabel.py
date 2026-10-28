@@ -179,3 +179,22 @@ def test_relabel_doubles_still_applies_owner_labels(tmp_path, monkeypatch):
     out = relabel.relabel(str(d), None, labels_dir=str(tmp_path / "L"))
     assert out["skipped"] == "doubles" and out["applied"] is True
     assert calls == [(str(d), str(tmp_path / "L"), "V")]
+
+
+def test_default_labels_dir_is_the_project_data_dir():
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert os.path.normpath(relabel.DEFAULT_LABELS_DIR) == os.path.normpath(
+        os.path.join(root, "data", "stroke_labels"))
+
+
+def test_rescore_reports_helper_rescores_with_applied_types(tmp_path):
+    d = tmp_path / "V"
+    _old_result(d)
+    (d / "strokes.json").write_text(json.dumps({"schema": 2, "strokes": [
+        {"frame": 150, "hitter": "lower", "stroke": "smash", "confidence": 0.9}]}), encoding="utf-8")
+    assert relabel.rescore_reports(str(d)) == 1
+    rep = json.loads((d / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rep["stroke_type"] == "smash"
+    assert json.loads((d / "technique_summary.json").read_text(encoding="utf-8"))["stroke_count"] == 1
+    assert relabel.rescore_reports(str(tmp_path / "none")) == 0

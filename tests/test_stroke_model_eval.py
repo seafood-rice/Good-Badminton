@@ -50,9 +50,9 @@ def _cand(w, name="v1"):
 def test_decide_keep_reject_and_no_live():
     assert me.decide(_metrics(0.8), _metrics(0.8))[0] is True
     keep, reason = me.decide(_metrics(0.79), _metrics(0.8))
-    assert keep is False and "0.79" in reason
+    assert keep is False and reason["candidate"] == 0.79
     keep, reason = me.decide(_metrics(0.95, 0.2), _metrics(0.5))
-    assert keep is False and "unknown" in reason
+    assert keep is False and reason["code"] == "unknown_rate"
     assert me.decide(_metrics(0.5, 0.15), None)[0] is True
     assert me.decide(_metrics(0.5, 0.16), None)[0] is False
     assert me.decide(_metrics(None, None), None)[0] is False
@@ -99,10 +99,100 @@ def test_rollback_restores_and_is_false_without_history(tmp_path):
     assert me.rollback(w) is True
     assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
     assert json.loads((w / "stroke-classifier.json").read_text())["created_utc"] == "v0"
-    # the model it replaced is the newest history entry now, so a second rollback undoes it
+    assert me.history(w)[-1]["rollback"] is True
+    # the model rolled away is marked retired: a second rollback has nothing older to go to
+    assert me.rollback(w) is False
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+
+
+def test_two_consecutive_rollbacks_go_one_model_further_back(tmp_path):
+    w = tmp_path / "weights"
+    _model(w / "stroke-classifier.pt", "v0")
+    me.promote(w, _cand(w, "v1"), {})
+    me.promote(w, _cand(w, "v2"), {})
     assert me.rollback(w) is True
     assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v1"
-    assert me.history(w)[-1]["rollback"] is True
+    assert me.rollback(w) is True
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+    assert me.rollback(w) is False
+    # a fresh promote makes the model it replaced available again
+    me.promote(w, _cand(w, "v3"), {})
+    assert me.rollback(w) is True
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
+
+
+def test_history_dir_survives_a_stray_entry_and_a_backwards_clock(tmp_path):
+    w = tmp_path / "weights"
+    (w / "history").mkdir(parents=True)
+    (w / "history" / "zzz-notes").mkdir()
+    (w / "history" / "readme.txt").write_text("x")
+    assert me._new_history_dir(w).name != "zzz-notes"
+    future = w / "history" / "29990101T000000000Z"
+    future.mkdir()
+    for _ in range(3):
+        d = me._new_history_dir(w)
+        assert d.name > future.name
+        future = d
+
+
+def test_history_entries_carry_live_after_and_train_labels(tmp_path):
+    w = tmp_path / "weights"
+    _model(w / "stroke-classifier.pt", "v0")
+    cand_m = {**_metrics(0.9, 0.05), "recall": {}}
+    kept = me.promote(w, _cand(w, "v1"), {"candidate": cand_m, "live": None, "train_labels": 70})
+    assert kept["live_after"] == {"version": "v1", "accuracy": 0.9, "unknown_rate": 0.05, "bar_met": True}
+    assert kept["bar_met"] is True
+    live_m = {**_metrics(0.92, 0.04), "recall": {}}
+    rej = me.reject(w, _cand(w, "v2"), {"candidate": _metrics(0.5), "live": live_m, "train_labels": 80})
+    assert rej["live_after"] == {"version": "v1", "accuracy": 0.92, "unknown_rate": 0.04, "bar_met": True}
+    me.promote(w, _cand(w, "v3"), {"candidate": _metrics(0.8, 0.1), "live": live_m, "train_labels": 90})
+    assert me.rollback(w, train_labels=95) is True
+    last = me.history(w)[-1]
+    # restored v1: its scores come from the entry that promoted it
+    assert last["live_after"] == {"version": "v1", "accuracy": 0.9, "unknown_rate": 0.05, "bar_met": True}
+    assert last["train_labels"] == 95
+    # a restored model nothing recorded scores for gets empty values
+    w2 = tmp_path / "w2"
+    _model(w2 / "stroke-classifier.pt", "old")
+    me.promote(w2, _cand(w2, "n1"), {})
+    me.rollback(w2)
+    assert me.history(w2)[-1]["live_after"] == {"version": "old", "accuracy": None,
+                                                "unknown_rate": None, "bar_met": None}
+
+
+def test_new_train_uses_the_newest_entry_with_train_labels(tmp_path):
+    res, lab, w = tmp_path / "res", tmp_path / "lab", tmp_path / "weights"
+    for stem in ("A", "B"):
+        _result(res, stem)
+    _labels(lab, "A", [(2.0, "lift", "label"), (4.0, "lift", "added")], split="train")
+    _labels(lab, "B", [(2.0, "lift", "label")], split="train")       # 3 train labels
+    me.promote(w, _cand(w), {"train_labels": 1})
+    assert me.status(lab, res, w)["counts"]["new_train"] == 2
+    me.reject(w, _cand(w, "v2"), {"train_labels": 3})                  # a rejected run counts
+    assert me.status(lab, res, w)["counts"]["new_train"] == 0
+    me.promote(w, _cand(w, "v3"), {"train_labels": 3})
+    me.rollback(w, train_labels=2)                                     # so does a rollback
+    assert me.status(lab, res, w)["counts"]["new_train"] == 1
+
+
+def test_card_strings_are_codes_with_numbers(tmp_path):
+    res, lab, w = tmp_path / "res", tmp_path / "lab", tmp_path / "weights"
+    _result(res, "A")
+    _labels(lab, "A", [(2.0, "lift", "label")], split="train")
+    st = me.status(lab, res, w)
+    assert st["live"]["bar_reasons"] == [{"code": "no_model"}]
+    assert {"code": "train_labels", "need": 50, "have": 1} in st["missing"]
+    assert {"code": "test_shots", "need": 20, "have": 0} in st["missing"]
+    keep, reason = me.decide(_metrics(0.5), _metrics(0.8))
+    assert keep is False and reason == {"code": "lower_accuracy", "candidate": 0.5, "live": 0.8}
+    assert me.decide(_metrics(0.9, 0.3), None)[1] == {"code": "unknown_rate", "value": 0.3, "bar": 0.15}
+    assert me.decide(_metrics(None, None), None)[1] == {"code": "no_confident_shot"}
+    assert me.decide(_metrics(0.9), None)[1]["code"] == "first_model"
+    assert me.decide(_metrics(0.9), _metrics(0.8))[1]["code"] == "better_or_equal"
+    assert me.describe({"code": "lower_accuracy", "candidate": 0.5, "live": 0.8}) == \
+        "candidate accuracy 0.5 < live 0.8"
+    assert "50" in me.describe({"code": "train_labels", "need": 50, "have": 1})
+    assert me.describe("plain text") == "plain text"
 
 
 def test_split_locked_from_sidecar_and_history(tmp_path):
@@ -157,7 +247,7 @@ def test_status_and_train_args(tmp_path):
     _labels(lab, "A", [(2.0, "lift", "label"), (4.0, "lift", "added")], split="train")
     _labels(lab, "B", [(2.0, "lift", "label")], split="train")
     st = me.status(lab, res, w)
-    assert st["live"] == {"version": None, "metrics": None, "bar_met": False, "bar_reasons": ["no model"]}
+    assert st["live"] == {"version": None, "metrics": None, "bar_met": False, "bar_reasons": [{"code": "no_model"}]}
     assert st["counts"] == {"train": 3, "test": 1, "new_train": 3}
     assert st["can_retrain"] is False and len(st["missing"]) == 2 and st["history"] == []
     # no data/hit_dataset: calibrate on the train video with the most labels
