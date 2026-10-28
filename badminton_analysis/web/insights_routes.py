@@ -227,6 +227,8 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
     def _kind(job_id, stage):
         if str(job_id).startswith('strategy_'):
             return 'strategy'
+        if str(job_id) in ('train_strokes', 'relabel_strokes'):
+            return 'training'
         if str(job_id).startswith('posture_') or 'posture' in str(stage or '').lower():
             return 'posture'
         return 'match'
@@ -251,7 +253,7 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             'status': status if isinstance(status, str) else None,
             'stage': stage if isinstance(stage, str) else None,
             'progress': _int_pct(job.get('progress', 0)),
-            'message': (_report_message(job.get('message')) if kind == 'strategy' else
+            'message': (_report_message(job.get('message')) if kind in ('strategy', 'training') else
                         _safe_message(job.get('message'),
                                       status if isinstance(status, str) else None)),
             'updated': updated,

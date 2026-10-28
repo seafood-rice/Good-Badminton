@@ -41,7 +41,10 @@ def _json(path):
 def relabel(result_dir, weights, allow_unknown=False, labels_dir=None):
     meta = _json(os.path.join(result_dir, "metadata.json")) or {}
     if meta.get("match_format") == "doubles":
-        return {"result": result_dir, "skipped": "doubles"}
+        # no model relabel for doubles, but the owner's corrections still apply
+        applied = labels_dir is not None and owner_labels.apply_to_result(
+            result_dir, labels_dir, os.path.basename(os.path.normpath(result_dir)))["applied"]
+        return {"result": result_dir, "skipped": "doubles", "applied": bool(applied)}
     det = (_json(os.path.join(result_dir, "rally_segments.json")) or {}).get("detection") or {}
     if det.get("stroke_labels_withheld", bool(det.get("degraded"))):
         return {"result": result_dir, "skipped": "labels withheld"}

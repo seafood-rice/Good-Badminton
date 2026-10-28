@@ -12,7 +12,7 @@ from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
 from badminton_analysis.web import (athletes_routes, insights_routes, job_slots, proc_control,
                                     rally_labels_routes, stroke_labels_routes,
-                                    strategy_routes)
+                                    stroke_model_routes, strategy_routes)
 from badminton_analysis.strategy import config as strategy_config
 from badminton_analysis.strategy import report as strategy_report
 
@@ -66,13 +66,17 @@ stroke_labels_routes.register(app, labels_dir=lambda: STROKE_LABELS_DIR, outputs
                               lock=lambda: _STROKE_LABELS_LOCK,
                               safe_stem=lambda name: _safe_stem(name),
                               job_active=lambda stem: _match_job_active(stem),
-                              split_locked=lambda stem: False)   # model_eval.split_locked lands later
+                              split_locked=lambda stem: _stroke_split_locked(stem))
 strategy_routes.register(app, outputs=lambda: OUTPUTS, athletes_path=lambda: ATHLETES_PATH,
                          athletes_lock=lambda: _ATHLETES_LOCK, jobs=lambda: jobs,
                          queue=lambda stem, focus=None: queue_strategy_job(stem, focus),
                          safe_stem=lambda name: _safe_stem(name),
                          settings_path=lambda: _strategy_settings_path(),
                          position=lambda job_id, job: _queue_position(job_id, job))
+stroke_model_routes.register(app, status=lambda: _stroke_model_status(),
+                             active_job=lambda: _training_job_view(),
+                             queue_retrain=lambda: queue_train_strokes(),
+                             rollback=lambda: _rollback_stroke_model())
 
 # ── Job store ────────────────────────────────────────────────────────────
 jobs = {}
@@ -301,6 +305,219 @@ def _after_match_completed(stem):
             queue_strategy_job(stem)
     except Exception as exc:
         print(f'strategy report not queued for {stem} ({type(exc).__name__})')
+
+
+# ── Stroke model: retrain / relabel jobs (spec 2026-10-28 section 6) ─────────
+_TRAINING_JOB_IDS = ('train_strokes', 'relabel_strokes')
+_STROKE_MODEL_LOCK = threading.Lock()
+_stroke_model_cache = {'key': None, 'value': None}
+
+
+def _stroke_split_locked(stem):
+    from badminton_analysis.stroke import model_eval
+    return model_eval.split_locked(stem, WEIGHTS)
+
+
+def _mtime_size(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _stroke_model_key():
+    """What the card depends on: live weights (mtime+size), history file mtime, newest label file."""
+    labels = [m for m in (_mtime_size(p) for p in Path(STROKE_LABELS_DIR).glob('*.json')) if m]
+    return (_mtime_size(Path(WEIGHTS) / 'stroke-classifier.pt'),
+            _mtime_size(Path(WEIGHTS) / 'stroke-model-history.json'),
+            max((m[0] for m in labels), default=None), len(labels))
+
+
+def _training_job_active():
+    return any((jobs.get(i) or {}).get('status') in _ACTIVE_JOB_STATUSES for i in _TRAINING_JOB_IDS)
+
+
+def _training_job_view():
+    """The active training/relabel job as ``{id, status, message, progress}``, else None."""
+    for job_id in _TRAINING_JOB_IDS:
+        job = jobs.get(job_id) or {}
+        if job.get('status') in _ACTIVE_JOB_STATUSES:
+            return {'id': job_id, 'status': job.get('status'), 'message': job.get('message', ''),
+                    'progress': job.get('progress', 0)}
+    return None
+
+
+def _invalidate_stroke_model():
+    with _STROKE_MODEL_LOCK:
+        _stroke_model_cache['key'] = None
+
+
+def _stroke_model_status():
+    """``model_eval.status`` (scores the live model with torch), recomputed only when its key changed.
+
+    While a training job runs nothing is computed: the cached value (or a history-only stub).
+    """
+    from badminton_analysis.stroke import model_eval
+    with _STROKE_MODEL_LOCK:
+        if _training_job_active():
+            if _stroke_model_cache['value'] is not None:
+                return _stroke_model_cache['value']
+            return {'live': None, 'counts': None, 'can_retrain': False, 'missing': [],
+                    'history': model_eval.history(WEIGHTS), 'pending': True}
+        key = _stroke_model_key()
+        if _stroke_model_cache['key'] != key or _stroke_model_cache['value'] is None:
+            _stroke_model_cache['value'] = model_eval.status(STROKE_LABELS_DIR, OUTPUTS, WEIGHTS)
+            _stroke_model_cache['key'] = key
+        return _stroke_model_cache['value']
+
+
+def _queue_training_job(job_id, message, cmd, log_path, finish):
+    """Register and queue one child-process job of kind ``training``: ``(ok, job_id, queued)``.
+
+    ``finish(job, returncode)`` runs after the child exits (job lock not held) and sets
+    the final message/status; ``cmd`` may be a callable returning the command at start time
+    (None = nothing to do). Only one training/relabel job is active at a time; asking for a
+    relabel while one is waiting or running makes it run once more when it ends.
+    """
+    job = {'status': 'pending', 'progress': 0, 'message': message, 'video_name': 'stroke-classifier',
+           'stage': 'training', 'kind': 'training', 'updated': time.time()}
+    with _JOBS_LOCK:
+        if _training_job_active():
+            current = jobs.get(job_id) or {}
+            if current.get('status') in ('pending', 'running'):
+                current['rerun'] = True
+            return False, job_id, False
+        jobs[job_id] = job
+
+    def start(release):
+        try:
+            argv = cmd() if callable(cmd) else cmd
+            if argv is None:
+                with _JOBS_LOCK:
+                    job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                    job['message'] = '无需重新标注 / nothing to relabel'
+                    job['updated'] = time.time()
+                    job['ended'] = True
+                release()
+                return
+            os.makedirs(os.path.dirname(str(log_path)), exist_ok=True)
+            log_fh = open(str(log_path), 'w', encoding='utf-8')
+            try:
+                proc = subprocess.Popen(argv, stdout=log_fh, stderr=subprocess.STDOUT, text=True,
+                                        cwd=str(PROJECT_ROOT), env=os.environ.copy())
+            except Exception:
+                log_fh.close()
+                raise
+        except Exception:
+            _fail_job(job, '任务无法启动 / job could not start')
+            release()
+            raise
+        job['proc'] = proc
+        _mark_running(job, message)
+        _start_tracker(job_id, job, track, proc, log_fh, release)
+
+    def track(proc, log_fh):
+        proc.wait()
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+        try:
+            finish(job, proc.returncode)
+        finally:
+            with _JOBS_LOCK:
+                job['updated'] = time.time()
+        if job.get('rerun') and job_id == 'relabel_strokes':
+            queue_relabel_strokes()
+
+    queued = not _job_slots.submit(job_id, start)
+    return True, job_id, queued
+
+
+def _last_json_line(path):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            lines = [ln.strip() for ln in fh if ln.strip().startswith('{')]
+        return json.loads(lines[-1]) if lines else None
+    except (OSError, ValueError):
+        return None
+
+
+def queue_train_strokes():
+    """Queue the stroke-classifier retrain: ``(ok, job_id, queued)``."""
+    log_path = Path(WEIGHTS) / 'candidates' / 'train.log'
+    cmd = [_venv_python, '-m', 'badminton_analysis.stroke.retrain',
+           '--labels-dir', str(STROKE_LABELS_DIR), '--results-dir', str(OUTPUTS),
+           '--weights-dir', str(WEIGHTS), '--project-root', str(PROJECT_ROOT)]
+
+    def finish(job, code):
+        result = _last_json_line(log_path)
+        _invalidate_stroke_model()
+        with _JOBS_LOCK:
+            if not isinstance(result, dict):
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = ('训练失败 / training failed' if code != 0
+                                  else '训练结果不可读 / training result unreadable')
+            elif code != 0 and not result.get('kept'):
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = '训练失败 / training failed: ' + str(result.get('reason') or '')[:120]
+            else:
+                job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                if result.get('kept'):
+                    job['message'] = '新模型已采用 / new stroke model kept'
+                else:
+                    job['message'] = '新模型未采用 / candidate rejected: ' + str(result.get('reason') or '')[:120]
+        if isinstance(result, dict) and result.get('kept'):
+            queue_relabel_strokes()
+
+    return _queue_training_job('train_strokes', '等待训练笔画模型 / waiting to train the stroke model',
+                               cmd, log_path, finish)
+
+
+def _relabel_command():
+    dirs = []
+    try:
+        entries = sorted(Path(OUTPUTS).iterdir(), key=lambda p: p.name)
+    except OSError:
+        entries = []
+    for path in entries:
+        if path.is_dir() and (path / 'strokes.json').is_file() and not _match_job_active(path.name):
+            dirs.append(str(path))
+    if not dirs:
+        return None
+    return [_venv_python, '-m', 'badminton_analysis.stroke.relabel',
+            '--weights', str(Path(WEIGHTS) / 'stroke-classifier.pt'),
+            '--labels-dir', str(STROKE_LABELS_DIR)] + dirs
+
+
+def queue_relabel_strokes():
+    """Queue relabel + apply over every result with strokes.json (skips active matches)."""
+    def finish(job, code):
+        with _JOBS_LOCK:
+            if code == 0:
+                job['status'], job['stage'], job['progress'] = 'completed', 'done', 100
+                job['message'] = '已重新标注 / results relabelled'
+            else:
+                job['status'], job['stage'] = 'error', 'error'
+                job['message'] = '重新标注失败 / relabel failed'
+
+    return _queue_training_job('relabel_strokes', '等待重新标注 / waiting to relabel',
+                               _relabel_command, Path(WEIGHTS) / 'candidates' / 'relabel.log', finish)
+
+
+def _rollback_stroke_model():
+    """``'busy' | 'none' | 'ok'``; on ok the relabel job is queued."""
+    from badminton_analysis.stroke import model_eval
+    with _STROKE_MODEL_LOCK:
+        if _training_job_active():
+            return 'busy'
+        done = model_eval.rollback(WEIGHTS)
+        _stroke_model_cache['key'] = None
+    if not done:
+        return 'none'
+    queue_relabel_strokes()
+    return 'ok'
 
 
 def _parse_progress_line(line):
@@ -1336,6 +1553,8 @@ def api_job_pause(job_id):
         return jsonify({'error': '未知的任务 / unknown job'}), 404
     if job_id.startswith('strategy_'):  # Ollama would keep generating with no slot held
         return jsonify({'error': '策略报告不能暂停 / a strategy report cannot be paused'}), 409
+    if job_id in _TRAINING_JOB_IDS:
+        return jsonify({'error': '训练任务不能暂停 / a training job cannot be paused'}), 409
     with _JOBS_LOCK:
         proc = job.get('proc')
         if job.get('status') != 'running' or proc is None or proc.poll() is not None:

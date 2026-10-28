@@ -167,3 +167,15 @@ def test_relabel_skips_hit_without_frame_or_hitter(tmp_path):
     doc["hits"] += [{"hitter": "upper"}, {"frame": 160}]
     (d / "hits.json").write_text(json.dumps(doc), encoding="utf-8")
     assert relabel.relabel(str(d), _weights(tmp_path))["labelled"] == 1
+
+
+def test_relabel_doubles_still_applies_owner_labels(tmp_path, monkeypatch):
+    d = tmp_path / "V"
+    _old_result(d)
+    (d / "metadata.json").write_text(json.dumps({"match_format": "doubles"}), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(relabel.owner_labels, "apply_to_result",
+                        lambda rd, ld, stem: calls.append((rd, ld, stem)) or {"applied": True})
+    out = relabel.relabel(str(d), None, labels_dir=str(tmp_path / "L"))
+    assert out["skipped"] == "doubles" and out["applied"] is True
+    assert calls == [(str(d), str(tmp_path / "L"), "V")]
