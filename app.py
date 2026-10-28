@@ -93,6 +93,9 @@ _JOBS_LOCK = threading.Lock()
 # 'paused': frozen in place, holding no slot. 'resuming': paused and waiting for a slot.
 _PAUSED_JOB_STATUSES = ('paused', 'resuming')
 _ACTIVE_JOB_STATUSES = ('pending', 'running', 'reencoding') + _PAUSED_JOB_STATUSES
+_MODELS_UPDATING = {'error': '模型更新中，该视频的结果正在重新处理，请稍后再试 / the models are updating and this '
+                             "video's results are being rewritten; try again when it ends",
+                    'reason': 'models_updating'}
 _JOB_BUSY = {'error': '该视频已在分析或排队中 / this video is already being analysed or queued'}
 
 
@@ -387,6 +390,42 @@ _skipped_stroke_stems = set()
 # Stems of the result dirs the running relabel child was given (guarded by ``_STROKE_LABELS_LOCK``);
 # a cancelled or failed child may have written the model-only strokes.json and died before applying.
 _relabel_job_stems = set()
+# The next re-segment job must rebuild every result's outcomes (the decoder changed, or a model was rolled back):
+# set when it is asked for, handed to the child by ``_resegment_command`` and given back if the child did
+# not finish. ``_resegment_cmd_rebuild_all`` is what the running child was given (``_STROKE_LABELS_LOCK``).
+_resegment_rebuild_all = False
+_resegment_cmd_rebuild_all = False
+
+
+def _models_updating(stem):
+    """True while a relabel / re-segment child is rewriting this result (caller holds ``_STROKE_LABELS_LOCK``)."""
+    return stem in _relabel_job_stems and _relabel_job_active()
+
+
+def _restore_rebuild_all():
+    """An interrupted re-segment child did not rebuild everything: ask for it again (caller holds the lock)."""
+    global _resegment_rebuild_all
+    if _resegment_cmd_rebuild_all:
+        _resegment_rebuild_all = True
+
+
+def _repair_resegmented(stems):
+    """Make the results a cancelled or failed re-segment child was given consistent (caller holds the locks).
+
+    The child writes ``rally_segments.json`` then ``hits.json`` per result and may die between them or
+    before rebuilding the outcomes: hit ids are recomputed from the segments on disk, outcomes rebuilt,
+    stroke labels re-applied. Results with an active match analysis are left to it. Never raises.
+    """
+    dirs = [OUTPUTS / stem for stem in sorted(stems) if not _match_job_active(stem)]
+    if not dirs:
+        return
+    try:
+        from badminton_analysis.outcomes import resegment
+        out = resegment.repair(dirs, WEIGHTS, RALLY_LABELS_DIR, STROKE_LABELS_DIR, ATHLETES_PATH)
+        for failure in out['failed']:
+            print(f"re-segment repair failed for {failure['stem']}: {failure['error']}")
+    except Exception as exc:
+        print(f're-segment repair failed ({type(exc).__name__})')
 
 
 def _stroke_apply_blocked(stem):
@@ -439,15 +478,20 @@ def _delete_partial_candidates(pattern='stroke-classifier-*'):
             pass
 
 
-def _settle_relabel(set_status, interrupted=False):
+def _settle_relabel(set_status, interrupted=False, resegment=False):
     """End a relabel or re-segment job: re-apply the labels saved during it, then flip its status.
 
     The flip happens inside the same lock hold (LABELS then JOBS), so a save either lands before
     this (and is applied here) or sees the job finished (and applies itself). An ``interrupted`` job
     (cancelled, or the child exited non-zero) may have died between writing a model-only
-    strokes.json and applying the labels, so every result it was given is re-applied.
+    strokes.json and applying the labels, so every result it was given is re-applied. An interrupted
+    re-segment job also gets its results repaired first (hit ids, outcomes; see ``_repair_resegmented``).
     """
     with _STROKE_LABELS_LOCK:
+        if interrupted and resegment:
+            _restore_rebuild_all()
+            with _RALLY_LABELS_LOCK:
+                _repair_resegmented(set(_relabel_job_stems))
         _reapply_owner_stroke_labels(include_job_stems=interrupted)
         with _RALLY_LABELS_LOCK:
             _rebuild_skipped_rally_outcomes()
@@ -464,7 +508,7 @@ def _training_cancelled(job_id, job):
         job.pop('rerun', None)
 
     if job_id in _RELABEL_JOB_IDS:
-        _settle_relabel(flip, interrupted=True)         # labels saved while it ran are applied before it counts as over
+        _settle_relabel(flip, interrupted=True, resegment=job_id == 'resegment_rallies')   # labels saved while it ran are applied before it counts as over
     else:
         with _JOBS_LOCK:
             flip()
@@ -796,7 +840,8 @@ def queue_train_rally():
                 else:
                     job['message'] = '回合模型未采用 / rally models not kept'
         if kept:
-            queue_resegment_rallies()
+            # a kept decoder alone changes no segment, yet every outcome must be rebuilt with it
+            queue_resegment_rallies(rebuild_all='decoder' in kept)
 
     return _queue_training_job('train_rally', '等待训练回合模型 / waiting to train the rally models',
                                cmd, log_path, finish, video_name='rally-models', stage='rally_training')
@@ -812,18 +857,30 @@ def _resegment_command():
         if (path.is_dir() and (path / 'hits.json').is_file() and (path / 'detections.jsonl').is_file()
                 and not _match_job_active(path.name)):
             dirs.append(str(path))
+    global _resegment_rebuild_all, _resegment_cmd_rebuild_all
     with _STROKE_LABELS_LOCK:
         _relabel_job_stems.clear()
         _relabel_job_stems.update(Path(d).name for d in dirs)
+        _resegment_cmd_rebuild_all, _resegment_rebuild_all = _resegment_rebuild_all, False
+        rebuild_all = _resegment_cmd_rebuild_all
     if not dirs:
+        _resegment_cmd_rebuild_all = False
         return None
-    return [_venv_python, '-m', 'badminton_analysis.outcomes.resegment',
-            '--weights-dir', str(WEIGHTS), '--labels-dir', str(RALLY_LABELS_DIR),
-            '--stroke-labels-dir', str(STROKE_LABELS_DIR), '--athletes', str(ATHLETES_PATH)] + dirs
+    return ([_venv_python, '-m', 'badminton_analysis.outcomes.resegment',
+             '--weights-dir', str(WEIGHTS), '--labels-dir', str(RALLY_LABELS_DIR),
+             '--stroke-labels-dir', str(STROKE_LABELS_DIR), '--athletes', str(ATHLETES_PATH)]
+            + (['--rebuild-all'] if rebuild_all else []) + dirs)
 
 
-def queue_resegment_rallies():
-    """Queue the re-segmenting of every result with hits + detections (skips active matches)."""
+def queue_resegment_rallies(rebuild_all=False):
+    """Queue the re-segmenting of every result with hits + detections (skips active matches).
+
+    ``rebuild_all``: also rebuild the outcomes of results whose segments do not change (the decoder
+    changed). The wish survives a busy answer, a rerun and an interrupted child."""
+    global _resegment_rebuild_all
+    if rebuild_all:
+        with _STROKE_LABELS_LOCK:
+            _resegment_rebuild_all = True
     def finish(job, code):
         # Label saves that waited for the child are applied / rebuilt now, then the status flips
         # (see _settle_relabel); a failed child may have died between two files of one result.
@@ -836,7 +893,7 @@ def queue_resegment_rallies():
                 job['message'] = '重新分段失败 / re-segmenting failed'
 
         _invalidate_rally_model()
-        _settle_relabel(flip, interrupted=code != 0)
+        _settle_relabel(flip, interrupted=code != 0, resegment=True)
 
     return _queue_training_job('resegment_rallies', '等待重新分段 / waiting to re-segment',
                                _resegment_command, Path(WEIGHTS) / 'candidates' / 'resegment.log', finish,
@@ -857,7 +914,7 @@ def _rollback_rally_model():
         _rally_model_cache['key'] = None
     if not done:
         return 'none'
-    queue_resegment_rallies()
+    queue_resegment_rallies(rebuild_all=True)        # which of the two files rolled back is not known here
     return 'ok'
 
 
@@ -1748,7 +1805,11 @@ def api_analyze():
         'stage': 'analyzing',
         'updated': time.time(),
     }
-    if not _register_job(job_id, job):
+    with _STROKE_LABELS_LOCK:          # LABELS before JOBS: the child's stems cannot change between check and register
+        if _models_updating(job_id):
+            return jsonify(_MODELS_UPDATING), 409
+        registered = _register_job(job_id, job)
+    if not registered:
         return jsonify(_JOB_BUSY), 409
 
     def start(release):

@@ -353,6 +353,108 @@ def test_rally_label_saves_during_a_resegment_are_rebuilt_when_it_ends(env, bloc
     assert r.get_json().get('rebuild_skipped') is None and rebuilt == ['b', 'b']
 
 
+# ---- review fixes ----------------------------------------------------------------------------
+
+def test_decoder_only_keep_rebuilds_outcomes(env):
+    """Review 3: a kept decoder alone re-segments nothing, so the job must ask for every outcome rebuilt."""
+    client, tmp, popen, _ = env
+    popen['final'] = {'segmenter': {'kept': False, 'reason': {'code': 'lower_f1'}},
+                      'decoder': {'kept': True, 'reason': {'code': 'decoder_ok'}}, 'totals': {}}
+    client.post('/api/rally-model/retrain')
+    _wait('train_rally')
+    _wait('resegment_rallies')
+    assert '--rebuild-all' in popen['cmds'][1]
+    # a segmenter-only keep does not
+    webapp.jobs.pop('train_rally'), webapp.jobs.pop('resegment_rallies')
+    popen['cmds'].clear()
+    popen['final'] = KEPT
+    client.post('/api/rally-model/retrain')
+    _wait('train_rally')
+    _wait('resegment_rallies')
+    assert '--rebuild-all' not in popen['cmds'][1]
+
+
+def test_rollback_rebuilds_every_outcome(env, monkeypatch):
+    client, _, popen, _ = env
+    monkeypatch.setattr(model_eval, 'rollback', lambda w, **k: True)
+    assert client.post('/api/rally-model/rollback').status_code == 200
+    _wait('resegment_rallies')
+    assert '--rebuild-all' in popen['cmds'][0]
+
+
+def test_a_cancelled_resegment_asks_for_the_rebuild_again(env, blocking):
+    client, _, popen, _ = env
+    webapp.queue_resegment_rallies(rebuild_all=True)
+    _wait_status('resegment_rallies', 'running')
+    assert client.post('/api/jobs/resegment_rallies/cancel').status_code == 200
+    _wait('resegment_rallies', ('cancelled',))
+    webapp.jobs.pop('resegment_rallies')
+    webapp.queue_resegment_rallies()                  # the next job, queued for any reason, still rebuilds all
+    _wait_status('resegment_rallies', 'running')
+    assert '--rebuild-all' in popen['cmds'][1]
+    client.post('/api/jobs/resegment_rallies/cancel')
+    _wait('resegment_rallies', ('cancelled',))
+
+
+def _stub_repair(monkeypatch):
+    from badminton_analysis.outcomes import resegment
+    calls = []
+    monkeypatch.setattr(resegment, 'repair', lambda dirs, *a, **k: calls.append([d.name for d in dirs])
+                        or {'repaired': [], 'failed': []})
+    return calls
+
+
+def test_resegment_cancel_repairs_the_results_it_was_given(env, blocking, monkeypatch):
+    """Review 8: a cancelled child may have died between its two writes; every stem it got is repaired."""
+    client, *_ = env
+    calls = _stub_repair(monkeypatch)
+    _stub_stroke_apply(monkeypatch)
+    webapp.queue_resegment_rallies()
+    _wait_status('resegment_rallies', 'running')
+    client.post('/api/jobs/resegment_rallies/cancel')
+    _wait('resegment_rallies', ('cancelled',))
+    assert calls == [['a', 'b', 'd']]
+
+
+def test_a_failed_resegment_repairs_the_results_it_was_given(env, monkeypatch):
+    _, _, popen, _ = env
+    calls = _stub_repair(monkeypatch)
+    _stub_stroke_apply(monkeypatch)
+    popen['code'] = 1
+    webapp.queue_resegment_rallies()
+    assert _wait('resegment_rallies')['status'] == 'error'
+    assert calls == [['a', 'b', 'd']]
+
+
+def test_a_clean_resegment_runs_no_repair(env, monkeypatch):
+    calls = _stub_repair(monkeypatch)
+    webapp.queue_resegment_rallies()
+    assert _wait('resegment_rallies')['status'] == 'completed' and calls == []
+
+
+def test_match_analysis_is_refused_for_stems_the_resegment_child_is_processing(env, monkeypatch):
+    """Review 10: a re-analysis would race the child's writes to the same result dir."""
+    client, tmp, popen, _ = env
+    (tmp / 'videos' / 'b.mp4').write_bytes(b'v')
+    (tmp / 'videos' / 'c.mp4').write_bytes(b'v')
+    webapp.jobs['resegment_rallies'] = {'status': 'running', 'kind': 'training', 'message': 'm'}
+    webapp._relabel_job_stems.clear()
+    webapp._relabel_job_stems.update({'b'})
+    try:
+        r = client.post('/api/analyze', json={'video': 'b.mp4'})
+        assert r.status_code == 409 and r.get_json()['reason'] == 'models_updating'
+        assert '/' in r.get_json()['error'] and 'b' not in webapp.jobs
+        other = client.post('/api/analyze', json={'video': 'c.mp4'})      # not one of its stems
+        assert other.status_code == 200
+    finally:
+        webapp.jobs['resegment_rallies']['status'] = 'cancelled'
+        webapp._relabel_job_stems.clear()
+    again = client.post('/api/analyze', json={'video': 'b.mp4'})          # the job is over: allowed
+    assert again.status_code == 200
+    for j in ('b', 'c'):
+        webapp.jobs.pop(j, None)
+
+
 # ---- clip staleness --------------------------------------------------------------------------
 
 def test_stale_clips_are_re_cut_on_request(env, monkeypatch):

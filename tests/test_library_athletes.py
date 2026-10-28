@@ -1328,3 +1328,15 @@ def test_a_part_reads_its_primarys_scoring():
     data = ath.set_match(data, "p1", clean)
     data = ath.set_match(data, "p2", {"part_of": "p1", "sides_swapped": False})
     assert ath.resolve_record(data, "p2")["scoring"]["preset"] == "one_game_30"
+
+
+def test_a_record_with_only_a_scoring_format_is_kept(tmp_path):
+    """Review 18: a match that has only its scoring format set is real content, not a blank record."""
+    for raw in ({"scoring": {"preset": "one_game_30"}}, {"format": "doubles", "scoring": {"preset": "15x3"}}):
+        clean, err = ath.validate_match(raw, ath.empty(), "p")
+        assert err is None and not ath._is_blank(clean) and not ath.is_link(clean)
+        stored = ath.set_match(ath.empty(), "p", clean)
+        assert "p" in stored["matches"]
+        assert ath.get_match(stored, "p")["scoring"] == clean["scoring"]
+        assert "part_of" not in stored["matches"]["p"]
+    assert ath._is_blank({"date": None, "upper": None, "lower": None, "result": None})

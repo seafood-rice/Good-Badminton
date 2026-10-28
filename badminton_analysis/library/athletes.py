@@ -397,6 +397,8 @@ def validate_match(record, data, stem=None):
 def _is_blank(record):
     if is_link(record):
         return False                  # a link is a real entry, whatever it points at
+    if record.get("scoring") is not None:
+        return False                  # a scoring format alone is content: the owner set it
     if record_format(record) == "doubles":
         players = record.get("players")
         return (record.get("date") is None and record.get("result") is None
