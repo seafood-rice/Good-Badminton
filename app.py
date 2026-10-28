@@ -11,7 +11,8 @@ from badminton_analysis.library import tags as libtags
 from badminton_analysis.library import athletes as libathletes
 from badminton_analysis.insights.rally import summarise_rally_payload
 from badminton_analysis.web import (athletes_routes, insights_routes, job_slots, proc_control,
-                                    rally_labels_routes, strategy_routes)
+                                    rally_labels_routes, stroke_labels_routes,
+                                    strategy_routes)
 from badminton_analysis.strategy import config as strategy_config
 from badminton_analysis.strategy import report as strategy_report
 
@@ -35,6 +36,9 @@ _ATHLETES_LOCK = threading.Lock()
 # re-analysis keeps them; every read-modify-write holds _RALLY_LABELS_LOCK.
 RALLY_LABELS_DIR = PROJECT_ROOT / 'data' / 'rally_labels'
 _RALLY_LABELS_LOCK = threading.Lock()
+# Owner stroke labels (data/stroke_labels/<stem>.json): the same reasoning and locking.
+STROKE_LABELS_DIR = PROJECT_ROOT / 'data' / 'stroke_labels'
+_STROKE_LABELS_LOCK = threading.Lock()
 TEMPLATES = PROJECT_ROOT / 'templates'
 WEIGHTS = PROJECT_ROOT / 'weights'
 
@@ -58,6 +62,11 @@ rally_labels_routes.register(app, labels_dir=lambda: RALLY_LABELS_DIR,
                              lock=lambda: _RALLY_LABELS_LOCK,
                              safe_stem=lambda name: _safe_stem(name),
                              job_active=lambda stem: _match_job_active(stem))
+stroke_labels_routes.register(app, labels_dir=lambda: STROKE_LABELS_DIR, outputs=lambda: OUTPUTS,
+                              lock=lambda: _STROKE_LABELS_LOCK,
+                              safe_stem=lambda name: _safe_stem(name),
+                              job_active=lambda stem: _match_job_active(stem),
+                              split_locked=lambda stem: False)   # model_eval.split_locked lands later
 strategy_routes.register(app, outputs=lambda: OUTPUTS, athletes_path=lambda: ATHLETES_PATH,
                          athletes_lock=lambda: _ATHLETES_LOCK, jobs=lambda: jobs,
                          queue=lambda stem, focus=None: queue_strategy_job(stem, focus),
@@ -1672,6 +1681,15 @@ def _forget_rally_labels(stem):
             print(f'Rally label cleanup skipped for {stem}: {exc}')
 
 
+def _forget_stroke_labels(stem):
+    """Remove the owner's stroke labels of a deleted video; never fatal."""
+    with _STROKE_LABELS_LOCK:
+        try:
+            (STROKE_LABELS_DIR / f'{stem}.json').unlink(missing_ok=True)
+        except OSError as exc:
+            print(f'Stroke label cleanup skipped for {stem}: {exc}')
+
+
 def _forget_match_record(stem):
     """Drop ``stem``'s match record from the athlete store after its video is deleted.
 
@@ -1750,6 +1768,7 @@ def api_delete(video_name):
                             print(f'Tag cleanup skipped for {stem}: {exc}')
             _forget_match_record(stem)
             _forget_rally_labels(stem)
+            _forget_stroke_labels(stem)
     except Exception:
         return jsonify({'error': '删除失败'}), 500
     return jsonify({'ok': True, 'scope': scope, 'deleted_files': deleted})
@@ -1949,6 +1968,13 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=5050)
     p.add_argument('--host', default='0.0.0.0')
     args = p.parse_args()
+    try:   # one-time: filled rows of the DJI stroke-label sheet become owner labels
+        with _STROKE_LABELS_LOCK:
+            from badminton_analysis.stroke import owner_labels as _owner_labels
+            _owner_labels.import_sheet(OUTPUTS / 'dji-stroke-labels' / 'LABELS.md',
+                                       STROKE_LABELS_DIR, OUTPUTS)
+    except Exception as exc:
+        print(f'Stroke label sheet import skipped: {exc}')
 
     print(f'''
 ╔══════════════════════════════════════════╗
