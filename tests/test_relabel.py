@@ -239,3 +239,18 @@ def test_a_failed_write_leaves_the_result_files_unchanged(tmp_path, monkeypatch)
     with pytest.raises(OSError):
         technique_writer.write_stroke_reports(str(d / "strokes.jsonl"), reports)
     assert _files(d) == before
+
+
+def test_relabel_deletes_stale_temp_files_but_not_fresh_ones(tmp_path):
+    import os
+    import time
+    d = tmp_path / "V"
+    _old_result(d)
+    stale, fresh, other = d / ".strokes-abc.tmp", d / ".strokes-new.tmp", d / "keep.tmp"
+    for f in (stale, fresh, other):
+        f.write_text("x", encoding="utf-8")
+    old = time.time() - 600
+    os.utime(stale, (old, old))
+    os.utime(other, (old, old))                  # not a writer's temp name: left alone
+    relabel.relabel(str(d), str(tmp_path / "missing.pt"))      # even a refused relabel cleans up
+    assert not stale.exists() and fresh.exists() and other.exists()

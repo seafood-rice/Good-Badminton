@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 from ..analysis.biomechanics import rescore_report
 from ..analysis.technique_writer import build_match_summary, write_stroke_reports
@@ -33,6 +34,25 @@ DEFAULT_LABELS_DIR = os.path.join(_ROOT, "data", "stroke_labels")
 def write_json(path, payload):
     """Atomic JSON write (temp file + os.replace): the relabel child can be killed at any moment."""
     write_json_atomic(path, clean_value(payload))
+
+
+STALE_TEMP_SEC = 300
+
+
+def clean_stale_temps(result_dir, max_age=STALE_TEMP_SEC):
+    """Delete the atomic writers' leftover ``.<name>-*.tmp`` files (a killed child) older than ``max_age``."""
+    now = time.time()
+    try:
+        entries = [e for e in os.scandir(result_dir) if e.is_file() and e.name.startswith(".")
+                   and e.name.endswith(".tmp") and "-" in e.name]
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if now - entry.stat().st_mtime > max_age:
+                os.remove(entry.path)
+        except OSError:
+            pass
 
 
 def _json(path):
@@ -101,6 +121,7 @@ def rescore_reports(result_dir, labels=None):
 
 
 def relabel(result_dir, weights, allow_unknown=False, labels_dir=None):
+    clean_stale_temps(result_dir)
     meta = _json(os.path.join(result_dir, "metadata.json")) or {}
     if meta.get("match_format") == "doubles":
         # no model relabel for doubles, but the owner's corrections still apply
