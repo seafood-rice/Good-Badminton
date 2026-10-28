@@ -265,6 +265,21 @@ def test_status_names_the_live_models_and_what_beat_swing(tmp_path):
     assert st["live"]["decoder"] is None
 
 
+def test_rollback_from_the_first_model_records_no_live_model(tmp_path):
+    # the first kept segmenter replaced nothing: rolling it back leaves no segmenter, and the
+    # history entry must say so rather than repeat the version that was just rolled away
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    seg = sg.train([({"gap_sec": 1.0}, 0), ({"gap_sec": 9.0}, 1)], features=["gap_sec"])
+    cand = tmp_path / "cand.json"
+    cand.write_text(json.dumps(seg), encoding="utf-8")
+    me.promote(weights, {me.SEGMENTER_FILE: cand}, {})
+    assert me.live_views(weights)["segmenter"]["version"] == seg["version"]
+    assert me.rollback(weights) is True
+    assert not (weights / me.SEGMENTER_FILE).exists()
+    assert me.history(weights)[-1]["live_after"]["segmenter"] is None
+
+
 def test_describe_codes_in_english():
     assert "0.45" in me.describe({"code": "lower_f1", "candidate": 0.45, "swing": 0.53})
     assert "precision" in me.describe({"code": "precision_unreachable", "target": 0.9})

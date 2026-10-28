@@ -26,7 +26,8 @@ from .reconcile import match_parts
 SEGMENTER_FILE = "rally-segmenter.json"
 DECODER_FILE = "rally-decoder.json"
 HISTORY_FILE = "rally-model-history.json"
-RALLY = store.ModelSpec("rally", (SEGMENTER_FILE, DECODER_FILE), HISTORY_FILE, "rally")
+RALLY = store.ModelSpec("rally", (SEGMENTER_FILE, DECODER_FILE), HISTORY_FILE, "rally",
+                        rollback_to_absent=True)
 
 MIN_MATCHES = 2             # labelled matches with MIN_POINTS point labels each
 MIN_POINTS = 20
@@ -416,6 +417,9 @@ def rollback(weights_dir, points=None):
         if dm is not None:
             views["decoder"] = {"version": dm.get("version"), "claim_threshold": dm.get("claim_threshold"),
                                 "heldout": dm.get("heldout")}
+        # a file the first promote installed over nothing rolls back to no model at all
+        for name in store._absent_names(newest):
+            views[{SEGMENTER_FILE: "segmenter", DECODER_FILE: "decoder"}[name]] = None
         return views
 
     return store.rollback(RALLY, weights_dir, live_after=live_after,
