@@ -5,6 +5,7 @@ with one, ``rally_segments.json`` says ``signal: learned`` and the consumers tre
 non-degraded signal.
 """
 import json
+import os
 
 import pytest
 
@@ -92,7 +93,7 @@ def test_learned_segments_replace_the_swing_ones(tmp_path):
     assert det["signal"] == "learned" and det["attempted_signal"] == "learned"
     assert det["degraded"] is False and det["stroke_labels_withheld"] is False
     assert det["reason"] == "learned segmenter v-test"
-    assert det["model"] == {"version": "v-test", "mode": "gap", "f1": 0.83}
+    assert det["model"] == {"version": "v-test", "mode": "gap", "train_f1": 0.83}   # no held-out block stored
     assert det["court_view"] == {"cut": 0.8} and det["suppressed_static_shuttle"] == 2
     assert [r["id"] for r in doc["rallies"]] == [1, 2]
     assert doc["rallies"][0]["start_sec"] == pytest.approx(3.0)      # first hit - 2 s
@@ -102,6 +103,30 @@ def test_learned_segments_replace_the_swing_ones(tmp_path):
     hits = json.loads((d / "hits.json").read_text())
     assert [h["rally_id"] for h in hits["hits"]] == [1, 1, 1, 1, 2, 2, 2]
     assert hits["model"] == {"sha256": "x"} and hits["source"] == "learned"
+
+
+def test_detection_model_f1_is_the_heldout_score(tmp_path):
+    """Review 15: the stored held-out F1, not the training F1, is what the file reports as ``f1``."""
+    d = write_run(tmp_path / "run")
+    s = system(d, tmp_path, model_doc=model(heldout={"f1": 0.61, "swing_f1": 0.5}))
+    s._apply_learned_segments(FPS)
+    det = json.loads((d / "rally_segments.json").read_text())["detection"]
+    assert det["model"] == {"version": "v-test", "mode": "gap", "f1": 0.61}
+
+
+def test_the_learned_post_step_writes_segments_and_hits_atomically(tmp_path, monkeypatch):
+    """Review 14: both files go through the atomic writer (temp file + replace), never a plain open('w')."""
+    from badminton_analysis.outcomes import labels as lab
+    d = write_run(tmp_path / "run")
+    s = system(d, tmp_path)
+    real, written = lab.write_json_atomic, []
+    monkeypatch.setattr(lab, "write_json_atomic", lambda path, doc: written.append(os.path.basename(str(path)))
+                        or real(path, doc))
+    from badminton_analysis.data import writer
+    monkeypatch.setattr(writer, "write_json", lambda *a, **k: pytest.fail("non-atomic writer used"))
+    s._apply_learned_segments(FPS)
+    assert written == ["rally_segments.json", "hits.json"]
+    assert json.loads((d / "rally_segments.json").read_text())["detection"]["signal"] == "learned"
 
 
 @pytest.mark.parametrize("case", ["no_file", "corrupt", "wrong_schema", "contact_rule", "no_hits"])

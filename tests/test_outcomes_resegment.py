@@ -194,3 +194,107 @@ def test_main_prints_the_summary(world, capsys):
                     "--athletes", str(athletes), str(results / "m1"), str(results / "m2")])
     last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert code == 0 and sorted(last["touched"]) == ["m1", "m2"]
+
+
+# ---- review fixes ----------------------------------------------------------------------------
+
+def _record_rebuilds(monkeypatch):
+    calls = []
+    real = ob.rebuild_match
+    monkeypatch.setattr(ob, "rebuild_match",
+                        lambda outputs, stem, *a, **k: calls.append(stem) or real(outputs, stem, *a, **k))
+    return calls
+
+
+def test_decoder_only_keep_rebuilds_outcomes(world, monkeypatch):
+    """Review 3: nothing re-segments when only the decoder changed, yet every outcome must be rebuilt."""
+    results, labels, athletes, weights, stroke = world
+    keep_segmenter(results, labels, weights)
+    call(world)
+    calls = _record_rebuilds(monkeypatch)
+    summary = call(world)
+    assert summary["unchanged"] == ["m1", "m2"] and calls == []           # segmenter-only: nothing to rebuild
+    summary = rs.run([results / "m1", results / "m2"], weights, labels, stroke, athletes, rebuild_all=True)
+    assert summary["touched"] == [] and sorted(calls) == ["m1", "m2"] and summary["failed"] == []
+    code = rs.main(["--weights-dir", str(weights), "--labels-dir", str(labels), "--stroke-labels-dir",
+                    str(stroke), "--athletes", str(athletes), "--rebuild-all", str(results / "m1")])
+    assert code == 0 and calls.count("m1") == 2
+
+
+def test_rebuild_all_skips_results_that_were_skipped(world, monkeypatch):
+    results, labels, athletes, weights, stroke = world
+    make_match(results, labels, "rule", 5, source="contact_rule", labelled=False)
+    calls = _record_rebuilds(monkeypatch)
+    summary = rs.run([results / "rule", results / "m1"], weights, labels, stroke, athletes, rebuild_all=True)
+    assert [s["stem"] for s in summary["skipped"]] == ["rule"] and calls == ["m1"]
+
+
+def test_resegment_cancel_rebuilds_touched_outcomes_and_hit_ids(world, monkeypatch):
+    """Review 8: a child killed between the segments write and the hits write is repaired."""
+    results, labels, athletes, weights, stroke = world
+    keep_segmenter(results, labels, weights)
+    call(world, [results / "m1"])
+    # what a kill between the segments write and the hits write leaves: new segments, hits on the old ids,
+    # the journal still there (a dead process runs no cleanup)
+    hits = json.loads((results / "m1" / "hits.json").read_text())
+    for h in hits["hits"]:
+        h["rally_id"] = 99
+    (results / "m1" / "hits.json").write_text(json.dumps(hits), encoding="utf-8")
+    (results / "m1" / rs.JOURNAL).write_text("{}", encoding="utf-8")
+    calls = _record_rebuilds(monkeypatch)
+    out = rs.repair([results / "m1"], weights, labels, stroke, athletes)
+    assert out == {"repaired": ["m1"], "failed": []} and calls == ["m1"]
+    ids = [h["rally_id"] for h in json.loads((results / "m1" / "hits.json").read_text())["hits"]]
+    assert 99 not in ids and ids == [r["id"] for r in segs(results, "m1")["rallies"] for _ in range(3)]
+    assert not (results / "m1" / rs.JOURNAL).exists()
+    assert (results / "m1" / "rally_outcomes.json").is_file()
+    assert rs.repair([results / "m1"], weights, labels, stroke, athletes) == {"repaired": [], "failed": []}
+
+
+def test_repair_without_journal_still_fixes_stale_hit_ids(world, monkeypatch):
+    results, labels, athletes, weights, stroke = world
+    hits = json.loads((results / "m2" / "hits.json").read_text())
+    hits["hits"][0]["rally_id"] = 42
+    (results / "m2" / "hits.json").write_text(json.dumps(hits), encoding="utf-8")
+    calls = _record_rebuilds(monkeypatch)
+    assert rs.repair([results / "m2"], weights, labels, stroke, athletes)["repaired"] == ["m2"]
+    assert calls == ["m2"]
+    assert json.loads((results / "m2" / "hits.json").read_text())["hits"][0]["rally_id"] == 1
+
+
+def test_a_clean_run_leaves_no_journal(world, monkeypatch):
+    results, labels, athletes, weights, stroke = world
+    keep_segmenter(results, labels, weights)
+    call(world)
+    assert not list(results.glob("*/" + rs.JOURNAL))
+
+
+def test_detection_model_f1_is_the_heldout_score(world):
+    """Review 15: ``f1`` is the held-out score stored with the model; the training score is named as such."""
+    results, labels, athletes, weights, _ = world
+    model = keep_segmenter(results, labels, weights)
+    call(world)
+    block = segs(results, "m1")["detection"]["model"]
+    assert block.get("f1") is None and block["train_f1"] == model["train_f1"]     # no held-out block stored
+    (weights / me.SEGMENTER_FILE).write_text(json.dumps(dict(model, heldout={"f1": 0.61, "swing_f1": 0.5})),
+                                             encoding="utf-8")
+    call(world)
+    block = segs(results, "m1")["detection"]["model"]
+    assert block["f1"] == 0.61 and "train_f1" not in block
+
+
+def test_first_promote_rolls_back_to_swing_segments(world):
+    """Review 9 end to end: promote the segmenter on empty weights, roll back to no model, re-segment."""
+    results, labels, athletes, weights, stroke = world
+    model = keep_segmenter(results, labels, weights)
+    (weights / me.SEGMENTER_FILE).unlink()
+    cand = weights / "candidates" / "rally-segmenter-1.json"
+    cand.parent.mkdir(parents=True)
+    cand.write_text(json.dumps(model), encoding="utf-8")
+    me.promote(weights, {me.SEGMENTER_FILE: cand}, {})
+    call(world)
+    assert segs(results, "m1")["detection"]["signal"] == "learned"
+    assert me.can_rollback(weights) is True and me.rollback(weights) is True
+    assert not (weights / me.SEGMENTER_FILE).exists()
+    summary = call(world)
+    assert "m1" in summary["touched"] and segs(results, "m1")["detection"]["signal"] != "learned"

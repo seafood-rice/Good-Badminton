@@ -858,7 +858,8 @@ class BadmintonAnalysisSystem:
         """
         if getattr(self, "_hit_source", None) != "learned" or not getattr(self, "_hit_list", None):
             return
-        from .data.writer import write_json as _write_json
+        from .data.writer import clean_value
+        from .outcomes.labels import write_json_atomic
 
         seg_path = os.path.join(self.save_dir, "rally_segments.json")
         old_rallies, old_detection = list(self.rally_list or []), self.rally_detection
@@ -885,18 +886,16 @@ class BadmintonAnalysisSystem:
             detection.update({
                 "signal": "learned", "attempted_signal": "learned", "degraded": False,
                 "reason": f"learned segmenter {version}",
-                "model": {"version": version, "mode": model.get("mode", "gap"),
-                          "f1": model.get("train_f1")},
+                "model": segmenter.model_detection(model),
                 "stroke_labels_withheld": False,
             })
             with open(seg_path, encoding="utf-8") as f:
                 old_text = f.read()
-            _write_json(seg_path, {"fps": fps, "rallies": rallies, "detection": detection})
+            write_json_atomic(seg_path, clean_value({"fps": fps, "rallies": rallies, "detection": detection}))
             try:
                 self._rewrite_hit_rally_ids(rallies)
             except Exception:
-                with open(seg_path, "w", encoding="utf-8") as f:
-                    f.write(old_text)
+                write_json_atomic(seg_path, json.loads(old_text))
                 raise
             self.rally_detection, self.rally_list = detection, list(rallies)
             print(f"Rally segmentation: signal=learned, {len(rallies)} segments "
@@ -906,8 +905,9 @@ class BadmintonAnalysisSystem:
             print(f"Learned rally segmenter not used, keeping the swing segments: {exc!r}")
 
     def _rewrite_hit_rally_ids(self, rallies):
-        """Point every hit in hits.json at the new rally list (one atomic-enough rewrite)."""
-        from .data.writer import write_json as _write_json
+        """Point every hit in hits.json at the new rally list (one atomic rewrite)."""
+        from .data.writer import clean_value
+        from .outcomes.labels import write_json_atomic
 
         path = os.path.join(self.save_dir, "hits.json")
         with open(path, encoding="utf-8") as f:
@@ -921,7 +921,7 @@ class BadmintonAnalysisSystem:
 
         for h in payload["hits"]:
             h["rally_id"] = rally_id(int(h["frame"]))
-        _write_json(path, payload)
+        write_json_atomic(path, clean_value(payload))
 
     def _write_metadata(self, fps, total_frames, video_duration, template_path, corners, roi_corners, mid_height):
         metadata = {

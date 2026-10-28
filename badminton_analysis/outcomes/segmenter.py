@@ -25,6 +25,21 @@ NMS_SEC = 3.0               # minimum spacing of two predicted point ends
 TUNE_GRID = tuple(round(0.05 * k, 2) for k in range(2, 19))
 
 
+def model_detection(model):
+    """The ``detection.model`` block of ``rally_segments.json`` for a learned segmenter.
+
+    ``f1`` is the held-out score stored with the model (``model["heldout"]["f1"]``, written by
+    ``model_eval``); a model without that block gets ``train_f1`` instead, under its own name."""
+    heldout = model.get("heldout")
+    f1 = heldout.get("f1") if isinstance(heldout, dict) else None
+    block = {"version": model.get("version"), "mode": model.get("mode", "gap")}
+    if f1 is not None:
+        block["f1"] = f1
+    else:
+        block["train_f1"] = model.get("train_f1")
+    return block
+
+
 def _matrix(features, rows):
     return np.array([[float(r.get(name, 0.0)) for name in features] for r in rows], dtype=float)
 

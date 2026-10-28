@@ -10,6 +10,13 @@ new segments, and mark pre-cut rally clips stale (``clips/.stale``: re-cut on re
 result touched: rebuild ``rally_outcomes.json`` for the whole match (owner rally labels are keyed by time,
 so each re-attaches to the segment now holding its end time) and re-apply the owner's stroke labels.
 Files are written atomically; a result that fails keeps its old files and the others still run.
+With ``--rebuild-all`` (the decoder changed, not only the segmenter) the outcomes of every result are
+rebuilt, touched or not.
+
+A result being rewritten carries a small journal (``.resegment-pending.json``) from before its first write
+until its outcomes are rebuilt and its stroke labels re-applied. ``repair`` (run by the app when the child
+was cancelled or failed) finishes what a killed child left: hits' ``rally_id`` recomputed from the segments
+on disk, outcomes rebuilt, stroke labels re-applied, journal removed.
 
 The offline swing recompute uses ``detections.jsonl`` (every analysed frame) with the default
 ``signal="auto"`` and the run's court corners, so for a run that took the swing path in analysis it gives
@@ -33,6 +40,7 @@ from .labels import write_json_atomic
 SEGMENTER_FILE = "rally-segmenter.json"
 DECODER_FILE = "rally-decoder.json"
 STALE_MARK = ".stale"
+JOURNAL = ".resegment-pending.json"
 
 
 class _Skip(Exception):
@@ -75,7 +83,7 @@ def _learned(inputs, model, old_detection):
     detection.update({
         "signal": "learned", "attempted_signal": "learned", "degraded": False,
         "reason": f"learned segmenter {version}",
-        "model": {"version": version, "mode": model.get("mode", "gap"), "f1": model.get("train_f1")},
+        "model": segmenter.model_detection(model),
         "stroke_labels_withheld": False})
     return [dict(_row(s), p_point=s["p_point"]) for s in segs], detection
 
@@ -95,6 +103,24 @@ def _swing(out_dir, old_detection):
 def _same(old_rallies, new_rallies):
     key = lambda rows: [(r.get("id"), r.get("start_frame"), r.get("end_frame")) for r in rows]   # noqa: E731
     return key(old_rallies) == key(new_rallies)
+
+
+def _rally_id(rallies, frame):
+    for r in rallies:
+        if int(r["start_frame"]) <= frame <= int(r["end_frame"]):
+            return r["id"]
+    return None
+
+
+def _journal_set(out_dir):
+    write_json_atomic(Path(out_dir) / JOURNAL, {"state": "pending"})
+
+
+def _journal_clear(out_dir):
+    try:
+        os.remove(Path(out_dir) / JOURNAL)
+    except OSError:
+        pass
 
 
 def _mark_stale(out_dir):
@@ -131,19 +157,19 @@ def _one(out_dir, model):
             and old_detection.get("model") == detection.get("model"):
         return "unchanged"
     old_bytes = seg_path.read_bytes()
-    write_json_atomic(seg_path, clean_value({"fps": old.get("fps"), "rallies": rallies, "detection": detection}))
+    _journal_set(out_dir)                  # from here a kill leaves a pair to repair
     try:
-        def rally_id(frame):
-            for r in rallies:
-                if int(r["start_frame"]) <= frame <= int(r["end_frame"]):
-                    return r["id"]
-            return None
-
-        for h in hits_doc["hits"]:
-            h["rally_id"] = rally_id(int(h["frame"]))
-        write_json_atomic(hits_path, hits_doc)
+        write_json_atomic(seg_path, clean_value({"fps": old.get("fps"), "rallies": rallies, "detection": detection}))
+        try:
+            for h in hits_doc["hits"]:
+                h["rally_id"] = _rally_id(rallies, int(h["frame"]))
+            write_json_atomic(hits_path, hits_doc)
+        except BaseException:
+            _restore(seg_path, old_bytes)
+            raise
     except BaseException:
-        _restore(seg_path, old_bytes)
+        if seg_path.read_bytes() == old_bytes:
+            _journal_clear(out_dir)        # back to the old pair
         raise
     _mark_stale(out_dir)
     return "touched"
@@ -153,13 +179,33 @@ def _error(exc):
     return f"{type(exc).__name__}: {exc}"[:200]
 
 
-def run(results_dirs, weights_dir, labels_dir, stroke_labels_dir, athletes_path):
+def _downstream(out_dir, weights_dir, labels_dir, stroke_labels_dir, athletes_path, apply_labels=True):
+    """Rebuild one result's outcomes and re-apply its stroke labels; ``[error text]`` of what failed."""
+    out_dir = Path(out_dir)
+    errors = []
+    try:
+        outcomes_build.rebuild_match(out_dir.parent, out_dir.name, labels_dir, athletes_path,
+                                     decoder_path=Path(weights_dir) / DECODER_FILE)
+    except Exception as exc:
+        errors.append("outcomes: " + _error(exc))
+    if apply_labels:
+        try:
+            if owner_labels.apply_to_result(out_dir, stroke_labels_dir, out_dir.name)["applied"]:
+                relabel.rescore_reports(out_dir)
+        except Exception as exc:
+            errors.append("stroke labels: " + _error(exc))
+    return errors
+
+
+def run(results_dirs, weights_dir, labels_dir, stroke_labels_dir, athletes_path, rebuild_all=False):
     """Re-segment every result dir; ``{"touched", "unchanged", "skipped": [{stem, reason}], "failed":
-    [{stem, error}]}`` (stems). Outcomes are rebuilt and stroke labels re-applied for the touched ones."""
+    [{stem, error}]}`` (stems). Outcomes are rebuilt and stroke labels re-applied for the touched ones;
+    with ``rebuild_all`` outcomes are rebuilt for the unchanged ones too (the decoder changed)."""
     weights_dir = Path(weights_dir)
+    results_dirs = [Path(d) for d in results_dirs]
     model = segmenter.load(weights_dir / SEGMENTER_FILE)
     summary = {"touched": [], "unchanged": [], "skipped": [], "failed": []}
-    for out_dir in (Path(d) for d in results_dirs):
+    for out_dir in results_dirs:
         stem = out_dir.name
         try:
             summary[_one(out_dir, model)].append(stem)
@@ -167,19 +213,61 @@ def run(results_dirs, weights_dir, labels_dir, stroke_labels_dir, athletes_path)
             summary["skipped"].append({"stem": stem, "reason": skip.reason})
         except Exception as exc:
             summary["failed"].append({"stem": stem, "error": _error(exc)})
-    for stem in list(summary["touched"]):
-        out_dir = next(Path(d) for d in results_dirs if Path(d).name == stem)
-        try:
-            outcomes_build.rebuild_match(out_dir.parent, stem, labels_dir, athletes_path,
-                                         decoder_path=weights_dir / DECODER_FILE)
-        except Exception as exc:
-            summary["failed"].append({"stem": stem, "error": "outcomes: " + _error(exc)})
-        try:
-            if owner_labels.apply_to_result(out_dir, stroke_labels_dir, stem)["applied"]:
-                relabel.rescore_reports(out_dir)
-        except Exception as exc:
-            summary["failed"].append({"stem": stem, "error": "stroke labels: " + _error(exc)})
+    touched = set(summary["touched"])
+    todo = list(summary["touched"]) + (list(summary["unchanged"]) if rebuild_all else [])
+    for stem in todo:
+        out_dir = next(d for d in results_dirs if d.name == stem)
+        errors = _downstream(out_dir, weights_dir, labels_dir, stroke_labels_dir, athletes_path,
+                             apply_labels=stem in touched)
+        for error in errors:
+            summary["failed"].append({"stem": stem, "error": error})
+        if not errors:
+            _journal_clear(out_dir)
     return summary
+
+
+def sync_hit_ids(out_dir):
+    """Point every hit's ``rally_id`` at the segments now on disk; True when hits.json changed."""
+    out_dir = Path(out_dir)
+    hits_doc, seg_doc = _read(out_dir / "hits.json"), _read(out_dir / "rally_segments.json")
+    if not (isinstance(hits_doc, dict) and hits_doc.get("source") == "learned"
+            and isinstance(hits_doc.get("hits"), list)
+            and isinstance(seg_doc, dict) and isinstance(seg_doc.get("rallies"), list)):
+        return False
+    changed = False
+    for h in hits_doc["hits"]:
+        new = _rally_id(seg_doc["rallies"], int(h["frame"]))
+        if h.get("rally_id") != new:
+            h["rally_id"] = new
+            changed = True
+    if changed:
+        write_json_atomic(out_dir / "hits.json", hits_doc)
+    return changed
+
+
+def repair(results_dirs, weights_dir, labels_dir, stroke_labels_dir, athletes_path):
+    """Make results consistent after a cancelled or failed ``run``; ``{"repaired": [stems], "failed": [...]}``.
+
+    Per result: hits' ``rally_id`` recomputed from the current ``rally_segments.json``; when that changed
+    something, or the result's journal says a rewrite was under way, outcomes are rebuilt and stroke labels
+    re-applied, then the journal is removed. Results nobody was rewriting are left alone."""
+    out = {"repaired": [], "failed": []}
+    for out_dir in (Path(d) for d in results_dirs):
+        stem = out_dir.name
+        try:
+            changed = sync_hit_ids(out_dir)
+            if not (changed or (out_dir / JOURNAL).is_file()):
+                continue
+            errors = _downstream(out_dir, weights_dir, labels_dir, stroke_labels_dir, athletes_path)
+        except Exception as exc:
+            out["failed"].append({"stem": stem, "error": _error(exc)})
+            continue
+        if errors:
+            out["failed"] += [{"stem": stem, "error": e} for e in errors]
+        else:
+            _journal_clear(out_dir)
+            out["repaired"].append(stem)
+    return out
 
 
 def main(argv=None):
@@ -188,9 +276,12 @@ def main(argv=None):
     p.add_argument("--labels-dir", required=True)
     p.add_argument("--stroke-labels-dir", required=True)
     p.add_argument("--athletes", required=True)
+    p.add_argument("--rebuild-all", action="store_true",
+                   help="rebuild every result's outcomes (the decoder changed), not only the re-segmented ones")
     p.add_argument("results_dirs", nargs="*")
     a = p.parse_args(argv)
-    summary = run(a.results_dirs, a.weights_dir, a.labels_dir, a.stroke_labels_dir, a.athletes)
+    summary = run(a.results_dirs, a.weights_dir, a.labels_dir, a.stroke_labels_dir, a.athletes,
+                  rebuild_all=a.rebuild_all)
     for s in summary["skipped"]:
         print(f"skipped {s['stem']}: {s['reason']}")
     for f in summary["failed"]:
