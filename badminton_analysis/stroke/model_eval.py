@@ -11,7 +11,10 @@ import os
 import re
 import shutil
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+import psutil
 
 from ..outcomes.labels import write_json_atomic
 from . import owner_labels
@@ -28,6 +31,8 @@ KEEP_REPLACED = 5
 MIN_NEW_TRAIN = 50
 MIN_TEST_SHOTS = 20
 RETIRED_MARK = ".retired"
+SWAP_MARKER = ".swap-in-progress"
+_MARKER_GRACE_SEC = 60        # an unreadable marker is only called stale after this long
 _STAMP_DIR = re.compile(r"^\d{8}T\d{6}\d{3}Z[a-z]*$")
 
 
@@ -268,38 +273,105 @@ def _live_after(version, metrics):
             "bar_met": _bar_met(metrics) if metrics else None}
 
 
-def recover(weights_dir):
-    """Undo a swap that was killed half way: the live ``.pt`` is gone but its replacement is not in.
+class SwapInProgress(RuntimeError):
+    """Another process is promoting or rolling back the live model."""
 
-    A staged rollback model (``.rollback-*.pt``) completes the rollback; otherwise the newest
-    history model (what promote retired) goes back to live. Returns True when something moved.
-    Idempotent and a no-op while a live model exists.
-    """
-    weights_dir = Path(weights_dir)
-    live = weights_dir / LIVE_NAME
-    if live.is_file():
-        return False
+
+def _read_marker(path):
+    doc = _json(path)
+    pid = doc.get("pid") if isinstance(doc, dict) else None
+    return pid if type(pid) is int and pid > 0 else None
+
+
+def _marker_alive(path):
+    """True while the process that wrote the swap marker may still be running."""
+    pid = _read_marker(path)
+    if pid is None:       # unreadable: a writer may be mid-create, so only an old file counts as stale
+        try:
+            return time.time() - os.stat(path).st_mtime < _MARKER_GRACE_SEC
+        except OSError:
+            return False
     try:
-        staged = sorted(weights_dir.glob(".rollback-*.pt"))
-        if staged:
-            _move_pair(staged[-1], live)
-            for d in _history_dirs(weights_dir, include_retired=False)[-1:]:
-                (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
-            return True
-        dirs = _history_dirs(weights_dir)
-        if dirs:
-            _move_pair(dirs[-1] / LIVE_NAME, live)
-            shutil.rmtree(dirs[-1], ignore_errors=True)
-            return True
+        return psutil.pid_exists(pid)
+    except Exception:
+        return True
+
+
+def _clear_marker(weights_dir):
+    try:
+        os.remove(Path(weights_dir) / SWAP_MARKER)
     except OSError:
         pass
-    return False
+
+
+@contextmanager
+def _swap_marker(weights_dir, what):
+    """Hold ``weights/.swap-in-progress`` (pid + what) for the length of a swap.
+
+    Raises ``SwapInProgress`` when another live process holds it. A marker left by a dead process
+    is repaired by ``recover`` first.
+    """
+    weights_dir = Path(weights_dir)
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    marker = weights_dir / SWAP_MARKER
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    for attempt in range(2):
+        try:
+            fd = os.open(marker, flags)
+            break
+        except FileExistsError:
+            if attempt or _marker_alive(marker):
+                raise SwapInProgress(f"a model swap is already running ({marker})")
+            recover(weights_dir)
+            _clear_marker(weights_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"pid": os.getpid(), "what": what, "utc": _utc()}, fh)
+        yield
+    finally:
+        _clear_marker(weights_dir)
+
+
+def recover(weights_dir):
+    """Undo a swap whose process was killed half way: the live ``.pt`` is gone, its replacement not in.
+
+    Acts only when ``.swap-in-progress`` exists and its pid is not alive; without a marker a
+    missing live model is left alone (the owner may have deleted it), and a live process's swap is
+    never touched. A staged rollback model (``.rollback-*.pt``) completes the rollback; otherwise
+    the newest history model (what promote retired) goes back to live. Returns True when
+    something moved. Idempotent.
+    """
+    weights_dir = Path(weights_dir)
+    marker = weights_dir / SWAP_MARKER
+    if not marker.is_file() or _marker_alive(marker):
+        return False
+    live = weights_dir / LIVE_NAME
+    moved = False
+    if not live.is_file():
+        try:
+            staged = sorted(weights_dir.glob(".rollback-*.pt"))
+            if staged:
+                _move_pair(staged[-1], live)
+                for d in _history_dirs(weights_dir, include_retired=False)[-1:]:
+                    (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
+                moved = True
+            else:
+                dirs = _history_dirs(weights_dir)
+                if dirs:
+                    _move_pair(dirs[-1] / LIVE_NAME, live)
+                    shutil.rmtree(dirs[-1], ignore_errors=True)
+                    moved = True
+        except OSError:
+            return False          # keep the marker: the next call tries again
+    _clear_marker(weights_dir)
+    return moved
 
 
 def promote(weights_dir, candidate_path, record):
     """Make the candidate the live model; the replaced model goes to ``history/<utc>/``."""
     recover(weights_dir)
-    retired = _install(weights_dir, candidate_path)
+    with _swap_marker(weights_dir, "promote"):
+        retired = _install(weights_dir, candidate_path)
     _prune(weights_dir)
     entry = dict(record)
     live = Path(weights_dir) / LIVE_NAME
@@ -369,19 +441,20 @@ def rollback(weights_dir, train_labels=None):
         return False
     newest = dirs[-1]
     version = _version(newest / LIVE_NAME)
-    # stage the old model outside history so the swap cannot see it as the current one
-    staged = Path(weights_dir) / f".rollback-{newest.name}.pt"
-    _move_pair(newest / LIVE_NAME, staged)
-    try:
-        retired = _install(weights_dir, staged)
-    except OSError:
-        _move_pair(staged, newest / LIVE_NAME)
-        raise
-    if retired is not None:
+    with _swap_marker(weights_dir, "rollback"):
+        # stage the old model outside history so the swap cannot see it as the current one
+        staged = Path(weights_dir) / f".rollback-{newest.name}.pt"
+        _move_pair(newest / LIVE_NAME, staged)
         try:
-            (retired / RETIRED_MARK).write_text("", encoding="utf-8")
+            retired = _install(weights_dir, staged)
         except OSError:
-            pass
+            _move_pair(staged, newest / LIVE_NAME)
+            raise
+        if retired is not None:
+            try:
+                (retired / RETIRED_MARK).write_text("", encoding="utf-8")
+            except OSError:
+                pass
     shutil.rmtree(newest, ignore_errors=True)
     _prune(weights_dir)
     entry = {"utc": _utc(), "kept": True, "rollback": True, "reason": {"code": "rolled_back"},

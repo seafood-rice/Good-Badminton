@@ -691,7 +691,10 @@ def _rollback_stroke_model():
     with _STROKE_MODEL_LOCK:
         if _training_job_active():
             return 'busy'
-        done = model_eval.rollback(WEIGHTS, train_labels=model_eval.train_count(STROKE_LABELS_DIR))
+        try:
+            done = model_eval.rollback(WEIGHTS, train_labels=model_eval.train_count(STROKE_LABELS_DIR))
+        except model_eval.SwapInProgress:      # another process (an orphaned retrain) is swapping
+            return 'busy'
         _stroke_model_cache['key'] = None
     if not done:
         return 'none'

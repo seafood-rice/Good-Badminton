@@ -551,3 +551,15 @@ def test_a_cancel_that_loses_the_race_with_a_finished_promote_is_a_normal_finish
     _wait_status('relabel_strokes', 'running')       # kept -> the relabel is queued
     procs[-1].kill()
     _wait('relabel_strokes', ('completed', 'error'))
+
+
+def test_rollback_while_another_process_swaps_is_busy(env, monkeypatch):
+    client, *_ = env
+
+    def refuse(*a, **k):
+        raise model_eval.SwapInProgress('x')
+
+    monkeypatch.setattr(model_eval, 'train_count', lambda d: 1)
+    monkeypatch.setattr(model_eval, 'rollback', refuse)
+    r = client.post('/api/stroke-model/rollback')
+    assert r.status_code == 409 and 'relabel_strokes' not in webapp.jobs

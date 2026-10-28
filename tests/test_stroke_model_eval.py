@@ -289,19 +289,32 @@ def _half_promote(w):
     return cand, retired
 
 
+def _dead_pid():
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def _marker(w, pid, what="promote"):
+    (w / me.SWAP_MARKER).write_text(json.dumps({"pid": pid, "what": what}), encoding="utf-8")
+
+
 def test_status_restores_a_half_finished_promote(tmp_path):
     w = tmp_path / "weights"
     cand, retired = _half_promote(w)
+    _marker(w, _dead_pid())
     assert not (w / "stroke-classifier.pt").exists()
     me.status(tmp_path / "lab", tmp_path / "res", w)
     assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
     assert (w / "stroke-classifier.json").is_file() and not retired.exists()
     assert cand.exists()                      # the candidate is left for the caller to delete
+    assert not (w / me.SWAP_MARKER).exists()
 
 
 def test_promote_and_rollback_recover_first(tmp_path):
     w = tmp_path / "weights"
     cand, _ = _half_promote(w)
+    _marker(w, _dead_pid())
     me.promote(w, cand, {})
     assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v1"
     assert (sorted((w / "history").iterdir())[-1] / "stroke-classifier.pt").read_bytes() == b"pt-v0"
@@ -311,6 +324,73 @@ def test_promote_and_rollback_recover_first(tmp_path):
     me._move_pair(newest / "stroke-classifier.pt", staged)
     retired = me._new_history_dir(w)
     me._move_pair(w / "stroke-classifier.pt", retired / "stroke-classifier.pt")
+    _marker(w, _dead_pid(), "rollback")
     assert me.rollback(w) is False        # the interrupted rollback was completed
     assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0"
     assert not staged.exists()
+
+
+def test_recover_leaves_a_swap_alone_while_its_process_is_alive(tmp_path):
+    w = tmp_path / "weights"
+    cand, retired = _half_promote(w)
+    _marker(w, os.getpid())                   # another process is mid-swap
+    assert me.recover(w) is False
+    assert not (w / "stroke-classifier.pt").exists() and retired.exists()
+    assert (w / me.SWAP_MARKER).is_file()
+
+
+def test_recover_without_a_marker_leaves_a_missing_live_model_alone(tmp_path):
+    w = tmp_path / "weights"
+    cand, retired = _half_promote(w)          # the owner may simply have deleted the live model
+    assert me.recover(w) is False
+    assert not (w / "stroke-classifier.pt").exists() and retired.exists()
+
+
+def test_recover_repairs_when_the_marker_pid_is_dead(tmp_path):
+    w = tmp_path / "weights"
+    cand, retired = _half_promote(w)
+    _marker(w, _dead_pid())
+    assert me.recover(w) is True
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v0" and not retired.exists()
+    assert not (w / me.SWAP_MARKER).exists()
+
+
+def test_a_stale_marker_with_a_live_model_is_just_cleared(tmp_path):
+    w = tmp_path / "weights"
+    _model(w / "stroke-classifier.pt", "v0")
+    _marker(w, _dead_pid())
+    assert me.recover(w) is False
+    assert not (w / me.SWAP_MARKER).exists()
+
+
+def test_a_second_concurrent_swap_is_refused_and_leaves_the_marker(tmp_path):
+    import pytest
+    w = tmp_path / "weights"
+    _model(w / "stroke-classifier.pt", "v0")
+    me.promote(w, _cand(w, "v1"), {})          # leaves a model to roll back to
+    cand = _cand(w, "v2")
+    _marker(w, os.getpid())
+    with pytest.raises(me.SwapInProgress):
+        me.promote(w, cand, {})
+    with pytest.raises(me.SwapInProgress):
+        me.rollback(w)
+    assert (w / "stroke-classifier.pt").read_bytes() == b"pt-v1" and cand.exists()
+    assert (w / me.SWAP_MARKER).is_file()
+
+
+def test_promote_and_rollback_hold_the_marker_only_while_swapping(tmp_path, monkeypatch):
+    w = tmp_path / "weights"
+    _model(w / "stroke-classifier.pt", "v0")
+    seen = []
+    real = me._install
+
+    def spy(*a, **k):
+        seen.append(json.loads((w / me.SWAP_MARKER).read_text(encoding="utf-8")))
+        return real(*a, **k)
+
+    monkeypatch.setattr(me, "_install", spy)
+    me.promote(w, _cand(w, "v1"), {})
+    assert me.rollback(w) is True
+    assert [m["pid"] for m in seen] == [os.getpid()] * 2
+    assert [m["what"] for m in seen] == ["promote", "rollback"]
+    assert not (w / me.SWAP_MARKER).exists()
