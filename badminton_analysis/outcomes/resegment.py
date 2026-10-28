@@ -29,13 +29,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ..data.writer import clean_value
 from ..stroke import owner_labels, relabel
 from ..stroke import rallies as rallies_mod
 from . import build as outcomes_build
 from . import run_inputs
 from . import segmenter
-from .labels import write_json_atomic
+from .labels import write_json_atomic, write_pipeline_json_atomic
 
 SEGMENTER_FILE = "rally-segmenter.json"
 DECODER_FILE = "rally-decoder.json"
@@ -159,11 +158,11 @@ def _one(out_dir, model):
     old_bytes = seg_path.read_bytes()
     _journal_set(out_dir)                  # from here a kill leaves a pair to repair
     try:
-        write_json_atomic(seg_path, clean_value({"fps": old.get("fps"), "rallies": rallies, "detection": detection}))
+        write_pipeline_json_atomic(seg_path, {"fps": old.get("fps"), "rallies": rallies, "detection": detection})
         try:
             for h in hits_doc["hits"]:
                 h["rally_id"] = _rally_id(rallies, int(h["frame"]))
-            write_json_atomic(hits_path, hits_doc)
+            write_pipeline_json_atomic(hits_path, hits_doc)
         except BaseException:
             _restore(seg_path, old_bytes)
             raise
@@ -241,7 +240,7 @@ def sync_hit_ids(out_dir):
             h["rally_id"] = new
             changed = True
     if changed:
-        write_json_atomic(out_dir / "hits.json", hits_doc)
+        write_pipeline_json_atomic(out_dir / "hits.json", hits_doc)
     return changed
 
 

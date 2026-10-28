@@ -162,14 +162,14 @@ def test_a_failed_hits_write_restores_the_segments_file(world, monkeypatch):
     results, labels, athletes, weights, _ = world
     keep_segmenter(results, labels, weights)
     old = (results / "m1" / "rally_segments.json").read_bytes()
-    real = rs.write_json_atomic
+    real = rs.write_pipeline_json_atomic
 
     def write(path, doc):
         if str(path).endswith("hits.json"):
             raise OSError("disk full")
         return real(path, doc)
 
-    monkeypatch.setattr(rs, "write_json_atomic", write)
+    monkeypatch.setattr(rs, "write_pipeline_json_atomic", write)
     summary = call(world, [results / "m1"])
     assert summary["failed"][0]["stem"] == "m1" and summary["touched"] == []
     assert (results / "m1" / "rally_segments.json").read_bytes() == old
@@ -298,3 +298,40 @@ def test_first_promote_rolls_back_to_swing_segments(world):
     assert not (weights / me.SEGMENTER_FILE).exists()
     summary = call(world)
     assert "m1" in summary["touched"] and segs(results, "m1")["detection"]["signal"] != "learned"
+
+
+def test_rollback_to_no_model_resegment_is_byte_identical(world, tmp_path):
+    """Review 5: re-segmenting writes the pipeline's own format, so back on the swing path the files match."""
+    from badminton_analysis.data import writer
+    results, labels, athletes, weights, _ = world
+    originals = {}
+    for stem in ("m1", "m2"):
+        for name in ("rally_segments.json", "hits.json"):      # as the analysis pipeline wrote them
+            path = results / stem / name
+            writer.write_json(str(path), json.loads(path.read_text(encoding="utf-8")))
+            originals[(stem, name)] = path.read_bytes()
+    keep_segmenter(results, labels, weights)
+    call(world)
+    assert segs(results, "m1")["detection"]["signal"] == "learned"
+    learned = (results / "m1" / "rally_segments.json").read_bytes()
+    expected = tmp_path / "expected.json"
+    writer.write_json(str(expected), json.loads(learned))
+    assert learned == expected.read_bytes()                    # the learned write is the pipeline's format too
+    (weights / me.SEGMENTER_FILE).unlink()
+    call(world)
+    for stem in ("m1", "m2"):
+        seg_path, hits_path = results / stem / "rally_segments.json", results / stem / "hits.json"
+        original = json.loads(originals[(stem, "rally_segments.json")])
+        rallies, detection = rs._swing(results / stem, original["detection"])      # what the swing path derives
+        expect = tmp_path / f"{stem}-swing.json"
+        writer.write_json(str(expect), {"fps": original["fps"], "rallies": rallies, "detection": detection})
+        assert seg_path.read_bytes() == expect.read_bytes()
+        back = json.loads(seg_path.read_text(encoding="utf-8"))
+        assert back["detection"].get("court_view") == original["detection"].get("court_view")
+        assert back["detection"]["signal"] != "learned" and "model" not in back["detection"]
+        hits = json.loads(hits_path.read_text(encoding="utf-8"))
+        for h in hits["hits"]:
+            h["rally_id"] = rs._rally_id(rallies, int(h["frame"]))
+        expect_hits = tmp_path / f"{stem}-hits.json"
+        writer.write_json(str(expect_hits), hits)
+        assert hits_path.read_bytes() == expect_hits.read_bytes()

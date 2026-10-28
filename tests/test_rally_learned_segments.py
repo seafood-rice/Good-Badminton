@@ -119,8 +119,8 @@ def test_the_learned_post_step_writes_segments_and_hits_atomically(tmp_path, mon
     from badminton_analysis.outcomes import labels as lab
     d = write_run(tmp_path / "run")
     s = system(d, tmp_path)
-    real, written = lab.write_json_atomic, []
-    monkeypatch.setattr(lab, "write_json_atomic", lambda path, doc: written.append(os.path.basename(str(path)))
+    real, written = lab.write_pipeline_json_atomic, []
+    monkeypatch.setattr(lab, "write_pipeline_json_atomic", lambda path, doc: written.append(os.path.basename(str(path)))
                         or real(path, doc))
     from badminton_analysis.data import writer
     monkeypatch.setattr(writer, "write_json", lambda *a, **k: pytest.fail("non-atomic writer used"))
