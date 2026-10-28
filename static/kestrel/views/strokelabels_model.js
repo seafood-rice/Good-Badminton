@@ -84,7 +84,9 @@ function memberOf(rally, rallies) {
   if (!rally) return () => true;
   if (Array.isArray(rallies) && rallies.length) {
     return (time) => {
-      const r = rallyFor(time, rallies);
+      // workspace_model rounds stroke times to 2 decimals before rallyFor; do the same, or a shot on the pad's edge
+      // counts in the summary but not here
+      const r = rallyFor(Math.round(time * 100) / 100, rallies);
       return !!r && (r === rally || (r.id !== undefined && r.id === rally.id));
     };
   }

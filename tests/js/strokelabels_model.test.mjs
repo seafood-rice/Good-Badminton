@@ -127,6 +127,13 @@ test('rowsForRally with the workspace rally list uses its membership (inside, el
   assert.deepEqual(rowsForRally(strokes, labels(), null, FPS, rallies).map((r) => r.time), [1, 2.7, 5.417, 20]);
 });
 
+test('rowsForRally rounds times like the workspace, so a shot on the pad edge counts in both', () => {
+  // seen live on 0003: the shot at 3.353 s is 0.5003 s past rally 1 (end 2.853 s); the workspace rounds it to 3.35
+  const rallies = [{ id: 1, start: 0.05, end: 2.853 }, { id: 2, start: 4.555, end: 7.291 }];
+  const rows = rowsForRally(doc(st(201.18, 'lower', 'net_rush')), labels(), rallies[0], FPS, rallies);
+  assert.deepEqual(rows.map((r) => r.time), [3.353]);
+});
+
 test('orphanLabels: labels no hit carries, scoped to the rally; added labels are never orphans', () => {
   const rallies = [{ id: 1, start: 0, end: 5 }, { id: 2, start: 6, end: 10 }];
   const strokes = doc(st(60, 'lower', 'clear'));
