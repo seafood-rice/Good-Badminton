@@ -310,6 +310,11 @@
 .mv-field{display:flex;flex-direction:column;gap:6px;flex:1 1 180px;min-width:0;}
 .mv-field.wide{flex:2 1 320px;}
 .mv-field label{font-size:12.5px;color:var(--ink2);font-weight:500;}
+.mv-scoring{border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin:0;min-width:0;}
+.mv-scoring legend{font-size:12.5px;color:var(--ink2);font-weight:500;padding:0 6px;}
+.mv-field.mv-check{flex-direction:row;align-items:center;gap:8px;}
+.mv-warn{font-size:12.5px;color:var(--warn,var(--ink2));font-weight:600;}
+.mv-warn:empty{display:none;}
 .mv-actions{display:flex;flex-wrap:wrap;gap:8px;}
 
 /* match peek */
@@ -790,6 +795,7 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 
 /* Stroke model card (Pipeline view, stroke correction spec section 6.1) */
 .sm-card{margin-bottom:16px;gap:8px;}
+.sm-version div+div{margin-top:2px;}
 .sm-metrics{display:flex;flex-wrap:wrap;align-items:center;gap:10px;}
 .sm-history{gap:4px;}
 .sm-hist-row{font-size:12.5px;color:var(--ink2);padding:4px 0;border-top:1px solid var(--line);}

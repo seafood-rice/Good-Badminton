@@ -227,7 +227,7 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
     def _kind(job_id, stage):
         if str(job_id).startswith('strategy_'):
             return 'strategy'
-        if str(job_id) in ('train_strokes', 'relabel_strokes'):
+        if str(job_id) in ('train_strokes', 'relabel_strokes', 'train_rally', 'resegment_rallies'):
             return 'training'
         if str(job_id).startswith('posture_') or 'posture' in str(stage or '').lower():
             return 'posture'

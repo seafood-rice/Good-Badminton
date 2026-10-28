@@ -1288,3 +1288,55 @@ def test_link_over_a_primary_with_parts_reports_has_parts():
     assert ath.validate_match({"part_of": "p9"}, data, "p1") == (None, "has_parts")
     assert ath.validate_match({"part_of": "p9"}, data, "p3") == ({"part_of": "p9",
                                                                   "sides_swapped": False}, None)
+
+
+# ------------------------------------------------------------- scoring format
+
+def test_scoring_is_optional_and_absent_by_default():
+    clean, err = ath.validate_match({"upper": {"name": "A"}}, ath.empty())
+    assert err is None and "scoring" not in clean
+    clean, err = ath.validate_match({"upper": {"name": "A"}, "scoring": None}, ath.empty())
+    assert err is None and "scoring" not in clean
+
+
+def test_scoring_is_cleaned_and_stored_on_a_primary():
+    data = ath.empty()
+    clean, err = ath.validate_match({"upper": {"name": "A"}, "scoring": {"preset": "one_game_30"}}, data, "p")
+    assert err is None
+    assert clean["scoring"]["points_to_win"] == 30 and clean["scoring"]["best_of"] == 1
+    stored = ath.set_match(data, "p", clean)
+    assert ath.get_match(stored, "p")["scoring"] == clean["scoring"]
+
+
+def test_scoring_is_kept_on_a_doubles_primary_and_invalid_is_refused():
+    clean, err = ath.validate_match({"format": "doubles", "scoring": {"preset": "15x3"}}, ath.empty())
+    assert err is None and clean["scoring"]["points_to_win"] == 15
+    assert ath.validate_match({"upper": {"name": "A"}, "scoring": {"preset": "bwf_21x3", "best_of": 2}},
+                              ath.empty()) == (None, "invalid_scoring")
+    assert ath.validate_match({"scoring": "x"}, ath.empty()) == (None, "invalid_scoring")
+
+
+def test_a_link_record_refuses_scoring():
+    data = ath.set_match(ath.empty(), "p1", {"upper": {"name": "A"}})
+    clean, err = ath.validate_match({"part_of": "p1", "scoring": {"preset": "one_game_30"}}, data, "p2")
+    assert clean is None and err == "invalid_record"
+
+
+def test_a_part_reads_its_primarys_scoring():
+    data = ath.empty()
+    clean, _ = ath.validate_match({"upper": {"name": "A"}, "scoring": {"preset": "one_game_30"}}, data, "p1")
+    data = ath.set_match(data, "p1", clean)
+    data = ath.set_match(data, "p2", {"part_of": "p1", "sides_swapped": False})
+    assert ath.resolve_record(data, "p2")["scoring"]["preset"] == "one_game_30"
+
+
+def test_a_record_with_only_a_scoring_format_is_kept(tmp_path):
+    """Review 18: a match that has only its scoring format set is real content, not a blank record."""
+    for raw in ({"scoring": {"preset": "one_game_30"}}, {"format": "doubles", "scoring": {"preset": "15x3"}}):
+        clean, err = ath.validate_match(raw, ath.empty(), "p")
+        assert err is None and not ath._is_blank(clean) and not ath.is_link(clean)
+        stored = ath.set_match(ath.empty(), "p", clean)
+        assert "p" in stored["matches"]
+        assert ath.get_match(stored, "p")["scoring"] == clean["scoring"]
+        assert "part_of" not in stored["matches"]["p"]
+    assert ath._is_blank({"date": None, "upper": None, "lower": None, "result": None})

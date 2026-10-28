@@ -925,3 +925,35 @@ def test_delete_of_a_primary_on_a_corrupt_store_is_skipped(client):
     before = _corrupt_store(store)
     assert c.post("/api/delete/p1", json={"scope": "all"}).status_code == 200
     assert store.read_bytes() == before
+
+
+def test_put_match_scoring_round_trips_and_a_bad_one_is_400(client, tmp_path):
+    c, videos, *_ = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    rec = {"date": "2026-10-11", "upper": {"name": "S. Ito"}, "lower": None, "result": None,
+           "scoring": {"preset": "one_game_30"}}
+    res = c.put("/api/matches/clip", json=rec)
+    assert res.status_code == 200
+    assert c.get("/api/matches/clip").get_json()["scoring"]["points_to_win"] == 30
+    bad = c.put("/api/matches/clip", json={**rec, "scoring": {"preset": "bwf_21x3", "best_of": 2}})
+    assert bad.status_code == 400
+    _assert_static_bilingual(bad, tmp_path)
+    # A result impossible under the format is accepted (the page warns, the store does not refuse).
+    odd = {**rec, "result": {"winner": "upper", "sets": [[30, 28]]}}
+    assert c.put("/api/matches/clip", json=odd).status_code == 200
+
+
+def test_doubles_record_scoring_round_trips_and_a_bad_one_is_400(client):
+    c, videos, _outputs, store = client
+    (videos / "clip.mp4").write_bytes(b"\x00")
+    record = _doubles_record({"P1": {"name": "A"}, "P2": {"name": "B"}, "P3": {"name": "C"}, "P4": {"name": "D"}},
+                             scoring={"preset": "one_game_30"})
+    res = c.put("/api/matches/clip", json=record)
+    assert res.status_code == 200
+    stored = c.get("/api/matches/clip").get_json()
+    assert stored["format"] == "doubles" and stored["scoring"]["points_to_win"] == 30
+    assert stored["scoring"]["best_of"] == 1 and stored["scoring"]["preset"] == "one_game_30"
+    assert libathletes.load(store)["matches"]["clip"]["scoring"] == stored["scoring"]
+    bad = c.put("/api/matches/clip", json={**record, "scoring": {"preset": "bwf_21x3", "best_of": 2}})
+    assert bad.status_code == 400
+    assert c.get("/api/matches/clip").get_json()["scoring"]["points_to_win"] == 30      # the bad one was not stored

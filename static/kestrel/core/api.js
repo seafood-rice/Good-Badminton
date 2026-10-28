@@ -136,6 +136,9 @@ export const endpoints = {
   strokeModel: () => '/api/stroke-model',
   strokeModelRetrain: () => '/api/stroke-model/retrain',
   strokeModelRollback: () => '/api/stroke-model/rollback',
+  rallyModel: () => '/api/rally-model',
+  rallyModelRetrain: () => '/api/rally-model/retrain',
+  rallyModelRollback: () => '/api/rally-model/rollback',
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
 };
 
@@ -202,4 +205,10 @@ export const api = {
   strokeModel: (opts) => getJSON(endpoints.strokeModel(), opts),
   retrainStrokeModel: (opts) => sendJSON('POST', endpoints.strokeModelRetrain(), undefined, opts),
   rollbackStrokeModel: (opts) => sendJSON('POST', endpoints.strokeModelRollback(), undefined, opts),
+  // Rally model card (rally-winner-learning spec 7.3). rallyModel -> {live: {segmenter, decoder}, counts, can_retrain,
+  // missing, history, can_rollback, job}; retrain answers {job_id, queued} or a 409 (body.reason 'busy' |
+  // 'not_enough_labels'); rollback a 409 busy / 404 none and queues the re-segment job.
+  rallyModel: (opts) => getJSON(endpoints.rallyModel(), opts),
+  retrainRallyModel: (opts) => sendJSON('POST', endpoints.rallyModelRetrain(), undefined, opts),
+  rollbackRallyModel: (opts) => sendJSON('POST', endpoints.rallyModelRollback(), undefined, opts),
 };

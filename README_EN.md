@@ -449,6 +449,12 @@ On Match details, the **Strokes** block under the rally summary lists the detect
 
 The **Stroke model** card on the Pipeline page shows the current model's accuracy on your test matches and the label counts. **Retrain** unlocks at 50 new train labels and 20 labelled test shots. A new model is kept only if it scores at least as well as the current one on the same test shots; every match is then relabelled with your corrections kept. **Roll back** restores the previous model. Weights and history live in `weights/` (a mounted volume in Docker).
 
+### Scoring format and learned rally models
+
+Each match has a **scoring format** in the match editor: BWF 21x3 (the default: 21 points, win by 2, capped at 30, ends change after each game and at 11 in the third), one game to 30 (first to 30 wins, ends change at 15), 15x3 (15 points; win-by and cap editable), or custom. Rally-outcome checks against the recorded result use it, and a result that is impossible under the format is accepted with a warning.
+
+The **Rally model** card on the Pipeline page trains two models from your point labels (the Point block): a rally segmenter (where points end, from the hit sequence) and a winner decoder (the score sequence under the match's format, with each signal's reliability learned from your labels). Each is measured leave-one-match-out and kept only if it beats today's behaviour: the segmenter's point-end F1 must reach the swing segmenter's, the decoder needs >= 85 % precision and at least as many correct winners as the rule cascade. Retrain unlocks with 2 labelled matches of 20+ points each and 20 new point labels. A kept model re-segments every finished match offline. Until a model is kept, analyses behave exactly as before.
+
 ## 📝 Usage
 
 

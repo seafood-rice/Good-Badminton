@@ -107,18 +107,43 @@ def _replace_with_retry(tmp, path):
             time.sleep(_REPLACE_BACKOFF_SEC)
 
 
-def write_json_atomic(path, doc):
-    """Write ``doc`` as JSON atomically (temp file in the same directory + os.replace)."""
+def _atomic(path, write, mode="w"):
+    """Fill a temp file in ``path``'s directory with ``write(file)``, then ``os.replace`` it onto ``path``."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.stem}-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(doc, f, ensure_ascii=False, indent=1)
+        with os.fdopen(fd, mode, **({"encoding": "utf-8"} if mode == "w" else {})) as f:
+            write(f)
         _replace_with_retry(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+def write_json_atomic(path, doc):
+    """Write ``doc`` as JSON atomically (temp file in the same directory + os.replace)."""
+    _atomic(path, lambda f: json.dump(doc, f, ensure_ascii=False, indent=1))
+
+
+def write_pipeline_json_atomic(path, payload):
+    """``data.writer.write_json`` (clean_value, indent 2, trailing newline), but atomically.
+
+    For the files the analysis pipeline writes (``rally_segments.json``, ``hits.json``): a later
+    rewrite leaves the same bytes the pipeline would have written.
+    """
+    from ..data.writer import clean_value
+
+    def write(f):
+        json.dump(clean_value(payload), f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    _atomic(path, write)
+
+
+def write_bytes_atomic(path, data):
+    """Put ``data`` (bytes) at ``path`` atomically."""
+    _atomic(path, lambda f: f.write(data), mode="wb")
 
 
 def attach(labels, segments):

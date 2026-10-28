@@ -13,22 +13,27 @@ cannot write.
 import argparse
 import datetime
 import json
+import math
 from pathlib import Path
 
 from ..insights.loaders import load_run, number
 from ..insights.rally import summarise_rally_payload
 from ..library import athletes as libathletes
+from . import decoder as dec
 from . import evidence as ev
 from . import labels as lab
+from . import scoring
 from .reconcile import match_parts, reconcile
 from .rules import decide
 
 SCHEMA = 1
 OUTCOMES_NAME = "rally_outcomes.json"
 ADDED_WINDOW_SEC = 10.0
+ZERO_START_PRIOR = 4.0     # a primary video with a result starts at 0-0 unless a free start fits this much better
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LABELS_DIR = PROJECT_ROOT / "data" / "rally_labels"
 DEFAULT_ATHLETES = PROJECT_ROOT / "data" / "athletes.json"
+DEFAULT_DECODER = PROJECT_ROOT / "weights" / "rally-decoder.json"
 
 
 def _segments(run):
@@ -174,10 +179,107 @@ def _entry(run, start, end, segment_id, label, auto):
         entry.update(winner_side=auto["decision"]["winner_side"],
                      confidence=auto["decision"]["confidence"], source="auto",
                      evidence=dict(auto["evidence"], rule=auto["decision"]["rule"]))
+    elif auto is not None and "decoder" in (auto["evidence"] or {}):   # decoded, but no claim
+        entry["evidence"] = {"decoder": auto["evidence"]["decoder"], "rule": "decoder"}
     return entry
 
 
-def _summary(entries, segments, rejected, added):
+def _decoder_items(run, segments, auto, labels_doc, inputs):
+    """``[(end_sec, segment_id|None, Obs, clamp|None)]`` in entry order: the segments (not-point
+    ones included) and the owner's added points, which are steps with no segment."""
+    by_segment, added = lab.attach(labels_doc["labels"], segments)
+    items = []
+    for seg, obs in zip(segments, dec.observations(segments, inputs, auto)):
+        label = by_segment.get(seg["id"])
+        verdict = label["verdict"] if label is not None else None
+        items.append((seg["end_sec"], seg["id"], obs,
+                      verdict if verdict in lab.SIDES or verdict == "not_point" else None))
+    for label in added:
+        items.append((label["end_sec"], None, dec.Obs(p_point=1.0), label["verdict"]))
+    items.sort(key=lambda i: i[0])
+    return items
+
+
+def _final_sets(record, fmt):
+    """The recorded sets as ``[(upper, lower)]``, or None. Doubles sets are team-1-first and the
+    record does not say which side team 1 is on, so no final constraint is made for them."""
+    if libathletes.record_format(record) == "doubles":
+        return None
+    result = record.get("result") if isinstance(record, dict) else None
+    sets = result.get("sets") if isinstance(result, dict) else None
+    if not isinstance(sets, list) or not sets or not scoring.consistent(fmt, sets):
+        return None
+    return [(int(s[0]), int(s[1])) for s in sets]
+
+
+def _start_key(res, bonus=0.0):
+    """Ranking of a decode result: a met final score first, then the log-likelihood."""
+    return (not res["final_open"], res["loglik"] + bonus)
+
+
+def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model, labels_dir, inputs=None,
+                  unclamped=(), notes=None):
+    """``({segment_id: {"upper", "lower", "none"}}, final_open)`` for ``out_dir``'s segments.
+
+    Every part of the match up to this one is decoded in order, each starting from the
+    previous part's end distribution (sides mapped with ``sides_swapped``). ``inputs``
+    (optional) are ``out_dir``'s already loaded run inputs. ``unclamped`` = stems whose owner
+    labels are ignored (the held-out match of a measurement); ``notes`` (a list) receives
+    ``start_free`` when the first video of a match with a result starts better from a free
+    state than from 0-0 (a recording that begins mid-game).
+    """
+    from . import run_inputs
+    stem = run.stem
+    parts = match_parts(athletes_data, stem) or [(stem, False)]
+    primary = libathletes.resolve_record(athletes_data, parts[0][0])
+    fmt = scoring.resolve(primary)
+    has_result = isinstance(primary.get("result"), dict) and bool(primary["result"])
+    start = "zero" if has_result else "free"   # parts[0] is the primary: no earlier part
+    final_sets = _final_sets(primary, fmt)
+    covered = True
+    for index, (part, swapped) in enumerate(parts):
+        if part == stem:
+            part_items = _decoder_items(run, segments, auto, labels_doc,
+                                        inputs if inputs is not None else run_inputs.load(out_dir))
+        else:
+            part_dir = Path(out_dir).parent / part
+            try:
+                part_run = load_run(part_dir) if part_dir.is_dir() else None
+                if part_run is None:
+                    raise ValueError("missing part")
+                part_segments = _segments(part_run)
+                part_auto = _auto(part_segments, _learned_hits(part_run), _Landing(part_run, part_dir))
+                part_labels = lab.load(lab.labels_path(labels_dir, part)) or lab.empty()
+                part_items = _decoder_items(part_run, part_segments, part_auto, part_labels,
+                                            run_inputs.load(part_dir))
+            except Exception:
+                covered, start = False, "free"   # a gap: the next part cannot continue from a known score
+                continue
+        last = index == len(parts) - 1
+        if part in unclamped:
+            part_items = [item[:3] + (None,) for item in part_items if item[1] is not None]
+        clamps = {i: item[3] for i, item in enumerate(part_items) if item[3] is not None}
+        observed = [item[2] for item in part_items]
+        final = final_sets if last and covered else None
+
+        def run_decode(begin):
+            return dec.decode(model, fmt, observed, clamps=clamps, start=begin, final=final, swapped=swapped)
+
+        res = run_decode(start)
+        if index == 0 and start == "zero":
+            free = run_decode("free")
+            if _start_key(free) > _start_key(res, math.log(ZERO_START_PRIOR)):
+                res = free
+                if notes is not None and "start_free" not in notes:
+                    notes.append("start_free")
+        start = res["end"] or "free"
+        if part == stem:
+            p = {item[1]: res["p"][i] for i, item in enumerate(part_items) if item[1] is not None}
+            return p, (res["final_open"] if last else False)
+    return {}, True
+
+
+def _summary(entries, segments, rejected, added, calibrated=False):
     labelled = [e for e in entries if e["winner_side"]]
     return {
         "entries": len(entries), "labelled": len(labelled),
@@ -185,7 +287,7 @@ def _summary(entries, segments, rejected, added):
         "coverage": round(len(labelled) / len(entries), 4) if entries else None,
         "points_won": {s: sum(1 for e in labelled if e["winner_side"] == s) for s in lab.SIDES},
         "segments": len(segments), "segments_rejected": rejected, "added": added,
-        "confidence_calibrated": False,
+        "confidence_calibrated": calibrated,
     }
 
 
@@ -198,11 +300,32 @@ def _read_doc(path):
     return doc if isinstance(doc, dict) and doc.get("schema") == SCHEMA else None
 
 
-def build_document(out_dir, labels_doc, athletes_data, other_parts=None):
+def _with_decoder(auto, probs, threshold):
+    """``auto`` with the decoder's winners (claimed at ``threshold``) in place of the rule cascade."""
+    out = {}
+    for sid, row in auto.items():
+        p = probs.get(sid)
+        decision = {"winner_side": None, "confidence": None, "rule": "decoder"}
+        evidence = row["evidence"]
+        if p is not None:
+            evidence = dict(evidence, decoder={"p_upper": round(p["upper"], 4),
+                                               "p_lower": round(p["lower"], 4),
+                                               "p_point": round(1.0 - p["none"], 4)})
+            claim = dec.claims({"p": [p]}, threshold)[0]
+            if claim is not None:
+                decision = {"winner_side": claim, "confidence": round(p[claim], 4), "rule": "decoder"}
+        out[sid] = {"decision": decision, "ending": row["ending"], "evidence": evidence}
+    return out
+
+
+def build_document(out_dir, labels_doc, athletes_data, other_parts=None,
+                   decoder_path=DEFAULT_DECODER, labels_dir=DEFAULT_LABELS_DIR):
     """The ``rally_outcomes.json`` document for ``out_dir``.
 
     ``other_parts`` = ``{stem: doc|None}`` for the other parts of the match; read
-    from the sibling output directories when None.
+    from the sibling output directories when None. When the decoder model at
+    ``decoder_path`` loads, its winners replace the rule cascade's (``labels_dir``
+    holds the other parts' owner labels); otherwise the output is as without it.
     """
     out_dir = Path(out_dir)
     run = load_run(out_dir)
@@ -212,6 +335,20 @@ def build_document(out_dir, labels_doc, athletes_data, other_parts=None):
         labels_doc = lab.empty()
     segments = _segments(run)
     auto = _auto(segments, _learned_hits(run), _Landing(run, out_dir))
+    calibrated = False
+    model = dec.load(decoder_path) if decoder_path is not None else None
+    if model is not None:
+        try:
+            probs, final_open = _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data,
+                                              model, labels_dir, notes=notes)
+            threshold = model.get("claim_threshold")
+            auto = _with_decoder(auto, probs, threshold if isinstance(threshold, (int, float))
+                                 and not isinstance(threshold, bool) else dec.DEFAULT_CLAIM_THRESHOLD)
+            calibrated = True
+            if final_open:
+                notes.append("final_score_open")
+        except Exception as exc:   # never fatal: the rule cascade still stands
+            notes.append(f"winner decoder failed; rule cascade used: {exc!r}")
     by_segment, added = lab.attach(labels_doc["labels"], segments)
 
     rows = []   # (start, end, segment_id, label, auto)
@@ -238,7 +375,7 @@ def build_document(out_dir, labels_doc, athletes_data, other_parts=None):
     doc = {"schema": SCHEMA, "stem": run.stem, "match_format": run.match_format,
            "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "rallies": entries,
-           "summary": _summary(entries, segments, rejected, sum(1 for e in entries if e["segment_id"] is None)),
+           "summary": _summary(entries, segments, rejected, sum(1 for e in entries if e["segment_id"] is None), calibrated),
            "notes": notes + list(run.notes)}
     parts = match_parts(athletes_data, run.stem)
     docs = {run.stem: doc}
@@ -253,14 +390,16 @@ def build_document(out_dir, labels_doc, athletes_data, other_parts=None):
     return doc
 
 
-def build(out_dir, labels_dir=DEFAULT_LABELS_DIR, athletes_path=DEFAULT_ATHLETES):
+def build(out_dir, labels_dir=DEFAULT_LABELS_DIR, athletes_path=DEFAULT_ATHLETES,
+          decoder_path=DEFAULT_DECODER):
     """Build and write ``out_dir/rally_outcomes.json``; the document, or None on failure."""
     out_dir = Path(out_dir)
     try:
         if not out_dir.is_dir():
             return None
         labels_doc = lab.load(lab.labels_path(labels_dir, out_dir.name))
-        doc = build_document(out_dir, labels_doc, libathletes.load(athletes_path))
+        doc = build_document(out_dir, labels_doc, libathletes.load(athletes_path),
+                             decoder_path=decoder_path, labels_dir=labels_dir)
         lab.write_json_atomic(out_dir / OUTCOMES_NAME, doc)
         return doc
     except Exception as exc:   # never fatal: the analysis / label save already succeeded
@@ -268,7 +407,8 @@ def build(out_dir, labels_dir=DEFAULT_LABELS_DIR, athletes_path=DEFAULT_ATHLETES
         return None
 
 
-def rebuild_match(outputs_dir, stem, labels_dir=DEFAULT_LABELS_DIR, athletes_path=DEFAULT_ATHLETES):
+def rebuild_match(outputs_dir, stem, labels_dir=DEFAULT_LABELS_DIR, athletes_path=DEFAULT_ATHLETES,
+                  decoder_path=DEFAULT_DECODER):
     """Rebuild ``stem`` and then every other part of its match; the stems written."""
     outputs_dir = Path(outputs_dir)
     data = libathletes.load(athletes_path)
@@ -279,7 +419,8 @@ def rebuild_match(outputs_dir, stem, labels_dir=DEFAULT_LABELS_DIR, athletes_pat
         if not out_dir.is_dir():
             continue
         try:
-            docs[s] = build_document(out_dir, lab.load(lab.labels_path(labels_dir, s)), data)
+            docs[s] = build_document(out_dir, lab.load(lab.labels_path(labels_dir, s)), data,
+                                     decoder_path=decoder_path, labels_dir=labels_dir)
         except Exception as exc:   # never fatal, as in build()
             print(f"rally_outcomes.json not built for {s}: {exc!r}")
     # Every part's reconciliation sees every part's fresh document.

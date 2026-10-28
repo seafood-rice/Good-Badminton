@@ -37,6 +37,7 @@ _MATCH_ERRORS = {
     'invalid_date': {'error': '日期无效，应为 YYYY-MM-DD / invalid date, expected YYYY-MM-DD'},
     'invalid_side': {'error': '选手信息无效 / invalid player entry'},
     'invalid_result': {'error': '比分结果无效 / invalid result'},
+    'invalid_scoring': {'error': '计分规则无效 / invalid scoring format'},
     'invalid_players': {'error': '双打选手信息无效 / invalid doubles players'},
     'unknown_athlete': _UNKNOWN_ATHLETE,
     # split matches: a video linked as a later part of another video's match
