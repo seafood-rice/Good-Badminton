@@ -6,6 +6,9 @@ Uses the saved hit inputs (hit_signals.npz, hits.json), so the video is not re-p
 Rewrites strokes.json (schema 2), re-scores strokes.jsonl / technique_summary.json from
 each report's measured metrics, and removes the cached training_plan.json.
 
+With ``labels_dir`` (the CLI defaults to data/stroke_labels) the owner's stroke corrections
+are re-applied over the new model output and the reports are re-scored with the applied type.
+
 Without the weights file a result is left untouched ("skipped": "weights not found"), so
 good labels are never replaced by all-unknown ones; --allow-unknown writes them anyway.
 """
@@ -17,11 +20,14 @@ import sys
 from ..analysis.biomechanics import rescore_report
 from ..analysis.technique_writer import build_match_summary, write_stroke_reports
 from ..data.writer import write_json
+from . import owner_labels
 from . import stroke_classifier as sc
 from .hit_signals import load_signals
 
 DEFAULT_WEIGHTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "weights", "stroke-classifier.pt")
+DEFAULT_LABELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))), "data", "stroke_labels")
 
 
 def _json(path):
@@ -32,7 +38,7 @@ def _json(path):
         return None
 
 
-def relabel(result_dir, weights, allow_unknown=False):
+def relabel(result_dir, weights, allow_unknown=False, labels_dir=None):
     meta = _json(os.path.join(result_dir, "metadata.json")) or {}
     if meta.get("match_format") == "doubles":
         return {"result": result_dir, "skipped": "doubles"}
@@ -89,7 +95,12 @@ def relabel(result_dir, weights, allow_unknown=False):
     write_json(os.path.join(result_dir, "strokes.json"),
                sc.build_payload(labels, info, hits_doc.get("source"), hits_doc.get("shuttle_source"),
                                 reason=reason))
-    by_key = {(l["frame"], l["hitter"]): l for l in labels}
+    applied = labels_dir is not None and owner_labels.apply_to_result(
+        result_dir, labels_dir, os.path.basename(os.path.normpath(result_dir)))["applied"]
+    if applied:
+        # the reports are scored with the owner's types; they stay keyed by the model's hitter
+        labels = (_json(os.path.join(result_dir, "strokes.json")) or {}).get("strokes") or labels
+    by_key = {(l["frame"], l.get("model_hitter", l["hitter"])): l for l in labels}
     n_reports = 0
     if reports is not None:
         new = []
@@ -115,9 +126,12 @@ def main(argv=None):
     p.add_argument("--weights", default=DEFAULT_WEIGHTS)
     p.add_argument("--allow-unknown", action="store_true",
                    help="without the weights file, still rewrite every hit as unknown")
+    p.add_argument("--labels-dir", default=DEFAULT_LABELS_DIR,
+                   help="owner stroke labels to re-apply (default data/stroke_labels)")
     a = p.parse_args(argv)
     for d in a.results:
-        print(json.dumps(relabel(d, a.weights, allow_unknown=a.allow_unknown)))
+        print(json.dumps(relabel(d, a.weights, allow_unknown=a.allow_unknown,
+                                 labels_dir=a.labels_dir)))
     return 0
 
 

@@ -209,3 +209,58 @@ def test_import_sheet_once_and_skips_existing(tmp_path):
         ("added", "upper", "lift")]
     assert ol.import_sheet(sheet, labels, results) == []
     assert ol.load(ol.labels_path(labels, "other"))["labels"] == [lab(9.0)]
+
+
+def _relabel_fixture(tmp_path, label):
+    from badminton_analysis.stroke import relabel
+    from badminton_analysis.stroke import stroke_model as smod
+    from badminton_analysis.stroke.stroke_windows import INPUT_DIM
+    from tests.test_relabel import _old_result
+    d = tmp_path / "V"
+    _old_result(d)
+    m = smod.StrokeNet(INPUT_DIM, hidden=8, levels=1)
+    w = tmp_path / "w.pt"
+    smod.save_stroke_model(m, smod.base_meta(8, 1, 0.0), w)
+    labels = tmp_path / "labels"
+    if label is not None:
+        ol.save(ol.labels_path(labels, "V"), doc_of(label))
+    return relabel, d, w, labels
+
+
+def test_relabel_keeps_owner_correction(tmp_path):
+    relabel, d, w, labels = _relabel_fixture(tmp_path, lab(150 / 30.0, stroke="smash"))
+    relabel.relabel(str(d), str(w), labels_dir=str(labels))
+    s = json.loads((d / "strokes.json").read_text(encoding="utf-8"))
+    row = s["strokes"][0]
+    assert row["stroke"] == "smash" and row["source"] == "owner"
+    assert row["model_stroke"] and row["model_group"] == group_of(row["model_stroke"])
+    assert s["owner_labels"]["labelled"] == 1
+    rep = json.loads((d / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert rep["stroke_type"] == "smash"          # re-scored with the applied type
+
+
+def test_relabel_without_labels_dir_is_unchanged(tmp_path):
+    relabel, d, w, labels = _relabel_fixture(tmp_path, lab(150 / 30.0, stroke="smash"))
+    relabel.relabel(str(d), str(w))
+    s = json.loads((d / "strokes.json").read_text(encoding="utf-8"))
+    assert "owner_labels" not in s and "source" not in s["strokes"][0]
+
+
+def test_analysis_reapplies_owner_labels_after_its_own_write(tmp_path):
+    from tests.test_stroke_pipeline import _bare
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "hits.json").write_text(json.dumps({"fps": 30.0, "hits": []}), encoding="utf-8")
+    labels = tmp_path / "labels"
+    ol.save(ol.labels_path(labels, "run"), doc_of(lab(5.0, stroke="smash")))
+    s = _bare(run)
+    s.stroke_labels_dir = str(labels)
+    s._run_stroke_classification()
+    row = json.loads((run / "strokes.json").read_text(encoding="utf-8"))["strokes"][0]
+    assert row["stroke"] == "smash" and row["source"] == "owner" and row["model_stroke"] == "unknown"
+
+
+def test_analysis_without_labels_dir_writes_plain_model_output(tmp_path):
+    from tests.test_stroke_pipeline import _bare
+    _bare(tmp_path)._run_stroke_classification()
+    assert "source" not in json.loads((tmp_path / "strokes.json").read_text(encoding="utf-8"))["strokes"][0]
