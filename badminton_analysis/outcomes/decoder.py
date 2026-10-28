@@ -2,10 +2,13 @@
 
 A hidden-state model over the match's score: one step per rally segment, each step
 either gives a point to the upper or the lower side, or is "not a point". The state
-is ``(game, a, b, server, flipped)``: ``a`` / ``b`` are the points of the two
+is ``(game, a, b, server, flipped, games_a)``: ``a`` / ``b`` are the points of the two
 players (``a`` is the primary record's upper player in game 1), ``server`` is the
 player who served (0 / 1, 2 = unknown) and ``flipped`` says whether the players
-have changed ends an odd number of times. Game ends, end changes and the match end
+have changed ends an odd number of times; ``games_a`` is the games ``a`` has won (the
+games ``b`` has won follow from ``game``), so the match ends when ``scoring.match_over``.
+With ``win_by`` 2 and no cap the deuce scores are folded to their equivalent classes (tied or
+one point up, with the parity of the score kept) so the state space is finite. Game ends, end changes and the match end
 follow the scoring format (``scoring.py``).
 
 Each signal (landing winner, last hitter, next server) has a table of
@@ -36,8 +39,8 @@ P_EPS = 1e-4
 CENTRE_X = 3.05
 CENTRE_BAND = 0.15       # a server this close to the centre line has no readable court
 FRAME_SLACK = 15         # nearest position within this many frames of the first hit
-END = (-1, 0, 0, 2, 0)   # the match is over
-START_ZERO = (1, 0, 0, 2, 0)
+END = (-1, 0, 0, 2, 0, 0)   # the match is over
+START_ZERO = (1, 0, 0, 2, 0, 0)
 END_MASS_MIN = 1e-6
 
 
@@ -111,8 +114,19 @@ def observations(segments, inputs, auto_evidence):
 
 # ---------------------------------------------------------------- score rules
 
-def _advance(fmt, final, g, a, b, fl, player):
-    """The state after ``player`` wins a point, ``END``, or None when ``final`` forbids it."""
+def _fold(fmt, a, b):
+    """Equivalent class of a deuce score of an uncapped win-by-2 game (parity of the score kept)."""
+    low = fmt["points_to_win"] - 1
+    if fmt["cap"] is not None or fmt["win_by"] != 2 or min(a, b) < low:
+        return a, b
+    base = low if (min(a, b) - low) % 2 == 0 else low + 1
+    return base + max(a - b, 0), base + max(b - a, 0)
+
+
+def _advance(fmt, final, g, a, b, fl, player, ga=None):
+    """The state after ``player`` wins a point, ``END``, or None when ``final`` forbids it.
+
+    ``ga`` = games won by ``a`` so far; None (unknown) ends the match after game ``best_of``."""
     pa, pb = a, b
     if player == 0:
         a += 1
@@ -127,24 +141,40 @@ def _advance(fmt, final, g, a, b, fl, player):
             return None
     change = int(bool(scoring.ends_change(fmt, g, a, b, pa, pb)))
     if over:
-        last = g >= (len(final) if final is not None else fmt["best_of"])
-        return END if last else (g + 1, 0, 0, player, fl ^ change)
-    return (g, a, b, player, fl ^ change)
+        if final is not None:
+            last = g >= len(final)
+        elif ga is None:
+            last = g >= fmt["best_of"]
+        else:
+            last = scoring.match_over(fmt, ga + (player == 0), (g - 1 - ga) + (player == 1))
+        gw = (ga or 0) + (player == 0)
+        return END if last else (g + 1, 0, 0, player, fl ^ change, gw)
+    if final is None:
+        a, b = _fold(fmt, a, b)
+    return (g, a, b, player, fl ^ change, ga or 0)
 
 
 def _free_states(fmt, final):
     top = fmt["cap"] if fmt["cap"] is not None else fmt["points_to_win"] + 1
     games = len(final) if final is not None else fmt["best_of"]
+    need = fmt["best_of"] // 2 + 1
     out = []
     for g in range(1, games + 1):
-        for a in range(top):
-            for b in range(top):
-                if scoring.game_over(fmt, a, b):
-                    continue
-                if final is not None and (a > final[g - 1][0] or b > final[g - 1][1]):
-                    continue
-                for fl in (0, 1):
-                    out.append((g, a, b, 2, fl))
+        if final is not None:
+            gas = [sum(1 for x, y in final[:g - 1] if x > y)]
+        else:
+            gas = [x for x in range(g) if x < need and g - 1 - x < need]
+        for ga in gas:
+            for a in range(top):
+                for b in range(top):
+                    if scoring.game_over(fmt, a, b):
+                        continue
+                    if final is not None and (a > final[g - 1][0] or b > final[g - 1][1]):
+                        continue
+                    if final is None and _fold(fmt, a, b) != (a, b):
+                        continue
+                    for fl in (0, 1):
+                        out.append((g, a, b, 2, fl, ga))
     return out
 
 
@@ -162,9 +192,9 @@ class _Space:
             i += 1
             succ = [-1, -1]
             if s != END:
-                g, a, b, _sv, fl = s
+                g, a, b, _sv, fl, ga = s
                 for player in (0, 1):
-                    nxt = _advance(fmt, final, g, a, b, fl, player)
+                    nxt = _advance(fmt, final, g, a, b, fl, player, ga)
                     if nxt is not None:
                         succ[player] = self._add(nxt)
             self.su.append(succ[0])
@@ -203,7 +233,7 @@ def _norm(counts):
 
 def _parity_counts(fmt, seq):
     """``(agree, n)`` of observed service courts against the score implied from 0-0."""
-    g, a, b, fl, server = 1, 0, 0, 0, None
+    g, a, b, fl, server, ga = 1, 0, 0, 0, None, 0
     agree = n = 0
     for obs, verdict in seq:
         if verdict not in SIDES:
@@ -212,28 +242,30 @@ def _parity_counts(fmt, seq):
             n += 1
             implied = "right" if (a if server == 0 else b) % 2 == 0 else "left"
             agree += implied == obs.serve_court
-        nxt = _advance(fmt, None, g, a, b, fl, SIDES.index(verdict) ^ fl)
+        nxt = _advance(fmt, None, g, a, b, fl, SIDES.index(verdict) ^ fl, ga)
         if nxt == END:
             break
-        g, a, b, server, fl = nxt
+        g, a, b, server, fl, ga = nxt
     return agree, n
 
 
-def fit(labelled, fmt=None):
+def fit(labelled, fmt=None, fmts=None):
     """The decoder model from labelled rallies.
 
     ``labelled`` is ``[(Obs | None, verdict)]`` in time order for one video (verdict
     ``upper`` / ``lower`` / ``not_point``; an ``Obs`` of None is a point with no
     segment: it moves the score but gives no signal counts), or a list of such lists.
-    Parity is counted from 0-0 under ``fmt`` (default preset), per video with the
-    better of the two mirror readings.
+    Parity is counted from 0-0 under the video's own format, per video with the better
+    of the two mirror readings: ``fmts`` is one format per video (parallel to the lists),
+    else ``fmt`` (default preset) for all.
     """
     fmt = fmt or scoring.resolve(None)
     seqs = labelled if labelled and isinstance(labelled[0], list) else [list(labelled or [])]
     point = {s: {"agree": 1, "disagree": 1, "absent": 1} for s in SIGNALS}
     none = {s: {"present": 1, "absent": 1} for s in SIGNALS}
     points = not_points = agree_total = n_total = 0
-    for seq in seqs:
+    for k, seq in enumerate(seqs):
+        seq_fmt = fmts[k] if fmts is not None and k < len(fmts) and fmts[k] else fmt
         for obs, verdict in seq:
             if obs is None:
                 points += verdict in SIDES
@@ -247,7 +279,7 @@ def fit(labelled, fmt=None):
                 not_points += 1
                 for name in SIGNALS:
                     none[name]["absent" if getattr(obs, name) is None else "present"] += 1
-        agree, n = _parity_counts(fmt, seq)
+        agree, n = _parity_counts(seq_fmt, seq)
         agree_total += max(agree, n - agree)
         n_total += n
     return {"schema": SCHEMA, "kind": KIND,
@@ -405,7 +437,7 @@ class _Infeasible(Exception):
 
 
 def _legal(fmt, final, s):
-    g, a, b, _sv, _fl = s
+    g, a, b, _sv, _fl, _ga = s
     if scoring.game_over(fmt, a, b):
         return False
     if final is not None and (g > len(final) or a > final[g - 1][0] or b > final[g - 1][1]):

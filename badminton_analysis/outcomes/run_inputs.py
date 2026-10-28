@@ -8,6 +8,8 @@ unusable run directory and never raises for bad input.
 """
 import json
 import math
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -83,7 +85,52 @@ def _trajectory_frames(out_dir):
     return frames
 
 
+_CACHE_FILES = ("metadata.json", "detections.jsonl", "hits.json", "shuttle_trajectory.json")
+_CACHE_SIZE = 8
+_cache = OrderedDict()           # {resolved dir: (signature, Inputs)}, most recent last
+_cache_lock = threading.Lock()
+
+
+def _signature(out_dir):
+    """``(mtime_ns, size)`` per file ``load`` reads (None for a missing one)."""
+    sig = []
+    for name in _CACHE_FILES:
+        try:
+            st = (out_dir / name).stat()
+            sig.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append(None)
+    return tuple(sig)
+
+
 def load(out_dir):
+    """``Inputs`` for a run directory (cached while its files are unchanged), or None when
+    metadata or detections are unusable.
+
+    The result is shared between callers of an unchanged directory: do not mutate it.
+    """
+    out_dir = Path(out_dir)
+    try:
+        key = str(out_dir.resolve())
+    except OSError:
+        return _load(out_dir)
+    sig = _signature(out_dir)
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None and hit[0] == sig:
+            _cache.move_to_end(key)
+            return hit[1]
+    inputs = _load(out_dir)
+    if inputs is not None:
+        with _cache_lock:
+            _cache[key] = (sig, inputs)
+            _cache.move_to_end(key)
+            while len(_cache) > _CACHE_SIZE:
+                _cache.popitem(last=False)
+    return inputs
+
+
+def _load(out_dir):
     """``Inputs`` for a run directory, or None when metadata or detections are unusable.
 
     A run without learned hits (``hits.json`` missing or rule-based) loads with an empty

@@ -51,7 +51,7 @@ def test_both_kept_are_promoted_with_history(world, capsys):
     seg, dm = sg.load(weights / me.SEGMENTER_FILE), dec.load(weights / me.DECODER_FILE)
     assert seg["heldout"]["f1"] > 0.9 and seg["heldout"]["swing_f1"] == 0.0
     assert dm["claim_threshold"] == pytest.approx(last["totals"]["threshold"])
-    assert dm["heldout"]["correct"] == 21 and dm["version"]
+    assert dm["heldout"]["correct"] == dm["heldout"]["claimed"] >= 15 and dm["version"]   # nested claims: a fold may abstain
     entry = me.history(weights)[-1]
     assert entry["kept"] is True and entry["points"] == 21 and entry["totals"]["seg_f1"] > 0.9
     assert entry["models"]["segmenter"]["kept"] and entry["models"]["decoder"]["kept"]

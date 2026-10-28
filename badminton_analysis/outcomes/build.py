@@ -13,6 +13,7 @@ cannot write.
 import argparse
 import datetime
 import json
+import math
 from pathlib import Path
 
 from ..insights.loaders import load_run, number
@@ -28,6 +29,7 @@ from .rules import decide
 SCHEMA = 1
 OUTCOMES_NAME = "rally_outcomes.json"
 ADDED_WINDOW_SEC = 10.0
+ZERO_START_PRIOR = 4.0     # a primary video with a result starts at 0-0 unless a free start fits this much better
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LABELS_DIR = PROJECT_ROOT / "data" / "rally_labels"
 DEFAULT_ATHLETES = PROJECT_ROOT / "data" / "athletes.json"
@@ -177,6 +179,8 @@ def _entry(run, start, end, segment_id, label, auto):
         entry.update(winner_side=auto["decision"]["winner_side"],
                      confidence=auto["decision"]["confidence"], source="auto",
                      evidence=dict(auto["evidence"], rule=auto["decision"]["rule"]))
+    elif auto is not None and "decoder" in (auto["evidence"] or {}):   # decoded, but no claim
+        entry["evidence"] = {"decoder": auto["evidence"]["decoder"], "rule": "decoder"}
     return entry
 
 
@@ -197,6 +201,10 @@ def _decoder_items(run, segments, auto, labels_doc, inputs):
 
 
 def _final_sets(record, fmt):
+    """The recorded sets as ``[(upper, lower)]``, or None. Doubles sets are team-1-first and the
+    record does not say which side team 1 is on, so no final constraint is made for them."""
+    if libathletes.record_format(record) == "doubles":
+        return None
     result = record.get("result") if isinstance(record, dict) else None
     sets = result.get("sets") if isinstance(result, dict) else None
     if not isinstance(sets, list) or not sets or not scoring.consistent(fmt, sets):
@@ -204,12 +212,21 @@ def _final_sets(record, fmt):
     return [(int(s[0]), int(s[1])) for s in sets]
 
 
-def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model, labels_dir, inputs=None):
+def _start_key(res, bonus=0.0):
+    """Ranking of a decode result: a met final score first, then the log-likelihood."""
+    return (not res["final_open"], res["loglik"] + bonus)
+
+
+def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model, labels_dir, inputs=None,
+                  unclamped=(), notes=None):
     """``({segment_id: {"upper", "lower", "none"}}, final_open)`` for ``out_dir``'s segments.
 
     Every part of the match up to this one is decoded in order, each starting from the
     previous part's end distribution (sides mapped with ``sides_swapped``). ``inputs``
-    (optional) are ``out_dir``'s already loaded run inputs.
+    (optional) are ``out_dir``'s already loaded run inputs. ``unclamped`` = stems whose owner
+    labels are ignored (the held-out match of a measurement); ``notes`` (a list) receives
+    ``start_free`` when the first video of a match with a result starts better from a free
+    state than from 0-0 (a recording that begins mid-game).
     """
     from . import run_inputs
     stem = run.stem
@@ -239,9 +256,22 @@ def _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data, model
                 covered, start = False, "free"   # a gap: the next part cannot continue from a known score
                 continue
         last = index == len(parts) - 1
+        if part in unclamped:
+            part_items = [item[:3] + (None,) for item in part_items if item[1] is not None]
         clamps = {i: item[3] for i, item in enumerate(part_items) if item[3] is not None}
-        res = dec.decode(model, fmt, [item[2] for item in part_items], clamps=clamps, start=start,
-                         final=final_sets if last and covered else None, swapped=swapped)
+        observed = [item[2] for item in part_items]
+        final = final_sets if last and covered else None
+
+        def run_decode(begin):
+            return dec.decode(model, fmt, observed, clamps=clamps, start=begin, final=final, swapped=swapped)
+
+        res = run_decode(start)
+        if index == 0 and start == "zero":
+            free = run_decode("free")
+            if _start_key(free) > _start_key(res, math.log(ZERO_START_PRIOR)):
+                res = free
+                if notes is not None and "start_free" not in notes:
+                    notes.append("start_free")
         start = res["end"] or "free"
         if part == stem:
             p = {item[1]: res["p"][i] for i, item in enumerate(part_items) if item[1] is not None}
@@ -278,12 +308,12 @@ def _with_decoder(auto, probs, threshold):
         decision = {"winner_side": None, "confidence": None, "rule": "decoder"}
         evidence = row["evidence"]
         if p is not None:
+            evidence = dict(evidence, decoder={"p_upper": round(p["upper"], 4),
+                                               "p_lower": round(p["lower"], 4),
+                                               "p_point": round(1.0 - p["none"], 4)})
             claim = dec.claims({"p": [p]}, threshold)[0]
             if claim is not None:
                 decision = {"winner_side": claim, "confidence": round(p[claim], 4), "rule": "decoder"}
-                evidence = dict(evidence, decoder={"p_upper": round(p["upper"], 4),
-                                                   "p_lower": round(p["lower"], 4),
-                                                   "p_none": round(p["none"], 4)})
         out[sid] = {"decision": decision, "ending": row["ending"], "evidence": evidence}
     return out
 
@@ -310,7 +340,7 @@ def build_document(out_dir, labels_doc, athletes_data, other_parts=None,
     if model is not None:
         try:
             probs, final_open = _decode_match(out_dir, run, segments, auto, labels_doc, athletes_data,
-                                              model, labels_dir)
+                                              model, labels_dir, notes=notes)
             threshold = model.get("claim_threshold")
             auto = _with_decoder(auto, probs, threshold if isinstance(threshold, (int, float))
                                  and not isinstance(threshold, bool) else dec.DEFAULT_CLAIM_THRESHOLD)

@@ -1,7 +1,10 @@
 """Leave-one-match-out measurement of the rally models, keep rules and card status (spec 7).
 
 For every labelled match M the models are trained on the other labelled matches and scored
-on M with M's labels hidden (the decoder decodes M with no clamps). ``evaluate`` pools the
+on M with M's labels hidden (the decoder decodes M with no clamps). A match recorded as
+several videos (parts) is one fold: all its parts are held out together and no owner label
+of any part reaches the decoding. The claim threshold is nested: each fold claims at the
+threshold chosen on the other folds' held-out probabilities. ``evaluate`` pools the
 held-out scores; ``decide`` applies the keep rules to the pooled numbers; ``status`` feeds the
 Rally model card. ``promote`` / ``reject`` / ``rollback`` swap the live files through
 ``models/store.py`` with the rally spec. ``weights_dir`` is always a parameter. This module
@@ -96,7 +99,10 @@ class _Match:
         self.live = ob._segments(self.run)
         self._auto = {}
 
-    def auto(self, key, segments):
+    def auto(self, segments):
+        """The automatic labeller's view of ``segments``; cached by the segments themselves (each
+        fold's segmenter cuts the video differently)."""
+        key = tuple((s["id"], s["start_sec"], s["end_sec"]) for s in segments)
         if key not in self._auto:
             self._auto[key] = ob._auto(segments, self.hits, self.landing)
         return self._auto[key]
@@ -107,9 +113,19 @@ def _fmt(athletes, stem):
     return scoring.resolve(libathletes.resolve_record(athletes, parts[0][0]))
 
 
-def _sequence(match, key, segments):
+def _group(athletes, stem):
+    """The fold a video belongs to: its match's primary stem (itself when unlinked)."""
+    parts = match_parts(athletes, stem)
+    return parts[0][0] if parts else stem
+
+
+def _match_stems(athletes, stem):
+    return {s for s, _swapped in match_parts(athletes, stem)} | {stem}
+
+
+def _sequence(match, segments):
     """``[(Obs | None, verdict)]`` of the owner-labelled steps, for ``dec.fit``."""
-    items = ob._decoder_items(match.run, segments, match.auto(key, segments), match.doc, match.inputs)
+    items = ob._decoder_items(match.run, segments, match.auto(segments), match.doc, match.inputs)
     return [(None if sid is None else obs, clamp) for _end, sid, obs, clamp in items if clamp is not None]
 
 
@@ -136,6 +152,15 @@ def choose_threshold(heldout, target=TARGET_PRECISION):
         if len(claimed) >= MIN_CLAIMS and sum(claimed) / len(claimed) >= target:
             return float(th)
     return None
+
+
+def fold_thresholds(pools):
+    """``{fold: threshold}``: each fold's claim threshold, chosen on the OTHER folds' held-out
+    probabilities only (None when they cannot reach the target: that fold then makes no claim).
+
+    ``pools`` = ``{fold: [(p, truth)]}``."""
+    return {g: choose_threshold([row for h, rows in pools.items() if h != g for row in rows])
+            for g in pools}
 
 
 def _f1(tp, fp, fn):
@@ -246,21 +271,24 @@ def evaluate(labels_dir, results_dir, athletes_path, candidate=None):
     per_match = {m.stem: {"points": len(m.ends), "segmenter": None, "swing": None, "decoder": None,
                           "rules": None} for m in matches}
 
-    # the segmenter, one model per fold
+    groups = {m.stem: _group(athletes, m.stem) for m in matches}
+    order = list(dict.fromkeys(groups.values()))
+
+    # the segmenter, one model per fold (a fold is a whole match, however many videos)
     seg_models = {}
-    for m in matches:
+    for g in order:
         if fixed:
-            seg_models[m.stem] = candidate.get("segmenter")
+            seg_models[g] = candidate.get("segmenter")
             continue
         try:
-            seg_models[m.stem] = sg.fit([(o.inputs, o.doc, o.ends) for o in matches if o is not m])
+            seg_models[g] = sg.fit([(o.inputs, o.doc, o.ends) for o in matches if groups[o.stem] != g])
         except ValueError:
-            seg_models[m.stem] = None
+            seg_models[g] = None
     seg_rows, swing_rows = [], []
     for m in matches:
-        if seg_models[m.stem] is None:
+        if seg_models[groups[m.stem]] is None:
             continue
-        learned, swing = _segment_fold(m, seg_models[m.stem])
+        learned, swing = _segment_fold(m, seg_models[groups[m.stem]])
         per_match[m.stem]["segmenter"], per_match[m.stem]["swing"] = learned, swing
         seg_rows.append(learned)
         swing_rows.append(swing)
@@ -271,40 +299,47 @@ def evaluate(labels_dir, results_dir, athletes_path, candidate=None):
 
     def segments_of(match, model):
         if use_learned and model is not None:
-            return "learned", sg.segments(match.inputs, model)
-        return "live", match.live
+            return sg.segments(match.inputs, model)
+        return match.live
 
-    # the decoder: per fold held-out probabilities, then one threshold
-    rows = []       # per match: (truth, probs, auto, segments)
-    pooled = []
-    for m in matches:
+    # the decoder: per fold held-out probabilities, then thresholds
+    rows = []       # per match: (match, model, truth, probs, auto, fold)
+    pools = {}      # fold -> [(p, truth)]
+    for g in order:
+        members = [m for m in matches if groups[m.stem] == g]
         if fixed:
             model = candidate.get("decoder")
         else:
-            train = [o for o in matches if o is not m]
-            seqs = [_sequence(o, *segments_of(o, seg_models[m.stem])) for o in train]
-            model = dec.fit([s for s in seqs if s], _fmt(athletes, train[0].stem)) if train else None
+            train = [o for o in matches if groups[o.stem] != g]
+            seqs = [(_sequence(o, segments_of(o, seg_models[g])), _fmt(athletes, o.stem)) for o in train]
+            seqs = [(q, f) for q, f in seqs if q]
+            model = dec.fit([q for q, _f in seqs], fmts=[f for _q, f in seqs]) if train else None
         if model is None:
             continue
-        key, segments = segments_of(m, seg_models[m.stem])
-        auto = m.auto(key, segments)
-        probs, _open = ob._decode_match(m.out_dir, m.run, segments, auto, lab.empty(), athletes,
-                                        model, labels_dir, inputs=m.inputs)
-        truth = _truth(m, segments)
-        rows.append((m, model, truth, probs, auto))
-        pooled += [(probs[sid], side) for sid, side in truth.items() if sid in probs]
+        for m in members:
+            segments = segments_of(m, seg_models[g])
+            auto = m.auto(segments)
+            probs, _open = ob._decode_match(m.out_dir, m.run, segments, auto, lab.empty(), athletes,
+                                            model, labels_dir, inputs=m.inputs,
+                                            unclamped=_match_stems(athletes, m.stem))
+            truth = _truth(m, segments)
+            rows.append((m, model, truth, probs, auto, g))
+            pools.setdefault(g, []).extend((probs[sid], side) for sid, side in truth.items() if sid in probs)
     if fixed:
         thresholds = [r[1].get("claim_threshold") for r in rows if r[1].get("claim_threshold") is not None]
         threshold = thresholds[0] if thresholds else None
+        fold_th = {g: threshold if threshold is not None else dec.DEFAULT_CLAIM_THRESHOLD for g in pools}
     else:
-        threshold = choose_threshold(pooled)
-    use = threshold if threshold is not None else dec.DEFAULT_CLAIM_THRESHOLD
+        # shipped: chosen on every fold's held-out probabilities; measured: each fold at the
+        # threshold the other folds would have given it, so the bar is not met by construction
+        threshold = choose_threshold([row for rs in pools.values() for row in rs])
+        fold_th = fold_thresholds(pools)
     d_claimed = d_correct = r_claimed = r_correct = 0
-    for m, _model, truth, probs, auto in rows:
+    for m, _model, truth, probs, auto, g in rows:
         dc = dk = rc = rk = 0
         for sid, side in truth.items():
             p = probs.get(sid)
-            claim = dec.claims({"p": [p]}, use)[0] if p is not None else None
+            claim = dec.claims({"p": [p]}, fold_th[g])[0] if p is not None and fold_th.get(g) is not None else None
             if claim is not None:
                 dc += 1
                 dk += claim == side
@@ -394,7 +429,7 @@ def status(labels_dir, results_dir, weights_dir):
     points = sum(n for _s, _d, n in usable)
     qualifying = sum(1 for _s, _d, n in usable if n >= MIN_POINTS)
     hist = history(weights_dir)
-    seen = [e["points"] for e in hist if type(e.get("points")) is int]
+    seen = [e["points"] for e in hist if type(e.get("points")) is int and not e.get("rollback")]
     new_points = max(0, points - (seen[-1] if seen else 0))
     missing = []
     if qualifying < MIN_MATCHES:
@@ -445,9 +480,10 @@ def fit_candidates(labels_dir, results_dir, athletes_path, totals, keep):
     if keep.get("decoder"):
         seqs = []
         for m in matches:
-            key, segments = ("learned", sg.segments(m.inputs, seg)) if seg is not None else ("live", m.live)
-            seqs.append(_sequence(m, key, segments))
-        model = dec.fit([s for s in seqs if s], _fmt(athletes, matches[0].stem))
+            segments = sg.segments(m.inputs, seg) if seg is not None else m.live
+            seqs.append((_sequence(m, segments), _fmt(athletes, m.stem)))
+        seqs = [(q, f) for q, f in seqs if q]
+        model = dec.fit([q for q, _f in seqs], fmts=[f for _q, f in seqs])
         threshold = totals.get("threshold")
         model.update({"version": _stamp(),
                       "claim_threshold": threshold if threshold is not None else dec.DEFAULT_CLAIM_THRESHOLD,

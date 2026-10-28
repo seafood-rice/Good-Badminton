@@ -34,28 +34,59 @@ def winners(result):
 
 def test_bwf_game_end_deuce_cap_and_end_change():
     f = scoring.PRESETS["bwf_21x3"]
-    assert dec._advance(f, None, 1, 20, 19, 0, 0) == (2, 0, 0, 0, 1)        # 21-19: game over, ends change
-    assert dec._advance(f, None, 1, 20, 20, 0, 0) == (1, 21, 20, 0, 0)       # deuce, play on
-    assert dec._advance(f, None, 1, 29, 29, 0, 1) == (2, 0, 0, 1, 1)         # cap: 29-30 ends the game
-    assert dec._advance(f, None, 3, 10, 5, 0, 0) == (3, 11, 5, 0, 1)         # change at 11 in game 3
-    assert dec._advance(f, None, 2, 10, 5, 0, 0) == (2, 11, 5, 0, 0)         # not in game 2
+    assert dec._advance(f, None, 1, 20, 19, 0, 0) == (2, 0, 0, 0, 1, 1)        # 21-19: game over, ends change
+    assert dec._advance(f, None, 1, 20, 20, 0, 0) == (1, 21, 20, 0, 0, 0)       # deuce, play on
+    assert dec._advance(f, None, 1, 29, 29, 0, 1) == (2, 0, 0, 1, 1, 0)         # cap: 29-30 ends the game
+    assert dec._advance(f, None, 3, 10, 5, 0, 0) == (3, 11, 5, 0, 1, 0)         # change at 11 in game 3
+    assert dec._advance(f, None, 2, 10, 5, 0, 0) == (2, 11, 5, 0, 0, 0)         # not in game 2
     assert dec._advance(f, None, 3, 20, 9, 1, 0) == dec.END                  # the deciding game ends the match
 
 
 def test_one_game_and_15x3_transitions():
-    assert dec._advance(ONE_GAME, None, 1, 14, 3, 0, 0) == (1, 15, 3, 0, 1)  # change at 15
-    assert dec._advance(ONE_GAME, None, 1, 15, 3, 1, 0) == (1, 16, 3, 0, 1)  # only once
+    assert dec._advance(ONE_GAME, None, 1, 14, 3, 0, 0) == (1, 15, 3, 0, 1, 0)  # change at 15
+    assert dec._advance(ONE_GAME, None, 1, 15, 3, 1, 0) == (1, 16, 3, 0, 1, 0)  # only once
     assert dec._advance(ONE_GAME, None, 1, 29, 3, 0, 0) == dec.END           # first to 30, win by 1
     g15 = scoring.PRESETS["15x3"]
-    assert dec._advance(g15, None, 3, 7, 2, 0, 0) == (3, 8, 2, 0, 1)
-    assert dec._advance(g15, None, 1, 14, 14, 0, 0) == (1, 15, 14, 0, 0)     # win by 2
-    assert dec._advance(g15, None, 1, 20, 20, 0, 0) == (2, 0, 0, 0, 1)       # cap 21
+    assert dec._advance(g15, None, 3, 7, 2, 0, 0) == (3, 8, 2, 0, 1, 0)
+    assert dec._advance(g15, None, 1, 14, 14, 0, 0) == (1, 15, 14, 0, 0, 0)     # win by 2
+    assert dec._advance(g15, None, 1, 20, 20, 0, 0) == (2, 0, 0, 0, 1, 1)       # cap 21
 
 
 def test_final_forbids_wrong_game_end():
     assert dec._advance(TINY, [(5, 3)], 1, 4, 3, 0, 0) == dec.END
     assert dec._advance(TINY, [(5, 3)], 1, 4, 3, 0, 1) is None               # b would pass 3
     assert dec._advance(TINY, [(5, 3)], 1, 4, 2, 0, 0) is None               # 5-2 ends the game early
+
+
+def test_best_of_3_two_nil_has_no_third_game():
+    f = scoring.PRESETS["bwf_21x3"]
+    assert dec._advance(f, None, 2, 20, 5, 0, 0, 1) == dec.END               # 2-0 in games: match over
+    assert dec._advance(f, None, 2, 5, 20, 0, 1, 1) == (3, 0, 0, 1, 1, 1)    # 1-1: a third game
+    # 5-0, 5-0 for the same player (upper, then lower after the change): the match is over
+    clamps = {i: "upper" if i < 5 else "lower" for i in range(10)}
+    res = dec.decode(neutral(), TINY_NOCHANGE, pts(11), clamps=clamps, start="zero")
+    assert res["start"] == "zero" and res["p"][10]["none"] == 1.0
+    assert list(res["end"]) == [dec.END]
+    # the same winner twice in a row but a game won by each: a third game follows
+    split = {i: "upper" for i in range(10)}
+    res = dec.decode(neutral(), TINY_NOCHANGE, pts(11), clamps=split, start="zero")
+    assert res["p"][10]["none"] < 1.0 or dec.END not in res["end"]
+
+
+UNCAPPED = scoring.validate({"preset": "custom", "points_to_win": 5, "win_by": 2, "cap": None, "best_of": 3,
+                             "change_ends_after_game": True, "change_ends_at": 3})[0]
+
+
+def test_decode_uncapped_win_by_2_terminates():
+    import time
+    t0 = time.time()
+    res = dec.decode(neutral(), UNCAPPED, pts(12), start="zero")
+    free = dec.decode(neutral(), UNCAPPED, pts(6), start="free")
+    assert time.time() - t0 < 1.0
+    assert len(res["p"]) == 12 and len(free["p"]) == 6
+    # deuce classes keep the parity of the score: 6-6 and 4-4 are one state, 5-5 another
+    assert dec._fold(UNCAPPED, 7, 6) == (5, 4) and dec._fold(UNCAPPED, 6, 6) == (4, 4)
+    assert dec._fold(UNCAPPED, 5, 5) == (5, 5) and dec._fold(UNCAPPED, 4, 3) == (4, 3)
 
 
 # ---------------------------------------------------------------------- decode
@@ -98,8 +129,8 @@ def test_free_start_does_not_force_zero():
     clamps = {0: "upper", 1: "upper"}
     zero = dec.decode(neutral(), TINY_NOCHANGE, pts(2), clamps=clamps, start="zero")
     free = dec.decode(neutral(), TINY_NOCHANGE, pts(2), clamps=clamps, start="free")
-    assert {(g, a + b) for g, a, b, _s, _f in zero["end"]} == {(1, 2)}
-    assert any(g > 1 or a + b > 2 for g, a, b, _s, _f in free["end"])
+    assert {(g, a + b) for g, a, b, _s, _f, _ga in zero["end"]} == {(1, 2)}
+    assert any(g > 1 or a + b > 2 for g, a, b, _s, _f, _ga in free["end"])
     assert len(free["end"]) > len(zero["end"])
     assert free["start"] == "free" and zero["start"] == "zero"
 
@@ -124,7 +155,7 @@ def test_impossible_clamps_report_only_clamps():
 def _serve_sequence(side_winners, invert):
     """Observations whose serve courts follow the score parity (optionally inverted)."""
     fmt = TINY_NOCHANGE
-    g, a, b, fl, server = 1, 0, 0, 0, None
+    g, a, b, fl, server, ga = 1, 0, 0, 0, None, 0
     obs, clamps = [], {}
     for i, w in enumerate(side_winners):
         court = None
@@ -133,8 +164,8 @@ def _serve_sequence(side_winners, invert):
             court = "right" if right != invert else "left"
         obs.append(Obs(serve_court=court, p_point=1.0))
         clamps[i] = w
-        state = dec._advance(fmt, None, g, a, b, fl, dec.SIDES.index(w) ^ fl)
-        g, a, b, server, fl = state
+        state = dec._advance(fmt, None, g, a, b, fl, dec.SIDES.index(w) ^ fl, ga)
+        g, a, b, server, fl, ga = state
     return obs, clamps
 
 
@@ -157,10 +188,10 @@ def test_claims_only_above_threshold():
 
 def test_carried_start_distribution():
     first = dec.decode(neutral(), TINY_NOCHANGE, pts(3), clamps={0: "upper", 1: "upper", 2: "lower"})
-    assert {(g, a + b) for g, a, b, _s, _f in first["end"]} == {(1, 3)}
+    assert {(g, a + b) for g, a, b, _s, _f, _ga in first["end"]} == {(1, 3)}
     second = dec.decode(neutral(), TINY_NOCHANGE, pts(1), clamps={0: "upper"}, start=first["end"])
     assert second["start"] == "carried"
-    assert {(g, a + b) for g, a, b, _s, _f in second["end"]} == {(1, 4)}
+    assert {(g, a + b) for g, a, b, _s, _f, _ga in second["end"]} == {(1, 4)}
 
 
 # ------------------------------------------------------------------- fit / load
@@ -177,6 +208,28 @@ def test_fit_tables_and_parity():
     obs, clamps = _serve_sequence(["upper", "lower", "lower", "upper", "upper", "upper", "lower"], True)
     fitted = dec.fit([(o, clamps[i]) for i, o in enumerate(obs)], fmt=TINY_NOCHANGE)
     assert fitted["parity"]["n"] == 6 and fitted["parity"]["reliability"] == pytest.approx(7 / 8)
+
+
+def test_fit_parity_uses_each_videos_own_format():
+    short = scoring.validate({"preset": "custom", "points_to_win": 5, "win_by": 1, "cap": 5, "best_of": 3,
+                              "change_ends_after_game": False, "change_ends_at": None})[0]
+    long_ = dict(short, points_to_win=7, cap=7)
+
+    def serve_seq(fmt):
+        g, a, b, fl, server, ga = 1, 0, 0, 0, None, 0
+        out = []
+        for w in ["upper"] * 5 + ["lower", "upper", "lower"]:
+            court = None if server is None else ("right" if (a if server == 0 else b) % 2 == 0 else "left")
+            out.append((Obs(serve_court=court), w))
+            g, a, b, server, fl, ga = dec._advance(fmt, None, g, a, b, fl, dec.SIDES.index(w) ^ fl, ga)
+        return out
+
+    seq = serve_seq(short)
+    own = dec.fit([seq], fmts=[short])["parity"]["reliability"]
+    wrong = dec.fit([seq], fmt=long_)["parity"]["reliability"]
+    assert own > wrong
+    other = dec.fit([seq, serve_seq(long_)], fmts=[short, long_])["parity"]["reliability"]
+    assert other > dec.fit([seq, serve_seq(long_)], fmt=short)["parity"]["reliability"]
 
 
 def test_load_roundtrip_and_invalid(tmp_path):

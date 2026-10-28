@@ -186,7 +186,7 @@ def test_decoder_winners_replace_the_rule_cascade(tmp_path):
     r1 = doc["rallies"][0]
     assert r1["winner_side"] == "lower" and r1["source"] == "auto" and r1["confidence"] > 0.9
     assert r1["evidence"]["rule"] == "decoder"
-    assert set(r1["evidence"]["decoder"]) == {"p_upper", "p_lower", "p_none"}
+    assert set(r1["evidence"]["decoder"]) == {"p_upper", "p_lower", "p_point"}
     assert doc["summary"]["confidence_calibrated"] is True
     assert "final_score_open" in doc["notes"]          # no recorded result: the end is open
     assert doc["summary"]["reconciliation"]["status"] == "no_result"
@@ -237,9 +237,9 @@ def test_start_final_and_carry_across_parts(tmp_path, monkeypatch):
             "matches": {"p_run": _record([[21, 10], [21, 15]]), "q_run": {"part_of": "p_run", "sides_swapped": True}}}
     model = _model_file(tmp_path)
     ob.build_document(tmp_path / "q_run", lab.empty(), data, decoder_path=model, labels_dir=tmp_path / "labels")
-    assert [c["swapped"] for c in calls] == [False, True]
-    assert calls[0]["start"] == "zero" and calls[0]["final"] is None
-    assert isinstance(calls[1]["start"], dict) and calls[1]["final"] == [(21, 10), (21, 15)]
+    assert [c["swapped"] for c in calls] == [False, False, True]     # primary: zero and free start
+    assert [c["start"] for c in calls[:2]] == ["zero", "free"] and calls[0]["final"] is None
+    assert isinstance(calls[2]["start"], dict) and calls[2]["final"] == [(21, 10), (21, 15)]
     calls.clear()
     data["matches"]["p_run"] = {"upper": {"name": "A"}, "lower": {"name": "B"}}     # no result
     ob.build_document(tmp_path / "p_run", lab.empty(), data, decoder_path=model, labels_dir=tmp_path / "labels")
@@ -256,3 +256,68 @@ def test_impossible_result_leaves_the_end_open(tmp_path):
     assert doc["summary"]["reconciliation"]["status"] == "no_result"
     assert doc["summary"]["reconciliation"]["reason"] == "scoring_mismatch"
     assert len(doc["rallies"]) == 2
+
+
+TINY_ONE = {"preset": "custom", "points_to_win": 5, "win_by": 2, "cap": 7, "best_of": 1,
+            "change_ends_after_game": False, "change_ends_at": None}
+
+
+def test_build_start_free_for_midgame_with_result(tmp_path):
+    out = _two_rally_run(tmp_path)
+    mid = {"schema_version": 1, "squads": {}, "athletes": {},
+           "matches": {"vid": _record([[5, 3]], scoring=TINY_ONE)}}
+    doc = ob.build_document(out, lab.empty(), mid, decoder_path=_model_file(tmp_path),
+                            labels_dir=tmp_path / "labels")
+    assert "start_free" in doc["notes"]          # two rallies cannot be a whole 5-3 game: it began mid-game
+    assert "final_score_open" not in doc["notes"]
+    whole = {"schema_version": 1, "squads": {}, "athletes": {},
+             "matches": {"vid": {"upper": {"name": "A"}, "lower": {"name": "B"}, "scoring": TINY_ONE,
+                                 "result": {"winner": "upper", "sets": []}}}}
+    doc = ob.build_document(out, lab.empty(), whole, decoder_path=_model_file(tmp_path),
+                            labels_dir=tmp_path / "labels")
+    assert "start_free" not in doc["notes"]      # 0-0 fits as well: the prior keeps it
+
+
+def test_final_sets_not_used_for_doubles(tmp_path, monkeypatch):
+    from badminton_analysis.outcomes import decoder as dec
+    calls = []
+    real = dec.decode
+
+    def spy(model, fmt, obs, **kw):
+        calls.append(kw.get("final"))
+        return real(model, fmt, obs, **kw)
+
+    monkeypatch.setattr(dec, "decode", spy)
+    out = _two_rally_run(tmp_path)
+    doubles = {"format": "doubles", "players": {},
+               "result": {"winner_team": 1, "sets": [[21, 10], [21, 15]]}}
+    data = {"schema_version": 1, "squads": {}, "athletes": {}, "matches": {"vid": doubles}}
+    assert ob._final_sets(doubles, ob.scoring.resolve(doubles)) is None
+    ob.build_document(out, lab.empty(), data, decoder_path=_model_file(tmp_path), labels_dir=tmp_path / "labels")
+    assert calls and all(f is None for f in calls)
+    singles = _record([[21, 10], [21, 15]])
+    assert ob._final_sets(singles, ob.scoring.resolve(singles)) == [(21, 10), (21, 15)]
+
+
+def test_decoder_evidence_on_unclaimed_rallies(tmp_path):
+    out = _two_rally_run(tmp_path)
+    doc = ob.build_document(out, lab.empty(), NO_ATHLETES, decoder_path=_model_file(tmp_path, threshold=0.9999),
+                            labels_dir=tmp_path / "labels")
+    for r in doc["rallies"]:
+        assert set(r["evidence"]["decoder"]) == {"p_upper", "p_lower", "p_point"}
+    assert any(r["winner_side"] is None for r in doc["rallies"])    # unclaimed ones carry it too
+
+
+def test_decode_match_drops_clamps_of_unclamped_parts(tmp_path):
+    from badminton_analysis.outcomes import decoder as dec
+    from badminton_analysis.insights.loaders import load_run
+    out = _two_rally_run(tmp_path)
+    run = load_run(out)
+    segments = ob._segments(run)
+    labels = _labels({"start_sec": 10, "end_sec": 15, "verdict": "upper"})
+    model = dec.load(_model_file(tmp_path))
+    auto = ob._auto(segments, ob._learned_hits(run), ob._Landing(run, out))
+    kept, _ = ob._decode_match(out, run, segments, auto, labels, NO_ATHLETES, model, tmp_path / "labels")
+    free, _ = ob._decode_match(out, run, segments, auto, labels, NO_ATHLETES, model, tmp_path / "labels",
+                               unclamped={run.stem})
+    assert kept[1]["upper"] == 1.0 and free[1]["upper"] < 1.0

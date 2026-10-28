@@ -94,10 +94,10 @@ def test_evaluate_leaves_the_held_out_match_out(world, monkeypatch):
         seg_calls.append(sorted(len(ends) for _inp, _doc, ends in matches))
         return real_seg_fit(matches)
 
-    def dec_fit(labelled, fmt=None):
+    def dec_fit(labelled, fmt=None, fmts=None):
         seqs = labelled if labelled and isinstance(labelled[0], list) else [labelled]
         dec_calls.append(sorted(sum(1 for _o, v in seq if v in dec.SIDES) for seq in seqs))
-        return real_dec_fit(labelled, fmt)
+        return real_dec_fit(labelled, fmt, fmts)
 
     def decode(model, fmt, obs, clamps=None, **kw):
         decode_calls.append(dict(clamps or {}))
@@ -151,6 +151,82 @@ def test_a_fold_without_both_classes_is_skipped_not_fatal(world, monkeypatch):
     assert res["totals"]["segmenter_folds"] == 0 and res["totals"]["seg_f1"] is None
     assert me.decide(res["totals"])["segmenter"] == (False, {"code": "no_training_data"})
     assert res["totals"]["dec_claimed"] > 0           # the decoder still measured, on the live segments
+
+
+def test_evaluate_fold_specific_segments(world, monkeypatch):
+    """Each fold's segmenter cuts the video differently: the evidence cache must follow the segments."""
+    results, labels, athletes = world
+    real_fit, real_segments = sg.fit, sg.segments
+    counter = iter(range(1, 100))
+    monkeypatch.setattr(sg, "fit", lambda ms: {"real": real_fit(ms), "k": next(counter)})
+
+    def fold_segments(inp, model):
+        if "real" not in model:                # the segmenter's own tuning calls
+            return real_segments(inp, model)
+        return [dict(x, id=x["id"] + 1000 * model["k"]) for x in real_segments(inp, model["real"])]
+
+    monkeypatch.setattr(sg, "segments", fold_segments)
+    res = me.evaluate(labels, results, athletes, None)
+    assert res["totals"]["segmenter_folds"] == 3 and res["totals"]["dec_claimed"] > 0
+
+
+def _two_match_world(tmp_path):
+    results, labels = tmp_path / "o2", tmp_path / "l2"
+    truths = {}
+    for stem, n, seed in (("a1", 10, 0), ("b1", 15, 1)):
+        _t, truths[stem] = make_match(results, labels, stem, n, seed=seed)
+    athletes = tmp_path / "ath2.json"
+    athletes.write_text(json.dumps({"schema": 1, "matches": {}}), encoding="utf-8")
+    return results, labels, athletes, truths
+
+
+def test_threshold_nested_precision(tmp_path, monkeypatch):
+    """A threshold chosen on the very rows it is scored on cannot fail the bar; the nested one can."""
+    results, labels, athletes, truths = _two_match_world(tmp_path)
+
+    def fake_decode(out_dir, run, segments, auto, labels_doc, athletes_data, model, labels_dir, **kw):
+        win = truths[run.stem]
+        probs = {}
+        for i, seg in enumerate(segments):
+            right = win[i]
+            wrong = "lower" if right == "upper" else "upper"
+            if run.stem == "a1":                       # confident and always right
+                side, conf = right, 0.95
+            else:                                       # unsure, and wrong on the last five
+                side, conf = (right if i < 10 else wrong), 0.7
+            probs[seg["id"]] = {side: conf, ("lower" if side == "upper" else "upper"): 1 - conf, "none": 0.0}
+        return probs, True
+
+    monkeypatch.setattr(me.ob, "_decode_match", fake_decode)
+    t = me.evaluate(labels, results, athletes, None)["totals"]
+    assert t["threshold"] == pytest.approx(0.95)       # the shipped one, chosen on every fold
+    # b1 is scored at a1's 0.95 (it never reaches it); a1 would need b1's threshold, which does not exist
+    assert t["dec_claimed"] == 0 and t["dec_precision"] is None
+    assert me.decide(t)["decoder"][1]["code"] == "no_claims"
+    assert me.fold_thresholds({"x": [(_p("upper", 0.9), "upper")] * 5}) == {"x": None}   # no other fold
+
+
+def test_lomo_groups_split_match_parts(world, monkeypatch):
+    results, labels, athletes = world
+    athletes.write_text(json.dumps({"schema_version": 1, "squads": {}, "athletes": {}, "matches": {
+        "m1": {"upper": {"name": "A"}, "lower": {"name": "B"}},
+        "m2": {"part_of": "m1", "sides_swapped": False}}}), encoding="utf-8")
+    seg_calls, unclamped = [], {}
+    real_seg_fit, real_decode = sg.fit, me.ob._decode_match
+
+    def seg_fit(matches):
+        seg_calls.append(sorted(len(ends) for _inp, _doc, ends in matches))
+        return real_seg_fit(matches)
+
+    def decode_match(out_dir, run, *a, **kw):
+        unclamped[run.stem] = set(kw.get("unclamped") or ())
+        return real_decode(out_dir, run, *a, **kw)
+
+    monkeypatch.setattr(sg, "fit", seg_fit)
+    monkeypatch.setattr(me.ob, "_decode_match", decode_match)
+    me.evaluate(labels, results, athletes, None)
+    assert sorted(seg_calls) == [[6, 7], [8]]          # m1 + m2 are held out together
+    assert unclamped["m1"] == unclamped["m2"] == {"m1", "m2"} and unclamped["m3"] == {"m3"}
 
 
 # ---- card status -----------------------------------------------------------------------------
@@ -226,3 +302,16 @@ def test_script_without_labelled_matches_says_so(tmp_path, capsys):
     code = _script().main(["--labels-dir", str(tmp_path / "l"), "--results-dir", str(tmp_path / "o"),
                            "--athletes", str(tmp_path / "a.json"), "--weights-dir", str(tmp_path / "w")])
     assert code == 1 and "no labelled match" in capsys.readouterr().out
+
+
+def test_status_baseline_skips_rollback_entries(world, tmp_path):
+    results, labels, _ = world
+    weights = tmp_path / "weights"
+    big = tmp_path / "big"
+    for i in range(2):
+        make_match(big / "outputs", big / "labels", f"b{i}", 21, seed=i)
+    store.append_history(me.RALLY, weights, {"kept": True, "points": 30, "utc": "2026-10-28T00:00:00Z"})
+    store.append_history(me.RALLY, weights, {"kept": True, "rollback": True, "points": 5,
+                                             "reason": {"code": "rolled_back"}, "utc": "2026-10-28T01:00:00Z"})
+    st = me.status(big / "labels", big / "outputs", weights)
+    assert st["counts"]["new_points"] == 12            # still measured from the 30 of the last real retrain

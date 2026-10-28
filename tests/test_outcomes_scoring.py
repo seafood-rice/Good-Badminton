@@ -41,6 +41,14 @@ def test_ends_change_after_game_and_in_deciding_game():
     assert sc.ends_change(FIFT, 3, 3, 8, 3, 7) is True
 
 
+def test_scoring_15x3_end_change_at_8_only_in_game_3():
+    assert sc.ends_change(FIFT, 3, 8, 3, 7, 3) is True
+    assert sc.ends_change(FIFT, 3, 9, 3, 8, 3) is False              # only on first reaching 8
+    for game in (1, 2):
+        assert sc.ends_change(FIFT, game, 8, 3, 7, 3) is False
+    assert sc.ends_change(FIFT, 2, 15, 3, 14, 3) is True             # the game itself ended
+
+
 def test_consistent():
     assert sc.consistent(BWF, [[21, 15], [18, 21], [21, 19]])
     assert sc.consistent(BWF, [[30, 29], [21, 0]])

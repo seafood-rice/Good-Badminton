@@ -237,6 +237,31 @@ def test_run_inputs_junk_and_missing_hits(tmp_path):
         assert inp is not None and inp.hits == [] and sf.gaps(inp) == []
 
 
+def test_run_inputs_load_is_cached_until_files_change(tmp_path, monkeypatch):
+    d = write_run(tmp_path / "run")
+    reads = []
+    real = run_inputs.rallies.swing_activity
+    monkeypatch.setattr(run_inputs.rallies, "swing_activity",
+                        lambda *a, **k: reads.append(1) or real(*a, **k))
+    first = run_inputs.load(d)
+    per_load = len(reads)
+    assert per_load >= 1
+    second = run_inputs.load(d)
+    assert len(reads) == per_load and second is first        # detections were not parsed again
+    hits = d / "hits.json"
+    hits.write_text(hits.read_text(encoding="utf-8") + " ", encoding="utf-8")   # a file changed
+    third = run_inputs.load(d)
+    assert len(reads) == 2 * per_load and third is not first and third.hits == first.hits
+
+
+def test_run_inputs_cache_is_small_and_never_keeps_failures(tmp_path):
+    assert run_inputs.load(tmp_path / "nothing") is None
+    for i in range(run_inputs._CACHE_SIZE + 3):
+        assert run_inputs.load(write_run(tmp_path / f"r{i}")) is not None
+    assert len(run_inputs._cache) <= run_inputs._CACHE_SIZE
+    assert str((tmp_path / "nothing").resolve()) not in run_inputs._cache
+
+
 def test_swing_features():
     inp = inputs([(10.0, "lower"), (11.0, "upper"), (14.0, "upper"), (30.0, "lower")])
     inp = inp._replace(swing_segments=((9.0, 10.5), (20.0, 25.0)))
