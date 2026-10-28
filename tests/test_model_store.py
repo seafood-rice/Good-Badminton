@@ -71,7 +71,7 @@ def test_promote_one_file_leaves_the_other_alone(tmp_path):
 def test_promote_both_files_and_first_model(tmp_path):
     w = tmp_path / "weights"
     first = store.promote(SPEC, w, _cand(w, **{SEG: "s1", DEC: "d1"}), {})
-    assert first["replaced"] is None and _read(w, SEG) == "s1" and _read(w, DEC) == "d1"
+    assert first["replaced"] and _read(w, SEG) == "s1" and _read(w, DEC) == "d1"   # an "absent" placeholder
     second = store.promote(SPEC, w, _cand(w, **{SEG: "s2", DEC: "d2"}), {})
     retired = w / "history" / "rally" / second["replaced"]
     assert (retired / SEG).read_text(encoding="utf-8") == "s1"
@@ -213,3 +213,78 @@ def test_stroke_style_spec_keeps_its_names(tmp_path):
     entry = store.promote(spec, w, {"m.pt": c / "x.pt", "m.json": c / "x.json"}, {})
     assert (w / "history" / entry["replaced"] / "m.pt").is_file()
     assert (w / "m.pt").read_text() == "b" and (w / "m.json").is_file()
+
+
+def test_rally_rollback_to_no_model(tmp_path):
+    """Review 9: the first promote records that nothing was live, so the owner can roll back to no model."""
+    w = tmp_path / "weights"
+    first = store.promote(SPEC, w, _cand(w, **{SEG: "s1", DEC: "d1"}), {})
+    assert store.can_rollback(SPEC, w) is True
+    assert (w / "history" / "rally" / first["replaced"] / store.ABSENT_MARK).is_file()
+    assert store.rollback(SPEC, w) is True
+    assert not (w / SEG).exists() and not (w / DEC).exists()
+    assert store.history(SPEC, w)[-1]["rollback"] is True
+    assert store.can_rollback(SPEC, w) is False and store.rollback(SPEC, w) is False
+    assert not list(w.glob(".rollback-*")) and not (w / SPEC.marker_name).exists()
+
+
+def test_rollback_to_no_model_only_removes_the_files_that_were_absent(tmp_path):
+    w = tmp_path / "weights"
+    _live(w, seg="s0", dec=None)                       # a segmenter, never a decoder
+    store.promote(SPEC, w, _cand(w, **{SEG: "s1", DEC: "d1"}), {})
+    assert store.rollback(SPEC, w) is True
+    assert _read(w, SEG) == "s0" and not (w / DEC).exists()
+
+
+def test_stroke_style_spec_cannot_roll_back_to_no_model(tmp_path):
+    spec = ModelSpec("stroke", ("m.pt", "m.json"), "h.json", None, marker=".swap", primary="m.pt",
+                     rollback_to_absent=False)
+    w = tmp_path / "weights"
+    w.mkdir()
+    c = w / "c"
+    c.mkdir()
+    (c / "x.pt").write_text("a")
+    (c / "x.json").write_text("{}")
+    entry = store.promote(spec, w, {"m.pt": c / "x.pt", "m.json": c / "x.json"}, {})
+    assert entry["replaced"] is None and store.can_rollback(spec, w) is False
+
+
+def test_store_recover_does_not_overwrite_present_live_files(tmp_path):
+    """Review 12: a half promote of both files must not clobber a live file that did get installed."""
+    w = tmp_path / "weights"
+    _live(w, seg="new-s", dec=None)                    # the candidate segmenter landed, the decoder was retired
+    retired = store.new_history_dir(SPEC, w)
+    (retired / SEG).write_text("old-s", encoding="utf-8")
+    (retired / DEC).write_text("old-d", encoding="utf-8")
+    _marker(w, _dead_pid())
+    assert store.recover(SPEC, w) is True
+    assert _read(w, SEG) == "new-s" and _read(w, DEC) == "old-d"
+    assert (retired / SEG).read_text(encoding="utf-8") == "old-s"      # its history copy is kept
+    assert not (w / SPEC.marker_name).exists()
+
+
+def test_store_recover_staged_rollback_does_not_overwrite_present_live_files(tmp_path):
+    w = tmp_path / "weights"
+    _live(w, seg="live-s", dec=None)
+    staged_seg, staged_dec = w / f".rollback-20260101T000000000Z-{SEG}", w / f".rollback-20260101T000000000Z-{DEC}"
+    staged_seg.write_text("old-s", encoding="utf-8")
+    staged_dec.write_text("old-d", encoding="utf-8")
+    _marker(w, _dead_pid(), what="rollback")
+    store.recover(SPEC, w)
+    assert _read(w, SEG) == "live-s" and _read(w, DEC) == "old-d"
+
+
+def test_a_sidecar_only_history_dir_is_not_a_rollback_target(tmp_path):
+    """Review 13: the primary file (the .pt) must be there for a dir to hold a model."""
+    spec = ModelSpec("stroke", ("m.pt", "m.json"), "h.json", None, marker=".swap", primary="m.pt",
+                     rollback_to_absent=False)
+    w = tmp_path / "weights"
+    old = store.new_history_dir(spec, w)
+    (old / "m.json").write_text("{}", encoding="utf-8")
+    assert store.can_rollback(spec, w) is False and store.rollback(spec, w) is False
+    (old / "m.pt").write_text("a", encoding="utf-8")
+    assert store.can_rollback(spec, w) is True
+    # a spec without a primary file counts either file
+    other = store.new_history_dir(SPEC, w)
+    (other / DEC).write_text("d", encoding="utf-8")
+    assert store.can_rollback(SPEC, w) is True

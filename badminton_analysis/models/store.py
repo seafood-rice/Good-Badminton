@@ -21,6 +21,7 @@ from ..outcomes.labels import write_json_atomic
 
 HISTORY_DIR = "history"
 RETIRED_MARK = ".retired"
+ABSENT_MARK = ".absent.json"   # names of the files that were not live when a promote retired "nothing"
 _MARKER_GRACE_SEC = 60        # an unreadable marker is only called stale after this long
 _STAMP = r"\d{8}T\d{6}\d{3}Z[a-z]*"
 _STAMP_DIR = re.compile(rf"^{_STAMP}$")
@@ -35,6 +36,8 @@ class ModelSpec:
     history_subdir: str = None
     keep: int = 5
     marker: str = None
+    primary: str = None               # a history dir holds a model only with this file (None: either file)
+    rollback_to_absent: bool = True   # the first promote leaves an "absent" placeholder: rollback to no model
 
     @property
     def marker_name(self):
@@ -77,7 +80,18 @@ def _base(spec, weights_dir):
     return base / spec.history_subdir if spec.history_subdir else base
 
 
+def _absent_names(d):
+    """The spec file names a history dir records as not live when it was made (see ``install``)."""
+    doc = read_json(Path(d) / ABSENT_MARK)
+    names = doc.get("files") if isinstance(doc, dict) else None
+    return [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+
+
 def _holds_model(spec, d):
+    if spec.rollback_to_absent and _absent_names(d):
+        return True
+    if spec.primary is not None:
+        return (d / spec.primary).is_file()
     return any((d / f).is_file() for f in spec.files)
 
 
@@ -144,8 +158,9 @@ def install(spec, weights_dir, files):
     """Retire the live copies of ``files`` into a new history dir and put the given files in their place.
 
     ``files`` maps a spec file name to the path to install (None: retire the live copy, install
-    nothing). Returns the retired dir (None when
-    nothing was live). A failure puts everything back.
+    nothing). A spec with ``rollback_to_absent`` also records, in the retired dir, the names it
+    installs that were not live, so a rollback can take them away again. Returns the retired dir
+    (None when nothing was live and nothing is recorded). A failure puts everything back.
     """
     weights_dir = Path(weights_dir)
     weights_dir.mkdir(parents=True, exist_ok=True)
@@ -156,10 +171,19 @@ def install(spec, weights_dir, files):
         if src is not None and not Path(src).is_file():
             raise FileNotFoundError(str(src))
     live = _live_names(spec, weights_dir, files)
+    absent = []
+    if spec.rollback_to_absent:
+        absent = [n for n in _order(spec, files) if files[n] is not None and n not in live]
     retired = None
-    if live:
+    if live or absent:
         retired = new_history_dir(spec, weights_dir)
-        move_group([(weights_dir / n, retired / n) for n in live])
+        try:
+            move_group([(weights_dir / n, retired / n) for n in live])
+            if absent:
+                write_json_atomic(retired / ABSENT_MARK, {"files": absent})
+        except BaseException:
+            shutil.rmtree(retired, ignore_errors=True)
+            raise
     try:
         move_group([(Path(files[n]), weights_dir / n) for n in _order(spec, files)
                     if files[n] is not None])
@@ -265,15 +289,19 @@ def _staged_name(spec, stamp, name):
 
 
 def _staged_files(spec, weights_dir):
-    """``{name: path}`` of the newest staged rollback set (the files that exist), else empty."""
+    """``(stamp, {name: path})`` of the newest staged rollback set (the files that exist), else ``(None, {})``."""
     stamps = sorted({m.group(1) for p in Path(weights_dir).glob(".rollback-*")
                      if (m := _STAGED.match(p.name))})
     for stamp in reversed(stamps):
         found = {n: Path(weights_dir) / _staged_name(spec, stamp, n) for n in spec.files}
         found = {n: p for n, p in found.items() if p.is_file()}
         if found:
-            return found
-    return {}
+            return stamp, found
+    return None, {}
+
+
+def _is_live(weights_dir, name):
+    return (Path(weights_dir) / name).is_file()
 
 
 def recover(spec, weights_dir):
@@ -282,8 +310,8 @@ def recover(spec, weights_dir):
     Acts only when the marker exists and its pid is not alive; without a marker a missing live
     model is left alone (the owner may have deleted it), and a live process's swap is never
     touched. A staged rollback set (``.rollback-*``) completes the rollback; otherwise the newest
-    history model (what promote retired) goes back to live. Returns True when something moved.
-    Idempotent.
+    history model (what promote retired) goes back to live. Only the files missing live are put
+    back: a live file is never overwritten. Returns True when something moved. Idempotent.
     """
     weights_dir = Path(weights_dir)
     marker = weights_dir / spec.marker_name
@@ -291,21 +319,35 @@ def recover(spec, weights_dir):
         return False
     moved = False
     try:
-        staged = _staged_files(spec, weights_dir)
+        stamp, staged = _staged_files(spec, weights_dir)
         if staged:
-            if any(not (weights_dir / n).is_file() for n in staged):
-                move_group([(staged[n], weights_dir / n) for n in _order(spec, staged)])
+            missing = [n for n in staged if not _is_live(weights_dir, n)]
+            if missing:
+                move_group([(staged[n], weights_dir / n) for n in _order(spec, missing)])
                 for d in history_dirs(spec, weights_dir, include_retired=False)[-1:]:
                     (d / RETIRED_MARK).write_text("", encoding="utf-8")   # the model rolled away
+                moved = True
+            left = [n for n in staged if _is_live(weights_dir, n) and staged[n].is_file()]
+            if left:        # the rollback had not reached these: give them back to their history dir
+                home = _base(spec, weights_dir) / stamp
+                home.mkdir(parents=True, exist_ok=True)
+                move_group([(staged[n], home / n) for n in _order(spec, left)])
                 moved = True
         else:
             dirs = history_dirs(spec, weights_dir)
             if dirs:
-                names = [n for n in spec.files if (dirs[-1] / n).is_file()]
-                if any(not (weights_dir / n).is_file() for n in names):
-                    move_group([(dirs[-1] / n, weights_dir / n) for n in _order(spec, names)])
-                    shutil.rmtree(dirs[-1], ignore_errors=True)
+                newest = dirs[-1]
+                names = [n for n in spec.files if (newest / n).is_file()]
+                missing = [n for n in names if not _is_live(weights_dir, n)]
+                if missing:
+                    move_group([(newest / n, weights_dir / n) for n in _order(spec, missing)])
                     moved = True
+                absent = _absent_names(newest) if spec.rollback_to_absent else []
+                if absent and any(not _is_live(weights_dir, n) for n in absent):
+                    (newest / ABSENT_MARK).unlink()      # the install never put them live: nothing was absent
+                    moved = True
+                if not any((newest / n).is_file() for n in spec.files) and not (newest / ABSENT_MARK).is_file():
+                    shutil.rmtree(newest, ignore_errors=True)
     except OSError:
         return False          # keep the marker: the next call tries again
     _clear_marker(spec, weights_dir)
@@ -371,12 +413,13 @@ def rollback(spec, weights_dir, live_after=None, install_fn=None, **record):
     newest = dirs[-1]
     after = live_after(newest) if live_after is not None else None
     names = [n for n in spec.files if (newest / n).is_file()]
+    absent = _absent_names(newest) if spec.rollback_to_absent else []
     with swap_marker(spec, weights_dir, "rollback"):
         # stage the old model outside history so the swap cannot see it as the current one
         staged = {n: weights_dir / _staged_name(spec, newest.name, n) for n in names}
         move_group([(newest / n, staged[n]) for n in _order(spec, names)])
         try:
-            retired = do_install(weights_dir, staged)
+            retired = do_install(weights_dir, dict(staged, **{n: None for n in absent if n not in staged}))
         except OSError:
             move_group([(staged[n], newest / n) for n in _order(spec, names)])
             raise

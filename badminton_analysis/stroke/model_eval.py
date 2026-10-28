@@ -158,7 +158,7 @@ def describe(code):
 # with its ``.json`` sidecar is a spec with two files).
 
 STROKE = store.ModelSpec("stroke", (LIVE_NAME, Path(meta_path(LIVE_NAME)).name), HISTORY_FILE, None,
-                         KEEP_REPLACED, marker=SWAP_MARKER)
+                         KEEP_REPLACED, marker=SWAP_MARKER, primary=LIVE_NAME, rollback_to_absent=False)
 SIDECAR_NAME = STROKE.files[1]
 SwapInProgress = store.SwapInProgress
 _read_marker = store.read_marker
