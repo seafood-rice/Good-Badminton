@@ -1124,7 +1124,7 @@ export function mount(container, ctx = {}) {
     const note = signalNote(m.summary, lang, m.rallies.length);
     if (note) sec.appendChild(h('div', { class: 'ws-sum-note' }, note));
     if (u) sec.appendChild(pointBlock(u));
-    if (u) sec.appendChild(strokesBlock(u));
+    sec.appendChild(strokesBlock(u));
     if (state.addPrompt) sec.appendChild(addPromptBlock());
     return sec;
   }
@@ -1222,7 +1222,7 @@ export function mount(container, ctx = {}) {
   }
 
   // ----- stroke correction (spec 2026-10-28 section 5.4) -----
-  /** The Strokes block for rally `u`: one widget per video, kept across repaints (it holds the selection and labels). */
+  /** The Strokes block for rally `u` (null: every shot of the video): one widget per video, kept across repaints (it holds the selection and labels). */
   function strokesBlock(u) {
     if (!refs.strokeBlock || refs.strokeBlockStem !== state.stem) {
       if (refs.strokeBlock) refs.strokeBlock.destroy();
@@ -1232,7 +1232,7 @@ export function mount(container, ctx = {}) {
       });
       refs.strokeBlock.load();
     }
-    refs.strokeBlock.update({ strokesDoc: state.strokesDoc, rally: u, fps: state.model.fps });
+    refs.strokeBlock.update({ strokesDoc: state.strokesDoc, rally: u, rallies: state.model.rallies, fps: state.model.fps });
     return refs.strokeBlock.el;
   }
 

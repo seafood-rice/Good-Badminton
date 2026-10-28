@@ -7,7 +7,7 @@ import { t } from '../core/i18n.js';
 import { api as kestrelApi, errorText } from '../core/api.js';
 import { h } from './frame.js';
 import {
-  STROKE_IDS, TYPE_KEYS, normaliseLabels, rowsForRally, applyAction, keyToAction, tally,
+  STROKE_IDS, TYPE_KEYS, normaliseLabels, rowsForRally, orphanLabels, applyAction, keyToAction, tally,
 } from '../views/strokelabels_model.js';
 
 const LONG = { timeout: 60000 };
@@ -29,7 +29,7 @@ const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 /**
  * strokeLabelsBlock({stem, lang, api: {get(stem), put(stem, body)}, getPlayer, playerName(side), onSaved(res)}) ->
- * {el, update({strokesDoc, rally, fps}), load(), focus(), destroy()}. `update` repaints for a new rally or a re-read
+ * {el, update({strokesDoc, rally, rallies, fps}), load(), focus(), destroy()}. `update` repaints for a new rally or a re-read
  * strokes.json; `onSaved` is told after each successful save (the page re-reads strokes.json when it was applied).
  */
 export function strokeLabelsBlock({
@@ -37,7 +37,7 @@ export function strokeLabelsBlock({
 } = {}) {
   let alive = true;
   let labelsDoc = normaliseLabels(null);
-  let props = { strokesDoc: null, rally: null, fps: null };
+  let props = { strokesDoc: null, rally: null, rallies: null, fps: null };
   let selected = null; // the selected row's time
   let notice = '';
   let saving = false;
@@ -47,7 +47,8 @@ export function strokeLabelsBlock({
 
   const side = (s) => (playerName ? playerName(s) : '') || t(s === 'lower' ? 'strokes.near' : 'strokes.far', lang);
   const typeText = (id) => (id && id !== 'unknown' ? t('stroke.' + id, lang) : t('strokes.unknown', lang));
-  const rows = () => rowsForRally(props.strokesDoc, labelsDoc, props.rally, props.fps);
+  const rows = () => rowsForRally(props.strokesDoc, labelsDoc, props.rally, props.fps, props.rallies);
+  const orphans = () => orphanLabels(props.strokesDoc, labelsDoc, props.rally, props.fps, props.rallies);
 
   function seekToRow(row) {
     const player = getPlayer();
@@ -191,6 +192,21 @@ export function strokeLabelsBlock({
     return btn;
   }
 
+  // An owner label no shot carries any more: shown so it can be seen and cleared.
+  function orphanNode(o) {
+    const what = o.stroke ? typeText(o.stroke) : t('strokes.state.' + (o.kind === 'not_hit' ? 'not_hit' : 'unsure'), lang);
+    return h('div', { class: 'ws-sl-row ws-sl-orphan dim', 'data-time': String(o.time), 'data-state': 'orphaned' }, [
+      h('span', { class: 'mono ws-sl-time' }, clock(o.time)),
+      h('span', { class: 'ws-sl-player' }, o.hitter ? side(o.hitter) : '—'),
+      h('span', { class: 'ws-sl-type' }, what),
+      h('span', { class: 'k-chip ws-sl-state st-orphaned' }, t('strokes.state.orphaned', lang)),
+      h('button', {
+        type: 'button', class: 'ws-chip ws-pt-btn ws-sl-orphan-clear', 'data-action': 'clear-orphan',
+        onclick: () => act({ time: o.time, label: o.label, state: 'orphaned' }, { type: 'clear' }, false),
+      }, t('strokes.clear', lang)),
+    ]);
+  }
+
   function typeButtons(onPick, current) {
     return h('div', { class: 'ws-sl-types', role: 'group' }, STROKE_IDS.map((id) => h('button', {
       type: 'button', class: 'ws-chip ws-sl-type-btn' + (current === id ? ' on' : ''), 'data-stroke': id,
@@ -220,10 +236,13 @@ export function strokeLabelsBlock({
         }, t('strokes.split.' + id, lang)))),
     ]));
     const list = rows();
-    if (!list.length) {
-      el.appendChild(h('div', { class: 'kw-note ws-sl-empty' }, t('strokes.empty', lang)));
+    const lost = orphans();
+    if (!list.length && !lost.length) {
+      el.appendChild(h('div', { class: 'kw-note ws-sl-empty' }, t(props.rally ? 'strokes.empty' : 'strokes.empty_all', lang)));
     } else {
-      el.appendChild(h('div', { class: 'ws-sl-list' }, list.map(rowNode)));
+      el.appendChild(h('div', { class: 'ws-sl-list' }, [...list.map(rowNode), ...lost.map(orphanNode)]));
+      const on = el.querySelector && el.querySelector('.ws-sl-row.on');
+      if (on && typeof on.scrollIntoView === 'function') on.scrollIntoView({ block: 'nearest' });
     }
     const row = list.find((r) => r.time === selected);
     if (row && !addPrompt) {

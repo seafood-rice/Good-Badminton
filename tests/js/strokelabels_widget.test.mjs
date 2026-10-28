@@ -195,3 +195,58 @@ test('an empty rally says so', async () => {
     assert.ok(block.el.textContent.includes(t('strokes.empty', 'en')));
   } finally { removeEnv(); }
 });
+
+test('orphaned owner labels are listed with a badge and can be cleared', async () => {
+  installEnv();
+  try {
+    const { block, api } = await make({ doc: { revision: 6, labels: [lab(1, 'clear'), lab(8, 'smash', 'label', 'upper')] } });
+    const orphan = rowsOf(block).find((r) => r.getAttribute('data-state') === 'orphaned');
+    assert.ok(orphan, 'an orphan row');
+    assert.ok(orphan.textContent.includes('0:08.0') && orphan.textContent.includes('Smash'));
+    assert.ok(orphan.textContent.includes(t('strokes.state.orphaned', 'en')));
+    const clear = everything(orphan).find((e) => e.getAttribute('data-action') === 'clear-orphan');
+    clear.click();
+    await tick();
+    const put = api.calls.find((c) => c[0] === 'PUT');
+    assert.deepEqual(put[2], { revision: 6, split: 'train', labels: [lab(1, 'clear')] });
+    assert.equal(rowsOf(block).some((r) => r.getAttribute('data-state') === 'orphaned'), false);
+    block.destroy();
+  } finally { removeEnv(); }
+});
+
+test('with no rally selected the block lists every shot and keys keep working', async () => {
+  installEnv();
+  try {
+    const { block, api } = await make();
+    block.update({ strokesDoc, rally: null, rallies: [{ id: 1, start: 0, end: 1.5 }], fps: FPS });
+    const rows = rowsOf(block);
+    assert.equal(rows.length, 3, 'shots outside every rally are listed too');
+    rows[2].click();
+    key(block, 'c');
+    await tick();
+    assert.deepEqual(api.calls.find((c) => c[0] === 'PUT')[2].labels, [lab(3, 'clear')]);
+    block.destroy();
+  } finally { removeEnv(); }
+});
+
+test('the selected row is scrolled into view', async () => {
+  installEnv();
+  try {
+    const { block } = await make();
+    const seen = [];
+    const orig = everything(block.el).find((e) => e.getAttribute('class') && e.getAttribute('class').includes('ws-sl-row'));
+    assert.ok(orig);
+    // every painted row gets the hook; the selected one is the one asked to scroll
+    const proto = Object.getPrototypeOf(orig);
+    const had = Object.prototype.hasOwnProperty.call(proto, 'scrollIntoView');
+    const old = proto.scrollIntoView;
+    proto.scrollIntoView = function scroll() { seen.push(this.getAttribute('data-time')); };
+    try {
+      rowsOf(block)[1].click();
+    } finally {
+      if (had) proto.scrollIntoView = old; else delete proto.scrollIntoView;
+    }
+    assert.deepEqual(seen, ['2']);
+    block.destroy();
+  } finally { removeEnv(); }
+});

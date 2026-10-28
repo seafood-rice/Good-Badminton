@@ -4,6 +4,8 @@
 // Rows are always computed from the model's own view of strokes.json (any previous overlay undone through the
 // model_* fields) plus the labels. Near = 'lower', far = 'upper'. No DOM here: widgets/strokelabels.js is the view.
 
+import { rallyFor } from './workspace_model.js';
+
 export const ATTACH_TOLERANCE_SEC = 0.15;
 export const ROW_MARGIN_SEC = 0.25;
 export const STROKE_IDS = ['short_serve', 'long_serve', 'clear', 'lift', 'smash', 'drop',
@@ -74,17 +76,52 @@ function attach(labels, strokes, fps) {
 const validStroke = (id) => (STROKE_IDS.includes(id) ? id : null);
 
 /**
+ * Whether a time belongs to the selected rally. With the workspace's rally list (`rallies`) it is the workspace's own
+ * rule (workspace_model.rallyFor: inside, else nearest within the pad), so the block and the summary always agree;
+ * without it, the old strict window. No rally = every time.
+ */
+function memberOf(rally, rallies) {
+  if (!rally) return () => true;
+  if (Array.isArray(rallies) && rallies.length) {
+    return (time) => {
+      const r = rallyFor(time, rallies);
+      return !!r && (r === rally || (r.id !== undefined && r.id === rally.id));
+    };
+  }
+  return (time) => time >= rally.start - ROW_MARGIN_SEC && time <= rally.end + ROW_MARGIN_SEC;
+}
+
+/**
+ * Owner labels no hit carries (the video was re-analysed or the hit is gone): [{time, hitter, stroke, kind, label}] in
+ * time order, only those in `rally` (membership as for rowsForRally). `added` labels are shots of their own, never
+ * orphans.
+ */
+export function orphanLabels(strokesDoc, labelsDoc, rally, fps, rallies) {
+  if (!num(fps) || fps <= 0) return [];
+  const labels = normaliseLabels(labelsDoc).labels;
+  const strokes = modelStrokes(strokesDoc);
+  const times = strokes.map((s) => s.frame / fps);
+  const member = memberOf(rally, rallies);
+  return labels
+    .filter((l) => l.kind !== 'added' && !times.some((t) => Math.abs(t - l.time_sec) <= ATTACH_TOLERANCE_SEC))
+    .filter((l) => member(l.time_sec))
+    .map((l) => ({ time: round3(l.time_sec), hitter: l.hitter || null, stroke: typeof l.stroke === 'string' ? l.stroke : null, kind: l.kind, label: l }))
+    .sort((a, b) => a.time - b.time);
+}
+
+/**
  * The rows of one rally: [{time, frame, hitter, stroke, model_stroke, model_hitter, confidence, source, state, label}],
  * in time order. `stroke` / `hitter` are the effective ones (the owner's when labelled). `state`: auto (model only),
  * confirmed (owner agrees with the model), corrected, not_hit (kept so it can be undone), unsure, added (a missed
- * shot). `label` is the owner label on the row, or null. `rally` is {start, end} in seconds; null gives every row.
+ * shot). `label` is the owner label on the row, or null. `rally` is a workspace rally ({id, start, end} in seconds); null
+ * gives every row. `rallies` (optional) is the workspace's rally list: membership then follows `rallyFor`.
  */
-export function rowsForRally(strokesDoc, labelsDoc, rally, fps) {
+export function rowsForRally(strokesDoc, labelsDoc, rally, fps, rallies) {
   if (!num(fps) || fps <= 0) return [];
   const labels = normaliseLabels(labelsDoc).labels;
   const strokes = modelStrokes(strokesDoc);
   const { byIndex, added } = attach(labels, strokes, fps);
-  const inRally = (time) => !rally || (time >= rally.start - ROW_MARGIN_SEC && time <= rally.end + ROW_MARGIN_SEC);
+  const inRally = memberOf(rally, rallies);
   const rows = [];
   strokes.forEach((s, i) => {
     const time = round3(s.frame / fps);

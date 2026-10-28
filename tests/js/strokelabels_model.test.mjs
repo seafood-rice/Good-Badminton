@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  rowsForRally, applyAction, keyToAction, tally, normaliseLabels, TYPE_KEYS, STROKE_IDS,
+  rowsForRally, orphanLabels, applyAction, keyToAction, tally, normaliseLabels, TYPE_KEYS, STROKE_IDS,
 } from '../../static/kestrel/views/strokelabels_model.js';
 
 const FPS = 60;
@@ -111,4 +111,29 @@ test('tally counts labelled shots and agreement with the model', () => {
   assert.deepEqual(t, { labelled: 2, total: 4, agree: 1, agreeShare: 0.5 });
   assert.deepEqual(tally(strokes, labels(), FPS), { labelled: 0, total: 4, agree: 0, agreeShare: null });
   assert.equal(normaliseLabels({ split: 'bogus', revision: -3, labels: [null, { time_sec: 'x' }] }).split, 'train');
+});
+
+test('rowsForRally with the workspace rally list uses its membership (inside, else nearest within 0.5 s)', () => {
+  const rallies = [{ id: 1, start: 0, end: 5 }, { id: 2, start: 6, end: 10 }];
+  const strokes = doc(st(60, 'lower', 'clear'), st(162, 'upper', 'lift'), st(325, 'lower', 'drop'), st(1200, 'lower', 'push'));
+  // 5.4 s is 0.4 s past rally 1 (outside the old 0.25 s window, inside the workspace's 0.5 s pad); 5.42 s is nearer rally 1
+  const one = rowsForRally(strokes, labels(lab(5.45, 'smash', 'added')), rallies[0], FPS, rallies);
+  assert.deepEqual(one.map((r) => r.time), [1, 2.7, 5.417, 5.45]);
+  const two = rowsForRally(strokes, labels(), rallies[1], FPS, rallies);
+  assert.deepEqual(two.map((r) => r.time), []);
+  // a shot outside every rally belongs to no rally ...
+  assert.equal(one.concat(two).some((r) => r.time === 20), false);   // 20 s
+  // ... but the all view lists it
+  assert.deepEqual(rowsForRally(strokes, labels(), null, FPS, rallies).map((r) => r.time), [1, 2.7, 5.417, 20]);
+});
+
+test('orphanLabels: labels no hit carries, scoped to the rally; added labels are never orphans', () => {
+  const rallies = [{ id: 1, start: 0, end: 5 }, { id: 2, start: 6, end: 10 }];
+  const strokes = doc(st(60, 'lower', 'clear'));
+  const ls = labels(lab(1.0, 'clear'), lab(3.0, 'smash'), lab(7.0, null, 'not_hit', 'upper'), lab(4.0, 'drop', 'added'));
+  const all = orphanLabels(strokes, ls, null, FPS, rallies);
+  assert.deepEqual(all.map((o) => [o.time, o.hitter, o.stroke, o.kind]), [[3, 'lower', 'smash', 'label'], [7, 'upper', null, 'not_hit']]);
+  assert.deepEqual(orphanLabels(strokes, ls, rallies[1], FPS, rallies).map((o) => o.time), [7]);
+  assert.deepEqual(orphanLabels(strokes, ls, null, null, rallies), []);
+  assert.equal(all[0].label, ls.labels[1]);
 });

@@ -83,7 +83,8 @@ function rallyEntries(payload, fps) {
   return out;
 }
 
-function rallyFor(time, rallies) {
+/** The rally a shot at `time` belongs to: the one containing it, else the nearest within RALLY_PAD_SEC (or null). */
+export function rallyFor(time, rallies) {
   if (time === null) return null;
   const exact = rallies.find((r) => time >= r.start && time <= r.end);
   if (exact) return exact;
