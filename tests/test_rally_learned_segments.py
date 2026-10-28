@@ -256,3 +256,54 @@ def test_segments_from_run_dir_match_in_memory_gap_count(tmp_path):
     assert len(sf.gaps(inp)) == len(HITS) - 1
     segs = segmenter.segments(inp, model())
     assert [s["id"] for s in segs] == [1, 2] and all(s["degraded"] is False for s in segs)
+
+
+# ---- more consumers: player positions, insights routes, strategy routes -------------------------
+
+def test_player_positions_do_not_depend_on_the_segment_signal(tmp_path):
+    """The position maps cut their own rallies from detections.jsonl; a learned file changes nothing."""
+    from badminton_analysis.visualization.player_positions import PlayerPositionVisualizer
+    out = learned_run(tmp_path, frames=900)
+
+    def load():
+        viz = PlayerPositionVisualizer(str(out / "detections.jsonl"), str(tmp_path / "viz"), fps=30)
+        return viz._load_data()
+
+    with_learned = load()
+    (out / "rally_segments.json").unlink()
+    without = load()
+    assert len(with_learned) == len(without) and with_learned.equals(without)
+
+
+@pytest.fixture
+def app_env(tmp_path, monkeypatch):
+    (tmp_path / "videos").mkdir()
+    monkeypatch.setattr(webapp, "VIDEOS", tmp_path / "videos")
+    monkeypatch.setattr(webapp, "OUTPUTS", tmp_path / "outputs")
+    monkeypatch.setattr(webapp, "ATHLETES_PATH", tmp_path / "data" / "athletes.json")
+    monkeypatch.setattr(webapp, "jobs", {})
+    webapp.app.config["TESTING"] = True
+    return webapp.app.test_client(), tmp_path
+
+
+def test_insights_routes_serve_a_learned_run(app_env):
+    client, tmp_path = app_env
+    learned_run(tmp_path)
+    (tmp_path / "videos" / "clip.mp4").write_bytes(b"x")
+    video = client.get("/api/insights/video/clip")
+    assert video.status_code == 200
+    rally = video.get_json()["rally"]
+    assert rally["status"] == "ok" and rally["value"]["signal"] == "learned"
+    assert rally["value"]["count"] == 2 and rally["value"]["suppressed"] is False
+    overview = client.get("/api/insights/overview?range=all")
+    assert overview.status_code == 200
+    assert {m["stem"] for m in overview.get_json()["matches"]} == {"clip"}      # a learned run is a library run
+
+
+def test_strategy_routes_serve_a_learned_run(app_env):
+    client, tmp_path = app_env
+    learned_run(tmp_path)
+    got = client.get("/api/strategy/clip")
+    assert got.status_code == 200 and got.get_json()["status"] == "none"
+    # the learned file counts as an analysis: regenerate is not refused as "no match analysis yet"
+    assert client.post("/api/strategy/clip/regenerate", json={}).status_code != 404
