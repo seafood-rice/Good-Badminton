@@ -133,6 +133,9 @@ export const endpoints = {
   status: (jobId) => '/api/status/' + enc(jobId),
   rallyLabels: (stem) => '/api/rally-labels/' + enc(stem),
   strokeLabels: (stem) => '/api/stroke-labels/' + enc(stem),
+  strokeModel: () => '/api/stroke-model',
+  strokeModelRetrain: () => '/api/stroke-model/retrain',
+  strokeModelRollback: () => '/api/stroke-model/rollback',
   output: (stem, subpath) => '/api/output/' + enc(stem) + '/' + String(subpath).split('/').map(enc).join('/'),
 };
 
@@ -194,4 +197,9 @@ export const api = {
   // body.reason 'stale' (reload), 'unreadable' or 'split_locked'.
   getStrokeLabels: (stem, opts) => getJSON(endpoints.strokeLabels(stem), opts),
   putStrokeLabels: (stem, body, opts) => sendJSON('PUT', endpoints.strokeLabels(stem), body, opts),
+  // Stroke model card (spec 2026-10-28 section 6). strokeModel -> {live, counts, can_retrain, missing, history, job};
+  // retrain answers {job_id, queued} or a 409 (body.reason 'busy' | 'not_enough_labels'); rollback a 409 busy / 404 none.
+  strokeModel: (opts) => getJSON(endpoints.strokeModel(), opts),
+  retrainStrokeModel: (opts) => sendJSON('POST', endpoints.strokeModelRetrain(), undefined, opts),
+  rollbackStrokeModel: (opts) => sendJSON('POST', endpoints.strokeModelRollback(), undefined, opts),
 };
