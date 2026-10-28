@@ -44,7 +44,6 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
 | learned-hit-detection | `claude/learned-hit-detection` | `badminton_analysis/stroke/`, `system.py`, `stroke_recog/recognizer.py`, `shuttle_track/tracknet.py`, `third_party/tracknet/`, `static/kestrel/legacy/kestrel-legacy.js`, `main.py`, `app.py`, `scripts/*hit*`, `scripts/shuttleset_labels.py`, `tests/test_hit_*` | First model on owner's Axelsen labels: recall 0.80, precision 0.67 (bar 0.60 / 0.70), hitter 0.88. Dead-time rebuild runs detached (`data/hit_dataset_gaps/build.log`; `stop_build.ps1` / `resume_build.ps1` there). Next: when it shows BUILD DONE, retrain on `data/hit_dataset` + `data/hit_dataset_gaps` (val Sindhu), re-score the 4 Axelsen stretches. Spec/plan: `docs/superpowers/*/2026-10-04-learned-hit-detection*`. `app.py` now serves `kestrel.html` at `/` and binds `0.0.0.0` (merged). Note: claude/stroke-timeline-mismatch-2bfb29 deletes stroke_recog/; rebase before touching it. |
 | split-match-linking | `claude/match-split-side-change-58a409` | `badminton_analysis/library/athletes.py`, `insights/aggregate.py`, `web/athletes_routes.py`, `app.py` (`_forget_match_record`), `static/kestrel/views/matches.js`, `static/kestrel/core/i18n.js` | Spec `docs/superpowers/specs/2026-10-21-split-match-linking-design.md`. Built: link a video as part N of a match (manual, sides-swapped flag); one expandable Matches row. Verified 2026-10-21: full pytest 2047 passed / 2 skipped, `node --test tests/js/*.test.mjs` 280 passed, live UI + API check on seeded data. Next: owner review/merge of the PR; then delete this row. Follow-ups: explicit `{part_of: null}` unlink (stale-tab safety), `has_record` flag on overview rows (UI guesses today). |
 | docker-migration-compose | `claude/docker-migration-compose-a48190` | `Dockerfile`, `.dockerignore`, `docker-compose*.yml`, `README.md`, `README_EN.md` | Image + compose (GPU default, CPU override) and README Docker sections done. Verified on RTX 4090 host: both images build; GPU image sees CUDA (torch + onnxruntime CUDA session); stack healthy; `pytest` in GPU image 1936 passed, 3 skipped (`test_ai_overlap.py` excluded, needs `git`). Not run: `fetch-weights` download, a real analysis on a video with weights. Delete this row when merged. |
-| rally-winner-learning | `claude/rally-winner-learning` | `badminton_analysis/outcomes/`, `badminton_analysis/models/store.py`, `stroke/rallies.py`, `stroke/model_eval.py`, `system.py`, `library/athletes.py`, `app.py`, `web/`, `scripts/score_rally_model.py`, `static/kestrel/` (matches, pipeline, rallymodel, i18n) | Spec `docs/superpowers/specs/2026-10-28-rally-winner-learning-design.md` written, awaiting owner review. Next: owner review, then the implementation plan. Nothing built or tested yet. |
 
 ## Decisions that still matter
 
@@ -74,12 +73,21 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
   re-analysis keep them). Retrain (`train_strokes` job, Pipeline card) keeps a candidate only if its 7-group accuracy
   >= the live model's on the same owner test shots and unknown <= 15 %; history and roll back in `weights/`. The
   strategy report adds an effectiveness tally, openings and overview facts from `strategy/shots.py`.
+- Rally models (spec `docs/superpowers/specs/2026-10-28-rally-winner-learning-design.md`): per-match `scoring`
+  format on the match record (`outcomes/scoring.py`, default `bwf_21x3`); a learned point-end segmenter and a
+  score-sequence winner decoder, each kept only when it beats today's swing segments / rule cascade leave-one-match-out
+  (`outcomes/model_eval.py`, Rally model card, `train_rally`; a keep queues `resegment_rallies`). No kept model =
+  output identical to before. Model store shared with the stroke model (`badminton_analysis/models/store.py`).
 
 ## Blockers and loose ends
 - Stroke correction: no owner stroke labels exist yet, so Retrain has never run on real labels (smoke-tested on
   placeholder labels: 90 s on the RTX 4090, reject path). Position check fails 0004 (both sides) and 0003's far side,
   so zone/rushed facts are thin; only 3 of 30 openings in 0003 are complete until missed shots are added. Doubles
   tactics untested live. Owner next: label strokes on 0003/0004 (one match as test), then Retrain.
+- Rally models: first leave-one-match-out run (2026-10-28, owner labels on 0003 + 0004, each fold = one held-out
+  match): segmenter point-end F1 0.63 / 0.27 (pooled 0.44) vs swing 0.78 / 0.53 (pooled 0.65), rejected; decoder
+  made no claim at >= 0.90 held-out precision (11 of 34 right at p >= 0.5), rejected; rule cascade 3 of 4 right.
+  Nothing is kept, so analyses are unchanged. Next: owner labels points on more matches (0009, 0010), then Retrain.
 - To-do (owner, 2026-10-28; not planned): forehand/backhand detection; shuttle landing depth; a per-game split of
   rallies; feeding owner not-a-hit / added shots into hit-detector training; career-wide tactical report; classifier
   relabel for doubles.
