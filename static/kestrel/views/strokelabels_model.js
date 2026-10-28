@@ -102,10 +102,11 @@ export function orphanLabels(strokesDoc, labelsDoc, rally, fps, rallies) {
   if (!num(fps) || fps <= 0) return [];
   const labels = normaliseLabels(labelsDoc).labels;
   const strokes = modelStrokes(strokesDoc);
-  const times = strokes.map((s) => s.frame / fps);
+  // a label is shown on a row only when attach() gave it to one: a second label near the same hit has no row
+  const carried = new Set(attach(labels, strokes, fps).byIndex.values());
   const member = memberOf(rally, rallies);
   return labels
-    .filter((l) => l.kind !== 'added' && !times.some((t) => Math.abs(t - l.time_sec) <= ATTACH_TOLERANCE_SEC))
+    .filter((l) => l.kind !== 'added' && !carried.has(l))
     .filter((l) => member(l.time_sec))
     .map((l) => ({ time: round3(l.time_sec), hitter: l.hitter || null, stroke: typeof l.stroke === 'string' ? l.stroke : null, kind: l.kind, label: l }))
     .sort((a, b) => a.time - b.time);

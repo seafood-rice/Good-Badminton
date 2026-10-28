@@ -58,7 +58,7 @@ export function cardModel(data, lang) {
   const job = data.job && typeof data.job === 'object' ? data.job : null;
   const history = (Array.isArray(data.history) ? data.history : []).slice(-5).reverse();
   const hasModel = typeof live.version === 'string' && live.version !== '';
-  const canRollback = (Array.isArray(data.history) ? data.history : []).some((e) => e && e.kept === true && e.replaced);
+  const canRollback = data.can_rollback === true; // the server knows which replaced models are still usable
   const texts = (list) => (Array.isArray(list) ? list.map((x) => describeCode(x, lang)).filter(Boolean) : []);
   const missing = texts(data.missing);
   const state = job ? 'running' : data.pending ? 'loading' : data.can_retrain ? 'ready' : 'not_enough';

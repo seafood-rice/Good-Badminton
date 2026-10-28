@@ -39,6 +39,7 @@ export function strokeLabelsBlock({
   let labelsDoc = normaliseLabels(null);
   let props = { strokesDoc: null, rally: null, rallies: null, fps: null };
   let selected = null; // the selected row's time
+  let paintedSelected = null; // the selection at the last paint: scroll only when it changed
   let notice = '';
   let saving = false;
   let addPrompt = null; // {time, hitter}
@@ -242,8 +243,9 @@ export function strokeLabelsBlock({
     } else {
       el.appendChild(h('div', { class: 'ws-sl-list' }, [...list.map(rowNode), ...lost.map(orphanNode)]));
       const on = el.querySelector && el.querySelector('.ws-sl-row.on');
-      if (on && typeof on.scrollIntoView === 'function') on.scrollIntoView({ block: 'nearest' });
+      if (selected !== paintedSelected && on && typeof on.scrollIntoView === 'function') on.scrollIntoView({ block: 'nearest' });
     }
+    paintedSelected = selected;
     const row = list.find((r) => r.time === selected);
     if (row && !addPrompt) {
       el.appendChild(h('div', { class: 'ws-sl-actions' }, [

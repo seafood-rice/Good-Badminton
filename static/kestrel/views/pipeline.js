@@ -6,7 +6,7 @@ import { ago } from '../core/format.js';
 import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, setStyle, setText } from '../widgets/frame.js';
-import { strokeModelCard } from '../widgets/strokemodel.js';
+import { strokeModelCard, describeCode } from '../widgets/strokemodel.js';
 import { ACTIVE_STATUSES, RUNNING_STATUSES as RUNNING, QUEUED_STATUSES, PAUSED_STATUSES, jobStage } from '../widgets/pipeline.js';
 
 export const FAST_MS = 2000;
@@ -57,6 +57,7 @@ export function groupJobs(jobs) {
       stage: jobStage(j),
       progress,
       message: typeof j.message === 'string' ? j.message : '',
+      reasonCode: j.reason_code && typeof j.reason_code === 'object' && typeof j.reason_code.code === 'string' ? j.reason_code : null,
       updated: isNum(j.updated) ? j.updated : null,
       tone: toneOf(status),
       active: isActive,
@@ -89,6 +90,14 @@ export function messageText(message, lang) {
   const m = /^(.+?) \/ (.+)$/.exec(s);
   if (m && /[一-鿿]/.test(m[1])) return (lang === 'en' ? m[2] : m[1]).trim();
   return s;
+}
+
+/** Pure: the text of a job row's message line; a coded reason (training jobs) is appended in the UI language. */
+export function jobMessage(row, lang) {
+  const r = obj(row);
+  const msg = messageText(r.message, lang);
+  const why = r.reasonCode ? describeCode(r.reasonCode, lang) : '';
+  return why ? (msg ? msg + ': ' : '') + why : msg;
 }
 
 function stageText(stage, lang) {
@@ -240,7 +249,7 @@ export function mount(container, ctx = {}) {
   }
 
   function paintText(refs, r) {
-    const msg = messageText(r.message, lang);
+    const msg = jobMessage(r, lang);
     setText(refs.msgEl, msg);
     refs.msgEl.hidden = !msg;
     setText(refs.updEl, r.updated !== null ? t('pv.updated', lang, { time: ago(Math.max(0, Date.now() / 1000 - r.updated)) }) : '');

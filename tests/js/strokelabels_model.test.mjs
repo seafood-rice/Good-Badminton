@@ -144,3 +144,14 @@ test('orphanLabels: labels no hit carries, scoped to the rally; added labels are
   assert.deepEqual(orphanLabels(strokes, ls, null, null, rallies), []);
   assert.equal(all[0].label, ls.labels[1]);
 });
+
+test('orphanLabels: a second label near the same hit is an orphan, not invisible', () => {
+  const strokes = doc(st(60, 'lower', 'clear'));
+  // both are within 0.15 s of the hit at 1.0 s; the closer one attaches, the other has no row
+  const ls = labels(lab(1.1, 'smash'), lab(1.02, 'clear'));
+  const rows = rowsForRally(strokes, ls, null, FPS);
+  assert.equal(rows[0].label, ls.labels[1]);
+  const lost = orphanLabels(strokes, ls, null, FPS);
+  assert.deepEqual(lost.map((o) => [o.time, o.stroke]), [[1.1, 'smash']]);
+  assert.equal(lost[0].label, ls.labels[0]);
+});

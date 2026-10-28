@@ -250,3 +250,28 @@ test('the selected row is scrolled into view', async () => {
     block.destroy();
   } finally { removeEnv(); }
 });
+
+test('a repaint with the same selection does not scroll again', async () => {
+  installEnv();
+  try {
+    const { block } = await make();
+    const seen = [];
+    const orig = everything(block.el).find((e) => e.getAttribute('class') && e.getAttribute('class').includes('ws-sl-row'));
+    const proto = Object.getPrototypeOf(orig);
+    const had = Object.prototype.hasOwnProperty.call(proto, 'scrollIntoView');
+    const old = proto.scrollIntoView;
+    proto.scrollIntoView = function scroll() { seen.push(this.getAttribute('data-time')); };
+    try {
+      rowsOf(block)[1].click();
+      assert.deepEqual(seen, ['2']);
+      block.update({ strokesDoc, rally: { start: 0, end: 10 }, fps: FPS });      // same selection, repainted
+      block.update({ strokesDoc, rally: { start: 0, end: 10 }, fps: FPS });
+      assert.deepEqual(seen, ['2'], 'the list stays where the owner scrolled it');
+      rowsOf(block)[2].click();                                                  // a new selection scrolls
+      assert.deepEqual(seen, ['2', '3']);
+    } finally {
+      if (had) proto.scrollIntoView = old; else delete proto.scrollIntoView;
+    }
+    block.destroy();
+  } finally { removeEnv(); }
+});

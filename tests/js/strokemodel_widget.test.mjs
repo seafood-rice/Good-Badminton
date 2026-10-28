@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installEnv, removeEnv, tick, everything } from './fake_dom.mjs';
 import { cardModel, describeCode, historyRow, strokeModelCard } from '../../static/kestrel/widgets/strokemodel.js';
-import { groupJobs, jobActions } from '../../static/kestrel/views/pipeline.js';
+import { groupJobs, jobActions, jobMessage } from '../../static/kestrel/views/pipeline.js';
 
 const live = (extra = {}) => ({ version: '2026-10-01T00:00:00Z', metrics: { accuracy: 0.9, unknown_rate: 0.05 }, bar_met: true, bar_reasons: [], ...extra });
 const body = (extra = {}) => ({ live: live(), counts: { train: 70, test: 25, new_train: 60 }, can_retrain: true, missing: [], history: [], job: null, ...extra });
@@ -44,8 +44,12 @@ test('history rows: newest first, kept / rejected / rolled back, rollback availa
   assert.equal(m.history[1].kept, false);
   assert.match(m.history[1].text, /Rejected \(80% → 50%\): candidate accuracy/);
   assert.match(m.history[2].text, /Run kept|New model kept \(70% → 80%\)/);
-  assert.equal(m.canRollback, true);
-  assert.equal(cardModel(body({ history: [history[1]] }), 'en').canRollback, false);
+  // rollback availability is the server's call (retired models are not counted in the history)
+  assert.equal(m.canRollback, false);
+  assert.equal(cardModel(body({ history, can_rollback: true }), 'en').canRollback, true);
+  assert.equal(cardModel(body({ history: [history[1]], can_rollback: true }), 'en').canRollback, true);
+  assert.equal(cardModel(body({ history, can_rollback: false }), 'en').canRollback, false);
+  assert.equal(cardModel(body({ can_rollback: true, job: { id: 'relabel_strokes', status: 'running' } }), 'en').canRollback, false);
   assert.equal(historyRow({ utc: '2026-10-01T10:00:00Z', kept: true }, 'zh').when, '2026-10-01 10:00');
 });
 
@@ -121,4 +125,17 @@ test('codes with numbers are rendered in the UI language; plain strings pass thr
   assert.match(m.history[0].text, /Rejected \(80% → 50%\): New model accuracy 50% is below the current 80%/);
   const zh = cardModel(body({ can_retrain: false, missing: [tl] }), 'zh');
   assert.match(zh.missing[0], /还差 47/);
+});
+
+test('pipeline: a training job row localises its reason code with the sm.code strings', () => {
+  const g = groupJobs([{ id: 'train_strokes', video: 'stroke-classifier', kind: 'training', status: 'completed',
+    message: '新模型未采用 / candidate rejected', reason_code: { code: 'lower_accuracy', candidate: 0.5, live: 0.6 } }]);
+  const row = g.finished[0];
+  assert.deepEqual(row.reasonCode, { code: 'lower_accuracy', candidate: 0.5, live: 0.6 });
+  assert.equal(jobMessage(row, 'en'), 'candidate rejected: ' + describeCode(row.reasonCode, 'en'));
+  assert.match(jobMessage(row, 'zh'), /^新模型未采用: /);
+  assert.notEqual(jobMessage(row, 'zh'), jobMessage(row, 'en'));
+  const plain = groupJobs([{ id: 'x', video: 'a.mp4', kind: 'match', status: 'error', message: 'boom' }]).finished[0];
+  assert.equal(plain.reasonCode, null);
+  assert.equal(jobMessage(plain, 'en'), 'boom');
 });
