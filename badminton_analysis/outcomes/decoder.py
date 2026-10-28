@@ -155,7 +155,7 @@ def _advance(fmt, final, g, a, b, fl, player, ga=None):
 
 
 def _free_states(fmt, final):
-    top = fmt["cap"] if fmt["cap"] is not None else fmt["points_to_win"] + 1
+    top = fmt["cap"] if fmt["cap"] is not None else fmt["points_to_win"] + 2   # folded deuce states reach (p+1, p)
     games = len(final) if final is not None else fmt["best_of"]
     need = fmt["best_of"] // 2 + 1
     out = []

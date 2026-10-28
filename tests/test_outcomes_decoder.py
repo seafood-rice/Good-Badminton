@@ -266,3 +266,13 @@ def test_observations_signals_and_serve_court():
     assert dec.observations(segs[:1], _inputs({"lower": {600: (1.0, 12.0)}}, ok=False), {})[0].serve_court is None
     assert dec.observations(segs[:1], _inputs({"lower": {600: (3.05, 12.0)}}), {})[0].serve_court is None
     assert dec.observations(segs[:1], None, {})[0].serve_court is None
+
+
+def test_free_start_covers_every_folded_deuce_state():
+    """Review 3: an uncapped win-by-2 game also starts at the folded advantage scores (p+1, p) and (p, p+1)."""
+    ab = {(a, b) for g, a, b, _s, _f, _ga in dec._free_states(UNCAPPED, None) if g == 1}
+    assert (6, 5) in ab and (5, 6) in ab and (4, 4) in ab and (5, 5) in ab
+    assert dec._fold(UNCAPPED, 8, 7) in ab and dec._fold(UNCAPPED, 7, 8) in ab     # a decode starting at 8-7
+    assert all(dec._fold(UNCAPPED, a, b) == (a, b) for a, b in ab)
+    free = dec.decode(neutral(), UNCAPPED, pts(4), start="free")
+    assert len(free["p"]) == 4
