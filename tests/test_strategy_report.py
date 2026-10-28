@@ -408,6 +408,24 @@ def test_markdown_exports_both_tables_escaped():
     assert "## 回合战术" in zh and "81%" in zh
 
 
+def test_markdown_tables_escape_pipes_in_cells():
+    doc = {"by_lang": {"en": {"header": {}, "caveats": {"items": []}}}, "facts": [],
+           "tables": {"effectiveness": {"you": {"a|b": {"effective": 1, "neutral": 0,
+                                                          "ineffective": 0, "unknown": 0,
+                                                          "n": 1}}, "opponent": {}},
+                      "openings": {"complete": 1, "total": 1, "insufficient": True, "neutral": 0,
+                                   "won_by": {}, "opening_winner_won_point": {},
+                                   "rows": [{"rally": "r|1", "advantage": "you",
+                                             "point_winner": None, "n_shots": 3, "shots": [
+                                                 {"hitter": "you", "stroke": "x|y", "zone": None,
+                                                  "sent_to": None}]}]}}}
+    en = render_markdown(doc, "en")
+    assert "| a\\|b" in en and "r\\|1" in en and "x\\|y" in en
+    for line in en.splitlines():
+        if line.startswith("| ") and "a\\|b" in line:
+            assert line.replace("\\|", "").count("|") == 7      # 6 columns
+
+
 def test_generate_stores_tables_and_missing_tables_render_nothing(run, stub):
     out, pack = run
     serve(stub, pack)

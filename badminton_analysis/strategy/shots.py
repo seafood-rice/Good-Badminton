@@ -134,6 +134,35 @@ def _doubles_maps(out_dir):
     return side_of, points
 
 
+def _hit_pids(out_dir):
+    """``{frame: player id}`` from ``hits.json`` ``hitter_id`` (doubles; empty when unusable)."""
+    doc = _read_json(os.path.join(out_dir, "hits.json")) or {}
+    out = {}
+    for h in doc.get("hits") if isinstance(doc.get("hits"), list) else []:
+        if not isinstance(h, dict):
+            continue
+        frame, pid = number(h.get("frame")), h.get("hitter_id")
+        if frame is not None and isinstance(pid, str) and pid:
+            out[int(frame)] = pid
+    return out
+
+
+def _team_positions(side_of, points):
+    """``{side: {frame: mean (x, y) of that team's players}}`` for the per-team fallback."""
+    acc = {}
+    for pid, frames in points.items():
+        side = side_of.get(pid)
+        if side not in SIDES:
+            continue
+        for f, (x, y) in frames.items():
+            a = acc.setdefault(side, {}).setdefault(f, [0.0, 0.0, 0])
+            a[0] += x
+            a[1] += y
+            a[2] += 1
+    return {side: {f: (a[0] / a[2], a[1] / a[2]) for f, a in frames.items()}
+            for side, frames in acc.items()}
+
+
 def _read_detections(out_dir):
     """``{"upper": {frame: (x, y)}, "lower": {...}}`` from ``detections.jsonl`` (read once)."""
     pos = {side: {} for side in SIDES}
@@ -247,6 +276,7 @@ def build_shots(out_dir):
     winners = _winners(out_dir, segments)
     side_of, player_pts = _doubles_maps(out_dir)
     doubles = bool(side_of)
+    hit_pid = _hit_pids(out_dir) if doubles else {}
 
     # hits -> (time, side, actor, stroke dict) per segment
     per_seg = [[] for _ in segments]
@@ -255,17 +285,27 @@ def build_shots(out_dir):
             continue
         frame = number(s.get("frame"))
         hitter = s.get("hitter")
-        side = side_of.get(hitter) if doubles else (hitter if hitter in SIDES else None)
+        if doubles:
+            side = hitter if hitter in SIDES else side_of.get(hitter)
+        else:
+            side = hitter if hitter in SIDES else None
         if frame is None or side not in SIDES:
             continue
+        actor = hitter
+        if doubles:
+            # the player behind the hit (hits.json, by frame) when it is on this side, else the
+            # team's own positions
+            pid = hit_pid.get(int(frame))
+            actor = pid if pid in player_pts and side_of.get(pid) == side else (
+                hitter if hitter in side_of and side_of[hitter] == side else side)
         t = frame / fps
         i = _assign(t, segments)
         if i is not None:
-            per_seg[i].append((t, int(frame), side, hitter, s))
+            per_seg[i].append((t, int(frame), side, actor, s))
 
     det = _read_detections(out_dir)
     # positions by actor: singles = side, doubles = player id
-    positions = player_pts if doubles else det
+    positions = (dict(player_pts) | _team_positions(side_of, player_pts)) if doubles else det
     in_play = {side: [] for side in SIDES}
     spans = [(round(seg["start_sec"] * fps), round(seg["end_sec"] * fps)) for seg in segments]
     if doubles:
@@ -365,6 +405,9 @@ def _classify(rows, i, side, winner):
         if winner == side:
             return "effective"
         return "ineffective" if winner in SIDES else "unknown"
+    # the hitter's last shot of a lost rally, whatever the link after it looks like
+    if winner == other and not any(r["hitter"] == side for r in rows[i + 1:]):
+        return "ineffective"
     # the rally ends within this shot's next two links, all of them intact
     if winner == side:
         end = last
@@ -429,6 +472,7 @@ def openings(table):
         })
     won_by = {side: 0 for side in SIDES}
     neutral = n = won = 0
+    by_side = {side: {"n": 0, "won": 0} for side in SIDES}
     for c in cands:
         if c["advantage"] == "neutral":
             neutral += 1
@@ -437,6 +481,8 @@ def openings(table):
         if c["point_winner"]:
             n += 1
             won += c["advantage"] == c["point_winner"]
+            by_side[c["advantage"]]["n"] += 1
+            by_side[c["advantage"]]["won"] += c["advantage"] == c["point_winner"]
     cands.sort(key=lambda c: (c["_tier"], -c["n_shots"], str(c["rally"])))
     rows = []
     for c in cands[:MAX_ROWS]:
@@ -444,7 +490,8 @@ def openings(table):
         c.pop("_tier")
         rows.append(c)
     return {"complete": len(complete), "total": len(rallies), "rows": rows, "won_by": won_by,
-            "opening_winner_won_point": {"n": n, "won": won}, "neutral": neutral}
+            "opening_winner_won_point": {"n": n, "won": won}, "by_side": by_side,
+            "neutral": neutral}
 
 
 # ------------------------------------------------------------------ overview

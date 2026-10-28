@@ -811,21 +811,22 @@ def _empty_tables():
 def _stroke_model_quality():
     """``{accuracy, bar_met}`` of the live stroke model, or None when nothing is recorded.
 
-    The last kept entry of ``weights/stroke-model-history.json`` holds the model's scored
-    metrics (``candidate``) and, when the evaluator wrote it, ``bar_met``. One place to point at
-    ``stroke.model_eval.status`` later."""
+    Every entry of ``weights/stroke-model-history.json`` carries ``live_after`` (the live model's
+    version, accuracy, unknown_rate and bar_met after that entry, whatever its kind), so the
+    newest entry says what is live now, also after a roll back."""
     try:
         with open(WEIGHTS_DIR / HISTORY_FILE, encoding="utf-8") as f:
             entries = json.load(f)
     except (OSError, ValueError, RecursionError, MemoryError):
         return None
-    for entry in reversed(entries if isinstance(entries, list) else []):
-        metrics = entry.get("candidate") if isinstance(entry, dict) and entry.get("kept") else None
-        accuracy = number(metrics.get("accuracy")) if isinstance(metrics, dict) else None
-        if accuracy is not None:
-            bar = entry.get("bar_met")
-            return {"accuracy": round(accuracy, 3), "bar_met": bar if isinstance(bar, bool) else None}
-    return None
+    if not isinstance(entries, list) or not entries or not isinstance(entries[-1], dict):
+        return None
+    live = entries[-1].get("live_after")
+    accuracy = number(live.get("accuracy")) if isinstance(live, dict) else None
+    if accuracy is None:
+        return None
+    bar = live.get("bar_met")
+    return {"accuracy": round(accuracy, 3), "bar_met": bar if isinstance(bar, bool) else None}
 
 
 def _tactics_overview_facts(table, ov, quality):
@@ -881,7 +882,8 @@ def _opening_facts(table, who_of, prefix_of, op):
     for side, p in who_of.items():
         out.append(_fact(f"{prefix_of(p)}.openings.won", op["won_by"][side], p, "count",
                          status, reason))
-        out.append(_fact(f"{prefix_of(p)}.opening_win_point", dict(op["opening_winner_won_point"]),
+        mine = op.get("by_side", {}).get(side) or {"n": 0, "won": 0}
+        out.append(_fact(f"{prefix_of(p)}.opening_win_point", dict(mine),
                          p, "count", status, reason))
     return out
 

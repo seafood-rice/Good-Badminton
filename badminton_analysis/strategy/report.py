@@ -604,6 +604,11 @@ def _esc(value):
     return str(value if value is not None else "").translate(_MD_SPECIAL)
 
 
+def _cell(value):
+    """``_esc`` plus what a table cell needs: a literal ``|`` must not end the cell."""
+    return _esc(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+
 class _Footnotes:
     """Number each distinct evidence id in first-use order."""
 
@@ -663,7 +668,7 @@ def _md_tactics(tables, lang, t):
             c = cells[stroke] if isinstance(cells[stroke], dict) else {}
             n = c.get("n")
             few = f" ({t['eff_few']})" if isinstance(n, (int, float)) and n < 5 else ""
-            out.append(f"| {_esc(_word(stroke, lang))}{few} | "
+            out.append(f"| {_cell(_word(stroke, lang))}{few} | "
                        + " | ".join(_md_count(c.get(k)) for k in
                                     ("effective", "neutral", "ineffective", "unknown", "n"))
                        + " |")
@@ -692,8 +697,8 @@ def _md_tactics(tables, lang, t):
             f"{_md_who(s.get('hitter'), t)} {_word(s.get('stroke') or '?', lang)} "
             f"({_md_zone(s.get('zone'), lang)} > {_md_zone(s.get('sent_to'), lang)})"
             for s in r.get("shots") or [] if isinstance(s, dict))
-        out.append(f"| {_esc(r.get('rally'))} | {_esc(adv)} | "
-                   f"{_esc(_md_who(r.get('point_winner'), t))} | {_esc(shots)} |")
+        out.append(f"| {_cell(r.get('rally'))} | {_cell(adv)} | "
+                   f"{_cell(_md_who(r.get('point_winner'), t))} | {_cell(shots)} |")
     return out
 
 

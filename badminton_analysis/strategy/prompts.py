@@ -130,10 +130,12 @@ _SYSTEM_ZH = (
 
 _FMT_RULES = {
     ("en", "singles"): "Stroke types are measured for both players; use them.",
-    ("en", "doubles"): ("Doubles: stroke types are not available. Hit counts per player are "
-                        "estimated (not validated); say so whenever you use them."),
+    ("en", "doubles"): ("Doubles: stroke types are only available where a fact for them is in "
+                        "the facts pack; never assume one that is not listed. Hit counts per "
+                        "player are estimated (not validated); say so whenever you use them."),
     ("zh", "singles"): "双方的击球类型都有测量数据，请使用。",
-    ("zh", "doubles"): "双打：没有击球类型数据。每位球员的击球次数是估计值（未经验证），引用时必须说明。",
+    ("zh", "doubles"): ("双打：只有数据中列出了击球类型事实时才可引用，未列出的不要假设。"
+                   "每位球员的击球次数是估计值（未经验证），引用时必须说明。"),
 }
 
 

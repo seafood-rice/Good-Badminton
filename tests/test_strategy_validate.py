@@ -196,6 +196,8 @@ def test_schema_and_prompts():
     en = system_prompt("en", "doubles")
     assert "estimated (not validated)" in en and "80 words" in en
     assert "estimated (not validated)" not in system_prompt("en", "singles")
+    assert "stroke types are not available" not in en
+    assert "only available where a fact" in en
     msg = json.loads(user_message(PACK))
     assert set(msg) == {"format", "focus", "header", "facts"}
 

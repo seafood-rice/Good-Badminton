@@ -410,16 +410,49 @@ def test_strokes_outside_any_rally_dropped(tmp_path):
 
 # ------------------------------------------------------------------ doubles
 
-def test_doubles_hitter_ids_map_to_team_sides(tmp_path):
-    out = make_doubles_run(tmp_path, fps=FPS, frames=2000)
+def doubles_dir(tmp_path, strokes, hits=None):
+    out = make_doubles_run(tmp_path, fps=FPS, frames=2000,
+                           **({} if hits is None else {"hits": hits}))
     segs = [{"id": 1, "start_frame": 0, "end_frame": 1500, "start_sec": 0.0, "end_sec": 15.0}]
     (out / "rally_segments.json").write_text(json.dumps({"fps": FPS, "rallies": segs}))
-    strokes = [{"frame": 100, "hitter": "P1", "stroke": "long_serve", "group": "serve"},
-               {"frame": 200, "hitter": "P3", "stroke": "clear", "group": "x"},
-               {"frame": 300, "hitter": "P2", "stroke": "smash", "group": "x"}]
     (out / "strokes.json").write_text(json.dumps({"schema": 2, "strokes": strokes}))
-    table = build_shots(out)
-    assert [s["hitter"] for s in table["shots"]] == [L, U, L]        # team 1 lower, team 2 upper
+    return out
+
+
+SIDE_STROKES = [{"frame": 100, "hitter": L, "stroke": "long_serve", "group": "serve"},
+                {"frame": 200, "hitter": U, "stroke": "clear", "group": "x"},
+                {"frame": 300, "hitter": L, "stroke": "smash", "group": "x"}]
+
+
+def test_doubles_side_hitters_are_used_as_they_are(tmp_path):
+    # the pipeline writes the court side (upper / lower) as the doubles hitter
+    table = build_shots(doubles_dir(tmp_path, SIDE_STROKES))
+    assert [s["hitter"] for s in table["shots"]] == [L, U, L]
     assert table["positions_ok"] == {"upper": True, "lower": True}
-    assert table["shots"][0]["zone"] == zone_of(L, 1.0, 8.0)         # P1's own position
+    assert table["shots"][0]["zone"] is not None            # the team's positions
     assert table["rallies"][0]["complete_opening"] is True
+
+
+def test_doubles_player_position_from_hits_hitter_id(tmp_path):
+    hits = [{"frame": 100, "hitter_id": "P1", "hitter_team": 1, "hitter_evidence": "shuttle"}]
+    table = build_shots(doubles_dir(tmp_path, SIDE_STROKES, hits))
+    assert table["shots"][0]["zone"] == zone_of(L, 1.0, 8.0)         # P1's own position
+
+
+def test_doubles_player_id_hitters_still_map(tmp_path):
+    strokes = [dict(s, hitter={L: "P1", U: "P3"}[s["hitter"]]) for s in SIDE_STROKES]
+    table = build_shots(doubles_dir(tmp_path, strokes))
+    assert [s["hitter"] for s in table["shots"]] == [L, U, L]
+
+
+def test_ineffective_last_shot_of_a_lost_rally_despite_broken_link(tmp_path):
+    e = eff(tmp_path, [(L, "drop"), (U, "clear"), (U, "smash")], U, name="x")
+    assert e["drop"]["ineffective"] == 1
+
+
+def test_opening_win_point_per_side(tmp_path):
+    rallies = [(opening(1.0, third=(L, "smash")), L),
+               (opening(21.0, third=(L, "smash")), U),
+               (opening(41.0, second=(U, "smash"), third=(L, "lift")), U)]
+    o = openings(build_shots(make(tmp_path, rallies)))
+    assert o["by_side"] == {L: {"n": 2, "won": 1}, U: {"n": 1, "won": 1}}

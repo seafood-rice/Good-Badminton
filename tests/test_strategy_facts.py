@@ -413,21 +413,69 @@ def test_tactics_positions_unusable_caveat(tmp_path, no_weights):
     assert {"code": "positions_unusable", "params": {"sides": ["opponent"]}} in pack["caveats"]
 
 
-def test_stroke_model_fact_from_history(tmp_path, monkeypatch):
+def _history(tmp_path, monkeypatch, history):
     from badminton_analysis.strategy import facts
     weights = tmp_path / "w"
     weights.mkdir()
-    history = [{"kept": True, "candidate": {"accuracy": 0.5}, "utc": "a"},
-               {"kept": True, "candidate": {"accuracy": 0.81, "unknown_rate": 0.1},
-                "bar_met": True, "utc": "b"},
-               {"kept": False, "candidate": {"accuracy": 0.99}, "utc": "c"},
-               {"kept": True, "rollback": True, "utc": "d"}]
-    (weights / "stroke-model-history.json").write_text(json.dumps(history), encoding="utf-8")
+    if history is not None:
+        (weights / "stroke-model-history.json").write_text(json.dumps(history), encoding="utf-8")
     monkeypatch.setattr(facts, "WEIGHTS_DIR", weights)
+
+
+def _live(version, accuracy, bar_met):
+    return {"version": version, "accuracy": accuracy, "unknown_rate": 0.1, "bar_met": bar_met}
+
+
+def test_stroke_model_fact_from_history(tmp_path, monkeypatch):
+    history = [{"kept": True, "utc": "a", "live_after": _live("v1", 0.5, False)},
+               {"kept": True, "utc": "b", "live_after": _live("v2", 0.81, True)}]
+    _history(tmp_path, monkeypatch, history)
     pack = build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE)
     fact = fact_map(pack)["match.stroke_model"]
     assert fact["status"] == "ok" and fact["value"] == {"accuracy": 0.81, "bar_met": True}
     assert {"code": "stroke_model", "params": {"accuracy": 0.81, "bar_met": True}} in pack["caveats"]
+
+
+def test_stroke_model_fact_after_rollback_uses_newest_live_after(tmp_path, monkeypatch):
+    history = [{"kept": True, "utc": "a", "live_after": _live("v1", 0.6, False)},
+               {"kept": True, "utc": "b", "live_after": _live("v2", 0.9, True)},
+               {"kept": True, "rollback": True, "utc": "c", "live_after": _live("v1", 0.6, False)}]
+    _history(tmp_path, monkeypatch, history)
+    fact = fact_map(build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE))["match.stroke_model"]
+    assert fact["value"] == {"accuracy": 0.6, "bar_met": False}
+
+
+@pytest.mark.parametrize("history", [None, [], [{"kept": True, "candidate": {"accuracy": 0.9}}]])
+def test_stroke_model_fact_unavailable_without_live_after(tmp_path, monkeypatch, history):
+    _history(tmp_path, monkeypatch, history)
+    pack = build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE)
+    assert fact_map(pack)["match.stroke_model"]["status"] == "unavailable"
+    assert "stroke_model" not in codes(pack)
+
+
+def test_opening_win_point_differs_per_side(tmp_path, no_weights):
+    # lower opens well in 4 rallies and wins 3; upper has the advantage in 2 and wins 1
+    n = 6
+    rallies = [(10 * i, 10 * i + 8) for i in range(n)]
+    strokes = []
+    for i in range(n):
+        if i < 4:
+            trio = (("lower", "long_serve"), ("upper", "lift"), ("lower", "smash"))
+        else:
+            trio = (("lower", "long_serve"), ("upper", "smash"), ("lower", "lift"))
+        for k, (hitter, stroke) in enumerate(trio):
+            strokes.append({"frame": round((10 * i + 1 + k) * FPS), "hitter": hitter,
+                            "stroke": stroke, "group": "serve" if "serve" in stroke else stroke,
+                            "confidence": 0.9})
+    out = make_run(tmp_path, rallies=rallies, strokes=strokes, frames=int(10 * n * FPS))
+    winners = ["lower", "lower", "lower", "upper", "upper", "lower"]
+    outs = [{"id": i + 1, "segment_id": i + 1, "start_sec": 10.0 * i, "end_sec": 10.0 * i + 8,
+             "winner_side": w, "source": "owner"} for i, w in enumerate(winners)]
+    (out / "rally_outcomes.json").write_text(json.dumps({"schema": 1, "rallies": outs}),
+                                            encoding="utf-8")
+    f = fact_map(build_facts(out, SINGLES_RECORD, STORE))
+    assert f["you.opening_win_point"]["value"] == {"n": 4, "won": 3}
+    assert f["opponent.opening_win_point"]["value"] == {"n": 2, "won": 1}
 
 
 def test_doubles_tactics_are_unavailable_or_empty(tmp_path, no_weights):
