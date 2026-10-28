@@ -20,10 +20,13 @@ CENTRE_X = 3.05
 POS_WINDOW = 8               # frames either side of a hit when looking up a position
 WALK_HZ = 5.0                # positions are sampled at this rate to sum the walked distance
 WALK_STEP_MAX_M = 3.0        # a step longer than this is a tracking jump, not walking
-LABEL_PAD_SEC = 1.0
+LABEL_PAD_SEC = 1.0      # an unsure label this close to a gap makes it unusable
+NEAREST_GAP_SEC = 1.0    # an end outside every gap labels the gap whose midpoint is this close
+SWING_DIST_CAP_SEC = 10.0
 
 FEATURES = ("gap_sec", "log_gap_sec", "swing_mean", "swing_max", "walk_upper", "walk_lower",
-            "svc_left", "svc_right", "same_side", "shuttle_share")
+            "svc_left", "svc_right", "same_side", "shuttle_share",
+            "swing_end_dist", "swing_outside", "swing_end_in_gap")
 
 
 @dataclass
@@ -85,6 +88,7 @@ def gaps(inputs):
     shuttle = np.array(sorted(inputs.shuttle_frames or ()), dtype=np.int64)
     ordered = {s: sorted((inputs.positions or {}).get(s) or {}) for s in SIDES}
     ok = inputs.positions_ok or {}
+    swing_segs = [(float(a), float(b)) for a, b in (getattr(inputs, "swing_segments", None) or ())]
     out = []
     for i in range(len(hits) - 1):
         a, b = hits[i], hits[i + 1]
@@ -99,6 +103,10 @@ def gaps(inputs):
                           if ok.get(side) else 0.0)
         hitter_xy = _lookup(inputs.positions.get(b[2]) or {}, int(b[1])) if ok.get(b[2]) else None
         left, right = _service_flags(b[2], hitter_xy)
+        ends = [e for _s, e in swing_segs]
+        inside = [e for e in ends if start <= e <= end]
+        dist = 0.0 if inside else min([min(abs(e - start), abs(e - end)) for e in ends] + [SWING_DIST_CAP_SEC])
+        overlaps = any(a <= end and b >= start for a, b in swing_segs)
         n_frames = max(1, int(b[1]) - int(a[1]) + 1)
         seen = int(np.searchsorted(shuttle, int(b[1]), side="right") - np.searchsorted(shuttle, int(a[1]), side="left"))
         out.append(Gap(start, end, {
@@ -110,6 +118,9 @@ def gaps(inputs):
             "svc_left": left, "svc_right": right,
             "same_side": 1.0 if a[2] == b[2] else 0.0,
             "shuttle_share": min(1.0, seen / n_frames),
+            "swing_end_dist": min(dist, SWING_DIST_CAP_SEC),
+            "swing_outside": 0.0 if overlaps else 1.0,
+            "swing_end_in_gap": 1.0 if inside else 0.0,
         }, i))
     return out
 
@@ -117,25 +128,35 @@ def gaps(inputs):
 def labels_for(gap_list, owner_labels_doc, segments=()):   # segments: kept for the interface
     """``[1 | 0 | None]`` per gap (None = not usable as an example).
 
-    Positive: an owner point end (a labelled winner, segment label or added point) lies
-    in ``[start - 1, end + 1]``. Unusable: no label document, or an ``unsure`` label ends
-    there. Negative: everything else, including gaps inside an owner ``not_point`` segment.
+    Exactly one positive gap per owner point end (a labelled winner, segment label or
+    added point): the gap containing the end time, else the gap whose midpoint is nearest
+    and within ``NEAREST_GAP_SEC``; an end with no such gap labels nothing. Unusable: no
+    label document or an empty label list, or an ``unsure`` label ends within
+    ``LABEL_PAD_SEC`` of the gap. Negative: every other gap, including those inside an
+    owner ``not_point`` segment.
     """
     if not isinstance(owner_labels_doc, dict) or not owner_labels_doc.get("labels"):
         return [None] * len(gap_list)
     labels = owner_labels_doc["labels"]
-    point_ends = sorted(l["end_sec"] for l in labels if l["verdict"] in lab.SIDES)
+    positive = set()
+    for label in labels:
+        if label["verdict"] not in lab.SIDES:
+            continue
+        e = label["end_sec"]
+        containing = [i for i, g in enumerate(gap_list) if g.start <= e <= g.end]
+        if containing:
+            positive.add(containing[0])
+            continue
+        near = [(abs((g.start + g.end) / 2 - e), i) for i, g in enumerate(gap_list)]
+        near = [n for n in near if n[0] <= NEAREST_GAP_SEC]
+        if near:
+            positive.add(min(near)[1])
     unsure = sorted(l["end_sec"] for l in labels if l["verdict"] == "unsure")
     out = []
-    for g in gap_list:
-        lo, hi = g.start - LABEL_PAD_SEC, g.end + LABEL_PAD_SEC
-        i = bisect.bisect_left(point_ends, lo)
-        if i < len(point_ends) and point_ends[i] <= hi:
+    for i, g in enumerate(gap_list):
+        if i in positive:
             out.append(1)
             continue
-        j = bisect.bisect_left(unsure, lo)
-        if j < len(unsure) and unsure[j] <= hi:
-            out.append(None)
-            continue
-        out.append(0)
+        j = bisect.bisect_left(unsure, g.start - LABEL_PAD_SEC)
+        out.append(None if j < len(unsure) and unsure[j] <= g.end + LABEL_PAD_SEC else 0)
     return out

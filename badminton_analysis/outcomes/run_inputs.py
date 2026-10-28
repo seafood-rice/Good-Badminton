@@ -27,6 +27,7 @@ class Inputs(NamedTuple):
     positions_ok: dict    # {side: bool}
     quad: Optional[list]  # court corners TL, TR, BR, BL (image px), or None
     end_sec: Optional[float] = None   # time of the last recorded frame
+    swing_segments: tuple = ()        # [(start_sec, end_sec)] of the production swing segmenter
 
 
 def _read_json(path):
@@ -121,7 +122,8 @@ def load(out_dir):
                     continue
                 seen += 1
                 players = d.get("players") if isinstance(d.get("players"), dict) else {}
-                rec = {"frame": frame}
+                rec = {"frame": frame, "shuttle": _pair((d.get("shuttlecock") or {}).get("image"))
+                       if isinstance(d.get("shuttlecock"), dict) else None}
                 for side in SIDES:
                     p = players.get(side) if isinstance(players.get(side), dict) else {}
                     hands = p.get("hands") if isinstance(p.get("hands"), dict) else {}
@@ -142,6 +144,12 @@ def load(out_dir):
     except (ValueError, TypeError, KeyError):
         times, activity = [], []
     swing = list(zip(times, activity))
+    try:   # the production swing path (static suppression, court gating), pinned to swing
+        segs, prov = rallies.segment_rallies(track, fps, signal="swing", quad=quad)
+        swing_segments = [(float(g["start_sec"]), float(g["end_sec"])) for g in segs
+                          if not g.get("degraded")] if prov.get("signal") == "swing" else []
+    except Exception:
+        swing_segments = []
     traj = _trajectory_frames(out_dir)
     hits = _learned_hits(out_dir)
     pts = {s: [] for s in SIDES}
@@ -164,4 +172,5 @@ def load(out_dir):
     end_sec = max((r["frame"] for r in track), default=0) / fps
     return Inputs(fps=fps, hits=hits, positions=positions, swing=swing,
                   shuttle_frames=traj if traj is not None else det_shuttle,
-                  positions_ok=ok, quad=quad, end_sec=end_sec)
+                  positions_ok=ok, quad=quad, end_sec=end_sec,
+                  swing_segments=swing_segments)

@@ -20,6 +20,8 @@ SWING_FRAC = 0.25          # a lone hit needs swing activity above this share of
 ITERATIONS = 3000
 LEARNING_RATE = 0.2
 L2 = 0.01
+NMS_SEC = 3.0               # minimum spacing of two predicted point ends
+TUNE_GRID = tuple(round(0.05 * k, 2) for k in range(2, 19))
 
 
 def _matrix(features, rows):
@@ -91,6 +93,39 @@ def load(path):
     return model
 
 
+def point_ends(gap_list, probs, threshold, nms_sec=NMS_SEC):
+    """Indices of the gaps kept as point ends: ``p >= threshold`` and the local maximum of p
+    within ``nms_sec`` of the gap midpoint (a tie goes to the earlier gap)."""
+    mids = [(g.start + g.end) / 2 for g in gap_list]
+    keep = []
+    for i, p in enumerate(probs):
+        if p < threshold:
+            continue
+        if all(not (abs(mids[j] - mids[i]) <= nms_sec and (probs[j] > p or (probs[j] == p and j < i)))
+               for j in range(len(probs)) if j != i):
+            keep.append(i)
+    return keep
+
+
+def tune_threshold(model, matches, grid=TUNE_GRID):
+    """``model`` with the threshold that maximises pooled point-end F1 on ``matches``.
+
+    ``matches`` is ``[(inputs, true_end_secs)]`` of the TRAINING matches only. The
+    smallest threshold wins a tie. The model also records ``train_f1``.
+    """
+    best = None
+    for th in grid:
+        trial = dict(model, threshold=float(th))
+        tp = fp = fn = 0
+        for inp, true_ends in matches:
+            r = point_end_f1([s["end_sec"] for s in segments(inp, trial)], true_ends)
+            tp, fp, fn = tp + r["tp"], fp + r["fp"], fn + r["fn"]
+        f1 = 2 * tp / (2 * tp + fp + fn) if tp else 0.0
+        if best is None or f1 > best[0] + 1e-12:
+            best = (f1, float(th))
+    return dict(model, threshold=best[1], train_f1=best[0]) if best else dict(model)
+
+
 def _lone_hit_swings(inputs, t):
     """True when the swing signal shows a swing within 0.5 s of ``t``."""
     if not inputs.swing:
@@ -114,12 +149,13 @@ def segments(inputs, model):
     hits = list(inputs.hits or [])
     if not hits:
         return []
-    probs = predict(model, sf.gaps(inputs))
-    cut = float(model.get("threshold", 0.5))
+    gap_list = sf.gaps(inputs)
+    probs = predict(model, gap_list)
+    ends = set(point_ends(gap_list, probs, float(model.get("threshold", 0.5))))
     runs, first = [], 0
     for i in range(len(hits)):
         last = i == len(hits) - 1
-        if last or probs[i] >= cut:
+        if last or i in ends:
             before = probs[first - 1] if first > 0 else None
             after = probs[i] if not last else None
             near = [p for p in (before, after) if p is not None]

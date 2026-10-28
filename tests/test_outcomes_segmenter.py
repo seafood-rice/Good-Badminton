@@ -76,9 +76,15 @@ def test_labels_from_segments_added_points_and_not_point():
                  (None, 100.0, "upper", True))
     got = sf.labels_for(g, doc, [])
     # gaps: 10-11, 11-12, 12-30, 30-31, 31-40, 40-60, 60-61
-    assert got == [0, 1, 1, 0, 0, 0, 0]
-    doc = labels((None, 61.5, "upper", True))
-    assert sf.labels_for(g, doc, [])[-1] == 1
+    # one positive per point end: the end 12.5 lies in gap 12-30; the added end at 100 fits no gap
+    assert got == [0, 0, 1, 0, 0, 0, 0]
+    doc = labels((None, 61.5, "upper", True))   # outside every gap: nearest midpoint within 1 s
+    assert sf.labels_for(g, doc, []) == [0, 0, 0, 0, 0, 0, 1]
+    # two ends in one gap still make one positive; two gaps never share an end
+    doc = labels((9.0, 12.2, "lower", False), (None, 12.4, "upper", True))
+    assert sum(1 for v in sf.labels_for(g, doc, []) if v == 1) == 1
+    doc = labels((9.0, 11.0, "lower", False))   # on the boundary of two gaps: exactly one
+    assert sum(1 for v in sf.labels_for(g, doc, []) if v == 1) == 1
 
 
 def test_labels_unsure_and_missing_document():
@@ -229,3 +235,40 @@ def test_run_inputs_junk_and_missing_hits(tmp_path):
     for name, kw in (("nohits", {"hits": False}), ("rule", {"hits_source": "rule"})):
         inp = run_inputs.load(write_run(tmp_path / name, **kw))
         assert inp is not None and inp.hits == [] and sf.gaps(inp) == []
+
+
+def test_swing_features():
+    inp = inputs([(10.0, "lower"), (11.0, "upper"), (14.0, "upper"), (30.0, "lower")])
+    inp = inp._replace(swing_segments=((9.0, 10.5), (20.0, 25.0)))
+    f = [g.features for g in sf.gaps(inp)]
+    assert f[0]["swing_end_in_gap"] == 1.0 and f[0]["swing_end_dist"] == 0.0 and f[0]["swing_outside"] == 0.0
+    assert f[1]["swing_end_in_gap"] == 0.0 and f[1]["swing_end_dist"] == pytest.approx(0.5)
+    assert f[1]["swing_outside"] == 1.0 and f[2]["swing_outside"] == 0.0   # 14-30 spans 20-25
+    assert f[2]["swing_end_in_gap"] == 1.0
+    f = [g.features for g in sf.gaps(inputs([(10.0, "lower"), (11.0, "upper")]))]
+    assert (f[0]["swing_end_dist"], f[0]["swing_outside"], f[0]["swing_end_in_gap"]) == (10.0, 1.0, 0.0)
+    far = inp._replace(swing_segments=((100.0, 120.0),))
+    assert sf.gaps(far)[0].features["swing_end_dist"] == 10.0   # capped
+
+
+def test_nms_keeps_the_local_maximum_only():
+    g = [sf.Gap(t, t + 0.5, {}) for t in (10.0, 11.0, 12.0, 20.0, 21.0)]
+    p = [0.6, 0.9, 0.7, 0.8, 0.8]
+    assert sg.point_ends(g, p, 0.5) == [1, 3]   # 0.6 and 0.7 lose to 0.9; the tie goes to the earlier
+    assert sg.point_ends(g, p, 0.85) == [1]
+    assert sg.point_ends(g, p, 0.95) == []
+
+
+def test_segments_use_nms_and_tuned_threshold_is_stored():
+    model = {"features": ["gap_sec"], "mean": [0.0], "scale": [1.0], "coef": [3.0], "intercept": -3.0,
+             "threshold": 0.5}
+    # two long gaps 2 s apart: only the longer one ends a rally
+    hits = [(10.0, "lower"), (10.8, "upper"), (13.0, "lower"), (15.5, "upper"), (16.3, "lower")]
+    segs = sg.segments(long_gap_inputs(hits), model)
+    assert len(segs) == 2 and segs[0]["end_sec"] == pytest.approx(13.0 + 2.5 / 3)   # split in the 2.5 s gap
+    truth = [13.8, 17.3]
+    tuned = sg.tune_threshold(model, [(long_gap_inputs(hits), truth)])
+    assert tuned["threshold"] in sg.TUNE_GRID and tuned["train_f1"] == 1.0 and tuned["coef"] == model["coef"]
+    # a threshold above every p scores 0, so a truth the model cannot hit still returns a model
+    assert sg.tune_threshold(model, [(long_gap_inputs(hits), [50.0])])["train_f1"] == 0.0
+    json.dumps(tuned)
