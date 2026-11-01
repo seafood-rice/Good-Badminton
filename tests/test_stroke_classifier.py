@@ -65,3 +65,36 @@ def test_payload_counts_types_and_groups():
 def test_load_classifier_missing_raises(tmp_path):
     with pytest.raises(smod.StrokeModelError):
         sc.load_classifier(tmp_path / "nope.pt")
+
+
+def _attr_model(tmp_path, biases, names=("backhand", "around_head", "above_net")):
+    m = smod.StrokeNet(INPUT_DIM, hidden=8, levels=1, n_attrs=len(names)).eval()
+    with torch.no_grad():
+        m.head.weight.zero_()
+        m.head.bias.zero_()
+        m.head.bias[4] = 10.0
+        m.attr_head.weight.zero_()
+        m.attr_head.bias.copy_(torch.tensor(biases, dtype=torch.float32))
+    path = tmp_path / "stroke-classifier.pt"
+    smod.save_stroke_model(m, smod.base_meta(8, 1, 0.5, attributes=names), path)
+    return path
+
+
+def test_classify_hits_adds_attributes_with_abstention(tmp_path):
+    # backhand p~1, around_head p~0, above_net p=0.55 (confidence 0.55 < 0.6 -> abstain)
+    bias = [10.0, -10.0, float(np.log(0.55 / 0.45))]
+    model, meta, info = sc.load_classifier(_attr_model(tmp_path, bias))
+    assert info["attributes"] == ["backhand", "around_head", "above_net"]
+    lab = sc.classify_hits(_sig(), [{"frame": 150, "hitter": "lower"}], model, meta)[0]
+    assert lab["attributes"] == {"backhand": True, "around_head": False, "above_net": None}
+    c = lab["attribute_confidence"]
+    assert c["backhand"] > 0.99 and c["around_head"] > 0.99 and c["above_net"] == 0.55
+
+
+def test_classify_hits_no_signal_and_no_heads_have_no_attributes(tmp_path):
+    model, meta, _ = sc.load_classifier(_attr_model(tmp_path, [10.0, 10.0, 10.0]))
+    lab = sc.classify_hits(_sig(shuttle=False), [{"frame": 150, "hitter": "lower"}], model, meta)[0]
+    assert "attributes" not in lab and "attribute_confidence" not in lab
+    model, meta, info = sc.load_classifier(_model_biased_to(4, tmp_path))
+    lab = sc.classify_hits(_sig(), [{"frame": 150, "hitter": "lower"}], model, meta)[0]
+    assert "attributes" not in lab and info["attributes"] == []

@@ -218,3 +218,15 @@ def test_after_match_completed_never_raises_on_bad_labels_or_missing_results(cli
     (labels_dir / "vid.json").write_text("{not json", encoding="utf-8")
     webapp._after_match_completed("vid")
     assert _stroke(outputs) == "clear"
+
+
+def test_put_accepts_a_hand_and_rejects_a_non_bool(client):
+    c, outputs, _ = client
+    assert _put(c, 0, [dict(LABEL, backhand=True)]).status_code == 200
+    assert c.get("/api/stroke-labels/vid").get_json()["labels"][0]["backhand"] is True
+    shot = json.loads((outputs / "vid" / "strokes.json").read_text(encoding="utf-8"))["strokes"][0]
+    assert shot["attributes"] == {"backhand": True} and shot["owner_backhand"] is True
+    assert _put(c, 1, [dict(LABEL, backhand="yes")]).status_code == 400
+    assert _put(c, 1, []).status_code == 200
+    shot = json.loads((outputs / "vid" / "strokes.json").read_text(encoding="utf-8"))["strokes"][0]
+    assert "attributes" not in shot and "owner_backhand" not in shot

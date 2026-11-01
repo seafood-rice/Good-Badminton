@@ -13,7 +13,9 @@ threshold is tuned on the validation match plus any --calib-video DJI videos, wh
 held out of training.
 """
 import argparse
+import csv
 import glob
+import json
 import os
 import sys
 import time
@@ -26,6 +28,11 @@ import torch.nn.functional as F
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+if os.path.join(ROOT, "scripts") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+
+import build_hit_dataset as bhd  # noqa: E402
+import shuttleset_labels as ssl  # noqa: E402
 
 from badminton_analysis.stroke import owner_labels as ol  # noqa: E402
 from badminton_analysis.stroke import stroke_classifier as sc  # noqa: E402
@@ -35,15 +42,54 @@ from badminton_analysis.stroke.hit_augment import augment, jittered_index  # noq
 from badminton_analysis.stroke.hit_signals import RawSignals, load_signals  # noqa: E402
 from badminton_analysis.stroke.stroke_metrics import (  # noqa: E402
     choose_threshold, predict_labels, score)
-from badminton_analysis.stroke.stroke_types import STROKE_TYPES, type_of_raw  # noqa: E402
+from badminton_analysis.stroke.stroke_types import ATTRIBUTES, STROKE_TYPES, type_of_raw  # noqa: E402
 from badminton_analysis.stroke.stroke_windows import INPUT_DIM, extract  # noqa: E402
 
 Rally = namedtuple("Rally", "sig hits match")
 _SIDES = {0: "lower", 1: "upper"}
+MIN_ATTR_LABELS = 200      # an attribute head is trained only with this many known training labels
 
 
-def load_shuttleset(dataset_dir):
-    rallies = []
+def _recomputed_attrs(z, match, labels_root, cache):
+    """The attribute arrays for an npz built before they existed, or None when not provable.
+
+    Recomputes this rally's labels exactly as build_hit_dataset did and accepts them only
+    if hit_frames and stroke_raw equal the npz's (a join, never a fuzzy match).
+    """
+    if not labels_root or "set" not in z.files or "rally" not in z.files:
+        return None
+    if "kind" in z.files and str(z["kind"]) != "rally":
+        return None
+    if match not in cache:
+        cache[match] = None
+        align_path = os.path.join(labels_root, "alignment", f"{match}.json")
+        label_dir = os.path.join(labels_root, "labels", match)
+        if os.path.isfile(align_path) and os.path.isdir(label_dir):
+            try:      # a broken label source costs this match its attribute heads, never the training run
+                with open(align_path, encoding="utf-8") as fh:
+                    offset = float(json.load(fh)["offset"])
+                corners = ssl.load_corners(os.path.join(labels_root, "labels", "homography.csv"), match)
+                spans = ssl.rally_spans(ssl.parse_match_hits(label_dir, corners))
+                cache[match] = (offset, {(sp["set"], sp["rally"]): sp for sp in spans})
+            except (KeyError, IndexError, TypeError, ValueError, OSError, csv.Error) as exc:
+                print(f"attribute labels unusable for {match}: {type(exc).__name__}: {exc}")
+    if cache[match] is None:
+        return None
+    offset, spans = cache[match]
+    span = spans.get((int(z["set"]), int(z["rally"])))
+    if span is None:
+        return None
+    clip_start, _ = bhd.clip_window(span["start"], span["end"], offset)
+    enc = bhd.encode_hits(span["hits"], offset, clip_start, float(z["fps"]), int(z["shuttle"].shape[0]))
+    if (not np.array_equal(enc["hit_frames"], z["hit_frames"])
+            or not np.array_equal(enc["stroke_raw"], z["stroke_raw"])):
+        return None
+    return {k: enc[k] for k in ATTRIBUTES}
+
+
+def load_shuttleset(dataset_dir, labels_root=None):
+    rallies, joined, unjoined = [], 0, 0
+    cache = {}
     for path in sorted(glob.glob(os.path.join(dataset_dir, "*", "*.npz"))):
         if path.endswith(".part.npz"):
             continue
@@ -53,14 +99,28 @@ def load_shuttleset(dataset_dir):
             sig = RawSignals(float(z["fps"]), int(z["first_frame"]), z["shuttle"].astype(np.float32),
                              z["keypoints"].astype(np.float32), z["court_corners"].astype(np.float32),
                              tuple(int(v) for v in z["image_size"]))
+            if all(k in z.files for k in ATTRIBUTES):
+                arrays = {k: z[k] for k in ATTRIBUTES}
+            else:
+                arrays = _recomputed_attrs(z, str(z["match"]), labels_root, cache)
+            if "kind" not in z.files or str(z["kind"]) == "rally":      # gap files carry no labels to join
+                if arrays is None:
+                    unjoined += 1
+                else:
+                    joined += 1
             hits = []
-            for f, who, raw in zip(z["hit_frames"], z["hitter"], z["stroke_raw"]):
+            for i, (f, who, raw) in enumerate(zip(z["hit_frames"], z["hitter"], z["stroke_raw"])):
                 stroke = type_of_raw(str(raw))
                 if stroke is None or int(who) not in _SIDES:
                     continue
-                hits.append({"frame": int(f), "hitter": _SIDES[int(who)], "stroke": stroke})
+                hit = {"frame": int(f), "hitter": _SIDES[int(who)], "stroke": stroke}
+                if arrays is not None:
+                    hit["attrs"] = {k: int(arrays[k][i]) for k in ATTRIBUTES if int(arrays[k][i]) >= 0}
+                hits.append(hit)
             if hits:
                 rallies.append(Rally(sig, hits, str(z["match"])))
+    if unjoined:
+        print(f"attributes not joined for {unjoined} of {joined + unjoined} rally file(s) in {dataset_dir}")
     return rallies
 
 
@@ -97,8 +157,15 @@ def _owner_hits(result_dir, doc):
                and h.get("hitter")]
         strokes_doc = {"schema": sc.STROKES_SCHEMA, "strokes": sc.unknown_labels(raw)}
     applied = ol.apply(strokes_doc, doc, fps)
-    return [{"frame": int(s["frame"]), "hitter": s["hitter"], "stroke": s["stroke"]}
-            for s in applied["strokes"] if s.get("source") == "owner"]
+    out = []
+    for s in applied["strokes"]:
+        if s.get("source") != "owner":
+            continue
+        hit = {"frame": int(s["frame"]), "hitter": s["hitter"], "stroke": s["stroke"]}
+        if isinstance(s.get("owner_backhand"), bool):
+            hit["attrs"] = {"backhand": int(s["owner_backhand"])}
+        out.append(hit)
+    return out
 
 
 def load_owner(labels_dir, results_dir):
@@ -143,14 +210,50 @@ def _windows(rally, rng=None):
                 for h, o in zip(hits, offsets)]
     X, ok = extract(sig, hits, idx)
     y = np.array([STROKE_TYPES.index(h["stroke"]) for h in rally.hits], np.int64)
-    return X[ok], y[ok]
+    A = np.array([[h.get("attrs", {}).get(k, -1) for k in ATTRIBUTES] for h in rally.hits],
+                 np.int64).reshape(len(rally.hits), len(ATTRIBUTES))     # -1 = unknown
+    return X[ok], y[ok], A[ok]
 
 
 def _stack(rallies, rng=None):
     parts = [_windows(r, rng) for r in rallies]
     X = np.concatenate([p[0] for p in parts]) if parts else np.zeros((0, 1, INPUT_DIM), np.float32)
     y = np.concatenate([p[1] for p in parts]) if parts else np.zeros(0, np.int64)
-    return X, y
+    A = np.concatenate([p[2] for p in parts]) if parts else np.zeros((0, len(ATTRIBUTES)), np.int64)
+    return X, y, A
+
+
+def _trained_attributes(A):
+    """Attributes with enough known labels and both classes present, in ATTRIBUTES order."""
+    out = []
+    for i, name in enumerate(ATTRIBUTES):
+        pos, neg = int((A[:, i] == 1).sum()), int((A[:, i] == 0).sum())
+        if pos + neg >= MIN_ATTR_LABELS and pos > 0 and neg > 0:
+            out.append(name)
+    return out
+
+
+def _masked_bce(logits, targets, pos_weight):
+    """Mean BCE over the known (target >= 0) entries of each column, then over columns."""
+    known = (targets >= 0).float()
+    raw = F.binary_cross_entropy_with_logits(logits, targets.clamp_min(0).float(),
+                                             pos_weight=pos_weight, reduction="none") * known
+    return (raw.sum(0) / known.sum(0).clamp_min(1.0)).mean()
+
+
+def _attr_metrics(model, names, X, A, min_conf):
+    probs = smod.predict_attrs(model, X) if names else None
+    out = {}
+    for j, name in enumerate(names):
+        col = A[:, ATTRIBUTES.index(name)]
+        known = col >= 0
+        p, truth = probs[known, j], col[known]
+        sure = np.maximum(p, 1.0 - p) >= min_conf
+        correct = int((sure & ((p >= 0.5).astype(np.int64) == truth)).sum())
+        n = int(known.sum())
+        out[name] = {"n": n, "accuracy": round(correct / n, 4) if n else None,
+                     "abstained": int((~sure).sum())}
+    return out
 
 
 def _evaluate(model, X, y, threshold):
@@ -164,9 +267,17 @@ def train(train_rallies, val_rallies, epochs=60, hidden=64, levels=3, batch=64, 
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
-    clean_X, clean_y = _stack(train_rallies)
-    val_X, val_y = _stack(val_rallies)
-    model = smod.StrokeNet(INPUT_DIM, hidden=hidden, levels=levels).to(device)
+    clean_X, clean_y, clean_A = _stack(train_rallies)
+    val_X, val_y, val_A = _stack(val_rallies)
+    names = _trained_attributes(clean_A)
+    cols = [ATTRIBUTES.index(n) for n in names]
+    pos_weight = None
+    if names:
+        pos = (clean_A[:, cols] == 1).sum(0).astype(np.float64)
+        neg = (clean_A[:, cols] == 0).sum(0).astype(np.float64)
+        pos_weight = torch.tensor(np.clip(neg / np.maximum(pos, 1.0), 1.0, 10.0),
+                                  dtype=torch.float32, device=device)
+    model = smod.StrokeNet(INPUT_DIM, hidden=hidden, levels=levels, n_attrs=len(names)).to(device)
     flat = clean_X.reshape(-1, INPUT_DIM)
     model.feat_mean.copy_(torch.from_numpy(flat.mean(0)))
     model.feat_std.copy_(torch.from_numpy(flat.std(0) + 1e-3))
@@ -178,13 +289,16 @@ def train(train_rallies, val_rallies, epochs=60, hidden=64, levels=3, batch=64, 
     best, best_state = None, None
     for epoch in range(1, epochs + 1):
         model.train()
-        X, y = _stack(train_rallies, rng)            # fresh augmentation every epoch
+        X, y, A = _stack(train_rallies, rng)         # fresh augmentation every epoch
         order = rng.permutation(len(X))
         losses = []
         for s in range(0, len(order), batch):
             b = order[s:s + batch]
-            logits = model(torch.from_numpy(X[b]).to(device))
+            logits, attr_logits = model.forward_all(torch.from_numpy(X[b]).to(device))
             loss = F.cross_entropy(logits, torch.from_numpy(y[b]).to(device), weight=weight)
+            if names:
+                loss = loss + _masked_bce(attr_logits, torch.from_numpy(A[b][:, cols]).to(device),
+                                          pos_weight)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -203,7 +317,8 @@ def train(train_rallies, val_rallies, epochs=60, hidden=64, levels=3, batch=64, 
     probs, truth, _ = _evaluate(model, val_X, val_y, 0.0)
     threshold = choose_threshold(probs, truth) if len(truth) else 0.5
     _, _, val_metrics = _evaluate(model, val_X, val_y, threshold)
-    meta = smod.base_meta(hidden, levels, threshold)
+    val_metrics["attributes"] = _attr_metrics(model, names, val_X, val_A, smod.ATTR_MIN_CONFIDENCE)
+    meta = smod.base_meta(hidden, levels, threshold, attributes=names)
     meta.update({
         "train_matches": sorted({r.match for r in train_rallies}),
         "val_matches": sorted({r.match for r in val_rallies}),
@@ -220,6 +335,8 @@ def main(argv=None):
     p.add_argument("--val-match")
     p.add_argument("--dji-labels")
     p.add_argument("--stroke-labels")
+    p.add_argument("--shuttleset-data", default=os.path.join(ROOT, "data", "shuttleset"),
+                   help="ShuttleSet labels/alignment, to attach attributes to older dataset files")
     p.add_argument("--results-dir", default=os.path.join(ROOT, "outputs"))
     p.add_argument("--calib-video", action="append", default=[])
     p.add_argument("--epochs", type=int, default=60)
@@ -228,7 +345,7 @@ def main(argv=None):
     a = p.parse_args(argv)
     if a.epochs < 1:
         p.error("--epochs must be at least 1")
-    shuttle = [r for d in a.dataset for r in load_shuttleset(d)]
+    shuttle = [r for d in a.dataset for r in load_shuttleset(d, a.shuttleset_data)]
     dji = load_dji(a.dji_labels, a.results_dir) if a.dji_labels else []
     owner = load_owner(a.stroke_labels, a.results_dir) if a.stroke_labels else []
     calib = set()

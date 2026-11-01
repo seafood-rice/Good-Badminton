@@ -21,7 +21,7 @@ def make(tmp_path, rallies, *, pos=default_pos, outcomes=None, name="run", posit
     """A synthetic result dir.
 
     ``rallies``: list of ``(shot list, winner)``; a shot is ``(time_sec, hitter, stroke)`` with
-    absolute times. Segment ``i + 1`` spans ``[i * 20, i * 20 + 19]``. ``outcomes`` overrides the
+    absolute times, optionally followed by an ``attributes`` dict. Segment ``i + 1`` spans ``[i * 20, i * 20 + 19]``. ``outcomes`` overrides the
     outcomes rallies (list of dicts)."""
     out = tmp_path / name
     out.mkdir(parents=True, exist_ok=True)
@@ -30,10 +30,10 @@ def make(tmp_path, rallies, *, pos=default_pos, outcomes=None, name="run", posit
         start, end = i * SEG_SPAN, i * SEG_SPAN + SEG_SPAN - 1
         segs.append({"id": i + 1, "start_frame": int(start * fps), "end_frame": int(end * fps),
                      "start_sec": start, "end_sec": end, "degraded": False})
-        for t, hitter, stroke in shots:
+        for t, hitter, stroke, *extra in shots:
             strokes.append({"frame": round(t * fps), "hitter": hitter, "stroke": stroke,
                             "group": "serve" if stroke.endswith("serve") else "x",
-                            "confidence": 0.9})
+                            "confidence": 0.9} | ({"attributes": extra[0]} if extra else {}))
         if winner:
             outs.append({"segment_id": i + 1, "start_sec": start, "end_sec": end,
                          "winner_side": winner, "source": "owner"})
@@ -458,3 +458,54 @@ def test_opening_win_point_per_side(tmp_path):
                (opening(41.0, second=(U, "smash"), third=(L, "lift")), U)]
     o = openings(build_shots(make(tmp_path, rallies)))
     assert o["by_side"] == {L: {"n": 2, "won": 1}, U: {"n": 1, "won": 1}}
+
+
+# ------------------------------------------------------------------ forehand / backhand
+
+def rear_pos(side, frame):
+    return (3.0, 4.0) if side == "upper" else (3.0, 12.0)       # lower hits from the rear
+
+
+def hand_table(tmp_path):
+    bh = lambda v, a=None: {"backhand": v} | ({} if a is None else {"around_head": a})  # noqa: E731
+    r1 = [(1.0, L, "long_serve", bh(True)), (2.0, U, "smash"), (3.0, L, "lift", bh(True, False)),
+          (4.0, U, "clear"), (5.0, L, "clear", bh(False, True)), (6.0, U, "drive"),
+          (8.0, L, "lift", {"backhand": "yes", "around_head": 1}), (9.0, U, "smash"),
+          (10.5, L, "block", bh(True))]
+    r2 = [(21.0, U, "smash"), (25.0, L, "block", bh(True))]      # 4 s: link broken
+    return build_shots(make(tmp_path, [(r1, None), (r2, None)], pos=rear_pos))
+
+
+def test_rows_carry_attributes_and_non_bool_is_none(tmp_path):
+    rows = hand_table(tmp_path)["shots"]
+    assert (rows[2]["backhand"], rows[2]["around_head"]) == (True, False)
+    assert (rows[1]["backhand"], rows[1]["around_head"]) == (None, None)     # no attributes
+    assert (rows[6]["backhand"], rows[6]["around_head"]) == (None, None)     # not a bool
+    table = build_shots(make(tmp_path, [([(1.0, L, "lift", {"backhand": 1}),
+                                          (2.0, U, "lift", "junk")], None)], name="n"))
+    assert [(s["backhand"], s["around_head"]) for s in table["shots"]] == [(None, None)] * 2
+
+
+def test_hand_stats_counts_pressed_and_rear(tmp_path):
+    table = hand_table(tmp_path)
+    # lower, non-serve, known hand: lift T, clear F, block T, block T (the serve is skipped)
+    assert S.hand_stats(table, L) == {
+        "n": 4, "backhand": 3,
+        "pressed_n": 2, "pressed_backhand": 2,    # lift after a smash, block after a smash; the
+        "rear_n": 2, "rear_around_head": 1}       # clear follows a clear, the last link is broken
+    assert S.hand_stats(table, U)["n"] == 0
+
+
+def test_hand_stats_pressed_by_a_rushed_reply(tmp_path):
+    def stats(reply_t, name):
+        shots = [(1.0, L, "clear"), (reply_t, U, "block", {"backhand": True})]
+        return S.hand_stats(build_shots(make(tmp_path, [(shots, None)], pos=moving_pos,
+                                             name=name)), U)
+    assert stats(1.9, "a") == {"n": 1, "backhand": 1, "pressed_n": 1, "pressed_backhand": 1,
+                               "rear_n": 0, "rear_around_head": 0}
+    assert stats(2.3, "b")["pressed_n"] == 0                   # 1.3 s: not rushed
+
+
+def test_hand_stats_without_attributes_is_all_zero(tmp_path):
+    table = build_shots(make(tmp_path, [(seq(1.0, [(L, "lift"), (U, "smash")]), None)]))
+    assert set(S.hand_stats(table, L).values()) == {0}

@@ -24,6 +24,7 @@ HISTORY_DIR = "history"
 KEEP_REPLACED = 5
 MIN_NEW_TRAIN = 50
 MIN_TEST_SHOTS = 20
+MIN_HAND_SHOTS = 20          # forehand/backhand rule needs this many owner-set hands on both sides
 RETIRED_MARK = ".retired"
 SWAP_MARKER = ".swap-in-progress"
 _MARKER_GRACE_SEC = 60        # an unreadable marker is only called stale after this long
@@ -89,6 +90,48 @@ def test_shots(labels_dir, results_dir):
 test_shots.__test__ = False
 
 
+def test_hands(labels_dir, results_dir):
+    """``[(stem, hits, backhand_truth)]``: like ``test_shots`` but only ``label`` rows that set ``backhand``."""
+    out = []
+    for stem, doc in _label_docs(labels_dir, "test"):
+        result_dir = Path(results_dir) / stem
+        fps = owner_labels._fps(result_dir)
+        hits = _hits(result_dir)
+        if fps is None or not hits:
+            continue
+        by_index, _, _ = owner_labels.attach(doc["labels"], hits, fps)
+        picked = sorted(i for i, lb in by_index.items() if lb["kind"] == "label" and "backhand" in lb)
+        if picked:
+            out.append((stem, [hits[i] for i in picked], [by_index[i]["backhand"] for i in picked]))
+    return out
+
+
+test_hands.__test__ = False
+
+
+def score_hands(weights, hand_shots, results_dir):
+    """``{n, correct, accuracy, abstained}`` of the backhand head on ``hand_shots``.
+
+    An abstention (or a model without heads) counts as wrong, so abstaining never raises accuracy.
+    """
+    model, meta, _ = sc.load_classifier(weights)
+    n = correct = abstained = 0
+    for stem, hits, truth in hand_shots:
+        path = Path(results_dir) / stem / "hit_signals.npz"
+        if not path.is_file():
+            continue
+        labels = sc.classify_hits(load_signals(path), hits, model, meta)
+        got = {l["frame"]: (l.get("attributes") or {}).get("backhand") for l in labels}
+        for hit, true in zip(hits, truth):
+            n += 1
+            pred = got.get(hit["frame"])
+            if pred is None:
+                abstained += 1
+            elif pred == true:
+                correct += 1
+    return {"n": n, "correct": correct, "accuracy": correct / n if n else None, "abstained": abstained}
+
+
 def score_weights(weights, shots, results_dir):
     """``stroke_metrics.score`` of ``weights`` on ``shots`` (the same shots for any weights)."""
     model, meta, _ = sc.load_classifier(weights)
@@ -117,6 +160,17 @@ def decide(candidate_m, live_m):
     live_acc = live_m.get("accuracy") or 0.0
     if acc < live_acc:
         return False, {"code": "lower_accuracy", "candidate": acc, "live": live_acc}
+    cand_h, live_h = candidate_m.get("backhand"), live_m.get("backhand")
+    if (isinstance(cand_h, dict) and isinstance(live_h, dict)
+            and (cand_h.get("n") or 0) >= MIN_HAND_SHOTS and (live_h.get("n") or 0) >= MIN_HAND_SHOTS
+            and (cand_h.get("accuracy") or 0.0) < (live_h.get("accuracy") or 0.0)):
+        return False, {"code": "lower_backhand_accuracy", "candidate": cand_h.get("accuracy") or 0.0,
+                       "live": live_h.get("accuracy") or 0.0}
+    cand_a, live_a = candidate_m.get("attributes"), live_m.get("attributes")
+    if isinstance(cand_a, list) and isinstance(live_a, list):
+        lost = [a for a in live_a if a not in cand_a]
+        if lost:
+            return False, {"code": "lost_attributes", "missing": lost}
     return True, {"code": "better_or_equal", "candidate": acc, "live": live_acc, "unknown": unknown}
 
 
@@ -133,6 +187,10 @@ def describe(code):
         return f"no live model; candidate unknown rate {code.get('unknown')} <= {code.get('bar')}"
     if k == "lower_accuracy":
         return f"candidate accuracy {code.get('candidate')} < live {code.get('live')}"
+    if k == "lower_backhand_accuracy":
+        return f"candidate forehand/backhand accuracy {code.get('candidate')} < live {code.get('live')}"
+    if k == "lost_attributes":
+        return f"candidate lacks attribute heads the live model has: {', '.join(code.get('missing') or [])}"
     if k == "better_or_equal":
         return (f"candidate accuracy {code.get('candidate')} >= live {code.get('live')}, "
                 f"unknown rate {code.get('unknown')}")

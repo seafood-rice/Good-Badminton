@@ -8,6 +8,8 @@ labelled but not scored.
 STROKE_TYPES = ("short_serve", "long_serve", "clear", "lift", "smash", "drop",
                 "net_shot", "block", "cross_net", "net_rush", "drive", "push")
 UNKNOWN = "unknown"
+# Per-hit boolean attributes (spec 2026-11-02 section 3); None = unknown or abstained.
+ATTRIBUTES = ("backhand", "around_head", "above_net")
 GROUPS = ("smash", "clear", "drop", "net", "lift", "drive", "serve")
 GROUP_OF = {
     "short_serve": "serve", "long_serve": "serve", "clear": "clear", "lift": "lift",

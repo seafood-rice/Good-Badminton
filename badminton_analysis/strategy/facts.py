@@ -870,6 +870,34 @@ def _eff_facts(table, who_of, prefix_of):
     return out, eff
 
 
+def _hand_facts(table, who_of, prefix_of):
+    """Forehand/backhand facts per player; model estimates, never validated (spec 8)."""
+    out = []
+    for side, p in who_of.items():
+        st = shots_mod.hand_stats(table, side)
+        pre = f"{prefix_of(p)}.hand"
+        rows = (("n", st["n"], None),
+                ("backhand_share", st["backhand"], st["n"]),
+                ("backhand_share_pressed", st["pressed_backhand"], st["pressed_n"]),
+                ("around_head_rear_share", st["rear_around_head"], st["rear_n"]))
+        for key, num, den in rows:
+            fid = f"{pre}.{key}"
+            unit = "count" if den is None else "share"
+            if (num if den is None else den) == 0:
+                fact = _unavailable(fid, p, "no_data", unit)
+            elif den is None:
+                few = num < shots_mod.MIN_HAND
+                fact = _fact(fid, num, p, unit, "insufficient" if few else "ok",
+                             "few_attempts" if few else None)
+            else:
+                few = den < shots_mod.MIN_HAND
+                fact = _fact(fid, _share(num / den), p, unit, "insufficient" if few else "ok",
+                             "few_attempts" if few else None)
+            fact["validated"] = False
+            out.append(fact)
+    return out
+
+
 def _opening_facts(table, who_of, prefix_of, op):
     ids = ["match.openings.complete", "match.openings.total"]
     if not table.get("rallies"):
@@ -905,6 +933,10 @@ def _tactics(ctx, fmt, sides):
         except Exception:
             pass
         facts.extend(eff)
+        try:
+            facts.extend(_hand_facts(table, who_of, prefix_of))
+        except Exception:
+            pass
         op = shots_mod.openings(table)
         facts.extend(_group(TACTICS_MATCH_IDS[5:], "match",
                             lambda: _opening_facts(table, who_of, prefix_of, op)))

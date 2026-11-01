@@ -43,6 +43,7 @@ def run(labels_dir, results_dir, weights_dir, project_root, python=None):
            *model_eval.train_args(project_root, labels_dir, results_dir, candidate)]
     # what the owner had labelled when this run started: the split may change while it trains
     snapshot = model_eval.test_shots(labels_dir, results_dir)
+    hand_snapshot = model_eval.test_hands(labels_dir, results_dir)
     train_labels = model_eval.train_count(labels_dir)
     print("training:", " ".join(cmd), flush=True)
     proc = subprocess.run(cmd, cwd=str(project_root))
@@ -59,6 +60,15 @@ def run(labels_dir, results_dir, weights_dir, project_root, python=None):
     cand_m = model_eval.score_weights(candidate, shots, results_dir)
     live = weights_dir / model_eval.LIVE_NAME
     live_m = model_eval.score_weights(live, shots, results_dir) if live.is_file() else None
+    for m, path in ((cand_m, candidate), (live_m, live)):
+        sidecar = model_eval._json(meta_path(path)) if m is not None else None
+        if isinstance(sidecar, dict):
+            m["attributes"] = [a for a in (sidecar.get("attributes") or []) if isinstance(a, str)]
+    hands = [sh for sh in hand_snapshot if not ({sh[0], f"owner:{sh[0]}", f"dji:{sh[0]}"} & seen)]
+    if hands:
+        cand_m["backhand"] = model_eval.score_hands(candidate, hands, results_dir)
+        if live_m is not None:
+            live_m["backhand"] = model_eval.score_hands(live, hands, results_dir)
     keep, reason = model_eval.decide(cand_m, live_m)
     record = {"reason": reason, "live": live_m, "candidate": cand_m, "test_videos": videos,
               "train_labels": train_labels, "bar_met": model_eval._bar_met(cand_m)}

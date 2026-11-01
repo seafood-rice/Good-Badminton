@@ -50,12 +50,17 @@ def _label(raw):
         return None
     if not isinstance(hitter, str) or not hitter or len(hitter) > _MAX_HITTER_CHARS:
         return None
+    out = {"time_sec": time_sec, "hitter": hitter, "stroke": stroke, "kind": kind}
     if kind in _NEEDS_STROKE:
         if stroke not in STROKE_TYPES:
             return None
+        if "backhand" in raw:
+            if not isinstance(raw["backhand"], bool):
+                return None
+            out["backhand"] = raw["backhand"]
     else:
-        stroke = None
-    return {"time_sec": time_sec, "hitter": hitter, "stroke": stroke, "kind": kind}
+        out["stroke"] = None
+    return out
 
 
 def validate_labels(raw):
@@ -110,6 +115,13 @@ def model_view(doc):
         if "model_stroke" in s:
             s["stroke"], s["group"] = s.pop("model_stroke"), s.pop("model_group", None)
             s["hitter"] = s.pop("model_hitter", s.get("hitter"))
+        if "model_attributes" in s:
+            model = s.pop("model_attributes")
+            if model is None:
+                s.pop("attributes", None)
+            else:
+                s["attributes"] = model
+        s.pop("owner_backhand", None)
         s.pop("source", None)
         s.pop("owner_unsure", None)
         strokes.append(s)
@@ -169,13 +181,20 @@ def apply(payload, labels_doc, fps):
         else:
             s["model_stroke"], s["model_group"] = s.get("stroke"), s.get("group")
             s["model_hitter"] = s.get("hitter")
+            if "backhand" in label:
+                s["model_attributes"] = s.get("attributes")
+                s["attributes"] = dict(s.get("attributes") or {}, backhand=label["backhand"])
+                s["owner_backhand"] = label["backhand"]
             s["stroke"], s["group"] = label["stroke"], group_of(label["stroke"])
             s["hitter"], s["source"] = label["hitter"], "owner"
             strokes.append(s)
     for label in added:
-        strokes.append({"frame": int(round(label["time_sec"] * fps)), "hitter": label["hitter"],
-                        "stroke": label["stroke"], "group": group_of(label["stroke"]),
-                        "confidence": None, "source": "owner"})
+        shot = {"frame": int(round(label["time_sec"] * fps)), "hitter": label["hitter"],
+                "stroke": label["stroke"], "group": group_of(label["stroke"]),
+                "confidence": None, "source": "owner"}
+        if "backhand" in label:
+            shot["attributes"], shot["owner_backhand"] = {"backhand": label["backhand"]}, label["backhand"]
+        strokes.append(shot)
     out["strokes"] = sorted(strokes, key=lambda s: s["frame"])
     out["removed"] = removed
     out["owner_labels"] = {

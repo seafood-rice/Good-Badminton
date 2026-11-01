@@ -275,3 +275,25 @@ test('a repaint with the same selection does not scroll again', async () => {
     block.destroy();
   } finally { removeEnv(); }
 });
+
+test('shows an FH/BH chip, the H key and the Backhand button save the hand', async () => {
+  installEnv();
+  try {
+    const hands = { ...strokesDoc, strokes: [{ ...st(60, 'lower', 'clear'), attributes: { backhand: true } }, st(120, 'upper', 'lift'), st(180, 'lower', 'drop')] };
+    const { block, api } = await make();
+    block.update({ strokesDoc: hands });
+    const chips = everything(block.el).filter((e) => (e.getAttribute('class') || '').split(' ').includes('ws-sl-hand'));
+    assert.deepEqual(chips.map((c) => c.textContent), ['BH'], 'only a shot with a hand shows a chip');
+    rowsOf(block)[0].click();
+    key(block, 'h');
+    await tick();
+    assert.deepEqual(api.calls.find((c) => c[0] === 'PUT')[2].labels, [{ ...lab(1, 'clear'), backhand: false }]);
+    rowsOf(block)[1].click();
+    const btn = everything(block.el).find((e) => e.getAttribute('data-action') === 'backhand');
+    btn.click();
+    await tick();
+    assert.deepEqual(api.calls.filter((c) => c[0] === 'PUT').at(-1)[2].labels.at(-1), { ...lab(2, 'lift', 'label', 'upper'), backhand: true });
+    assert.ok(block.el.textContent.includes('H forehand/backhand'));
+    block.destroy();
+  } finally { removeEnv(); }
+});
