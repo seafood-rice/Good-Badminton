@@ -3,6 +3,7 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -144,3 +145,18 @@ def test_run_pipeline_returns_signals_when_tracknet_ran(tmp_path, monkeypatch):
     sig = bd.run_pipeline_on_clip(clip, str(tmp_path / "run"), CORNERS, "weight")
     assert sig.n_frames == 60
     assert seen["dense_whole_video"] is True
+
+
+def test_encode_hits_writes_attribute_arrays_aligned_with_kept_hits():
+    hits = [{"t": 10.0, "side": "lower", "stroke7": "serve", "type_raw": "a",
+             "backhand": 1, "around_head": 0, "above_net": -1},
+            {"t": 99.0, "side": "lower", "stroke7": "net", "type_raw": "b",
+             "backhand": 0, "around_head": 1, "above_net": 1},          # outside the clip: dropped
+            {"t": 11.0, "side": "upper", "stroke7": "net", "type_raw": "c",
+             "backhand": 0, "around_head": 1, "above_net": 1},
+            {"t": 11.5, "side": "upper", "stroke7": "net", "type_raw": "d"}]   # no attribute keys
+    enc = bd.encode_hits(hits, 0.0, 9.0, 30.0, 90)
+    assert enc["hit_frames"].tolist() == [31, 61, 76]
+    assert enc["backhand"].tolist() == [1, 0, -1] and enc["around_head"].tolist() == [0, 1, -1]
+    assert enc["above_net"].tolist() == [-1, 1, -1]
+    assert all(enc[k].dtype == np.int64 for k in ("backhand", "around_head", "above_net"))

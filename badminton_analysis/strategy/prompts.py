@@ -84,13 +84,19 @@ _TACTICS = {
         "strengths, weaknesses and the game plan on the eff.* and openings.* facts when they are "
         "available. Never call a stroke a strength or a weakness when its fact is insufficient "
         "(fewer than 5 attempts) or unavailable; say there is not enough data instead. If "
-        "match.openings.complete is insufficient, make no claim about openings."),
+        "match.openings.complete is insufficient, make no claim about openings. <p>.hand.* = "
+        "forehand/backhand shares (backhand_share_pressed = after the opponent's attacking or "
+        "rushing shot; around_head_rear_share = rear-court shots hit around the head). They are "
+        "model estimates, not validated: word them as estimates and never as a firm weakness."),
     "zh": (
         "回合战术：<p>.eff.<stroke> = 该球员这种击球的结果（有效、中性、无效、未知，n 为次数）；"
         "match.openings.*、<p>.openings.*、<p>.opening_win_point = 每分前三拍的情况。"
         "优势、不足和比赛计划应尽量依据 eff.* 与 openings.* 数据。"
         "当某种击球的数据为 insufficient（少于 5 次）或 unavailable 时，不得称其为优势或不足，"
-        "应写“数据不足”。若 match.openings.complete 为 insufficient，不要对开局下结论。"),
+        "应写“数据不足”。若 match.openings.complete 为 insufficient，不要对开局下结论。"
+        "<p>.hand.* = 正手/反手占比（backhand_share_pressed = 对手进攻或压迫之后；"
+        "around_head_rear_share = 后场击球中的头顶后击球）。这些是模型估计，未经验证："
+        "请以“估计”表述，不要当作确定的不足。"),
 }
 
 _SYSTEM_EN = (

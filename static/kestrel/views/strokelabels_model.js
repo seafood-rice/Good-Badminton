@@ -49,6 +49,10 @@ function modelStrokes(strokesDoc) {
       s.stroke = s.model_stroke;
       s.hitter = 'model_hitter' in s ? s.model_hitter : s.hitter;
     }
+    if ('model_attributes' in s) {   // an owner hand overlaid the model's attributes: put them back
+      if (s.model_attributes === null) delete s.attributes;
+      else s.attributes = s.model_attributes;
+    }
     out.push(s);
   }
   for (const raw of arr(d.removed)) if (raw && typeof raw === 'object' && num(raw.frame)) out.push({ ...raw });
@@ -73,6 +77,8 @@ function attach(labels, strokes, fps) {
   return { byIndex, added };
 }
 
+const modelHand = (s) => (typeof obj(s.attributes).backhand === 'boolean' ? s.attributes.backhand : null);
+const ownerHand = (label) => (label && typeof label.backhand === 'boolean' ? label.backhand : undefined);
 const validStroke = (id) => (STROKE_IDS.includes(id) ? id : null);
 
 /**
@@ -113,8 +119,9 @@ export function orphanLabels(strokesDoc, labelsDoc, rally, fps, rallies) {
 }
 
 /**
- * The rows of one rally: [{time, frame, hitter, stroke, model_stroke, model_hitter, confidence, source, state, label}],
- * in time order. `stroke` / `hitter` are the effective ones (the owner's when labelled). `state`: auto (model only),
+ * The rows of one rally: [{time, frame, hitter, stroke, model_stroke, model_hitter, backhand, model_backhand, confidence,
+ * source, state, label}], in time order. `stroke` / `hitter` / `backhand` are the effective ones (the owner's when
+ * labelled; `backhand` is true / false / null for unknown, `model_backhand` is the model's own). `state`: auto (model only),
  * confirmed (owner agrees with the model), corrected, not_hit (kept so it can be undone), unsure, added (a missed
  * shot). `label` is the owner label on the row, or null. `rally` is a workspace rally ({id, start, end} in seconds); null
  * gives every row. `rallies` (optional) is the workspace's rally list: membership then follows `rallyFor`.
@@ -133,31 +140,39 @@ export function rowsForRally(strokesDoc, labelsDoc, rally, fps, rallies) {
     const modelStroke = typeof s.stroke === 'string' ? s.stroke : null;
     const base = {
       time, frame: s.frame, hitter: s.hitter, stroke: modelStroke, model_stroke: modelStroke, model_hitter: s.hitter,
+      backhand: modelHand(s), model_backhand: modelHand(s),
       confidence: num(s.confidence) ? s.confidence : null, source: 'model', state: 'auto', label,
     };
     if (!label) { rows.push(base); return; }
     if (label.kind === 'not_hit') { rows.push({ ...base, state: 'not_hit' }); return; }
     if (label.kind === 'unsure') { rows.push({ ...base, state: 'unsure' }); return; }
-    const same = label.stroke === modelStroke && label.hitter === s.hitter;
-    rows.push({ ...base, stroke: label.stroke, hitter: label.hitter, source: 'owner', state: same ? 'confirmed' : 'corrected' });
+    const hand = ownerHand(label);
+    const handDiffers = hand !== undefined && base.model_backhand !== null && hand !== base.model_backhand;
+    const same = label.stroke === modelStroke && label.hitter === s.hitter && !handDiffers;
+    rows.push({
+      ...base, stroke: label.stroke, hitter: label.hitter, backhand: hand === undefined ? base.backhand : hand,
+      source: 'owner', state: same ? 'confirmed' : 'corrected',
+    });
   });
   for (const label of added) {
     if (!inRally(label.time_sec)) continue;
     rows.push({
       time: round3(label.time_sec), frame: Math.round(label.time_sec * fps), hitter: label.hitter, stroke: label.stroke,
-      model_stroke: null, model_hitter: null, confidence: null, source: 'owner', state: 'added', label,
+      model_stroke: null, model_hitter: null, backhand: ownerHand(label) === undefined ? null : ownerHand(label),
+      model_backhand: null, confidence: null, source: 'owner', state: 'added', label,
     });
   }
   return rows.sort((a, b) => a.time - b.time);
 }
 
 const sameLabel = (a, b) => a === b || (!!a && !!b && a.time_sec === b.time_sec && a.hitter === b.hitter
-  && a.stroke === b.stroke && a.kind === b.kind);
+  && a.stroke === b.stroke && a.kind === b.kind && a.backhand === b.backhand);
 
 /**
  * A new document with `action` applied to `row`'s label (the old owner label of that row is replaced). Actions:
  * {type:'set', stroke} | {type:'swap'} | {type:'not_hit'} | {type:'unsure'} | {type:'confirm'} | {type:'clear'} |
- * {type:'add', time, hitter, stroke}. An action that needs a stroke type the row does not have (swap or confirm of an
+ * {type:'hand', backhand} | {type:'hand-toggle'} | {type:'add', time, hitter, stroke}. `hand` writes the shown stroke
+ * and hitter with the owner's forehand/backhand; `set`, `swap` and `confirm` keep the row label's own hand. An action that needs a stroke type the row does not have (swap or confirm of an
  * unknown shot) leaves the document as it is.
  */
 export function applyAction(labelsDoc, row, action) {
@@ -171,7 +186,12 @@ export function applyAction(labelsDoc, row, action) {
   if (!num(r.time)) return doc;
   const rest = doc.labels.filter((l) => !sameLabel(l, r.label));
   const isAdded = r.state === 'added';
-  const make = (kind, stroke, hitter) => ({ time_sec: round3(r.time), hitter, stroke: kind === 'label' || kind === 'added' ? stroke : null, kind });
+  const keep = r.label && (r.label.kind === 'label' || r.label.kind === 'added') ? ownerHand(r.label) : undefined;
+  const make = (kind, stroke, hitter, hand = keep) => {
+    const label = { time_sec: round3(r.time), hitter, stroke: kind === 'label' || kind === 'added' ? stroke : null, kind };
+    if ((kind === 'label' || kind === 'added') && hand !== undefined) label.backhand = hand;
+    return label;
+  };
   let next = null;
   switch (a.type) {
     case 'set':
@@ -187,6 +207,14 @@ export function applyAction(labelsDoc, row, action) {
       if (!validStroke(r.stroke) || !r.hitter) return doc;
       next = make('label', r.stroke, r.hitter);
       break;
+    case 'hand':
+    case 'hand-toggle': {
+      const hand = a.type === 'hand' ? a.backhand : r.backhand !== true;
+      if (r.state === 'not_hit' || r.state === 'unsure') return doc;   // no stroke to attach a hand to
+      if (typeof hand !== 'boolean' || !validStroke(r.stroke) || !r.hitter) return doc;
+      next = make(isAdded ? 'added' : 'label', r.stroke, r.hitter, hand);
+      break;
+    }
     case 'not_hit':
       next = isAdded ? null : make('not_hit', null, r.hitter);   // an added shot that is no shot just goes away
       break;
@@ -204,12 +232,13 @@ export function applyAction(labelsDoc, row, action) {
   return { ...doc, labels: next ? [...rest, next] : rest };
 }
 
-/** The action of a key press (type letters and digits as on the buttons, P swap, X not a hit, ? unsure, Enter confirm). */
+/** The action of a key press (type letters and digits as on the buttons, P swap, H forehand/backhand toggle, X not a hit, ? unsure, Enter confirm). */
 export function keyToAction(key) {
   if (key === 'Enter') return { type: 'confirm' };
   if (key === '?') return { type: 'unsure' };
   const k = typeof key === 'string' ? key.toLowerCase() : '';
   if (k === 'p') return { type: 'swap' };
+  if (k === 'h') return { type: 'hand-toggle' };
   if (k === 'x') return { type: 'not_hit' };
   const id = KEY_TO_TYPE[k];
   return id ? { type: 'set', stroke: id } : null;

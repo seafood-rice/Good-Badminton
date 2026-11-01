@@ -440,3 +440,33 @@ def test_hitter_unknown_caveat_text_in_both_languages():
     item = {"code": "hitter_unknown", "params": {}}
     assert "hitter was not identified" in _caveat_text(item, "en")
     assert "击球人" in _caveat_text(item, "zh")
+
+
+def _hand_fact(fid, value=0.4):
+    return {"id": fid, "value": value, "unit": "share", "who": fid.split(".")[0],
+            "status": "ok", "reason": None, "validated": False}
+
+
+def test_hand_fact_templates_in_both_languages_marked_as_estimates():
+    from badminton_analysis.strategy.report import _sentence
+    for who in ("you", "opponent"):
+        for key in ("n", "backhand_share", "backhand_share_pressed", "around_head_rear_share"):
+            fact = _hand_fact(f"{who}.hand.{key}")
+            en, zh = _sentence(fact, "en"), _sentence(fact, "zh")
+            assert "not validated" in en and "未经验证" in zh
+            assert ("Your" if who == "you" else "The opponent's") in en
+            assert ("你的" if who == "you" else "对手的") in zh and "{" not in en + zh
+
+
+def test_fallback_uses_hand_facts_for_shot_selection_and_scouting():
+    pack = {"format": "singles", "facts": [
+        _hand_fact("you.hand.backhand_share"),
+        _hand_fact("opponent.hand.backhand_share_pressed", 0.5)]}
+    sections = fallback_sections(pack, "en", "singles")
+    shot = sections["your_game"]["shot_selection"]["claims"]
+    assert shot[0]["evidence"] == ["you.hand.backhand_share"]
+    assert "backhand" in shot[0]["text"] and "40%" in shot[0]["text"]
+    scout = sections["scouting"]["claims"]
+    assert scout[0]["evidence"] == ["opponent.hand.backhand_share_pressed"]
+    zh = fallback_sections(pack, "zh", "singles")
+    assert "反手" in zh["your_game"]["shot_selection"]["claims"][0]["text"]

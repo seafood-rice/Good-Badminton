@@ -301,3 +301,68 @@ def test_technique_reports_written_after_the_labels_get_the_owner_types(tmp_path
     (run / "strokes.jsonl").write_text(json.dumps(rep) + "\n", encoding="utf-8")
     s._rescore_owner_stroke_reports()
     assert json.loads((run / "strokes.jsonl").read_text(encoding="utf-8").splitlines()[0])["stroke_type"] == "smash"
+
+
+# ---- owner forehand / backhand
+def hlab(t, backhand, **kw):
+    return dict(lab(t, **kw), backhand=backhand)
+
+
+def test_backhand_must_be_a_bool_and_unsure_drops_it():
+    assert ol.validate_labels([hlab(1.0, True), hlab(2.0, False, kind="added")])[0]["backhand"] is True
+    for bad in (1, 0, "yes", None, 1.0):
+        assert ol.validate_labels([hlab(1.0, bad)]) is None
+    out = ol.validate_labels([hlab(1.0, True, kind="not_hit", stroke=None), hlab(2.0, False, kind="unsure", stroke=None)])
+    assert all("backhand" not in x for x in out)
+    assert "backhand" not in ol.validate_labels([lab(1.0)])[0]
+
+
+def _with_attrs(p, attrs):
+    for s, a in zip(p["strokes"], attrs):
+        if a is not None:
+            s["attributes"] = a
+    return p
+
+
+def test_apply_hand_is_reversible_and_idempotent():
+    base = _with_attrs(payload((60, "lower", "clear"), (120, "upper", "lift")), [{"backhand": True, "around_head": False}, None])
+    doc = doc_of(hlab(1.0, False, stroke="clear"), hlab(2.0, True, hitter="upper", stroke="lift"))
+    out = ol.apply(base, doc, 60.0)
+    a, b = out["strokes"]
+    assert a["attributes"] == {"backhand": False, "around_head": False} and a["owner_backhand"] is False
+    assert a["model_attributes"] == {"backhand": True, "around_head": False}
+    assert b["attributes"] == {"backhand": True} and b["model_attributes"] is None
+    assert ol.apply(out, doc, 60.0) == out
+    assert ol.model_view(out) == ol.model_view(base) == base | {"strokes": ol.model_view(base)["strokes"]}
+    back = ol.model_view(out)["strokes"]
+    assert back[0]["attributes"] == {"backhand": True, "around_head": False}
+    assert "attributes" not in back[1] and "owner_backhand" not in back[0]
+    # a label without a hand leaves the model's attributes alone
+    plain = ol.apply(base, doc_of(lab(1.0, stroke="clear")), 60.0)["strokes"][0]
+    assert plain["attributes"] == {"backhand": True, "around_head": False} and "model_attributes" not in plain
+
+
+def test_added_shot_carries_its_hand():
+    out = ol.apply(payload((60, "lower", "clear")), doc_of(hlab(3.0, True, kind="added", stroke="drop")), 60.0)
+    added = [s for s in out["strokes"] if s["frame"] == 180][0]
+    assert added["attributes"] == {"backhand": True} and added["owner_backhand"] is True
+    gone = ol.model_view(out)
+    assert [s["frame"] for s in gone["strokes"]] == [60]
+
+
+def test_owner_backhand_overrides_only_that_attribute_and_keeps_confidence():
+    model = {"backhand": False, "around_head": True}
+    base = _with_attrs(payload((60, "lower", "clear")), [dict(model)])
+    base["strokes"][0]["attribute_confidence"] = {"backhand": 0.9, "around_head": 0.8}
+    out = ol.apply(base, doc_of(hlab(1.0, True, stroke="clear")), 60.0)
+    s = out["strokes"][0]
+    assert s["attributes"] == {"backhand": True, "around_head": True}
+    assert s["attribute_confidence"] == {"backhand": 0.9, "around_head": 0.8}
+    back = ol.model_view(out)["strokes"][0]
+    assert back["attributes"] == model and back["attribute_confidence"] == {"backhand": 0.9, "around_head": 0.8}
+    assert ol.model_view(out) == base
+
+
+def test_owner_hand_on_a_shot_without_model_heads_has_no_confidence():
+    out = ol.apply(payload((60, "lower", "clear")), doc_of(hlab(1.0, True, stroke="clear")), 60.0)
+    assert "attribute_confidence" not in out["strokes"][0]

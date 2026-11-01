@@ -155,3 +155,70 @@ test('orphanLabels: a second label near the same hit is an orphan, not invisible
   assert.deepEqual(lost.map((o) => [o.time, o.stroke]), [[1.1, 'smash']]);
   assert.equal(lost[0].label, ls.labels[0]);
 });
+
+// ---- forehand / backhand
+const handLab = (time_sec, stroke, backhand, kind = 'label', hitter = 'lower') => ({ ...lab(time_sec, stroke, kind, hitter), backhand });
+
+test('rows carry the effective and the model hand', () => {
+  const strokes = doc(st(60, 'lower', 'clear', { attributes: { backhand: true } }), st(120, 'upper', 'lift'));
+  const rows = rowsForRally(strokes, labels(handLab(2.0, 'lift', false, 'label', 'upper')), RALLY, FPS);
+  assert.deepEqual(rows.map((r) => [r.backhand, r.model_backhand]), [[true, true], [false, null]]);
+  assert.equal(rows[1].state, 'confirmed', 'a hand the model did not give is not a correction');
+});
+
+test('an owner hand that differs from the model makes the row corrected; an overlaid payload reads as the model view', () => {
+  const overlaid = doc(st(60, 'lower', 'clear', {
+    model_stroke: 'clear', model_group: 'clear', model_hitter: 'lower', source: 'owner',
+    attributes: { backhand: false }, model_attributes: { backhand: true }, owner_backhand: false,
+  }), st(120, 'lower', 'drop', {
+    model_stroke: 'drop', model_group: 'drop', model_hitter: 'lower', source: 'owner',
+    attributes: { backhand: true }, model_attributes: null, owner_backhand: true,
+  }));
+  const rows = rowsForRally(overlaid, labels(handLab(1.0, 'clear', false), handLab(2.0, 'drop', true)), RALLY, FPS);
+  assert.deepEqual(rows.map((r) => [r.model_backhand, r.backhand, r.state]), [[true, false, 'corrected'], [null, true, 'confirmed']]);
+});
+
+test('hand action writes a label with the shown stroke and hitter; added rows stay added', () => {
+  const r = rowsForRally(doc(st(60, 'lower', 'clear')), labels(), RALLY, FPS)[0];
+  let d = applyAction(labels(), r, { type: 'hand', backhand: true });
+  assert.deepEqual(d.labels, [{ time_sec: 1, hitter: 'lower', stroke: 'clear', kind: 'label', backhand: true }]);
+  const added = rowsForRally(doc(), labels(lab(4, 'drop', 'added')), RALLY, FPS)[0];
+  d = applyAction(labels(lab(4, 'drop', 'added')), added, { type: 'hand', backhand: false });
+  assert.deepEqual(d.labels, [{ time_sec: 4, hitter: 'lower', stroke: 'drop', kind: 'added', backhand: false }]);
+  assert.equal(applyAction(labels(), r, { type: 'hand', backhand: 'yes' }).labels.length, 0);
+  const unknown = rowsForRally(doc(st(60, 'lower', 'unknown')), labels(), RALLY, FPS)[0];
+  assert.equal(applyAction(labels(), unknown, { type: 'hand', backhand: true }).labels.length, 0);
+});
+
+test('hand-toggle flips the effective hand (unknown becomes backhand)', () => {
+  const strokes = doc(st(60, 'lower', 'clear', { attributes: { backhand: true } }), st(120, 'lower', 'lift'));
+  const [a, b] = rowsForRally(strokes, labels(), RALLY, FPS);
+  assert.equal(applyAction(labels(), a, { type: 'hand-toggle' }).labels[0].backhand, false);
+  assert.equal(applyAction(labels(), b, { type: 'hand-toggle' }).labels[0].backhand, true);
+});
+
+test('hand and hand-toggle do nothing on a not_hit or unsure row', () => {
+  const strokes = doc(st(60, 'lower', 'clear', { attributes: { backhand: true } }));
+  for (const kind of ['not_hit', 'unsure']) {
+    const l = labels({ time_sec: 1.0, hitter: 'lower', stroke: null, kind });
+    const row = rowsForRally(strokes, l, RALLY, FPS)[0];
+    assert.equal(row.state, kind);
+    assert.deepEqual(applyAction(l, row, { type: 'hand', backhand: true }).labels, l.labels);
+    assert.deepEqual(applyAction(l, row, { type: 'hand-toggle' }).labels, l.labels);
+  }
+});
+
+test('set, swap and confirm keep the label hand', () => {
+  const strokes = doc(st(60, 'lower', 'clear'));
+  const l = labels(handLab(1.0, 'clear', true));
+  const row = rowsForRally(strokes, l, RALLY, FPS)[0];
+  assert.equal(applyAction(l, row, { type: 'set', stroke: 'smash' }).labels[0].backhand, true);
+  assert.deepEqual([applyAction(l, row, { type: 'swap' }).labels[0].hitter, applyAction(l, row, { type: 'swap' }).labels[0].backhand], ['upper', true]);
+  assert.equal(applyAction(l, row, { type: 'confirm' }).labels[0].backhand, true);
+  assert.equal('backhand' in applyAction(l, row, { type: 'not_hit' }).labels[0], false);
+});
+
+test('H key toggles the hand', () => {
+  assert.deepEqual(keyToAction('h'), { type: 'hand-toggle' });
+  assert.deepEqual(keyToAction('H'), { type: 'hand-toggle' });
+});

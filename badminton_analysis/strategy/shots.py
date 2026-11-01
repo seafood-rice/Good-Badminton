@@ -28,6 +28,7 @@ EDGE_SHARE = 0.4        # position check fails when more in-play frames than thi
 POS_WINDOW = 8          # frames either side of a hit when looking up a position
 MIN_ATTEMPTS = 5        # fewer attempts of a stroke is never a strength / weakness
 MIN_OPENINGS = 5        # fewer complete openings = no opening claims
+MIN_HAND = 20           # fewer shots with a known forehand/backhand = no hand claim
 MAX_ROWS = 8
 SHORT_RALLY_SEC = 9.0
 
@@ -229,6 +230,13 @@ def _is_serve(s):
     return s.get("group") == "serve" or s.get("stroke") in ("short_serve", "long_serve")
 
 
+def _attr(stroke, name):
+    """A per-hit attribute (``attributes.<name>``) as a bool, else None (absent or not a bool)."""
+    attrs = stroke.get("attributes")
+    val = attrs.get(name) if isinstance(attrs, dict) else None
+    return val if isinstance(val, bool) else None
+
+
 # ------------------------------------------------------------------ the table
 
 def _empty(fps=None):
@@ -333,6 +341,7 @@ def build_shots(out_dir):
                 "zone": zone_of(side, *xy) if xy else None, "sent_to": None,
                 "tempo_sec": tempo_sec, "tempo": tempo, "rushed_reply": None,
                 "link_broken": False, "last": k == len(hits) - 1,
+                "backhand": _attr(s, "backhand"), "around_head": _attr(s, "around_head"),
             })
         for k in range(len(rows) - 1):
             a, b = rows[k], rows[k + 1]
@@ -420,6 +429,35 @@ def effectiveness(table, side):
             cell = out.setdefault(shot["stroke"], dict.fromkeys(_OUTCOME_KEYS, 0) | {"n": 0})
             cell[cls] += 1
             cell["n"] += 1
+    return out
+
+
+# ------------------------------------------------------------------ forehand / backhand
+
+def hand_stats(table, side):
+    """Forehand/backhand counts of ``side``'s non-serve shots (per-hit attributes spec 8).
+
+    ``pressed``: the previous shot of the rally was the opponent's, the link intact, and it was
+    an attacking stroke or rushed this reply. ``rear``: shot zone depth rear, around-head known."""
+    out = dict.fromkeys(("n", "backhand", "pressed_n", "pressed_backhand", "rear_n",
+                         "rear_around_head"), 0)
+    for rows in _by_rally(table).values():
+        for i, shot in enumerate(rows):
+            if shot["hitter"] != side or _is_serve(shot):
+                continue
+            bh = shot.get("backhand")
+            if isinstance(bh, bool):
+                out["n"] += 1
+                out["backhand"] += bh
+                prev = rows[i - 1] if i else None
+                if prev and prev["hitter"] != side and not prev["link_broken"] \
+                        and (prev["stroke"] in ATTACKING or prev["rushed_reply"] is True):
+                    out["pressed_n"] += 1
+                    out["pressed_backhand"] += bh
+            ah = shot.get("around_head")
+            if isinstance(ah, bool) and shot["zone"] and shot["zone"]["depth"] == "rear":
+                out["rear_n"] += 1
+                out["rear_around_head"] += ah
     return out
 
 

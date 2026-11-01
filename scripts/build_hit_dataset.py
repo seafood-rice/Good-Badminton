@@ -37,6 +37,7 @@ from badminton_analysis.stroke.hit_features import CourtGeometry  # noqa: E402
 from badminton_analysis.stroke.hit_signals import load_signals  # noqa: E402
 
 _SIDE_CODE = {"lower": 0, "upper": 1}
+_ATTR_KEYS = ("backhand", "around_head", "above_net")     # 1 / 0 / -1 unknown, aligned with hit_frames
 
 
 def label_to_clip_frame(t_label, offset_sec, clip_start_sec, fps):
@@ -51,6 +52,7 @@ def court_annotation_text(corners):
 
 def encode_hits(hits, offset_sec, clip_start_sec, fps, n_frames):
     frames, hitter, stroke, raw = [], [], [], []
+    attrs = {k: [] for k in _ATTR_KEYS}
     for h in hits:
         f = label_to_clip_frame(h["t"], offset_sec, clip_start_sec, fps)
         if not 1 <= f <= n_frames:
@@ -59,8 +61,11 @@ def encode_hits(hits, offset_sec, clip_start_sec, fps, n_frames):
         hitter.append(_SIDE_CODE.get(h.get("side"), -1))
         stroke.append(sl.STROKE7.index(h["stroke7"]) if h.get("stroke7") in sl.STROKE7 else -1)
         raw.append(h.get("type_raw") or "")
+        for k in _ATTR_KEYS:
+            attrs[k].append(int(h.get(k, -1)))
     return {"hit_frames": np.asarray(frames, np.int64), "hitter": np.asarray(hitter, np.int64),
-            "stroke7": np.asarray(stroke, np.int64), "stroke_raw": np.asarray(raw, dtype=str)}
+            "stroke7": np.asarray(stroke, np.int64), "stroke_raw": np.asarray(raw, dtype=str),
+            **{k: np.asarray(v, np.int64) for k, v in attrs.items()}}
 
 
 def run_pipeline_on_clip(clip, run_dir, corners, tracknet_mode):

@@ -162,3 +162,71 @@ def test_no_test_shots_reject_keeps_live_after_of_the_live_model(monkeypatch, tm
     assert after['version'] == 'v1' and after['accuracy'] == 0.7 and after['bar_met'] is False
     monkeypatch.setattr(facts, 'WEIGHTS_DIR', weights)
     assert facts._stroke_model_quality() == {'accuracy': 0.7, 'bar_met': False}
+
+
+def test_retrain_records_backhand_metrics_for_both_on_leak_filtered_shots(monkeypatch, tmp_path, capsys):
+    weights = _setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(model_eval, 'test_hands', lambda l, r: [('t', [{'frame': 1}], [True]), ('leaked', [{'frame': 2}], [False])])
+    monkeypatch.setattr(retrain, '_leaked', lambda c: {'leaked'})
+    seen = []
+
+    def hands(w, shots_, r):
+        seen.append([s[0] for s in shots_])
+        return {'n': 25, 'correct': 20, 'accuracy': 0.8 if 'candidates' in str(w) else 0.9, 'abstained': 0}
+
+    monkeypatch.setattr(model_eval, 'score_hands', hands)
+    assert retrain.run(tmp_path / 'l', tmp_path / 'r', weights, tmp_path) == 0
+    out = _final(capsys)
+    assert seen == [['t'], ['t']]
+    assert out['candidate']['backhand']['accuracy'] == 0.8 and out['live']['backhand']['accuracy'] == 0.9
+    assert out['kept'] is False and out['reason']['code'] == 'lower_backhand_accuracy'
+
+
+def test_retrain_without_hand_shots_has_no_backhand_metrics(monkeypatch, tmp_path, capsys):
+    weights = _setup(monkeypatch, tmp_path)
+    assert retrain.run(tmp_path / 'l', tmp_path / 'r', weights, tmp_path) == 0
+    out = _final(capsys)
+    assert 'backhand' not in out['candidate'] and 'backhand' not in out['live'] and out['kept'] is True
+
+
+def _sidecar(path, attributes=None):
+    doc = {'train_matches': [], 'val_matches': []}
+    if attributes is not None:
+        doc['attributes'] = attributes
+    path.write_text(json.dumps(doc), encoding='utf-8')
+
+
+def _trainer_with_sidecar(monkeypatch, attributes):
+    def fake_run(cmd, cwd=None):
+        out = cmd[cmd.index('--out') + 1]
+        open(out, 'wb').write(b'cand')
+        _sidecar(__import__('pathlib').Path(out.replace('.pt', '.json')), attributes)
+
+        class P:
+            returncode = 0
+        return P()
+
+    monkeypatch.setattr(subprocess, 'run', fake_run)
+
+
+def test_retrain_records_sidecar_attributes_and_keeps_schema_one_live_vs_heads(monkeypatch, tmp_path, capsys):
+    weights = _setup(monkeypatch, tmp_path)
+    _sidecar(weights / 'stroke-classifier.json')                       # schema-1 live: no attributes key
+    _trainer_with_sidecar(monkeypatch, ['backhand'])
+    assert retrain.run(tmp_path / 'l', tmp_path / 'r', weights, tmp_path) == 0
+    out = _final(capsys)
+    assert out['candidate']['attributes'] == ['backhand'] and out['live']['attributes'] == []
+    assert out['kept'] is True
+
+
+def test_retrain_rejects_a_candidate_without_heads_even_with_few_hand_shots(monkeypatch, tmp_path, capsys):
+    weights = _setup(monkeypatch, tmp_path)
+    _sidecar(weights / 'stroke-classifier.json', ['backhand', 'above_net'])
+    _trainer_with_sidecar(monkeypatch, [])
+    monkeypatch.setattr(model_eval, 'test_hands', lambda l, r: [('t', [{'frame': 1}], [True])])
+    monkeypatch.setattr(model_eval, 'score_hands',
+                        lambda w, s, r: {'n': 1, 'correct': 1, 'accuracy': 1.0, 'abstained': 0})
+    assert retrain.run(tmp_path / 'l', tmp_path / 'r', weights, tmp_path) == 0
+    out = _final(capsys)
+    assert out['kept'] is False
+    assert out['reason'] == {'code': 'lost_attributes', 'missing': ['backhand', 'above_net']}

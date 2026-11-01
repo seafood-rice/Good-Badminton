@@ -475,6 +475,8 @@ body.ws-theater-open{overflow:hidden;}
 .ws-sl-player{min-width:44px;color:var(--ink2);}
 .ws-sl-type{flex:1;font-weight:600;}
 .ws-sl-type.struck{text-decoration:line-through;}
+.ws-sl-hand{color:var(--ink3);}
+.ws-sl-hand.owner{color:var(--good);}
 .ws-sl-state.st-auto{color:var(--ink3);}
 .ws-sl-state.st-corrected,.ws-sl-state.st-added{color:var(--mid);}
 .ws-sl-state.st-confirmed{color:var(--good);}

@@ -178,3 +178,20 @@ def test_alignment_script_rejects_a_25_fps_video_without_tracking(tmp_path, monk
     assert written["accepted"] is False and written["fps"] == 25.0 and written["width"] == 1280
     assert written["reason"] == "fps below 30 (resampling would repeat frames)"
     assert "REJECTED" in capsys.readouterr().out
+
+
+def test_parse_match_hits_attributes_including_blank_hit_height(tmp_path):
+    d = tmp_path / "M"
+    d.mkdir()
+    (d / "set1.csv").write_text(SET_CSV, encoding="utf-8")
+    hits = sl.parse_match_hits(str(d), CORNERS)
+    # row 1: backhand 1.0, aroundhead blank, hit_height 2.0 (below); row 2: blank/blank/2.0;
+    # row 3: everything blank -> forehand, not around head, height unknown
+    assert [(h["backhand"], h["around_head"], h["above_net"]) for h in hits] == [
+        (1, 0, 0), (0, 0, 0), (0, 0, -1)]
+
+
+def test_flag_and_above_net_values():
+    assert sl._flag("1") == 1 and sl._flag("1.0") == 1 and sl._flag("") == 0 and sl._flag(None) == 0
+    assert sl._above_net("1") == 1 and sl._above_net("2.0") == 0
+    assert sl._above_net("") == -1 and sl._above_net("x") == -1 and sl._above_net("3") == -1

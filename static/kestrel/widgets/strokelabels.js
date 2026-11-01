@@ -142,7 +142,7 @@ export function strokeLabelsBlock({
       if (action.type === 'confirm' && ['confirmed', 'corrected'].includes(row.state)) selectAfter(row.time);   // just move on
       return;
     }
-    save(doc, advance && !['swap', 'clear'].includes(action.type));
+    save(doc, advance && !['swap', 'clear', 'hand', 'hand-toggle'].includes(action.type));
   }
 
   function openAdd() {
@@ -173,6 +173,8 @@ export function strokeLabelsBlock({
 
   const stateChip = (row) => h('span', { class: `k-chip ws-sl-state st-${row.state}` }, t('strokes.state.' + row.state, lang));
 
+  const handText = (b) => t(b ? 'strokes.hand.bh' : 'strokes.hand.fh', lang);
+
   function rowNode(row) {
     const on = row.time === selected;
     const dim = row.state === 'not_hit' || row.state === 'unsure';
@@ -186,6 +188,11 @@ export function strokeLabelsBlock({
       h('span', { class: 'mono ws-sl-time' }, clock(row.time)),
       h('span', { class: 'ws-sl-player' }, row.hitter ? side(row.hitter) : '—'),
       h('span', { class: 'ws-sl-type' + (row.state === 'not_hit' ? ' struck' : '') }, type),
+      row.backhand === null ? null : h('span', {
+        class: 'k-chip ws-sl-hand' + (row.source === 'owner' && row.label && typeof row.label.backhand === 'boolean' ? ' owner' : ''),
+        'data-hand': row.backhand ? 'backhand' : 'forehand',
+        'aria-label': t('strokes.hand.aria', lang, { hand: t(row.backhand ? 'strokes.hand.backhand' : 'strokes.hand.forehand', lang) }),
+      }, handText(row.backhand)),
       stateChip(row),
       row.state === 'corrected' ? h('span', { class: 'kw-muted ws-sl-was' }, t('strokes.model_was', lang, { type: typeText(row.model_stroke) })) : null,
       row.confidence !== null && row.state === 'auto' ? h('span', { class: 'mono kw-muted ws-sl-conf' }, `${Math.round(row.confidence * 100)}%`) : null,
@@ -251,11 +258,17 @@ export function strokeLabelsBlock({
       el.appendChild(h('div', { class: 'ws-sl-actions' }, [
         typeButtons((id) => act(row, { type: 'set', stroke: id }), row.state === 'not_hit' || row.state === 'unsure' ? null : row.stroke),
         h('div', { class: 'ws-pt-row ws-sl-more' }, [
-          ['confirm', 'strokes.confirm'], ['swap', 'strokes.swap'], ['not_hit', 'strokes.not_hit'], ['unsure', 'strokes.unsure'],
+          ['confirm', 'strokes.confirm'], ['hand:false', 'strokes.hand.forehand'], ['hand:true', 'strokes.hand.backhand'], ['swap', 'strokes.swap'], ['not_hit', 'strokes.not_hit'], ['unsure', 'strokes.unsure'],
           ...(row.label ? [['clear', 'strokes.clear']] : []),
-        ].map(([type, key]) => h('button', {
-          type: 'button', class: 'ws-chip ws-pt-btn', 'data-action': type, onclick: () => act(row, { type }),
-        }, t(key, lang)))),
+        ].map(([type, key]) => {
+          const hand = type.startsWith('hand:') ? type.slice(5) === 'true' : null;
+          const on = hand !== null && row.backhand === hand;
+          return h('button', {
+            type: 'button', class: 'ws-chip ws-pt-btn' + (on ? ' on' : ''), 'data-action': hand === null ? type : (hand ? 'backhand' : 'forehand'),
+            'aria-pressed': hand === null ? null : (on ? 'true' : 'false'),
+            onclick: () => act(row, hand === null ? { type } : { type: 'hand', backhand: hand }),
+          }, t(key, lang));
+        })),
       ]));
     }
     if (addPrompt) {

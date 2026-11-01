@@ -496,3 +496,82 @@ def test_doubles_without_any_known_hitter_gets_the_hitter_unknown_caveat(tmp_pat
     assert "hitter_unknown" not in codes(known)                     # one zone is enough
     singles = build_facts(tactic_run(tmp_path / "c"), SINGLES_RECORD, STORE)
     assert "hitter_unknown" not in codes(singles)
+
+
+def _with_attributes(out, fn):
+    """Rewrite strokes.json giving stroke ``i`` the ``attributes`` ``fn(i, stroke)`` (None = none)."""
+    doc = json.loads((out / "strokes.json").read_text(encoding="utf-8"))
+    for i, s in enumerate(doc["strokes"]):
+        attrs = fn(i, s)
+        if attrs is not None:
+            s["attributes"] = attrs
+    (out / "strokes.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+HAND_IDS = ("hand.n", "hand.backhand_share", "hand.backhand_share_pressed",
+            "hand.around_head_rear_share")
+
+
+def test_hand_facts_ok_and_never_validated(tmp_path, no_weights):
+    out = tactic_run(tmp_path, n=22)
+    # lower smashes: 5 of 22 backhand; upper lifts: all backhand
+    _with_attributes(out, lambda i, s: (
+        None if s["stroke"] == "long_serve" else
+        {"backhand": s["stroke"] == "lift" or i // 3 < 5, "around_head": False}))
+    f = fact_map(build_facts(out, SINGLES_RECORD, STORE))
+    assert f["you.hand.n"]["value"] == 22 and f["you.hand.n"]["unit"] == "count"
+    assert f["you.hand.n"]["status"] == "ok"
+    assert f["you.hand.backhand_share"]["status"] == "ok"
+    assert f["you.hand.backhand_share"]["value"] == round(5 / 22, 3)
+    assert f["opponent.hand.backhand_share"]["value"] == 1.0
+    assert f["you.hand.backhand_share"]["unit"] == "share"
+    for who in ("you", "opponent"):
+        for key in HAND_IDS:
+            assert f[f"{who}.{key}"]["validated"] is False
+
+
+def test_hand_facts_insufficient_and_no_data_per_fact(tmp_path, no_weights):
+    out = tactic_run(tmp_path, n=6)
+    _with_attributes(out, lambda i, s: None if s["stroke"] == "long_serve" else
+                     {"backhand": True})
+    f = fact_map(build_facts(out, SINGLES_RECORD, STORE))
+    share = f["you.hand.backhand_share"]
+    assert share["status"] == "insufficient" and share["reason"] == "few_attempts"
+    assert share["value"] == 1.0
+    assert f["you.hand.n"]["status"] == "insufficient" and f["you.hand.n"]["reason"] == "few_attempts"
+    assert f["you.hand.n"]["value"] == 6
+    # nothing in this run is a pressed or around-head shot: its own n is 0
+    for key in ("hand.backhand_share_pressed", "hand.around_head_rear_share"):
+        assert f[f"you.{key}"]["status"] == "unavailable" and f[f"you.{key}"]["reason"] == "no_data"
+        assert f[f"you.{key}"]["validated"] is False
+
+
+def test_hand_facts_without_attributes_are_no_data_and_rest_unchanged(tmp_path, no_weights):
+    pack = build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE)
+    f = fact_map(pack)
+    for who in ("you", "opponent"):
+        for key in HAND_IDS:
+            fact = f[f"{who}.{key}"]
+            assert fact["status"] == "unavailable" and fact["reason"] == "no_data"
+            assert fact["value"] is None and fact["validated"] is False
+    assert f["you.eff.smash"]["status"] == "ok" and f["match.openings.complete"]["value"] == 6
+    json.dumps(pack)
+
+
+def test_hand_group_failure_does_not_break_the_rest(tmp_path, no_weights, monkeypatch):
+    from badminton_analysis.strategy import shots
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(shots, "hand_stats", boom)
+    f = fact_map(build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE))
+    assert "you.hand.n" not in f
+    assert f["you.eff.smash"]["status"] == "ok" and f["match.openings.complete"]["value"] == 6
+
+
+def test_doubles_hand_facts_use_team_ids_and_are_unavailable(tmp_path, no_weights):
+    out = make_doubles_run(tmp_path, frames=60)
+    f = fact_map(build_facts(out, {"format": "doubles"}, STORE))
+    for fid, fact in f.items():
+        if ".hand." in fid:
+            assert fid.startswith("team.") and fact["status"] == "unavailable"

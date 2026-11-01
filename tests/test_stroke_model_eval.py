@@ -416,3 +416,74 @@ def test_promote_and_rollback_hold_the_marker_only_while_swapping(tmp_path, monk
     assert [m["pid"] for m in seen] == [os.getpid()] * 2
     assert [m["what"] for m in seen] == ["promote", "rollback"]
     assert not (w / me.SWAP_MARKER).exists()
+
+
+# ---- forehand / backhand gate
+def _hand_labels(labels_dir, stem, rows, split="test"):
+    _write(labels_dir / f"{stem}.json", {"schema": 1, "revision": 1, "split": split, "labels": [
+        dict({"time_sec": t, "hitter": "lower", "stroke": s, "kind": k}, **({} if b is None else {"backhand": b}))
+        for t, s, k, b in rows]})
+
+
+def test_test_hands_only_label_rows_with_a_hand(tmp_path):
+    res, lab = tmp_path / "res", tmp_path / "lab"
+    _result(res, "T")
+    _hand_labels(lab, "T", [(2.0, "smash", "label", True), (4.0, "lift", "label", None), (6.0, "lift", "added", True)])
+    got = me.test_hands(lab, res)
+    assert [(s, [h["frame"] for h in hits], truth) for s, hits, truth in got] == [("T", [60], [True])]
+    assert [s for s, _, _ in me.test_shots(lab, res)] == ["T"]
+
+
+def _fake_heads(monkeypatch, answers):
+    monkeypatch.setattr(sc, "load_classifier", lambda path: (str(path), {}, {}))
+    monkeypatch.setattr(sc, "classify_hits", lambda sig, hits, model, meta: [
+        dict({"frame": h["frame"], "stroke": "smash"}, **({"attributes": {"backhand": answers[model][h["frame"]]}}
+                                                          if answers[model].get(h["frame"], "none") != "none" else {}))
+        for h in hits])
+
+
+def test_score_hands_counts_abstention_and_missing_heads_as_wrong(tmp_path, monkeypatch):
+    res, lab = tmp_path / "res", tmp_path / "lab"
+    _result(res, "T")
+    _hand_labels(lab, "T", [(2.0, "smash", "label", True), (4.0, "lift", "label", False), (6.0, "lift", "label", True)])
+    hands = me.test_hands(lab, res)
+    _fake_heads(monkeypatch, {"good.pt": {60: True, 120: False, 180: True},
+                              "shy.pt": {60: True, 120: None, 180: True}, "old.pt": {}})
+    assert me.score_hands("good.pt", hands, res) == {"n": 3, "correct": 3, "accuracy": 1.0, "abstained": 0}
+    shy = me.score_hands("shy.pt", hands, res)
+    assert shy["correct"] == 2 and shy["abstained"] == 1 and shy["accuracy"] == 2 / 3
+    old = me.score_hands("old.pt", hands, res)
+    assert old["accuracy"] == 0.0 and old["abstained"] == 3
+    assert me.score_hands("good.pt", [], res)["accuracy"] is None
+
+
+def _hm(acc, n=me.MIN_HAND_SHOTS):
+    return {"n": n, "accuracy": acc}
+
+
+def test_decide_rejects_lower_backhand_accuracy_only_with_enough_shots():
+    cand, live = dict(_metrics(0.8), backhand=_hm(0.7)), dict(_metrics(0.8), backhand=_hm(0.8))
+    keep, reason = me.decide(cand, live)
+    assert keep is False and reason == {"code": "lower_backhand_accuracy", "candidate": 0.7, "live": 0.8}
+    assert "forehand/backhand" in me.describe(reason)
+    assert me.decide(dict(cand, backhand=_hm(0.8)), live)[0] is True
+    assert me.decide(dict(cand, backhand=_hm(0.7, 19)), live)[0] is True        # too few on the candidate side
+    assert me.decide(cand, dict(live, backhand=_hm(0.8, 19)))[0] is True        # too few on the live side
+    assert me.decide(cand, _metrics(0.8))[0] is True                            # live was not scored on hands
+    assert me.decide(dict(cand, backhand=_hm(0.1)), dict(live, backhand=_hm(0.1)))[0] is True
+    assert me.decide(dict(cand, backhand=_hm(0.9), accuracy=0.7), live)[1]["code"] == "lower_accuracy"
+
+
+def test_decide_rejects_lost_attributes_but_unknown_never_fires():
+    live = dict(_metrics(0.8), attributes=["backhand", "above_net"])
+    cand = dict(_metrics(0.9), attributes=["backhand"])
+    keep, reason = me.decide(cand, live)
+    assert keep is False and reason == {"code": "lost_attributes", "missing": ["above_net"]}
+    assert "above_net" in me.describe(reason)
+    assert me.decide(dict(cand, attributes=[]), live)[1]["missing"] == ["backhand", "above_net"]
+    assert me.decide(dict(cand, attributes=["above_net", "backhand", "around_head"]), live)[0] is True
+    assert me.decide(dict(_metrics(0.9), attributes=[]), dict(_metrics(0.8), attributes=[]))[0] is True
+    assert me.decide(_metrics(0.9), live)[0] is True                       # candidate unknown
+    assert me.decide(cand, _metrics(0.8))[0] is True                       # live unknown
+    # a type-accuracy loss is still reported first
+    assert me.decide(dict(cand, accuracy=0.7), live)[1]["code"] == "lower_accuracy"

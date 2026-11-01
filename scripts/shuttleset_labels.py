@@ -76,6 +76,17 @@ def _f(value):
         return float("nan")
 
 
+def _flag(value):
+    """ShuttleSet flag columns: 1 / 1.0 = true, blank (or anything else) = false."""
+    return 1 if _f(value) == 1.0 else 0
+
+
+def _above_net(value):
+    """hit_height: 1 = above the net, 2 = below, blank or unparsable = -1 (unknown)."""
+    v = _f(value)
+    return 1 if v == 1.0 else 0 if v == 2.0 else -1
+
+
 def parse_match_hits(match_dir, corners):
     hits = []
     for set_no in (1, 2, 3):
@@ -93,7 +104,10 @@ def parse_match_hits(match_dir, corners):
                              "frame30": int(round(frame)), "t": frame / LABEL_FPS,
                              "player": row.get("player"), "type_raw": raw,
                              "stroke7": stroke7_of(raw),
-                             "side": hitter_side(_f(row.get("player_location_y")), corners)})
+                             "side": hitter_side(_f(row.get("player_location_y")), corners),
+                             "backhand": _flag(row.get("backhand")),
+                             "around_head": _flag(row.get("aroundhead")),
+                             "above_net": _above_net(row.get("hit_height"))})
     return sorted(hits, key=lambda h: h["frame30"])
 
 

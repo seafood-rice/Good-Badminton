@@ -165,6 +165,17 @@ _SIDE = {
     "opening_win_point": ("{W} openings won, and how many of those points were won "
                           "(n = points with a known winner): {v}.",
                           "{W}取得开局优势的回合中赢下该分的情况（n 为已知胜者的回合数）：{v}。"),
+    "hand.n": ("{W} non-serve shots with a detected forehand or backhand (model estimate, not "
+               "validated): {v}.", "{W}已识别正手或反手的非发球击球数（模型估计，未经验证）：{v}。"),
+    "hand.backhand_share": ("{W} share of backhand shots (model estimate, not validated): {v}.",
+                            "{W}反手击球占比（模型估计，未经验证）：{v}。"),
+    "hand.backhand_share_pressed": (
+        "{W} share of backhand shots when under pressure, after an attacking or rushing shot "
+        "(model estimate, not validated): {v}.",
+        "{W}在对手进攻或压迫后的反手击球占比（模型估计，未经验证）：{v}。"),
+    "hand.around_head_rear_share": (
+        "{W} share of rear-court shots hit around the head (model estimate, not validated): {v}.",
+        "{W}后场击球中头顶后（绕头）击球的占比（模型估计，未经验证）：{v}。"),
     "pulled.n": ("{W} shots counted for the pull zones: {v}.", "{W}用于统计调动区域的击球数：{v}。"),
 }
 for _z, (_en, _zh) in {"front": ("front court", "前场"), "mid": ("mid court", "中场"),
@@ -277,7 +288,8 @@ def _candidates(pack, fmt):
                           "match.short_rally_share", "match.long_rally_share",
                           "match.tempo_shots_per_sec", "match.degraded_share"],
         "shot_selection": ["you.mix.attack_share", "you.mix.neutral_share",
-                           "you.mix.defence_share", "you.serve.short_share", "you.net_share"],
+                           "you.mix.defence_share", "you.serve.short_share", "you.net_share",
+                           "you.hand.backhand_share"],
         "movement": ["you.distance_m", "you.mean_speed_mps", "you.zone.front", "you.zone.mid",
                      "you.zone.rear", "you.recovery_median_sec"],
         "patterns": ["you.seq2_top", "you.seq3_top", "you.after_lift", "you.last_stroke"],
@@ -288,7 +300,8 @@ def _candidates(pack, fmt):
         "plan": ["you.technique_weak", "opponent.pulled.back", "you.recovery_median_sec",
                  "you.mix.defence_share", "you.after_lift"],
         "scouting": ["opponent.mix.attack_share", "opponent.last_stroke", "you.pulled.back",
-                     "opponent.zone.rear", "opponent.seq2_top"]}
+                     "opponent.zone.rear", "opponent.seq2_top",
+                     "opponent.hand.backhand_share_pressed"]}
 
 
 def _picks(pack, ids, lo, hi, lang):

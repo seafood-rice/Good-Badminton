@@ -109,6 +109,8 @@ test('codes with numbers are rendered in the UI language; plain strings pass thr
   const tl = { code: 'train_labels', need: 50, have: 3 };
   assert.equal(describeCode(tl, 'en'), '47 more train labels needed (50 new in total)');
   assert.match(describeCode(tl, 'zh'), /还差 47 个训练标注/);
+  assert.equal(describeCode({ code: 'lost_attributes', missing: ['backhand', 'above_net'] }, 'en'),
+    'The new model lacks attribute outputs the current model has: backhand, above_net');
   assert.equal(describeCode({ code: 'accuracy', value: 0.81, bar: 0.85 }, 'en'), '7-group accuracy 81% is below the bar 85%');
   assert.match(describeCode({ code: 'lower_accuracy', candidate: 0.5, live: 0.8 }, 'zh'), /50%.*80%/);
   assert.equal(describeCode('old text', 'en'), 'old text');

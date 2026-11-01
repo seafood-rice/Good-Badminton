@@ -23,6 +23,7 @@ export function describeCode(code, lang) {
   const params = { ...c };
   for (const k of Object.keys(c)) if (c[k] === null || c[k] === undefined) params[k] = '?'; // a number the server lacked
   for (const k of PCT_PARAMS) if (isNum(c[k])) params[k] = pct(c[k]);
+  if (Array.isArray(c.missing)) params.missing = c.missing.join(', ');
   if (isNum(c.need) && isNum(c.have)) params.more = Math.max(0, c.need - c.have);
   else if ('need' in c || 'have' in c) params.more = '?';
   const text = t(key, lang, params);

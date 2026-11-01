@@ -52,3 +52,60 @@ def test_load_rejects_missing_sidecar(tmp_path):
 def test_predict_probs_empty():
     m = smod.StrokeNet(INPUT_DIM, hidden=16, levels=2)
     assert smod.predict_probs(m, np.zeros((0, WINDOW_STEPS, INPUT_DIM), np.float32)).shape == (0, 12)
+
+
+def test_schema_one_sidecar_loads_without_heads(tmp_path):
+    m = smod.StrokeNet(INPUT_DIM, hidden=16, levels=2)
+    path = tmp_path / "s.pt"
+    smod.save_stroke_model(m, _meta(schema=1), path)
+    sidecar = tmp_path / "s.json"
+    meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    meta.pop("attributes"), meta.pop("attribute_min_confidence")
+    sidecar.write_text(json.dumps(meta), encoding="utf-8")
+    m2, loaded = smod.load_stroke_model(path)
+    assert loaded["attributes"] == [] and m2.n_attrs == 0
+    x = np.zeros((2, WINDOW_STEPS, INPUT_DIM), np.float32)
+    assert smod.predict_attrs(m2, x) is None and smod.predict_probs(m2, x).shape == (2, 12)
+
+
+def test_schema_two_round_trip_with_heads(tmp_path):
+    m = smod.StrokeNet(INPUT_DIM, hidden=16, levels=2, n_attrs=2).eval()
+    path = tmp_path / "s.pt"
+    smod.save_stroke_model(m, smod.base_meta(16, 2, 0.4, attributes=["backhand", "above_net"]), path)
+    m2, meta = smod.load_stroke_model(path)
+    assert meta["schema"] == 2 and meta["attributes"] == ["backhand", "above_net"]
+    assert meta["attribute_min_confidence"] == 0.6
+    x = np.random.default_rng(0).normal(size=(3, WINDOW_STEPS, INPUT_DIM)).astype(np.float32)
+    a = smod.predict_attrs(m2, x)
+    assert a.shape == (3, 2) and ((a > 0) & (a < 1)).all()
+    np.testing.assert_allclose(a, smod.predict_attrs(m, x), atol=1e-6)
+    assert smod.predict_attrs(m2, x[:0]).shape == (0, 2)
+
+
+def test_forward_keeps_type_logits_only_and_forward_all_adds_attrs():
+    m = smod.StrokeNet(INPUT_DIM, hidden=16, levels=2, n_attrs=3).eval()
+    x = torch.zeros(3, WINDOW_STEPS, INPUT_DIM)
+    logits, attrs = m.forward_all(x)
+    assert m(x).shape == (3, len(STROKE_TYPES)) and torch.equal(m(x), logits)
+    assert attrs.shape == (3, 3)
+    assert smod.StrokeNet(INPUT_DIM, hidden=16, levels=2).forward_all(x)[1] is None
+
+
+def test_load_rejects_unknown_schema_three(tmp_path):
+    path = tmp_path / "s.pt"
+    smod.save_stroke_model(smod.StrokeNet(INPUT_DIM, hidden=16, levels=2), _meta(schema=3), path)
+    with pytest.raises(smod.StrokeModelError, match="incompatible"):
+        smod.load_stroke_model(path)
+
+
+@pytest.mark.parametrize("over", [{"attributes": ["foo"]}, {"attributes": ["backhand", "backhand"]},
+                                  {"attributes": "backhand"}, {"attributes": [1]},
+                                  {"attributes": ["backhand"], "attribute_min_confidence": "high"},
+                                  {"attributes": ["backhand"], "attribute_min_confidence": True},
+                                  {"attributes": ["backhand"], "attribute_min_confidence": 0.3},
+                                  {"attributes": ["backhand"], "attribute_min_confidence": 1.5}])
+def test_schema_two_rejects_bad_attribute_fields(tmp_path, over):
+    path = tmp_path / "s.pt"
+    smod.save_stroke_model(smod.StrokeNet(INPUT_DIM, hidden=16, levels=2, n_attrs=1), _meta(**over), path)
+    with pytest.raises(smod.StrokeModelError, match="attribute"):
+        smod.load_stroke_model(path)

@@ -7,7 +7,7 @@ classifier: without a usable model every hit is "unknown" and classifier is null
 """
 from collections import Counter
 
-from .stroke_model import StrokeModelError, file_sha256, load_stroke_model, predict_probs  # noqa: F401
+from .stroke_model import StrokeModelError, file_sha256, load_stroke_model, predict_attrs, predict_probs  # noqa: F401
 from .stroke_types import STROKE_TYPES, UNKNOWN, group_of
 from .stroke_windows import extract
 
@@ -19,7 +19,8 @@ def load_classifier(path):
     info = {"version": meta.get("created_utc") or "unversioned",
             "weights_sha256": file_sha256(path),
             "validated_on_owner_footage": bool(meta.get("validated_on_owner_footage")),
-            "unknown_threshold": float(meta["unknown_threshold"])}
+            "unknown_threshold": float(meta["unknown_threshold"]),
+            "attributes": list(meta.get("attributes") or [])}
     return model, meta, info
 
 
@@ -39,6 +40,9 @@ def classify_hits(sig, hits, model, meta):
     hits = list(hits)
     X, ok = extract(sig, hits)
     probs = predict_probs(model, X[ok]) if ok.any() else None
+    names = list(meta.get("attributes") or [])
+    attr_p = predict_attrs(model, X[ok]) if ok.any() and names else None
+    attr_min = float(meta.get("attribute_min_confidence", 0.6))
     thr = float(meta["unknown_threshold"])
     labels, j = [], 0
     for k, h in enumerate(hits):
@@ -49,7 +53,14 @@ def classify_hits(sig, hits, model, meta):
         j += 1
         best = int(p.argmax())
         conf = round(float(p[best]), 4)
-        labels.append(_label(h, STROKE_TYPES[best] if conf >= thr else UNKNOWN, conf))
+        label = _label(h, STROKE_TYPES[best] if conf >= thr else UNKNOWN, conf)
+        if attr_p is not None:
+            q = attr_p[j - 1]
+            c = {n: round(float(max(v, 1.0 - v)), 4) for n, v in zip(names, q)}
+            label["attributes"] = {n: (bool(v >= 0.5) if c[n] >= attr_min else None)
+                                   for n, v in zip(names, q)}
+            label["attribute_confidence"] = c
+        labels.append(label)
     return sorted(labels, key=lambda l: l["frame"])
 
 
