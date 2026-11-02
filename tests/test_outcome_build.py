@@ -321,3 +321,25 @@ def test_decode_match_drops_clamps_of_unclamped_parts(tmp_path):
     free, _ = ob._decode_match(out, run, segments, auto, labels, NO_ATHLETES, model, tmp_path / "labels",
                                unclamped={run.stem})
     assert kept[1]["upper"] == 1.0 and free[1]["upper"] < 1.0
+
+
+def _static_object_run(tmp_path, n, spot=(3.0, 18.0)):
+    # n rallies, each ending with the shuttle "resting" at the same spot ``spot``
+    segs = [(i + 1, 10.0 * i + 1.0, 10.0 * i + 6.0) for i in range(n)]
+    hits = [(10.0 * i + 5.5, "lower") for i in range(n)]
+    return make_run(tmp_path / f"s{n}", segs, hits=hits,
+                    landings=[(10.0 * i + 6.0, *spot) for i in range(n)])
+
+
+def test_e2_ignores_a_floor_point_far_off_court(tmp_path):
+    segments, auto = ob.segment_evidence(_static_object_run(tmp_path, 1, spot=(3.0, 18.0)))
+    assert auto[1]["evidence"]["landing"] is None and auto[1]["decision"]["rule"] == "no_landing"
+    _, near = ob.segment_evidence(_static_object_run(tmp_path, 1, spot=(3.0, 14.2)))
+    assert near[1]["evidence"]["landing"]["reason"] == "outside"      # 0.8 m out: a real out
+
+
+def test_e2_ignores_one_spot_repeated_in_three_rallies(tmp_path):
+    _, two = ob.segment_evidence(_static_object_run(tmp_path, 2, spot=(3.0, 3.0)))
+    assert all(row["evidence"]["landing"] is not None for row in two.values())
+    _, three = ob.segment_evidence(_static_object_run(tmp_path, 3, spot=(3.0, 3.0)))
+    assert all(row["evidence"]["landing"] is None for row in three.values())

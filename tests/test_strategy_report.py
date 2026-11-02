@@ -470,3 +470,23 @@ def test_fallback_uses_hand_facts_for_shot_selection_and_scouting():
     assert scout[0]["evidence"] == ["opponent.hand.backhand_share_pressed"]
     zh = fallback_sections(pack, "zh", "singles")
     assert "反手" in zh["your_game"]["shot_selection"]["claims"][0]["text"]
+
+
+def test_depth_fact_templates_in_both_languages_marked_as_estimates():
+    from badminton_analysis.strategy.report import _sentence
+    for who in ("you", "opponent"):
+        for key in ("n", "front_share", "mid_share", "rear_share", "lift_clear_rear_share",
+                    "drop_net_front_share"):
+            fact = _hand_fact(f"{who}.depth.{key}")
+            en, zh = _sentence(fact, "en"), _sentence(fact, "zh")
+            assert "estimate" in en and "估计" in zh and "{" not in en + zh
+
+
+def test_fallback_uses_depth_facts_for_shot_selection_and_scouting():
+    pack = {"format": "singles", "facts": [
+        _hand_fact("you.depth.lift_clear_rear_share", 0.3),
+        _hand_fact("opponent.depth.rear_share", 0.5)]}
+    sections = fallback_sections(pack, "en", "singles")
+    shot = sections["your_game"]["shot_selection"]["claims"]
+    assert shot[0]["evidence"] == ["you.depth.lift_clear_rear_share"] and "30%" in shot[0]["text"]
+    assert sections["scouting"]["claims"][0]["evidence"] == ["opponent.depth.rear_share"]

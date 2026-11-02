@@ -101,7 +101,7 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
   `outputs/<stem>/rally_outcomes.json` is the contract the LLM report reads. Auto labeller precision not yet
   measured: the owner labels 0009 + 0010 in the match details page (Point block), then run
   `python scripts/score_rally_outcomes.py outputs/DJI_20261024092943_0009_D outputs/DJI_20261024093729_0010_D`.
-  Auto coverage on DJI runs is ~3-7 %. Backfill older runs with `python -m badminton_analysis.outcomes.build
+  Auto coverage on DJI runs was ~3-7 %, nearly all from a static object behind the baseline; with the M2 E2 filter it is ~0 on 0003/0004. Backfill older runs with `python -m badminton_analysis.outcomes.build
   outputs/<stem>`. Next step after labels: a score-sequence decoder (HMM).
 - Stroke classifier (spec `docs/superpowers/specs/2026-10-22-unified-stroke-classifier-design.md`): owner
   accuracy bar not yet measured. Owner labels `outputs/dji-stroke-labels/LABELS.md` (0014 = test; add 1-2
@@ -109,6 +109,10 @@ merged as #13; its dead-time gap builder (`--gaps`) and the `/` -> Kestrel servi
   `scripts/score_strokes.py --split test`. First model (`weights/stroke-classifier.pt`, ShuttleSet only): Sindhu
   group accuracy 0.867, drive recall 0.49. After merge, relabel existing results with
   `python -m badminton_analysis.stroke.relabel <result_dir>`.
+- Shot landing (M2, spec `docs/superpowers/specs/2026-11-02-landing-position-depth-m2-design.md`): depth facts are
+  `validated: false`; ShuttleSet depth-band agreement 0.718 vs 0.660 feet-only (`python scripts/score_landing.py`).
+  No DJI ground truth: needs owner-marked landings. The shuttle track snaps to a still object behind the near
+  baseline on DJI runs; it is filtered (floor landings and outcome E2), so terminal floor landings are rare.
 - B11 shuttle-segmentation path is unvalidated on footage (needs an owner-run full Axelsen run).
 - `stroke/shot_boundary.py` is standalone, not wired in; no real broadcast sample exists.
 - B11 follow-ups: CLI flags in `main.py` for gate/signal pins; legacy `web_ui.html` clip button;

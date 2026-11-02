@@ -177,10 +177,22 @@ _SIDE = {
         "{W} share of rear-court shots hit around the head (model estimate, not validated): {v}.",
         "{W}后场击球中头顶后（绕头）击球的占比（模型估计，未经验证）：{v}。"),
     "pulled.n": ("{W} shots counted for the pull zones: {v}.", "{W}用于统计调动区域的击球数：{v}。"),
+    "depth.n": ("{W} shots with an estimated landing on the other half (estimate): {v}.",
+                "{W}估计出落点、且落在对方半场的击球数（估计）：{v}。"),
+    "depth.lift_clear_rear_share": (
+        "{W} lifts and clears that reached the rear court (estimate): {v}.",
+        "{W}挑球和高远球到达后场的比例（估计）：{v}。"),
+    "depth.drop_net_front_share": (
+        "{W} drops and net shots that stayed in the front court (estimate): {v}.",
+        "{W}吊球和网前球落在前场的比例（估计）：{v}。"),
 }
 for _z, (_en, _zh) in {"front": ("front court", "前场"), "mid": ("mid court", "中场"),
                        "rear": ("rear court", "后场")}.items():
     _SIDE[f"zone.{_z}"] = ("{W} time spent in the " + _en + ": {v}.", "{W}在" + _zh + "的时间占比：{v}。")
+for _z, (_en, _zh) in {"front": ("front court", "前场"), "mid": ("mid court", "中场"),
+                       "rear": ("rear court", "后场")}.items():
+    _SIDE[f"depth.{_z}_share"] = ("{W} shots landing in the other player's " + _en + " (estimate): {v}.",
+                                  "{W}落在对方" + _zh + "的击球占比（估计）：{v}。")
 for _z, (_en, _zh) in {"left": ("left", "左侧"), "centre": ("centre", "中路"),
                        "right": ("right", "右侧")}.items():
     _SIDE[f"zone.{_z}"] = ("{W} time spent in the " + _en + " of the court: {v}.",
@@ -289,7 +301,7 @@ def _candidates(pack, fmt):
                           "match.tempo_shots_per_sec", "match.degraded_share"],
         "shot_selection": ["you.mix.attack_share", "you.mix.neutral_share",
                            "you.mix.defence_share", "you.serve.short_share", "you.net_share",
-                           "you.hand.backhand_share"],
+                           "you.hand.backhand_share", "you.depth.lift_clear_rear_share"],
         "movement": ["you.distance_m", "you.mean_speed_mps", "you.zone.front", "you.zone.mid",
                      "you.zone.rear", "you.recovery_median_sec"],
         "patterns": ["you.seq2_top", "you.seq3_top", "you.after_lift", "you.last_stroke"],
@@ -301,7 +313,7 @@ def _candidates(pack, fmt):
                  "you.mix.defence_share", "you.after_lift"],
         "scouting": ["opponent.mix.attack_share", "opponent.last_stroke", "you.pulled.back",
                      "opponent.zone.rear", "opponent.seq2_top",
-                     "opponent.hand.backhand_share_pressed"]}
+                     "opponent.hand.backhand_share_pressed", "opponent.depth.rear_share"]}
 
 
 def _picks(pack, ids, lo, hi, lang):
