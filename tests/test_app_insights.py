@@ -334,3 +334,35 @@ def test_overview_doubles_no_scope_lists_both_runs(lib):
     assert {f["code"] for f in body["findings"]} == {"doubles_identity_degraded"}
     text = json.dumps(body)
     assert str(tmp_path).replace("\\", "/") not in text and str(tmp_path) not in text
+
+
+# ------------------------------------------------------------- landings route (landing spec 6)
+
+def test_landings_route_returns_the_shot_landings(lib):
+    c, tmp_path, videos, *_ = lib
+    _run(tmp_path, videos, STEM_A)
+    res = c.get("/api/insights/video/Dji%2020260919100627%200004%20D/landings")
+    assert res.status_code == 200
+    body = res.get_json()
+    assert body["stem"] == STEM_A and body["match_format"] == "singles"
+    assert set(body) >= {"landings", "bands", "positions_ok", "shots"}
+    assert set(body["bands"]) == {"upper", "lower"}
+    assert str(tmp_path) not in res.get_data(as_text=True)
+
+
+def test_landings_route_unknown_or_traversal_is_404(lib):
+    c, tmp_path, *_ = lib
+    res = c.get("/api/insights/video/nope/landings")
+    assert res.status_code == 404
+    _assert_static_bilingual(res, tmp_path)
+    assert c.get("/api/insights/video/..%2Fsecret/landings").status_code == 404
+
+
+def test_landings_route_junk_files_do_not_fail(lib):
+    c, tmp_path, videos, outputs, _ = lib
+    out = outputs / "junk"
+    out.mkdir()
+    for name in ("strokes.json", "rally_segments.json", "metadata.json", "shuttle_trajectory.json"):
+        (out / name).write_text("{nope", encoding="utf-8")
+    res = c.get("/api/insights/video/junk/landings")
+    assert res.status_code == 200 and res.get_json()["landings"] == []

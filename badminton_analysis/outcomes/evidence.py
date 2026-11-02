@@ -5,9 +5,12 @@ E2 landing: the cleaned shuttle track after the last hit, its first still run
 (the shuttle on the floor) projected to court metres, judged in / out / net.
 E3 ``next_server``: the side of the next rally's first hit after a pause.
 
-Pure functions on already-loaded data; nothing here raises for bad input.
+Pure functions on already-loaded data (``load_trajectory`` reads one file); nothing here raises for
+bad input.
 """
+import json
 import math
+from pathlib import Path
 
 NET_Y = 6.7
 COURT = (6.1, 13.4)
@@ -22,6 +25,9 @@ STILL_MIN_FILL = 0.5         # a still run needs points on at least half of its 
 STILL_RADIUS_FRAC = 0.006    # a landed shuttle stays within this of the run's first point
 STILL_MIN_SEC = 0.25
 NEXT_SERVE_PAUSE_SEC = 3.0
+FLOOR_SLACK_M = 1.5          # a floor point further than this outside the court is a static object
+REPEAT_M = 0.2               # floor points this close together ...
+REPEAT_RALLIES = 3           # ... in this many rallies of one run are one static object, not landings
 
 
 def other(side):
@@ -101,6 +107,62 @@ def find_landing(points, fps, frame_h):
             return (sum(p[1] for p in run) / len(run), sum(p[2] for p in run) / len(run))
         i += 1
     return None
+
+
+def load_trajectory(out_dir):
+    """``{frame: [x, y]}`` from ``shuttle_trajectory.json``, or {} when absent / unusable."""
+    path = Path(out_dir) / "shuttle_trajectory.json"
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError, RecursionError, MemoryError):
+        return {}
+    traj = doc.get("trajectory") if isinstance(doc, dict) else None
+    if not isinstance(traj, dict):
+        return {}
+    out = {}
+    for key, point in traj.items():
+        try:
+            out[int(key)] = point
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def floor_point(trajectory, first_frame, last_frame, fps, frame_h, h, static_points=()):
+    """Court metres of the first still run of the cleaned track over ``first_frame..last_frame``, or None."""
+    if h is None or not frame_h:
+        return None
+    try:
+        frames = range(int(first_frame), int(last_frame) + 1)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    points = clean_track(trajectory, frames, frame_h, static_points)
+    image_xy = find_landing(points, fps, frame_h)
+    return to_court(h, image_xy) if image_xy else None
+
+
+def floor_plausible(xy):
+    """False for a floor point more than ``FLOOR_SLACK_M`` outside the court."""
+    x, y = xy
+    return (-FLOOR_SLACK_M <= x <= COURT[0] + FLOOR_SLACK_M
+            and -FLOOR_SLACK_M <= y <= COURT[1] + FLOOR_SLACK_M)
+
+
+def repeated(points):
+    """Indices of the floor points (one per rally, None = no point) that sit within ``REPEAT_M`` of
+    each other in ``REPEAT_RALLIES`` or more rallies: a still object the track snaps to (landing spec
+    2026-11-02 section 3), not where a shuttle landed."""
+    out = set()
+    for i, p in enumerate(points):
+        if p is None:
+            continue
+        near = sum(1 for q in points if q is not None and math.hypot(q[0] - p[0], q[1] - p[1]) <= REPEAT_M)
+        if near >= REPEAT_RALLIES:
+            out.add(i)
+    return out
 
 
 def court_homography(corners):

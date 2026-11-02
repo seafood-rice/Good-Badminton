@@ -21,6 +21,7 @@ from flask import Blueprint, jsonify, request
 
 from badminton_analysis.insights import aggregate, sidecar
 from badminton_analysis.library import athletes as libathletes
+from badminton_analysis.strategy import shots
 
 _UNKNOWN_VIDEO = {'error': '未知的视频 / unknown video'}
 _UNKNOWN_ATHLETE = {'error': '未知的运动员 / unknown athlete'}
@@ -207,6 +208,21 @@ def register(app, *, videos, outputs, athletes_path, athletes_lock, jobs, safe_s
             _log_failure('video insights', exc)
             return jsonify(_FAILED), 500
         return jsonify(doc)
+
+    @bp.route('/api/insights/video/<stem>/landings', methods=['GET'])
+    def insights_landings(stem):
+        clean = safe_stem(stem)
+        out_dir = Path(outputs()) / clean if clean is not None else None
+        if out_dir is None or not any((out_dir / m).is_file() for m in RUN_MARKERS):
+            return jsonify(_UNKNOWN_VIDEO), 404
+        try:
+            doc = shots.landings_payload(str(out_dir))
+            meta = shots.read_json(str(out_dir / 'metadata.json')) or {}
+            fmt = 'doubles' if meta.get('match_format') == 'doubles' else 'singles'
+        except Exception as exc:
+            _log_failure('landings', exc)
+            return jsonify(_FAILED), 500
+        return jsonify({'stem': clean, 'match_format': fmt, **doc})
 
     # ------------------------------------------------------------------- jobs
 

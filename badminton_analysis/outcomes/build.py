@@ -62,25 +62,7 @@ def _learned_hits(run):
 
 
 def _trajectory(out_dir):
-    """``{frame: [x, y]}`` from ``shuttle_trajectory.json``, or {} when absent / unusable."""
-    path = Path(out_dir) / "shuttle_trajectory.json"
-    if not path.is_file():
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            doc = json.load(f)
-    except (OSError, ValueError, RecursionError, MemoryError):
-        return {}
-    traj = doc.get("trajectory") if isinstance(doc, dict) else None
-    if not isinstance(traj, dict):
-        return {}
-    out = {}
-    for key, point in traj.items():
-        try:
-            out[int(key)] = point
-        except (TypeError, ValueError):
-            continue
-    return out
+    return ev.load_trajectory(out_dir)
 
 
 class _Landing:
@@ -106,27 +88,35 @@ class _Landing:
         usable = self.h is not None and self.frame_h and self.fps
         self.trajectory = _trajectory(out_dir) if usable else {}
 
-    def verdict(self, seg, last_hit, hitter):
+    def point(self, seg, last_hit):
+        """Court metres of the floor point after the last hit, or None (far off court: a static object)."""
         # Without a last hit there is no "after the last hit": a shuttle held before
         # the serve would pass for a landing.
         if not self.trajectory or last_hit is None:
             return None
         first = int(last_hit[1]) + 1
         last = int((seg["end_sec"] + ev.LANDING_AFTER_END_SEC) * self.fps)
-        points = ev.clean_track(self.trajectory, range(first, last + 1), self.frame_h, self.static)
-        image_xy = ev.find_landing(points, self.fps, self.frame_h)
-        court_xy = ev.to_court(self.h, image_xy) if image_xy else None
+        court_xy = ev.floor_point(self.trajectory, first, last, self.fps, self.frame_h, self.h, self.static)
+        return court_xy if court_xy and ev.floor_plausible(court_xy) else None
+
+    def verdict(self, court_xy, hitter):
         return ev.landing_verdict(court_xy, hitter, self.match_format) if court_xy else None
 
 
 def _auto(segments, hits, landing):
     """``{segment_id: {"decision", "ending", "evidence"}}`` for every segment."""
+    last_hits = []
+    for seg in segments:
+        inside = ev.rally_hits(hits, seg["start_sec"], seg["end_sec"])
+        last_hits.append(inside[-1] if inside else None)
+    points = [landing.point(seg, lh) for seg, lh in zip(segments, last_hits)]
+    for i in ev.repeated(points):   # one spot in many rallies: a static object, not a landing
+        points[i] = None
     out = {}
     for i, seg in enumerate(segments):
-        inside = ev.rally_hits(hits, seg["start_sec"], seg["end_sec"])
-        last_hit = inside[-1] if inside else None
+        last_hit = last_hits[i]
         hitter = last_hit[2] if last_hit else None
-        land = landing.verdict(seg, last_hit, hitter)
+        land = landing.verdict(points[i], hitter)
         server = None
         if i + 1 < len(segments) and last_hit:
             nxt = segments[i + 1]

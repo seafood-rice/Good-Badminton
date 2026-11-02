@@ -113,6 +113,7 @@ function qs(params) {
 export const endpoints = {
   overview: (q) => '/api/insights/overview' + qs({ athlete: q && q.athlete, squad: q && q.squad, range: q && q.range }),
   videoInsights: (stem) => '/api/insights/video/' + enc(stem),
+  landings: (stem) => '/api/insights/video/' + enc(stem) + '/landings',
   jobs: () => '/api/jobs',
   jobSlots: () => '/api/jobs/slots',
   cancelJob: (id) => '/api/jobs/' + enc(id) + '/cancel',
@@ -153,6 +154,8 @@ const scopeArgs = (scope, opts) => {
 export const api = {
   overview: (q, opts) => getJSON(endpoints.overview(q), opts),
   videoInsights: (stem, opts) => getJSON(endpoints.videoInsights(stem), opts),
+  // Estimated shot landings and depth bands (landing spec 2026-11-02 section 6).
+  landings: (stem, opts) => getJSON(endpoints.landings(stem), opts),
   jobs: (opts) => getJSON(endpoints.jobs(), opts),
   // {max_jobs, running:[id], queued:[id]}. cancelJob drops a queued job only; a 409 means it already started.
   jobSlots: (opts) => getJSON(endpoints.jobSlots(), opts),

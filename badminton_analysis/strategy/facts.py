@@ -898,6 +898,33 @@ def _hand_facts(table, who_of, prefix_of):
     return out
 
 
+def _depth_facts(table, who_of, prefix_of):
+    """Landing depth facts per player; estimates validated on broadcast footage only (landing spec 5)."""
+    out = []
+    for side, p in who_of.items():
+        st = shots_mod.depth_stats(table, side)
+        pre = f"{prefix_of(p)}.depth"
+        rows = (("n", st["n"], None),
+                ("front_share", st["front"], st["n"]),
+                ("mid_share", st["mid"], st["n"]),
+                ("rear_share", st["rear"], st["n"]),
+                ("lift_clear_rear_share", st["lift_clear_rear"], st["lift_clear_n"]),
+                ("drop_net_front_share", st["drop_net_front"], st["drop_net_n"]))
+        for key, num, den in rows:
+            fid = f"{pre}.{key}"
+            unit = "count" if den is None else "share"
+            count = num if den is None else den
+            if count == 0:
+                fact = _unavailable(fid, p, "no_data", unit)
+            else:
+                few = count < shots_mod.MIN_DEPTH
+                fact = _fact(fid, num if den is None else _share(num / den), p, unit,
+                             "insufficient" if few else "ok", "few_attempts" if few else None)
+            fact["validated"] = False
+            out.append(fact)
+    return out
+
+
 def _opening_facts(table, who_of, prefix_of, op):
     ids = ["match.openings.complete", "match.openings.total"]
     if not table.get("rallies"):
@@ -935,6 +962,10 @@ def _tactics(ctx, fmt, sides):
         facts.extend(eff)
         try:
             facts.extend(_hand_facts(table, who_of, prefix_of))
+        except Exception:
+            pass
+        try:
+            facts.extend(_depth_facts(table, who_of, prefix_of))
         except Exception:
             pass
         op = shots_mod.openings(table)

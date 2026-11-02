@@ -1,7 +1,8 @@
 """Per-shot table, effectiveness tally and opening table (rally tactics spec 7.1-7.4).
 
 Built from a result directory: ``strokes.json`` (owner overlay already applied),
-``rally_segments.json``, ``rally_outcomes.json`` and ``detections.jsonl``. Nothing here raises for
+``rally_segments.json``, ``rally_outcomes.json``, ``detections.jsonl``, and for landings (landing
+spec 2026-11-02) ``shuttle_trajectory.json`` and the court corners in ``metadata.json``. Nothing here raises for
 a missing or malformed file; a gap shows up as ``None`` values or empty lists. Standalone: the
 facts pack (Task 8) turns the numbers into cite-able facts.
 """
@@ -10,14 +11,13 @@ import os
 import statistics
 from collections import Counter
 
+from ..insights import landing as land
+from ..insights.landing import COURT_L, COURT_W, FRONT_M, REAR_M   # noqa: F401  (zone bands)
 from ..insights.loaders import SIDES, load_run, number
 from ..insights.movement import NET_Y
 from ..insights.rally import SHOT_PAD_SEC
+from ..outcomes import evidence as ev
 
-COURT_W = 6.1
-COURT_L = 13.4
-FRONT_M = 1.98          # depth from the net: front <= FRONT_M
-REAR_M = 4.7            # rear > REAR_M, mid in between
 FAST_SEC = 0.7          # tempo: fast < FAST_SEC
 SLOW_SEC = 1.5          # slow > SLOW_SEC
 RUSH_M = 2.5            # receiver moved >= RUSH_M ...
@@ -29,6 +29,8 @@ POS_WINDOW = 8          # frames either side of a hit when looking up a position
 MIN_ATTEMPTS = 5        # fewer attempts of a stroke is never a strength / weakness
 MIN_OPENINGS = 5        # fewer complete openings = no opening claims
 MIN_HAND = 20           # fewer shots with a known forehand/backhand = no hand claim
+MIN_DEPTH = 20          # fewer landings = no depth claim
+SHUTTLE_WINDOW = 3      # frames either side of the receiver's hit when looking up the shuttle
 MAX_ROWS = 8
 SHORT_RALLY_SEC = 9.0
 
@@ -42,7 +44,8 @@ _OUTCOME_KEYS = ("effective", "neutral", "ineffective", "unknown")
 
 # ------------------------------------------------------------------ small readers
 
-def _read_json(path):
+def read_json(path):
+    """The JSON object in ``path``, or None (absent, unreadable or not an object)."""
     try:
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)
@@ -53,7 +56,7 @@ def _read_json(path):
 
 def _segments(out_dir):
     """``(fps, [{id, start_sec, end_sec}])`` from ``rally_segments.json`` (``(None, [])`` if unusable)."""
-    doc = _read_json(os.path.join(out_dir, "rally_segments.json")) or {}
+    doc = read_json(os.path.join(out_dir, "rally_segments.json")) or {}
     fps = number(doc.get("fps"))
     fps = fps if fps and fps > 0 else None
     rows = []
@@ -78,7 +81,7 @@ def _winners(out_dir, segments):
     """``{segment id: (winner_side, owner_labelled)}`` from a schema-1 ``rally_outcomes.json``.
 
     An outcome rally maps to a segment by ``segment_id``, else by the largest time overlap."""
-    doc = _read_json(os.path.join(out_dir, OUTCOMES_FILE))
+    doc = read_json(os.path.join(out_dir, OUTCOMES_FILE))
     if not doc or doc.get("schema") != OUTCOMES_SCHEMA or not isinstance(doc.get("rallies"), list):
         return {}
     by_id = {s["id"]: s for s in segments}
@@ -105,7 +108,7 @@ def _winners(out_dir, segments):
 def _doubles_maps(out_dir):
     """``(pid -> team side, pid -> {frame: (x, y)})`` for a doubles run, else ``({}, {})``."""
     from .facts import _player_points, _team_side   # reuse the doubles identity code
-    meta = _read_json(os.path.join(out_dir, "metadata.json")) or {}
+    meta = read_json(os.path.join(out_dir, "metadata.json")) or {}
     if meta.get("match_format") != "doubles":
         return {}, {}       # singles: skip the heavy full-run load
     try:
@@ -137,7 +140,7 @@ def _doubles_maps(out_dir):
 
 def _hit_pids(out_dir):
     """``{frame: player id}`` from ``hits.json`` ``hitter_id`` (doubles; empty when unusable)."""
-    doc = _read_json(os.path.join(out_dir, "hits.json")) or {}
+    doc = read_json(os.path.join(out_dir, "hits.json")) or {}
     out = {}
     for h in doc.get("hits") if isinstance(doc.get("hits"), list) else []:
         if not isinstance(h, dict):
@@ -181,8 +184,7 @@ def zone_of(side, x, y):
 
     Depth is the distance from the net (``abs(y - 6.7)``); left/right is the player's own view
     facing the net, so the far (upper) half is mirrored."""
-    d = abs(y - NET_Y)
-    depth = "front" if d <= FRONT_M else ("rear" if d > REAR_M else "mid")
+    depth = land.depth_of(y)
     third = min(2, max(0, int(x / COURT_W * 3)))
     if side == "upper":
         third = 2 - third
@@ -237,6 +239,58 @@ def _attr(stroke, name):
     return val if isinstance(val, bool) else None
 
 
+# ------------------------------------------------------------------ landing inputs
+
+class _LandingInputs:
+    """The shuttle track, homographies, frame height and static cells of one run (landing spec 3)."""
+
+    def __init__(self, out_dir):
+        meta = read_json(os.path.join(out_dir, "metadata.json")) or {}
+        court = meta.get("court") if isinstance(meta.get("court"), dict) else {}
+        video = meta.get("video") if isinstance(meta.get("video"), dict) else {}
+        self.h = ev.court_homography(court["corners"]) if court.get("corners") else None
+        self.h_inv = land.inverse(self.h) if self.h is not None else None
+        self.frame_h = number(video.get("height"))
+        doc = read_json(os.path.join(out_dir, "rally_segments.json")) or {}
+        detection = doc.get("detection") if isinstance(doc.get("detection"), dict) else {}
+        static = detection.get("suppressed_static_shuttle")
+        cells = static.get("cells") if isinstance(static, dict) else None
+        self.static = []
+        for cell in cells if isinstance(cells, list) else []:
+            point = cell.get("point") if isinstance(cell, dict) else None
+            if isinstance(point, list) and len(point) == 2 and all(number(v) is not None for v in point):
+                self.static.append((float(point[0]), float(point[1])))
+        self.trajectory = ev.load_trajectory(out_dir) if self.h is not None else {}
+
+    def shuttle(self, frame):
+        """The shuttle's image point nearest ``frame`` within SHUTTLE_WINDOW frames, else None."""
+        for d in range(SHUTTLE_WINDOW + 1):
+            for f in ((frame,) if d == 0 else (frame - d, frame + d)):
+                p = self.trajectory.get(f)
+                if isinstance(p, (list, tuple)) and len(p) == 2 and tuple(p) != (0, 0) \
+                        and number(p[0]) is not None and number(p[1]) is not None:
+                    return (float(p[0]), float(p[1]))
+        return None
+
+    def floor(self, frame, end_sec, fps):
+        """The terminal floor landing after the hit at ``frame`` (outcome E2), or None."""
+        if not self.trajectory or not self.frame_h:
+            return None
+        last = int((end_sec + ev.LANDING_AFTER_END_SEC) * fps)
+        xy = ev.floor_point(self.trajectory, frame + 1, last, fps, self.frame_h, self.h, self.static)
+        if not xy or not ev.floor_plausible(xy):
+            return None
+        return land.make(xy[0], xy[1], "floor")
+
+
+def _drop_repeated_floors(rows):
+    """Clear floor landings that sit at one spot in REPEAT_RALLIES or more rallies (a still object
+    the track snaps to, e.g. a shuttle lying beside the court)."""
+    floors = [r for r in rows if r["landing"] and r["landing"]["source"] == "floor"]
+    for i in ev.repeated([(r["landing"]["x"], r["landing"]["y"]) for r in floors]):
+        floors[i]["landing"] = None
+
+
 # ------------------------------------------------------------------ the table
 
 def _empty(fps=None):
@@ -261,7 +315,7 @@ def _assign(t, segments):
 def build_shots(out_dir):
     out_dir = str(out_dir)
     fps, segments = _segments(out_dir)
-    doc = _read_json(os.path.join(out_dir, "strokes.json")) or {}
+    doc = read_json(os.path.join(out_dir, "strokes.json")) or {}
     raw = doc.get("strokes") if isinstance(doc.get("strokes"), list) else []
     if not fps or not segments:
         return _empty(fps)
@@ -320,6 +374,8 @@ def build_shots(out_dir):
             return None
         return _lookup(positions.get(actor), frame)
 
+    li = _LandingInputs(out_dir)
+
     shots, rallies = [], []
     for seg, hits in zip(segments, per_seg):
         hits.sort(key=lambda h: h[0])
@@ -342,6 +398,7 @@ def build_shots(out_dir):
                 "tempo_sec": tempo_sec, "tempo": tempo, "rushed_reply": None,
                 "link_broken": False, "last": k == len(hits) - 1,
                 "backhand": _attr(s, "backhand"), "around_head": _attr(s, "around_head"),
+                "landing": None,
             })
         for k in range(len(rows) - 1):
             a, b = rows[k], rows[k + 1]
@@ -349,17 +406,23 @@ def build_shots(out_dir):
             a["link_broken"] = a["hitter"] == b["hitter"] or b["time"] - a["time"] > BROKEN_GAP_SEC
             if a["link_broken"]:
                 continue
-            a["sent_to"] = b["zone"]
             p_then = where(hb[3], hb[2], ha[1])      # receiver when this shot was hit
             p_next = where(hb[3], hb[2], hb[1])      # receiver at the reply
+            lnd = land.estimate(hb[2], p_next, li.shuttle(hb[1]), li.h_inv)
+            a["landing"] = lnd
+            a["sent_to"] = (zone_of(hb[2], lnd["x"], lnd["y"])
+                            if lnd and not lnd["out"] and lnd["side"] == hb[2] else b["zone"])
             if p_then and p_next:
                 a["rushed_reply"] = (_dist(p_then, p_next) >= RUSH_M
                                      and b["time"] - a["time"] <= RUSH_SEC)
+        if rows:
+            rows[-1]["landing"] = li.floor(hits[-1][1], seg["end_sec"], fps)
         shots.extend(rows)
         win = winners.get(seg["id"])
         rallies.append({"id": seg["id"], "winner_side": win[0] if win else None,
                         "n_shots": len(rows), "complete_opening": _complete(rows, hits),
                         "owner_labelled": bool(win and win[1])})
+    _drop_repeated_floors(shots)
     return {"shots": shots, "rallies": rallies, "positions_ok": ok, "fps": fps}
 
 
@@ -461,6 +524,31 @@ def hand_stats(table, side):
     return out
 
 
+# ------------------------------------------------------------------ landing depth
+
+def depth_stats(table, side):
+    """Depth bands of ``side``'s non-serve shots that landed in court on the other half (landing spec 5).
+
+    ``lift_clear``: lifts and clears, how many reached the rear; ``drop_net``: drops and net-group
+    shots, how many stayed in the front."""
+    other = "lower" if side == "upper" else "upper"
+    out = dict.fromkeys(("n", "front", "mid", "rear", "lift_clear_n", "lift_clear_rear",
+                         "drop_net_n", "drop_net_front"), 0)
+    for s in table.get("shots") or []:
+        lnd = s.get("landing")
+        if s["hitter"] != side or _is_serve(s) or not lnd or lnd["out"] or lnd["side"] != other:
+            continue
+        out["n"] += 1
+        out[lnd["depth"]] += 1
+        if s["group"] in ("lift", "clear"):
+            out["lift_clear_n"] += 1
+            out["lift_clear_rear"] += lnd["depth"] == "rear"
+        elif s["group"] in ("drop", "net"):
+            out["drop_net_n"] += 1
+            out["drop_net_front"] += lnd["depth"] == "front"
+    return out
+
+
 # ------------------------------------------------------------------ openings
 
 def _advantage(rows):
@@ -532,3 +620,25 @@ def overview(table, out_dir):
                             if rallies else None),
         "shots_source": "labelled" if any(s["source"] == "owner" for s in shots) else "detected",
     }
+
+
+# ------------------------------------------------------------------ landing map (API)
+
+def landings_payload(out_dir):
+    """``{"landings": [...], "bands": {side: {n, front, mid, rear}}}`` for the shot-landing map (spec 6).
+
+    ``bands`` counts every in-court landing on the other half, serves included (the map shows them)."""
+    table = build_shots(out_dir)
+    landings = []
+    bands = {side: {"n": 0, "front": 0, "mid": 0, "rear": 0} for side in SIDES}
+    for s in table["shots"]:
+        lnd = s.get("landing")
+        if not lnd:
+            continue
+        landings.append({"rally": s["rally"], "time": s["time"], "hitter": s["hitter"],
+                         "stroke": s["stroke"], "group": s["group"], **lnd})
+        if not lnd["out"] and lnd["side"] != s["hitter"]:
+            bands[s["hitter"]]["n"] += 1
+            bands[s["hitter"]][lnd["depth"]] += 1
+    return {"landings": landings, "bands": bands, "positions_ok": table["positions_ok"],
+            "shots": len(table["shots"])}

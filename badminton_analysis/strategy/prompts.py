@@ -87,7 +87,11 @@ _TACTICS = {
         "match.openings.complete is insufficient, make no claim about openings. <p>.hand.* = "
         "forehand/backhand shares (backhand_share_pressed = after the opponent's attacking or "
         "rushing shot; around_head_rear_share = rear-court shots hit around the head). They are "
-        "model estimates, not validated: word them as estimates and never as a firm weakness."),
+        "model estimates, not validated: word them as estimates and never as a firm weakness. "
+        "<p>.depth.* = where that player's shots landed on the other half (front / mid / rear "
+        "shares; lift_clear_rear_share = lifts and clears that reached the rear; "
+        "drop_net_front_share = drops and net shots that stayed in the front). They are "
+        "estimates from the receiver's position: word them as estimates."),
     "zh": (
         "回合战术：<p>.eff.<stroke> = 该球员这种击球的结果（有效、中性、无效、未知，n 为次数）；"
         "match.openings.*、<p>.openings.*、<p>.opening_win_point = 每分前三拍的情况。"
@@ -96,7 +100,10 @@ _TACTICS = {
         "应写“数据不足”。若 match.openings.complete 为 insufficient，不要对开局下结论。"
         "<p>.hand.* = 正手/反手占比（backhand_share_pressed = 对手进攻或压迫之后；"
         "around_head_rear_share = 后场击球中的头顶后击球）。这些是模型估计，未经验证："
-        "请以“估计”表述，不要当作确定的不足。"),
+        "请以“估计”表述，不要当作确定的不足。"
+        "<p>.depth.* = 该球员的击球落在对方半场的位置（前场/中场/后场占比；"
+        "lift_clear_rear_share = 挑球和高远球到达后场的比例；drop_net_front_share = 吊球和网前球"
+        "落在前场的比例）。这些根据接球者位置估计：请以“估计”表述。"),
 }
 
 _SYSTEM_EN = (

@@ -575,3 +575,40 @@ def test_doubles_hand_facts_use_team_ids_and_are_unavailable(tmp_path, no_weight
     for fid, fact in f.items():
         if ".hand." in fid:
             assert fid.startswith("team.") and fact["status"] == "unavailable"
+
+
+DEPTH_IDS = ("depth.n", "depth.front_share", "depth.mid_share", "depth.rear_share",
+             "depth.lift_clear_rear_share", "depth.drop_net_front_share")
+
+
+def test_depth_facts_from_landings_never_validated(tmp_path, no_weights):
+    # the upper lifts land at the lower player's feet; the lower serve is not counted and the
+    # rally-ending smash has no floor landing (no shuttle track)
+    f = fact_map(build_facts(tactic_run(tmp_path, n=22), SINGLES_RECORD, STORE))
+    n = f["opponent.depth.n"]
+    assert (n["value"], n["unit"], n["status"]) == (22, "count", "ok")
+    shares = [f[f"opponent.depth.{b}_share"]["value"] for b in ("front", "mid", "rear")]
+    assert sum(shares) == pytest.approx(1.0) and f["opponent.depth.mid_share"]["unit"] == "share"
+    assert f["opponent.depth.lift_clear_rear_share"]["status"] == "ok"
+    assert f["opponent.depth.drop_net_front_share"]["reason"] == "no_data"
+    assert f["you.depth.n"]["status"] == "unavailable" and f["you.depth.n"]["reason"] == "no_data"
+    for who in ("you", "opponent"):
+        for key in DEPTH_IDS:
+            assert f[f"{who}.{key}"]["validated"] is False
+
+
+def test_depth_facts_insufficient_below_twenty(tmp_path, no_weights):
+    f = fact_map(build_facts(tactic_run(tmp_path, n=6), SINGLES_RECORD, STORE))
+    for key in ("depth.n", "depth.mid_share", "depth.lift_clear_rear_share"):
+        fact = f[f"opponent.{key}"]
+        assert fact["status"] == "insufficient" and fact["reason"] == "few_attempts"
+
+
+def test_depth_group_failure_does_not_break_the_rest(tmp_path, no_weights, monkeypatch):
+    from badminton_analysis.strategy import shots
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(shots, "depth_stats", boom)
+    f = fact_map(build_facts(tactic_run(tmp_path), SINGLES_RECORD, STORE))
+    assert "you.depth.n" not in f and f["you.eff.smash"]["status"] == "ok"

@@ -509,3 +509,130 @@ def test_hand_stats_pressed_by_a_rushed_reply(tmp_path):
 def test_hand_stats_without_attributes_is_all_zero(tmp_path):
     table = build_shots(make(tmp_path, [(seq(1.0, [(L, "lift"), (U, "smash")]), None)]))
     assert set(S.hand_stats(table, L).values()) == {0}
+
+
+# ------------------------------------------------------------------ landings (landing spec 2026-11-02)
+
+# Image = court metres x 100 (shifted by 50, 20); a 1080-high frame.
+LAND_CORNERS = [[50, 20], [660, 20], [660, 1360], [50, 1360]]
+
+
+def _land_run(tmp_path, shots, *, traj=None, name="land", groups=None):
+    out = make(tmp_path, [(shots, None)], name=name)
+    (out / "metadata.json").write_text(json.dumps({"court": {"corners": LAND_CORNERS},
+                                                   "video": {"height": 1080, "fps": FPS}}))
+    if traj is not None:
+        (out / "shuttle_trajectory.json").write_text(
+            json.dumps({"key": "x", "trajectory": {str(f): p for f, p in traj.items()}}))
+    if groups:
+        doc = json.loads((out / "strokes.json").read_text())
+        for s, g in zip(doc["strokes"], groups):
+            s["group"] = g
+        (out / "strokes.json").write_text(json.dumps(doc))
+    return out
+
+
+def test_landing_from_receiver_feet_and_reach(tmp_path):
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "clear")]))["shots"]
+    lnd = rows[0]["landing"]
+    # the upper receiver stands at (3.0, 4.0); no shuttle track: feet only, 0.6 m towards the net
+    assert lnd == {"x": 3.0, "y": 4.6, "side": "upper", "depth": "mid", "source": "feet", "out": False}
+    assert rows[0]["sent_to"] == zone_of(U, 3.0, 4.6)
+    assert rows[1]["landing"] is None                     # last shot, no track: no floor landing
+
+
+def test_landing_width_from_the_shuttle_column(tmp_path):
+    traj = {200: [50 + 510, 300]}                         # at the reply (frame 200): column x = 5.1 m
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "clear")], traj=traj))["shots"]
+    assert rows[0]["landing"]["source"] == "shuttle_feet" and rows[0]["landing"]["x"] == 5.1
+    assert rows[0]["sent_to"]["side"] == "left"           # upper half is mirrored
+
+
+def test_landing_shuttle_lookup_window_and_missing_points(tmp_path):
+    traj = {197: [50 + 510, 300], 200: [0, 0], 199: None}
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "clear")], traj=traj))["shots"]
+    assert rows[0]["landing"]["x"] == 5.1                 # 3 frames away, [0, 0] and null skipped
+    far = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "clear")],
+                                traj={196: [560, 300]}, name="far"))["shots"]
+    assert far[0]["landing"]["source"] == "feet"
+
+
+def test_no_landing_on_a_broken_link_or_without_positions(tmp_path):
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, L, "clear"), (6.0, U, "lift")]))
+    assert [r["landing"] for r in rows["shots"]] == [None, None, None]
+    out = make(tmp_path, [([(1.0, L, "clear"), (2.0, U, "clear")], None)], positions=False, name="np")
+    assert build_shots(out)["shots"][0]["landing"] is None
+
+
+def test_terminal_floor_landing(tmp_path):
+    traj = {f: [350, 1220] for f in range(201, 260)}       # still on the floor after the last hit
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "smash")], traj=traj))["shots"]
+    assert rows[1]["landing"] == {"x": 3.0, "y": 12.0, "side": "lower", "depth": "rear",
+                                  "source": "floor", "out": False}
+    out_traj = {f: [20, 1220] for f in range(201, 260)}    # beside the court
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "smash")], traj=out_traj,
+                                 name="o"))["shots"]
+    assert rows[1]["landing"]["out"] is True and rows[1]["landing"]["depth"] is None
+
+
+def test_depth_stats(tmp_path):
+    shots = [(1.0, L, "long_serve"), (2.0, U, "clear"), (3.0, L, "lift"), (4.0, U, "drop"),
+             (5.0, L, "net_shot"), (6.0, U, "clear")]
+    out = _land_run(tmp_path, shots, groups=["serve", "clear", "lift", "drop", "net", "clear"])
+    table = build_shots(out)
+    # lower hits land at the upper feet (y 4.0 -> 4.6: mid); upper hits at the lower feet (9.5 -> 8.9: mid)
+    assert S.depth_stats(table, L) == {"n": 2, "front": 0, "mid": 2, "rear": 0, "lift_clear_n": 1,
+                                       "lift_clear_rear": 0, "drop_net_n": 1, "drop_net_front": 0}
+    st = S.depth_stats(table, U)
+    assert (st["n"], st["lift_clear_n"], st["drop_net_n"]) == (2, 1, 1)   # last clear: no landing
+
+
+def test_landings_payload(tmp_path):
+    out = _land_run(tmp_path, [(1.0, L, "long_serve"), (2.0, U, "clear"), (3.0, L, "lift")])
+    doc = S.landings_payload(out)
+    assert [d["hitter"] for d in doc["landings"]] == [L, U]
+    assert doc["landings"][0]["stroke"] == "long_serve" and doc["landings"][0]["rally"] == 1
+    assert doc["bands"][L] == {"n": 1, "front": 0, "mid": 1, "rear": 0}   # the serve counts here
+    assert doc["shots"] == 3
+    json.dumps(doc)
+
+
+def test_landing_inputs_tolerate_junk(tmp_path):
+    out = make(tmp_path, [([(1.0, L, "clear"), (2.0, U, "clear")], None)], name="j")
+    (out / "metadata.json").write_text(json.dumps({"court": {"corners": "junk"}, "video": []}))
+    (out / "shuttle_trajectory.json").write_text("[1, 2]")
+    assert build_shots(out)["shots"][0]["landing"]["source"] == "feet"
+
+
+def test_floor_landing_far_off_court_is_dropped(tmp_path):
+    traj = {f: [350, 1520 + 500] for f in range(201, 260)}   # 20 m: 6.6 m behind the baseline
+    rows = build_shots(_land_run(tmp_path, [(1.0, L, "clear"), (2.0, U, "smash")], traj=traj))["shots"]
+    assert rows[1]["landing"] is None
+
+
+def test_floor_landing_repeated_in_three_rallies_is_a_static_object(tmp_path):
+    def run(n, name):
+        rallies = [([(i * SEG_SPAN + 1.0, L, "clear"), (i * SEG_SPAN + 2.0, U, "smash")], None) for i in range(n)]
+        out = make(tmp_path, rallies, name=name)
+        (out / "metadata.json").write_text(json.dumps({"court": {"corners": LAND_CORNERS},
+                                                       "video": {"height": 1080, "fps": FPS}}))
+        traj = {}
+        for i in range(n):
+            base = int((i * SEG_SPAN + 2.0) * FPS)
+            traj.update({base + k: [350, 1220] for k in range(1, 60)})
+        (out / "shuttle_trajectory.json").write_text(
+            json.dumps({"key": "x", "trajectory": {str(f): p for f, p in traj.items()}}))
+        return [r["landing"] for r in build_shots(out)["shots"] if r["last"]]
+    assert all(l and l["source"] == "floor" for l in run(2, "two"))
+    assert run(3, "three") == [None, None, None]
+
+
+def test_net_landing_for_far_receiver_counts_for_the_near_hitter(tmp_path):
+    def pos(side, frame):
+        return (3.0, 6.3) if side == "upper" else (3.0, 9.5)
+    out = make(tmp_path, [([(1.0, L, "drop"), (2.0, U, "net_shot")], None)], pos=pos, name="net")
+    doc = json.loads((out / "strokes.json").read_text())
+    doc["strokes"][0]["group"] = "drop"
+    (out / "strokes.json").write_text(json.dumps(doc))
+    st = S.depth_stats(build_shots(out), L)
+    assert (st["n"], st["front"], st["drop_net_front"]) == (1, 1, 1)

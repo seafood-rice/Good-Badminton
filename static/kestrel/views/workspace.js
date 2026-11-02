@@ -19,6 +19,8 @@ import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets
 import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
 import { createPlayer } from '../widgets/player.js';
 import { movementCard, safeFile } from '../widgets/movement.js';
+import { landingCard } from '../widgets/landing.js';
+import { landingModel, poolLandings } from './landing_model.js';
 import { techniquePanel } from '../widgets/technique.js';
 import { clipsPanel } from '../widgets/clips.js';
 import { planPanel } from '../widgets/plan.js';
@@ -1423,6 +1425,36 @@ export function mount(container, ctx = {}) {
     return movementCard({ lang, items: [{ stem: state.stem, caption: null }], doubles: state.dbl ? doublesHeatmaps() : null });
   }
 
+  // ----- shot landing card (fetched after the view is built; a stale answer for another stem is dropped) -----
+  function buildLanding() {
+    const host = h('div', { class: 'ws-slot' });
+    const stem = state.stem;
+    const names = state.names || {};
+    host.appendChild(landingCard({ lang, model: null }));
+    soft(api.landings(stem, LONG)).then((r) => {
+      if (state.destroyed || state.stem !== stem || isAborted(r)) return;
+      host.textContent = '';
+      host.appendChild(landingCard({ lang, model: landingModel(r.ok ? r.data : null, { names }), names }));
+    });
+    return host;
+  }
+
+  /** Whole match: every analysed part's landings pooled into the primary's frame (swapped parts turned round). */
+  function buildWholeLanding() {
+    const host = h('div', { class: 'ws-slot' });
+    const parts = state.whole.parts.filter((p) => p.ok);
+    const names = (state.head && state.head.names) || state.names || {};
+    const whole = state.whole;
+    host.appendChild(landingCard({ lang, model: null }));
+    Promise.all(parts.map((p) => soft(api.landings(p.stem, LONG)))).then((rs) => {
+      if (state.destroyed || state.whole !== whole || rs.some(isAborted)) return;
+      const pooled = poolLandings(rs.map((r) => (r.ok ? r.data : null)), parts.map((p) => !!p.swapped));
+      host.textContent = '';
+      host.appendChild(landingCard({ lang, model: landingModel(pooled, { names }), names }));
+    });
+    return host;
+  }
+
   // ----- strokes tab: distribution by group (+ the TrackNet provenance note) -----
   /**
    * One video's distribution by default; the Whole match passes the pooled one. `strokes` is every detected stroke
@@ -1580,14 +1612,15 @@ export function mount(container, ctx = {}) {
     const timeline = buildTimeline();
     refs.listSec = buildList();
     const move = buildMovement();
+    const landing = buildLanding();
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
     const main = h('div', { class: 'ws-main' }, [video, timeline]);
-    const side = h('aside', { class: 'ws-side', 'aria-label': t('wsx.side_aria', lang) }, [move, refs.inspHost, refs.sumHost]);
+    const side = h('aside', { class: 'ws-side', 'aria-label': t('wsx.side_aria', lang) }, [move, landing, refs.inspHost, refs.sumHost]);
     refs.body.appendChild(h('div', { class: 'ws-top' }, [main, side]));
     const tabs = buildTabs();
     refs.body.appendChild(tabs);
-    sections = [head, video, timeline, move, refs.inspHost, refs.sumHost, tabs];
+    sections = [head, video, timeline, move, landing, refs.inspHost, refs.sumHost, tabs];
     renderTab();
     paintLane();
     renderStrip();
@@ -1683,10 +1716,11 @@ export function mount(container, ctx = {}) {
     const cards = h('div', { class: 'ws-part-cards' }, parts.map(partCard));
     // Heatmap + scatter per analysed part, captioned "Part N" (images are never merged across parts).
     const move = movementCard({ lang, items: parts.filter((p) => p.ok).map((p) => ({ stem: p.stem, caption: t('wsx.parts.n', lang, { n: p.n }) })) });
+    const landing = buildWholeLanding();
     const tabs = buildTabs();
     const pooled = pooledOutcomesCard();
-    [cards, pooled, move, tabs].forEach((n) => { if (n) refs.body.appendChild(n); });
-    sections = [head, cards, pooled, move, tabs].filter(Boolean);
+    [cards, pooled, move, landing, tabs].forEach((n) => { if (n) refs.body.appendChild(n); });
+    sections = [head, cards, pooled, move, landing, tabs].filter(Boolean);
     renderTab();
     startReveal();
   }
