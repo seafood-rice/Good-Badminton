@@ -1259,10 +1259,17 @@ export function mount(container, ctx = {}) {
     const s = state.stem;
     const r = await soft(getJSON(endpoints.output(s, 'strokes.json'), LONG));
     if (state.destroyed || state.stem !== s || !r.ok || !r.data || typeof r.data !== 'object' || !state.modelInput) return;
+    // keep the place: the rally (or All strokes) and the selected shot, found again by its frame (an added or
+    // removed shot shifts the indices)
+    const selFrame = currentStroke() ? currentStroke().frame : null;
     state.strokesDoc = r.data;
     state.model = buildWorkspaceModel({ ...state.modelInput, strokes: r.data });
-    if (!state.model.rallies.some((x) => x.id === state.unit)) state.unit = state.model.rallies.length ? state.model.rallies[0].id : 'all';
-    if (!unitStrokes().some((x) => x.i === state.sel)) state.sel = unitStrokes().length ? unitStrokes()[0].i : null;
+    if (state.unit !== 'all' && !state.model.rallies.some((x) => x.id === state.unit)) {
+      state.unit = state.model.rallies.length ? state.model.rallies[0].id : 'all';
+    }
+    const again = selFrame === null ? null : unitStrokes().find((x) => x.frame === selFrame);
+    if (again) state.sel = again.i;
+    else if (!unitStrokes().some((x) => x.i === state.sel)) state.sel = unitStrokes().length ? unitStrokes()[0].i : null;
     paintLane();
     renderStrip();
     renderFilters();
@@ -1369,11 +1376,14 @@ export function mount(container, ctx = {}) {
     refreshOutcomes(s);
   }
 
-  /** A verdict for the selected segment (a button or N / F / X / U); saves and moves on to the next segment. */
+  /**
+   * A verdict for the selected segment (a button or N / F / X / U); saves and stays on the segment, so the owner can
+   * pick the outcome type next and the rally timeline selection is never moved by a save.
+   */
   function onVerdict(verdict) {
     const u = currentUnit();
     if (!u || !state.model) return;
-    saveLabels(applyVerdict(state.labelsDoc, u, verdict, null, state.model.rallies), true);
+    saveLabels(applyVerdict(state.labelsDoc, u, verdict, null, state.model.rallies), false);
   }
 
   /** An outcome type for the selected segment's winner (a chip or 1 / 2 / 3); saves without moving on. */

@@ -362,7 +362,7 @@ test('no labels and no outcomes file: the page still renders, the block offers t
   });
 });
 
-test('clicking Near won saves verdict lower with the current revision, advances and shows the auto result greyed', async () => {
+test('clicking Near won saves verdict lower with the current revision and stays on the rally', async () => {
   const saved = [];
   await withPage(async ({ container }) => {
     saveStub(saved);
@@ -372,7 +372,13 @@ test('clicking Near won saves verdict lower with the current revision, advances 
     assert.equal(saved[0].stem, 's');
     assert.equal(saved[0].doc.revision, 4);
     assert.deepEqual(saved[0].doc.labels, [{ start_sec: 0, end_sec: 5, verdict: 'lower', outcome: null, added: false }]);
-    // advanced to segment 2, which only has the automatic result (far = upper): greyed, tagged auto
+    // the rally timeline selection is kept: still segment 1, now with the outcome chips
+    assert.match(container.querySelector('.ws-sum').textContent, /1 of 2/);
+    assert.ok(verdictBtn(container, 'lower').classList.contains('on'));
+    assert.ok(container.querySelector('[data-outcome="winner"]'), 'outcome chips for the picked winner');
+    // segment 2 only has the automatic result (far = upper): greyed, tagged auto
+    container.querySelectorAll('.ws-rb')[1].click();
+    await tick();
     assert.match(container.querySelector('.ws-sum').textContent, /2 of 2/);
     assert.ok(container.querySelector('.ws-pt-autotag'), 'auto tag');
     assert.ok(verdictBtn(container, 'upper').classList.contains('auto'));
@@ -395,9 +401,7 @@ test('an outcome chip saves the same winner with the outcome and stays on the se
   await withPage(async ({ container }) => {
     saveStub(saved);
     verdictBtn(container, 'upper').click();
-    await settleSave();
-    container.querySelectorAll('.ws-rb')[0].click(); // back on segment 1, a winner is picked: the chips show
-    await tick();
+    await settleSave(); // still on segment 1, a winner is picked: the chips show
     const chip = container.querySelector('[data-outcome="forced_error"]');
     assert.ok(chip);
     chip.click();
@@ -558,5 +562,41 @@ test('Strokes block: same shots as the summary (padded membership), also in the 
     all.click();
     await tick();
     assert.equal(slRows(container).length, 5, 'all view: every shot, also the one outside every rally');
+  }, { routes });
+});
+
+test('a stroke label save keeps the rally timeline selection: All strokes stays All strokes, a rally stays that rally', async () => {
+  const routes = singles();
+  let revision = 0;
+  const put = [];
+  await withPage(async ({ container }) => {
+    api.getStrokeLabels = async () => ({ schema: 1, revision, split: 'train', labels: [] });
+    api.putStrokeLabels = async (stem, body) => { put.push(body); revision = body.revision + 1; return { revision, applied: true }; };
+    const slRows = () => everything(container).filter((e) => e.getAttribute('class') && e.getAttribute('class').split(' ').includes('ws-sl-row'));
+    const allBtn = everything(container).find((e) => e.tagName === 'BUTTON' && e.textContent === t('ws.all_strokes', 'en'));
+    const unsure = async () => {
+      const b = container.querySelector('[data-action="unsure"]');
+      assert.ok(b, 'unsure button of the selected row');
+      b.click();
+      for (let i = 0; i < 12; i++) await tick();
+    };
+    // a rally: rally 2 stays selected after the save
+    container.querySelectorAll('.ws-rb')[1].click();
+    await tick();
+    slRows()[0].click();
+    await tick();
+    await unsure();
+    assert.equal(put.length, 1);
+    assert.equal(container.querySelectorAll('.ws-rb')[1].getAttribute('aria-pressed'), 'true', 'rally 2 still selected');
+    // All strokes: stays on after the save, it does not fall back to rally 1
+    allBtn.click();
+    await tick();
+    slRows()[1].click();
+    await tick();
+    await unsure();
+    assert.equal(put.length, 2);
+    assert.equal(allBtn.getAttribute('aria-pressed'), 'true', 'All strokes still selected');
+    assert.equal(slRows().length, 3, 'every shot still listed');
+    assert.equal(container.querySelectorAll('.ws-rb')[0].getAttribute('aria-pressed'), 'false', 'not reset to rally 1');
   }, { routes });
 });
