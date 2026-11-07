@@ -347,6 +347,25 @@
 .ws-main{flex:8 1 560px;min-width:0;display:flex;flex-direction:column;gap:16px;}
 .ws-side{flex:4 1 320px;min-width:0;display:flex;flex-direction:column;gap:16px;}
 .ws-slot{display:flex;flex-direction:column;min-width:0;}
+/* Movable cards: a header strip (grip, title when collapsed, collapse toggle) above each card; drag drop marker. */
+.ws-cf{display:flex;flex-direction:column;min-width:0;}
+.ws-cf-bar{display:flex;align-items:center;gap:8px;min-height:22px;padding:0 2px 4px;}
+.ws-grip,.ws-cf-toggle{display:inline-flex;align-items:center;justify-content:center;width:28px;height:22px;padding:0;border:1px solid transparent;
+  border-radius:var(--r-ctl);background:transparent;color:var(--ink3);font-size:14px;line-height:1;cursor:pointer;}
+.ws-grip{cursor:grab;touch-action:none;}
+.ws-grip:hover,.ws-cf-toggle:hover{background:var(--surface2);border-color:var(--line);color:var(--ink);}
+.ws-grip:focus-visible,.ws-cf-toggle:focus-visible{outline:2px solid var(--cyan);outline-offset:1px;}
+.ws-cf-title{display:none;flex:1 1 auto;min-width:0;font-size:13.5px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.ws-cf-toggle{margin-left:auto;transition:transform .15s;}
+.ws-cf.collapsed .ws-cf-title{display:block;}
+.ws-cf.collapsed .ws-cf-toggle{transform:rotate(-90deg);}
+.ws-cf.collapsed .ws-cf-bar{padding:6px 8px;border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--surface);}
+.ws-cf-body{min-width:0;}
+.ws-cf-body[hidden]{display:none;}
+.ws-cf.dragging{opacity:.55;}
+.ws-cf.dragging .ws-grip{cursor:grabbing;}
+.ws-zone.drag-on{min-height:56px;}
+.ws-drop-marker{height:4px;flex:0 0 auto;border-radius:2px;background:var(--cyan);box-shadow:0 0 0 2px var(--cyanSoft);pointer-events:none;}
 .ws-sec-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px;}
 .ws-sec-head .card-title{margin:0;}
 .ws-h3{margin:0;font-size:13.5px;font-weight:600;}
