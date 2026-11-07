@@ -65,7 +65,13 @@ function attach(labels, strokes, fps) {
   const added = [];
   const times = strokes.map((s) => s.frame / fps);
   for (const label of labels) {
-    if (label.kind === 'added') { added.push(label); continue; }
+    if (label.kind === 'added') {
+      // added shots within the tolerance of each other are one shot: the later replaces the earlier (owner_labels.attach)
+      const same = added.findIndex((a) => Math.abs(a.time_sec - label.time_sec) <= ATTACH_TOLERANCE_SEC);
+      if (same < 0) added.push(label);
+      else added[same] = label;
+      continue;
+    }
     let best = -1;
     let bestGap = ATTACH_TOLERANCE_SEC;
     times.forEach((t, i) => {
@@ -180,7 +186,9 @@ export function applyAction(labelsDoc, row, action) {
   const a = obj(action);
   if (a.type === 'add') {
     if (!num(a.time) || a.time < 0 || !validStroke(a.stroke) || (a.hitter !== 'upper' && a.hitter !== 'lower')) return doc;
-    return { ...doc, labels: [...doc.labels, { time_sec: round3(a.time), hitter: a.hitter, stroke: a.stroke, kind: 'added' }] };
+    // adding again at the same moment replaces the earlier added shot instead of stacking copies
+    const others = doc.labels.filter((l) => !(l.kind === 'added' && Math.abs(l.time_sec - a.time) <= ATTACH_TOLERANCE_SEC));
+    return { ...doc, labels: [...others, { time_sec: round3(a.time), hitter: a.hitter, stroke: a.stroke, kind: 'added' }] };
   }
   const r = obj(row);
   if (!num(r.time)) return doc;

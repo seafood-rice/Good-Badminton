@@ -163,6 +163,41 @@ test('Add missed shot here uses the player time, then a player and a type', asyn
     assert.deepEqual(api.calls.find((c) => c[0] === 'PUT')[2].labels, [lab(4.25, 'net_shot', 'added', 'upper')]);
     const rows = rowsOf(block);
     assert.equal(rows.at(-1).getAttribute('data-state'), 'added');
+    // the new shot is selected and the add is confirmed
+    assert.equal(rows.at(-1).getAttribute('aria-pressed'), 'true');
+    assert.ok(block.el.textContent.includes(t('strokes.added', 'en', { time: '0:04.3' }))
+      || block.el.textContent.includes(t('strokes.added', 'en', { time: '0:04.2' })));
+    block.destroy();
+  } finally { removeEnv(); }
+});
+
+test('a shot added outside the shown rally says where to find it (seen live on 0009 at 0:08.4)', async () => {
+  installEnv();
+  try {
+    const { block, player } = await make();
+    block.update({ strokesDoc, rally: { start: 20, end: 30 }, fps: FPS });
+    player.video.currentTime = 8.391;
+    buttonWithText(block.el, t('strokes.add', 'en')).click();
+    everything(block.el).find((e) => e.getAttribute('data-stroke') === 'long_serve').click();
+    await tick();
+    assert.equal(rowsOf(block).length, 0);
+    assert.ok(block.el.textContent.includes('outside this rally'), block.el.textContent);
+    block.destroy();
+  } finally { removeEnv(); }
+});
+
+test('adding again at the same moment replaces the earlier added shot', async () => {
+  installEnv();
+  try {
+    const { block, api } = await make();
+    for (const stroke of ['long_serve', 'clear', 'long_serve']) {
+      buttonWithText(block.el, t('strokes.add', 'en')).click();
+      everything(block.el).find((e) => e.getAttribute('data-stroke') === stroke).click();
+      await tick();
+    }
+    const last = api.calls.filter((c) => c[0] === 'PUT').at(-1)[2].labels;
+    assert.deepEqual(last, [lab(4.25, 'long_serve', 'added')]);
+    assert.equal(rowsOf(block).filter((r) => r.getAttribute('data-state') === 'added').length, 1);
     block.destroy();
   } finally { removeEnv(); }
 });

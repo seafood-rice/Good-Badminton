@@ -141,12 +141,19 @@ def attach(labels, strokes, fps):
     A hit's time is ``frame / fps``. A label takes the nearest stroke within
     ``ATTACH_TOLERANCE_SEC``; a stroke takes one label, the later one in list order wins
     and the earlier is orphaned. ``by_index`` maps a position in ``strokes`` to its label.
+    Added shots within ``ATTACH_TOLERANCE_SEC`` of each other are one shot: the later one
+    replaces the earlier (a repeated "add missed shot here" must not add copies).
     """
     by_index, orphaned, added = {}, [], []
     times = [s["frame"] / fps for s in strokes]
     for label in labels:
         if label["kind"] == "added":
-            added.append(label)
+            same = next((i for i, a in enumerate(added)
+                         if abs(a["time_sec"] - label["time_sec"]) <= ATTACH_TOLERANCE_SEC), None)
+            if same is None:
+                added.append(label)
+            else:
+                added[same] = label
             continue
         best, best_gap = None, ATTACH_TOLERANCE_SEC
         for i, t in enumerate(times):

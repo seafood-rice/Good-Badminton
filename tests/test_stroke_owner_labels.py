@@ -80,6 +80,18 @@ def test_added_never_attaches():
     assert by == {} and orphaned == [] and len(added) == 1
 
 
+def test_repeated_added_shots_at_one_moment_are_one_shot():
+    # seen live on 0009: six "add missed shot here" saves at 8.391 s put six shots in strokes.json
+    strokes = payload((60, "lower", "clear"))["strokes"]
+    labels = [lab(8.391, kind="added", stroke=s) for s in ("long_serve", "clear", "long_serve")]
+    labels.append(lab(9.0, kind="added", stroke="lift"))
+    _, _, added = ol.attach(labels, strokes, 60.0)
+    assert [(a["time_sec"], a["stroke"]) for a in added] == [(8.391, "long_serve"), (9.0, "lift")]
+    out = ol.apply(payload((60, "lower", "clear")), doc_of(*labels), 60.0)
+    assert [s["stroke"] for s in out["strokes"] if s["source"] == "owner"] == ["long_serve", "lift"]
+    assert out["owner_labels"]["added"] == 2
+
+
 def test_apply_sets_source_and_recounts():
     p = payload((60, "lower", "clear"), (120, "upper", "lift"), (180, "lower", "drop"),
                 (240, "upper", "drop"))

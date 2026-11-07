@@ -87,8 +87,12 @@ export function strokeLabelsBlock({
     }
   }
 
-  /** Save `doc` (the labels with an action applied); then move on to the next row when `advance`. */
-  async function save(doc, advance) {
+  /**
+   * Save `doc` (the labels with an action applied); then move on to the next row when `advance`. `addedAt` is the
+   * time of a shot just added: it is selected and confirmed, or, when it lies outside the shown rally, the notice says
+   * where to find it (otherwise an add looks like it did nothing, and a retry used to stack copies).
+   */
+  async function save(doc, advance, addedAt = null) {
     if (saving || !alive) return;
     const rowsBefore = rows();
     const at = rowsBefore.findIndex((r) => r.time === selected);
@@ -122,6 +126,15 @@ export function strokeLabelsBlock({
     }
     if (!alive) return;
     addPrompt = null;
+    if (saved && isNum(addedAt) && !notice) {
+      const row = rows().find((r) => r.state === 'added' && Math.abs(r.time - addedAt) < 0.002);
+      if (row) {
+        selected = row.time;
+        notice = t('strokes.added', lang, { time: clock(row.time) });
+      } else {
+        notice = t('strokes.added_outside', lang, { time: clock(addedAt) });
+      }
+    }
     if (saved && advance && at >= 0) {
       const next = rows().find((r) => r.time > rowsBefore[at].time);
       if (next) {
@@ -279,7 +292,7 @@ export function strokeLabelsBlock({
           'aria-pressed': addPrompt.hitter === s ? 'true' : 'false',
           onclick: () => { addPrompt = { ...addPrompt, hitter: s }; paint(); },
         }, side(s)))),
-        typeButtons((id) => save(applyAction(labelsDoc, null, { type: 'add', time: addPrompt.time, hitter: addPrompt.hitter, stroke: id }), false), null),
+        typeButtons((id) => save(applyAction(labelsDoc, null, { type: 'add', time: addPrompt.time, hitter: addPrompt.hitter, stroke: id }), false, addPrompt.time), null),
         h('button', { type: 'button', class: 'ws-chip ws-pt-btn', 'data-add': 'cancel', onclick: () => { addPrompt = null; paint(); } }, t('strokes.add_cancel', lang)),
       ]));
     } else {
