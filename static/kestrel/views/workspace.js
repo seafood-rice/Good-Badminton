@@ -14,6 +14,8 @@ import { t, TECHNIQUE_IDS } from '../core/i18n.js';
 import { fmtDate, fmtNumber, fmtDuration } from '../core/format.js';
 import { createClock, local } from '../core/motion.js';
 import { formatHash } from '../core/router.js';
+import { prefs, PREF_KEYS } from '../core/prefs.js';
+import { CARD_IDS, ZONES, normaliseLayout, defaultLayout, moveCard, toggleCollapsed, stepCard, locate } from './workspace_layout.js';
 import { api, getJSON, endpoints, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, setText, setAttr, approxMark } from '../widgets/frame.js';
 import { swatch, unvalidatedBadge } from '../widgets/doubles.js';
@@ -123,6 +125,10 @@ export function mount(container, ctx = {}) {
   let ctl = null;
   let sections = [];
   let settleTimer = null;
+  // The movable cards' layout (one per browser, the same for every match) and the frames of the cards on screen.
+  let layout = normaliseLayout(prefs.getJSON(PREF_KEYS.wsLayout, null));
+  let frames = null;
+  let drag = null;
 
   const root = h('div', { class: 'page ws', 'data-view': 'workspace' });
   container.appendChild(root);
@@ -178,6 +184,8 @@ export function mount(container, ctx = {}) {
    * the kept tab panels (their requests), the player (its media connection and document listeners) and the reveal.
    */
   function teardown() {
+    endDrag(false);
+    frames = null;
     unbindLabelKeys();
     closeMenu(false);
     destroyPanels();
@@ -384,6 +392,7 @@ export function mount(container, ctx = {}) {
     const s = state.stem;
     const shown = state.view !== 'whole' && !!state.model;
     return h('div', { class: 'ov-actions' }, [
+      shown ? h('button', { type: 'button', class: 'ov-btn ws-layout-reset', onclick: resetLayout }, t('wsl.reset', lang)) : null,
       h('a', { href: formatHash('overview', {}, obj(S().scope)), class: 'ov-btn' }, t('ws.back', lang)),
       shown && state.video && state.video.has_posture
         ? h('a', { href: formatHash('results', { stem: s }, { mode: 'posture' }), class: 'ov-btn' }, t('wsx.posture', lang))
@@ -1604,6 +1613,179 @@ export function mount(container, ctx = {}) {
     settleTimer = setTimeout(settle, SETTLE_MS);
   }
 
+  // ----- movable cards (layout in workspace_layout.js; saved per browser) -----
+  const CARD_TITLES = {
+    video: 'ws.video', timeline: 'ws.timeline', movement: 'wsx.move.title', landing: 'wsx.land.title',
+    inspector: 'ws.inspector', summary: 'ws.summary',
+  };
+  const cardTitle = (id) => t(CARD_TITLES[id], lang);
+
+  /** A header strip (grip, title shown when collapsed, collapse toggle) above the card; the card itself is untouched. */
+  function cardFrame(id, node) {
+    const title = cardTitle(id);
+    const gripBtn = h('button', {
+      type: 'button', class: 'ws-grip', 'aria-label': t('wsl.grip', lang, { card: title }), title: t('wsl.hint', lang),
+      onpointerdown: (e) => startDrag(id, e),
+      onkeydown: (e) => onGripKey(id, e),
+    }, '⠿');
+    const toggle = h('button', {
+      type: 'button', class: 'ws-cf-toggle', 'aria-label': t('wsl.toggle', lang, { card: title }), 'aria-expanded': 'true',
+      onclick: () => { saveLayout(toggleCollapsed(layout, id)); paintCollapsed(); },
+    }, '▾');
+    const bar = h('div', { class: 'ws-cf-bar' }, [gripBtn, h('span', { class: 'ws-cf-title' }, title), toggle]);
+    const body = h('div', { class: 'ws-cf-body' }, node);
+    const el = h('div', { class: 'ws-cf', 'data-card': id }, [bar, body]);
+    return { el, grip: gripBtn, toggle, body };
+  }
+
+  const zoneKids = (el) => Array.from(el.children || el.childNodes || []).filter((c) => c && c.tagName);
+
+  function saveLayout(next) {
+    layout = next;
+    prefs.setJSON(PREF_KEYS.wsLayout, layout);
+  }
+
+  function paintCollapsed() {
+    if (!frames) return;
+    for (const [id, f] of frames) {
+      const off = layout.collapsed.includes(id);
+      f.el.classList.toggle('collapsed', off);
+      f.body.hidden = off;
+      f.toggle.setAttribute('aria-expanded', off ? 'false' : 'true');
+    }
+  }
+
+  /**
+   * Put the frames in the order of `layout`. Each frame is placed at its index only if it is not already there, so a
+   * move relocates the moved card and not the ones around it; the <video> node moves only with its own card, and then
+   * its time and playing state are restored (a detach can pause it).
+   */
+  function applyLayout() {
+    if (!frames || !refs.zones) return;
+    const v = refs.video;
+    const snap = v ? { t: v.currentTime, playing: !v.paused && !v.ended } : null;
+    let videoMoved = false;
+    for (const z of ZONES) {
+      const zoneEl = refs.zones[z];
+      layout.order[z].forEach((id, i) => {
+        const f = frames.get(id).el;
+        const cur = zoneKids(zoneEl)[i];
+        if (cur === f) return;
+        if (v && f.contains(v)) videoMoved = true;
+        if (cur) zoneEl.insertBefore(f, cur); else zoneEl.appendChild(f);
+      });
+    }
+    paintCollapsed();
+    if (videoMoved && snap) {
+      try {
+        if (v.currentTime !== snap.t) v.currentTime = snap.t;
+        if (snap.playing && v.paused) {
+          const p = v.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        }
+      } catch (e) { /* a media element that cannot seek yet keeps its own position */ }
+    }
+  }
+
+  function announceMove(id) {
+    const at = locate(layout, id);
+    if (!at || !refs.live) return;
+    setText(refs.live, t('wsl.moved', lang, {
+      card: cardTitle(id), zone: t('wsl.zone.' + at.zone, lang), n: at.index + 1, total: layout.order[at.zone].length,
+    }));
+  }
+
+  function commitMove(next, id) {
+    saveLayout(next);
+    applyLayout();
+    const f = frames && frames.get(id);
+    if (f) focusNode(f.grip);
+    announceMove(id);
+  }
+
+  function onGripKey(id, e) {
+    const dir = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[e.key];
+    if (!dir) return;
+    e.preventDefault();
+    const r = stepCard(layout, id, dir);
+    if (r.moved) commitMove(r.layout, id);
+  }
+
+  function resetLayout() {
+    layout = defaultLayout();
+    prefs.remove(PREF_KEYS.wsLayout);
+    applyLayout();
+    if (refs.live) setText(refs.live, t('wsl.reset_done', lang));
+  }
+
+  // Pointer drag: the grip captures the pointer; the drop marker shows the insertion point in either zone.
+  function dropTarget(x, y) {
+    let best = null;
+    for (const z of ZONES) {
+      const r = refs.zones[z].getBoundingClientRect();
+      const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+      const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+      const d = dx * dx + dy * dy;
+      if (!best || d < best.d) best = { zone: z, d };
+    }
+    const zoneEl = refs.zones[best.zone];
+    const others = zoneKids(zoneEl).filter((c) => c.getAttribute('data-card') && c !== drag.frame);
+    let index = 0;
+    others.forEach((c) => {
+      const r = c.getBoundingClientRect();
+      if (y > r.top + r.height / 2) index += 1;
+    });
+    return { zone: best.zone, index, before: others[index] || null };
+  }
+
+  function startDrag(id, e) {
+    if (!frames || drag || (e.button !== undefined && e.button > 0)) return;
+    if (typeof e.preventDefault === 'function') e.preventDefault();
+    const f = frames.get(id);
+    const doc = typeof document.addEventListener === 'function' ? document : null;
+    drag = {
+      id, frame: f.el, marker: h('div', { class: 'ws-drop-marker', 'aria-hidden': 'true' }), target: null, doc,
+      move: (ev) => moveDrag(ev), up: (ev) => { moveDrag(ev); endDrag(true); }, cancel: () => endDrag(false),
+      key: (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); endDrag(false); } },
+    };
+    f.el.classList.add('dragging');
+    refs.zones.main.classList.add('drag-on');
+    refs.zones.side.classList.add('drag-on');
+    if (typeof f.grip.setPointerCapture === 'function' && e.pointerId !== undefined) {
+      try { f.grip.setPointerCapture(e.pointerId); } catch (err) { /* a synthetic pointer cannot be captured */ }
+    }
+    if (doc) {
+      doc.addEventListener('pointermove', drag.move);
+      doc.addEventListener('pointerup', drag.up);
+      doc.addEventListener('pointercancel', drag.cancel);
+      doc.addEventListener('keydown', drag.key, true);
+    }
+  }
+
+  function moveDrag(ev) {
+    if (!drag || typeof ev.clientX !== 'number') return;
+    const tgt = dropTarget(ev.clientX, ev.clientY);
+    drag.target = tgt;
+    refs.zones[tgt.zone].insertBefore(drag.marker, tgt.before);
+  }
+
+  function endDrag(drop) {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (d.doc) {
+      d.doc.removeEventListener('pointermove', d.move);
+      d.doc.removeEventListener('pointerup', d.up);
+      d.doc.removeEventListener('pointercancel', d.cancel);
+      d.doc.removeEventListener('keydown', d.key, true);
+    }
+    if (d.marker.parentNode) d.marker.parentNode.removeChild(d.marker);
+    d.frame.classList.remove('dragging');
+    if (refs.zones) { refs.zones.main.classList.remove('drag-on'); refs.zones.side.classList.remove('drag-on'); }
+    if (drop && d.target && frames) commitMove(moveCard(layout, d.id, d.target.zone, d.target.index), d.id);
+    else if (!drop && refs.live && frames) setText(refs.live, t('wsl.cancelled', lang));
+  }
+
   /** One video (a single match, or the selected part of a split match). */
   function renderAll() {
     if (state.destroyed) return;
@@ -1615,12 +1797,17 @@ export function mount(container, ctx = {}) {
     const landing = buildLanding();
     refs.inspHost = h('div', { class: 'ws-slot' });
     refs.sumHost = h('div', { class: 'ws-slot' });
-    const main = h('div', { class: 'ws-main' }, [video, timeline]);
-    const side = h('aside', { class: 'ws-side', 'aria-label': t('wsx.side_aria', lang) }, [move, landing, refs.inspHost, refs.sumHost]);
-    refs.body.appendChild(h('div', { class: 'ws-top' }, [main, side]));
+    const nodes = { video, timeline, movement: move, landing, inspector: refs.inspHost, summary: refs.sumHost };
+    frames = new Map(CARD_IDS.map((id) => [id, cardFrame(id, nodes[id])]));
+    refs.zones = {
+      main: h('div', { class: 'ws-main ws-zone', 'data-zone': 'main' }),
+      side: h('aside', { class: 'ws-side ws-zone', 'data-zone': 'side', 'aria-label': t('wsx.side_aria', lang) }),
+    };
+    refs.body.appendChild(h('div', { class: 'ws-top' }, [refs.zones.main, refs.zones.side]));
+    applyLayout();
     const tabs = buildTabs();
     refs.body.appendChild(tabs);
-    sections = [head, video, timeline, move, landing, refs.inspHost, refs.sumHost, tabs];
+    sections = [head, ...CARD_IDS.map((id) => frames.get(id).el), tabs];
     renderTab();
     paintLane();
     renderStrip();

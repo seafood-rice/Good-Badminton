@@ -9,6 +9,7 @@ export const PREF_KEYS = Object.freeze({
   matchesView: 'kestrel_matches_view',
   volume: 'kestrel_volume',
   muted: 'kestrel_muted',
+  wsLayout: 'kestrel_ws_layout_v1',
 });
 
 /** Legacy values: 'light' -> day, 'dark' -> night. Anything unknown is night. */
