@@ -332,3 +332,24 @@ test('shows an FH/BH chip, the H key and the Backhand button save the hand', asy
     block.destroy();
   } finally { removeEnv(); }
 });
+
+test('the shot list keeps its scroll position when a label is saved; another rally starts at the top', async () => {
+  installEnv();
+  try {
+    const { block, api } = await make();
+    block.update({ strokesDoc, rally: { id: 1, start: 0, end: 10 }, fps: FPS });
+    const list = () => block.el.querySelector('.ws-sl-list');
+    rowsOf(block)[1].click();
+    list().scrollTop = 80;
+    list().dispatch('scroll', {});
+    key(block, 'x'); // not a hit: saves and repaints the list
+    for (let i = 0; i < 6; i++) await tick();
+    assert.equal(api.calls.filter((c) => c[0] === 'PUT').length, 1);
+    assert.equal(list().scrollTop, 80, 'scroll kept after the save');
+    block.update({ strokesDoc, rally: { id: 1, start: 0, end: 10 }, fps: FPS }); // the workspace re-reads strokes.json
+    assert.equal(list().scrollTop, 80, 'scroll kept after the re-read');
+    block.update({ strokesDoc, rally: { id: 2, start: 0, end: 10 }, fps: FPS });
+    assert.notEqual(list().scrollTop, 80, 'another rally starts from the top');
+    block.destroy();
+  } finally { removeEnv(); }
+});

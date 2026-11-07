@@ -40,6 +40,9 @@ export function strokeLabelsBlock({
   let props = { strokesDoc: null, rally: null, rallies: null, fps: null };
   let selected = null; // the selected row's time
   let paintedSelected = null; // the selection at the last paint: scroll only when it changed
+  let paintedScope; // the rally id (or 'all') at the last paint: the list keeps its scroll while this is unchanged
+  let listEl = null; // the shot list of the last paint
+  let listScroll = 0; // its last scroll position, kept by its scroll events (a detached list reads 0)
   let notice = '';
   let saving = false;
   let addPrompt = null; // {time, hitter}
@@ -245,6 +248,12 @@ export function strokeLabelsBlock({
 
   function paint() {
     if (!alive) return;
+    // a repaint rebuilds the list: carry its scroll over, unless another rally (or All shots) is now shown
+    const scope = props.rally && props.rally.id !== undefined ? props.rally.id : 'all';
+    const keepScroll = scope === paintedScope ? listScroll : 0;
+    listScroll = keepScroll;
+    listEl = null;
+    paintedScope = scope;
     el.textContent = '';
     const locked = labelsDoc.split_locked;
     el.appendChild(h('div', { class: 'ws-sec-head' }, [
@@ -261,7 +270,15 @@ export function strokeLabelsBlock({
     if (!list.length && !lost.length) {
       el.appendChild(h('div', { class: 'kw-note ws-sl-empty' }, t(props.rally ? 'strokes.empty' : 'strokes.empty_all', lang)));
     } else {
-      el.appendChild(h('div', { class: 'ws-sl-list' }, [...list.map(rowNode), ...lost.map(orphanNode)]));
+      listEl = h('div', { class: 'ws-sl-list' }, [...list.map(rowNode), ...lost.map(orphanNode)]);
+      el.appendChild(listEl);
+      const mine = listEl;
+      mine.addEventListener('scroll', () => { if (mine === listEl && mine.isConnected !== false) listScroll = mine.scrollTop; });
+      mine.scrollTop = keepScroll;
+      // the workspace may move this block into a new card right after the repaint, which drops the scroll: put it back
+      if (keepScroll && typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => { if (mine === listEl && alive && mine.scrollTop !== keepScroll) mine.scrollTop = keepScroll; });
+      }
       const on = el.querySelector && el.querySelector('.ws-sl-row.on');
       if (selected !== paintedSelected && on && typeof on.scrollIntoView === 'function') on.scrollIntoView({ block: 'nearest' });
     }
