@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { installEnv, removeEnv, tick, everything } from './fake_dom.mjs';
-import { cardModel, describeCode, historyRow, strokeModelCard } from '../../static/kestrel/widgets/strokemodel.js';
+import { cardModel, describeCode, historyRow, strokeModelCard, utcText } from '../../static/kestrel/widgets/strokemodel.js';
 import { groupJobs, jobActions, jobMessage } from '../../static/kestrel/views/pipeline.js';
 
 const live = (extra = {}) => ({ version: '2026-10-01T00:00:00Z', metrics: { accuracy: 0.9, unknown_rate: 0.05 }, bar_met: true, bar_reasons: [], ...extra });
@@ -148,4 +148,10 @@ test('a code with a missing number renders it as "?"', () => {
   assert.equal(describeCode({ code: 'train_labels', need: 50, have: null }, 'en'),
     '? more train labels needed (50 new in total)');
   assert.match(describeCode({ code: 'accuracy', value: null, bar: 0.85 }, 'zh'), /\?/);
+});
+
+test('the live model version reads as a date, not a raw ISO string', () => {
+  assert.equal(cardModel(body(), 'en').version, '2026-10-01 00:00');
+  assert.equal(utcText('2026-10-22T20:50:20Z'), '2026-10-22 20:50');
+  assert.equal(utcText('h1'), 'h1');
 });

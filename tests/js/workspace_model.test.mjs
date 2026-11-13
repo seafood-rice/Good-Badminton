@@ -115,3 +115,12 @@ test('workspace_model: a learned segmentation counts as rallies, not segments or
   assert.equal(m.rallies.length, 2);
   assert.equal(m.summary.label, 'rallies');
 });
+
+test('setsSide: who the set scores give the match to', () => {
+  assert.equal(M.setsSide([[21, 18], [19, 21], [21, 15]]), 0);
+  assert.equal(M.setsSide([[19, 30]]), 1);
+  assert.equal(M.setsSide([[21, 18], [18, 21]]), null);   // level
+  assert.equal(M.setsSide([]), null);
+  assert.equal(M.setsSide(null), null);
+  assert.equal(M.setsSide([[21, 'x'], [5, 5]]), null);     // junk and ties never count
+});

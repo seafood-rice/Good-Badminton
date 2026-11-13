@@ -549,6 +549,8 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
 .kw-col-res{width:72px;white-space:nowrap;}
 .kw-col-tech{width:64px;white-space:nowrap;}
 .mv-table .kw-col-date{width:110px;}
+.kw-nowrap{white-space:nowrap;}
+.kw-conflict{color:var(--mid);cursor:help;}
 .mv-name{min-width:220px;}
 .mv-name .kw-row-open{overflow-wrap:anywhere;}
 .mv-sub{margin-top:2px;font-size:12px;color:var(--ink3);overflow-wrap:anywhere;}
@@ -793,7 +795,7 @@ tr.trow{display:table-row;padding:0;gap:0;border-top:0;}
   background:var(--surface);border:1px solid var(--lineHi);border-radius:12px;box-shadow:0 18px 48px var(--shadow);animation:kUp .25s var(--ease) both;text-align:left;}
 /* match details: tabs under the top band */
 .ws-tabwrap{display:flex;flex-direction:column;min-width:0;}
-.ws-tabs{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--line);}
+.ws-tabs{display:flex;gap:4px;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--line);}
 .ws-tab{all:unset;box-sizing:border-box;cursor:pointer;padding:10px 14px;font-size:14px;font-weight:600;color:var(--ink2);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;}
 .ws-tab:hover{color:var(--ink);}
 .ws-tab:focus-visible{outline:2px solid var(--cyan);outline-offset:-2px;border-radius:6px;}

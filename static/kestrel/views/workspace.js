@@ -36,7 +36,7 @@ import { doublesWorkspaceModel, doublesVideoFiles, hitsInWindow } from './double
 import {
   RALLY_PAD_SEC, JOIN_FRAMES, STROKE_PAGE, summariseRallyPayload, buildWorkspaceModel, matchDate, matchDateApprox,
   listScore, rallyInput, rallyCountText, capItems, readReduced, resolveFps, soft, nameFor, unitKey, signalNote,
-  techLabel, strokeName, techCode, metricLabel, clockText, num1, isNum, obj, SIDES,
+  techLabel, strokeName, techCode, metricLabel, clockText, num1, isNum, obj, SIDES, setsSide,
   TABS, resolveTab, strokeDistribution, trackNetNote, techniqueSummary, weaknessLines,
   matchParts, resolvePartQuery, poolDistribution, poolTechnique, poolRallyCounts, partTechIndex,
 } from './workspace_model.js';
@@ -492,6 +492,11 @@ export function mount(container, ctx = {}) {
       const pairs = res.sets.filter((p) => Array.isArray(p) && p.length === 2)
         .map((p) => (a === 'lower' ? `${p[1]}–${p[0]}` : `${p[0]}–${p[1]}`));
       meta.appendChild(h('span', { class: 'mono ws-sets' }, pairs.join(' · ')));
+    }
+    // Record sets are [upper, lower]: flag a winner the sets do not give the match to.
+    const bySets = setsSide(res.sets);
+    if (SIDES.includes(res.winner) && bySets !== null && SIDES[bySets] !== res.winner) {
+      meta.appendChild(h('span', { class: 'k-chip mid', 'data-ws': 'score-conflict' }, '⚠ ' + t('score.conflict', lang)));
     }
     if (SIDES.includes(res.winner)) {
       if (hd.athleteSide) {

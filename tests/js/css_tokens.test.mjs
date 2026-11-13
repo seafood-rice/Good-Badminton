@@ -43,9 +43,9 @@ const SPEC = {
   bg: ['#05070A', '#EDF0F3'], surface: ['#0B1017', '#FFFFFF'], surface2: ['#111923', '#F5F7F9'],
   line: ['#1B2733', '#DCE2E8'], lineHi: ['#2D4054', '#B9C4CF'],
   ink: ['#E6EDF5', '#0E141B'], ink2: ['#9BA9B8', '#44505E'], ink3: ['#7A8898', '#5E6B7A'],
-  accent: ['#FF5A36', '#FF5A36'], accentInk: ['#FF8A6B', '#C23A1A'],
-  cyan: ['#7FC8D6', '#1B7F92'], cyanInk: ['#7FC8D6', '#077486'],
-  blue: ['#9DB0E6', '#3C58D6'], good: ['#5FCF9A', '#17794A'], mid: ['#E8B454', '#8A5A00'], bad: ['#F27B86', '#C4262B'],
+  accent: ['#FF5A36', '#FF5A36'], accentInk: ['#FF8A6B', '#A8300F'],
+  cyan: ['#7FC8D6', '#1B7F92'], cyanInk: ['#7FC8D6', '#065F6E'],
+  blue: ['#9DB0E6', '#3C58D6'], good: ['#5FCF9A', '#0F6A3E'], mid: ['#E8B454', '#7A4F00'], bad: ['#F27B86', '#A81E22'],
 };
 
 test('spec 6.3 values are verbatim (all 16 tokens, night and day)', () => {

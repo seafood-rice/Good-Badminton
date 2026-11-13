@@ -157,7 +157,10 @@ export function rallyModelCard({ lang, api, onChanged } = {}) {
     }, t('rm.retrain', lang));
     const rollback = h('button', {
       type: 'button', class: 'ov-btn small', 'data-rm': 'rollback', disabled: !model.canRollback,
-      onclick: (e) => run(() => api.rollbackRallyModel({ timeout: 10000 }), e.currentTarget),
+      onclick: (e) => {
+        if (typeof confirm === 'function' && !confirm(t('rm.rollback_confirm', lang))) return;
+        run(() => api.rollbackRallyModel({ timeout: 10000 }), e.currentTarget);
+      },
     }, t('rm.rollback', lang));
     el.appendChild(h('div', { class: 'pv-foot' }, [retrain, rollback]));
     if (model.history.length) {

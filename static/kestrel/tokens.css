@@ -34,9 +34,9 @@
   --bg:#EDF0F3; --surface:#FFFFFF; --surface2:#F5F7F9;
   --line:#DCE2E8; --lineHi:#B9C4CF;
   --ink:#0E141B; --ink2:#44505E; --ink3:#5E6B7A;
-  --accent:#FF5A36; --accentInk:#C23A1A; --accentSoft:rgba(255,90,54,.12);
-  --cyan:#1B7F92; --cyanInk:#077486; --cyanSoft:rgba(27,127,146,.1);
-  --blue:#3C58D6; --good:#17794A; --mid:#8A5A00; --bad:#C4262B;
+  --accent:#FF5A36; --accentInk:#A8300F; --accentSoft:rgba(255,90,54,.12);
+  --cyan:#1B7F92; --cyanInk:#065F6E; --cyanSoft:rgba(27,127,146,.1);
+  --blue:#3C58D6; --good:#0F6A3E; --mid:#7A4F00; --bad:#A81E22;
   --dot:rgba(20,40,70,.07); --hatch:rgba(60,80,100,.1);
   --photoO:.2; --shadow:rgba(20,40,70,.18);
   color-scheme:light;
@@ -55,7 +55,7 @@
   --ease:cubic-bezier(.2,.8,.2,1);
   --font-ui:'Space Grotesk','PingFang SC','Microsoft YaHei',system-ui,sans-serif;
   --font-mono:'IBM Plex Mono',ui-monospace,'PingFang SC','Microsoft YaHei',monospace;
-  --font-serif:'Instrument Serif',Georgia,'PingFang SC','Microsoft YaHei',serif;
+  --font-serif:'Instrument Serif',Georgia,'Noto Serif SC','Source Han Serif SC','Songti SC','STSong','SimSun',serif;
 }
 
 /* ---- base typography ---- */

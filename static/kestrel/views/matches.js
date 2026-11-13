@@ -16,6 +16,7 @@ import { formatHash } from '../core/router.js';
 import { api, errorText } from '../core/api.js';
 import { h, hasDOM, revealStyle, approxMark } from '../widgets/frame.js';
 import { rallyCountText } from './workspace.js';
+import { setsSide } from './workspace_model.js';
 import { IDENTITY_IDS, doublesPeekModel, identityOptionLabel, identityColor } from './doubles_model.js';
 import { prefs, PREF_KEYS } from '../core/prefs.js';
 import {
@@ -78,6 +79,8 @@ export function matchRows(overview) {
       result: m.result === 'W' || m.result === 'L' ? m.result : null,
       sets,
       setsText: setsText(sets),
+      // The record's W/L and its own set scores point at different players (sets are [own, opp]).
+      scoreConflict: (m.result === 'W' || m.result === 'L') && setsSide(sets) !== null && (setsSide(sets) === 0) !== (m.result === 'W'),
       // A doubles run has no per-player technique score, whatever the payload holds.
       techIndex: !doubles && isNum(m.tech_index) ? m.tech_index : null,
       status,
@@ -1239,8 +1242,11 @@ export function mount(container, ctx = {}) {
           ]),
         ])),
         h('td', { class: 'mono kw-muted kw-col-date' }, [fmtDate(r.date, lang), r.dateApprox ? approxMark(lang) : null]),
-        h('td', null, resultChip(r)),
-        h('td', { class: 'mono kw-muted' }, r.sets.length ? r.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ') : '—'),
+        h('td', { class: 'kw-nowrap' }, resultChip(r)),
+        h('td', { class: 'mono kw-muted kw-nowrap' }, [
+          r.sets.length ? r.sets.map((p) => `${p[0]}–${p[1]}`).join(' · ') : '—',
+          r.scoreConflict ? h('span', { class: 'kw-conflict', role: 'img', title: t('score.conflict', lang), 'aria-label': t('score.conflict', lang) }, ' ⚠') : null,
+        ]),
         h('td', { class: 'mono kw-num' }, num1(r.techIndex)),
         h('td', null, statusChip(r)),
         h('td', { class: 'kw-num' }, actions(r, name, nextStem)),
