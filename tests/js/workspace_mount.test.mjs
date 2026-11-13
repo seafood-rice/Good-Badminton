@@ -111,7 +111,7 @@ test('layout A: player and movement on top, five tabs, a Posture report link and
     assert.ok(p.querySelector('.ws-dist-bar'));
     assert.equal(p.querySelectorAll('.ws-dist-seg').length, 3);
     assert.match(p.textContent, /Stroke distribution/);
-    assert.match(p.textContent, /Dense shuttle tracking: TrackNetV3/);
+    assert.match(p.textContent, /Shuttle path from frame-by-frame tracking/);
     assert.ok(p.querySelector('.ws-list'));
   });
 });

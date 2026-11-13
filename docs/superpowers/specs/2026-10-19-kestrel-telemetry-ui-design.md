@@ -355,14 +355,17 @@ Night default, day optional (`[data-theme="day"]`; legacy `light` maps to day). 
 | `--bg --surface --surface2` | `#05070A #0B1017 #111923` | `#EDF0F3 #FFFFFF #F5F7F9` |
 | `--line --lineHi` | `#1B2733 #2D4054` | `#DCE2E8 #B9C4CF` |
 | `--ink --ink2 --ink3` | `#E6EDF5 #9BA9B8 #7A8898` | `#0E141B #44505E #5E6B7A` |
-| `--accent --accentInk` | `#FF5A36 #FF8A6B` | `#FF5A36 #C23A1A` |
-| `--cyan --cyanInk` | `#7FC8D6 #7FC8D6` | `#1B7F92 #077486` |
-| `--blue --good --mid --bad` | `#9DB0E6 #5FCF9A #E8B454 #F27B86` | `#3C58D6 #17794A #8A5A00 #C4262B` |
+| `--accent --accentInk` | `#FF5A36 #FF8A6B` | `#FF5A36 #A8300F` |
+| `--cyan --cyanInk` | `#7FC8D6 #7FC8D6` | `#1B7F92 #065F6E` |
+| `--blue --good --mid --bad` | `#9DB0E6 #5FCF9A #E8B454 #F27B86` | `#3C58D6 #0F6A3E #7A4F00 #A81E22` |
 
 The legacy variables (`--paper --card --border --fill --muted --faint --good --mid --bad --sidebar-bg`,
 radii) are re-pointed at these so untouched legacy screens adopt the look. Fonts: Space Grotesk (UI), IBM
 Plex Mono (numbers, labels), Instrument Serif (page names, titles); the CJK fallback stack is
-`"PingFang SC","Microsoft YaHei"`. Text tokens hold 4.5:1 on their surface. Focus ring: 2 px `--cyan`.
+`"PingFang SC","Microsoft YaHei"` (the serif falls back to `"Noto Serif SC","Source Han Serif SC","Songti SC",
+"STSong","SimSun"` so Chinese titles stay serif). Text tokens hold 4.5:1 on their surface; the day status and
+ink colours (`--good --mid --bad --accentInk --cyanInk`) also hold 4.5:1 as 12 px chip text on their own 16 % tint
+(design review 2026-11-13). Focus ring: 2 px `--cyan`.
 
 ### 6.4 Motion
 

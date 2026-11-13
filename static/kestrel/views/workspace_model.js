@@ -20,6 +20,15 @@ const DEFAULT_REF = Object.freeze({ lo: 70, hi: 100 });
 
 export const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 export const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+
+/** Pure: which side the sets give the match to: 0 (the first number of each pair), 1, or null (no sets or level). */
+export function setsSide(sets) {
+  const wins = [0, 0];
+  for (const p of Array.isArray(sets) ? sets : []) {
+    if (Array.isArray(p) && p.length === 2 && isNum(p[0]) && isNum(p[1]) && p[0] !== p[1]) wins[p[0] > p[1] ? 0 : 1] += 1;
+  }
+  return wins[0] === wins[1] ? null : wins[0] > wins[1] ? 0 : 1;
+}
 const round2 = (x) => Math.round(x * 100) / 100;
 export const num1 = (v) => String(+Number(v).toFixed(1));
 

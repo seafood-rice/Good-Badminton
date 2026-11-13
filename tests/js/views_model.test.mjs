@@ -871,3 +871,14 @@ test('validateRecordForm: scoring round-trips and is absent when the form has no
   assert.deepEqual(validateRecordForm(form).record, rec);
   assert.equal(validateRecordForm({ ...form, scoring: { ...form.scoring, win_by: '7' } }).errors.scoring, 'scoring.err');
 });
+
+test('matchRows: scoreConflict flags a W/L the own set scores contradict', () => {
+  const rows = matchRows({ matches: [
+    { stem: 'a', result: 'W', sets: [[19, 30]] },
+    { stem: 'b', result: 'W', sets: [[30, 19]] },
+    { stem: 'c', result: 'L', sets: [[30, 19]] },
+    { stem: 'd', result: 'W', sets: [] },
+    { stem: 'e', result: null, sets: [[19, 30]] },
+  ] });
+  assert.deepEqual(rows.map((r) => r.scoreConflict), [true, false, true, false, false]);
+});

@@ -7,6 +7,8 @@ import { h } from './frame.js';
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+/** '2026-10-22T20:50:20Z' -> '2026-10-22 20:50' (UTC, as the history rows); other strings pass through. */
+export const utcText = (v) => (typeof v === 'string' ? v.replace('T', ' ').replace(/:\d\dZ$/, '').replace('Z', '') : '');
 const pct = (v) => (isNum(v) ? Math.round(v * 100) + '%' : '—');
 
 const PCT_PARAMS = ['value', 'bar', 'candidate', 'live', 'unknown', 'swing', 'precision', 'target'];
@@ -44,7 +46,7 @@ export function historyRow(entry, lang) {
   const kept = e.kept === true;
   const live = obj(e.live);
   const cand = obj(e.candidate);
-  const when = typeof e.utc === 'string' ? e.utc.replace('T', ' ').replace(/:\d\dZ$/, '').replace('Z', '') : '';
+  const when = utcText(e.utc);
   let text;
   if (rollback) text = t('sm.hist.rolled_back', lang);
   else {
@@ -75,7 +77,7 @@ export function cardModel(data, lang) {
   return {
     state,
     hasModel,
-    version: hasModel ? live.version : null,
+    version: hasModel ? utcText(live.version) : null,
     accuracy: pct(metrics.accuracy),
     unknown: pct(metrics.unknown_rate),
     scored: isNum(metrics.accuracy),
@@ -148,7 +150,10 @@ export function strokeModelCard({ lang, api, onChanged } = {}) {
     }, t('sm.retrain', lang));
     const rollback = h('button', {
       type: 'button', class: 'ov-btn small', 'data-sm': 'rollback', disabled: !model.canRollback,
-      onclick: (e) => run(() => api.rollbackStrokeModel({ timeout: 10000 }), e.currentTarget),
+      onclick: (e) => {
+        if (typeof confirm === 'function' && !confirm(t('sm.rollback_confirm', lang))) return;
+        run(() => api.rollbackStrokeModel({ timeout: 10000 }), e.currentTarget);
+      },
     }, t('sm.rollback', lang));
     el.appendChild(h('div', { class: 'pv-foot' }, [retrain, rollback]));
     if (model.history.length) {
